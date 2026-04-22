@@ -18,12 +18,9 @@ export function newCorrelationId(): string {
 
 /** Extract correlation id from an incoming request header bag.
  *  Accepts both Next.js `Headers` and plain record shapes. */
-export function readCorrelationId(headers: {
-  get?(name: string): string | null;
-  [k: string]: unknown;
-}): string | null {
+export function readCorrelationId(headers: Headers | { get?(name: string): string | null | undefined; [k: string]: unknown }): string | null {
   if (typeof headers.get === 'function') {
-    return headers.get(CORRELATION_HEADER);
+    return headers.get(CORRELATION_HEADER) ?? null;
   }
   const record = headers as Record<string, unknown>;
   const direct = record[CORRELATION_HEADER] ?? record[CORRELATION_HEADER.toUpperCase()];
@@ -31,9 +28,6 @@ export function readCorrelationId(headers: {
 }
 
 /** Read-or-mint. Use this at every service entry point. */
-export function ensureCorrelationId(headers: {
-  get?(name: string): string | null;
-  [k: string]: unknown;
-}): string {
+export function ensureCorrelationId(headers: Headers | { get?(name: string): string | null | undefined; [k: string]: unknown }): string {
   return readCorrelationId(headers) ?? newCorrelationId();
 }

@@ -13,7 +13,7 @@
 
 'use client';
 
-import { useMemo } from 'react';
+import { Suspense, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useStockBot } from '@/lib/hooks/useStockBot';
 import BotIndicator from '@/components/stock/BotIndicator';
@@ -27,6 +27,14 @@ const DEFAULT_SYMBOLS = [
 ];
 
 export default function StocksPage() {
+  return (
+    <Suspense fallback={<div className="page" style={{ padding: 24 }}>Loading…</div>}>
+      <StocksPageInner />
+    </Suspense>
+  );
+}
+
+function StocksPageInner() {
   const sp = useSearchParams();
   const symbols = useMemo(() => {
     const q = sp?.get('symbols');

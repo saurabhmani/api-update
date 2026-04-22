@@ -95,7 +95,7 @@ export function listRules(userId?: string): AlertRule[] {
 
 // ── Trigger history (for /history endpoint) ────────────────────────
 
-export interface TriggerRecord {
+export type TriggerRecord = {
   rule_id: string;
   user_id: string;
   symbol: string;
@@ -104,7 +104,7 @@ export interface TriggerRecord {
   observed_value: number;
   triggered_at: number;
   correlation_id: string;
-}
+};
 
 const HISTORY_MAX = 1000;
 const history: TriggerRecord[] = [];

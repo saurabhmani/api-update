@@ -15,6 +15,8 @@ import type {
   GetSnapshotResponse,
   GetHistoricalResponse,
   ServiceResponse,
+  ServiceOk,
+  ServiceErr,
   HealthResponse,
 } from '@contracts/api';
 import type { HistoricalRange } from '@/types/market';
@@ -34,7 +36,10 @@ export async function handleSnapshot(
   params: SnapshotParams,
   correlationId: string,
   log: (level: string, msg: string, meta?: Record<string, unknown>) => void,
-): Promise<ServiceResponse<GetSnapshotResponse['data']> & { source?: string; data_quality?: string; fetched_at?: number; trail?: unknown }> {
+): Promise<
+  | (ServiceOk<GetSnapshotResponse['data']> & { source?: string; data_quality?: string; fetched_at?: number; trail?: unknown })
+  | ServiceErr
+> {
   if (!params.symbol || typeof params.symbol !== 'string') {
     return { ok: false, error: 'symbol required', code: 'BAD_REQUEST', correlation_id: correlationId };
   }

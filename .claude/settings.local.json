@@ -18,7 +18,8 @@
       "Bash(find /c/Users/pranj/OneDrive/Desktop/Compnay/q365-aligned/src -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) -exec grep -l \"instrument_id\" {} \\\\;)",
       "Bash(node -e ' *)",
       "Bash(curl -s http://localhost:3000/api/market-data/health --max-time 10)",
-      "Bash(curl -s -X POST -o /tmp/reseed.json -w \"HTTP %{http_code} TIME %{time_total}s\\\\n\" http://localhost:3000/api/market-data/reseed --max-time 120)"
+      "Bash(curl -s -X POST -o /tmp/reseed.json -w \"HTTP %{http_code} TIME %{time_total}s\\\\n\" http://localhost:3000/api/market-data/reseed --max-time 120)",
+      "Bash(npm run *)"
     ]
   }
 }

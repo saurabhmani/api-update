@@ -24,6 +24,13 @@ import { handleSnapshot, handleHistorical, handleHealth } from './handlers';
 import { ensureCorrelationId, CORRELATION_HEADER } from '@contracts/correlation';
 import { logger } from '@/lib/logger';
 
+function statusFor(body: { ok: boolean; code?: string }): number {
+  if (body.ok) return 200;
+  if (body.code === 'BAD_REQUEST') return 400;
+  if (body.code === 'STALE') return 503;
+  return 500;
+}
+
 const cfg = loadConfig();
 const log = logger.child({ service: 'market-ingestion', port: cfg.port });
 
@@ -80,7 +87,7 @@ const server = http.createServer(async (req, res) => {
         correlationId,
         logLine,
       );
-      json(res, body.ok ? 200 : body.code === 'BAD_REQUEST' ? 400 : body.code === 'STALE' ? 503 : 500, body, correlationId);
+      json(res, statusFor(body), body, correlationId);
       return;
     }
 
@@ -90,7 +97,7 @@ const server = http.createServer(async (req, res) => {
         correlationId,
         logLine,
       );
-      json(res, body.ok ? 200 : body.code === 'BAD_REQUEST' ? 400 : body.code === 'STALE' ? 503 : 500, body, correlationId);
+      json(res, statusFor(body), body, correlationId);
       return;
     }
 
