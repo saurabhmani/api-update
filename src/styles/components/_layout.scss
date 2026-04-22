@@ -1,0 +1,193 @@
+@use '../variables' as *;
+@use '../mixins'    as *;
+
+// ── App shell ─────────────────────────────────────────────────────
+.shell { display:flex; min-height:100vh; }
+
+// ── Sidebar ───────────────────────────────────────────────────────
+.sidebar {
+  width:      $sidebar-w;
+  background: $sidebar-bg;             // #071428 — deepest navy
+  @include flex-col;
+  position:   fixed;
+  inset:      0 auto 0 0;
+  z-index:    200;
+  transition: transform $t-base;
+  @include thin-scroll;
+
+  @include below-md {
+    transform: translateX(-100%);
+    &.open { transform: translateX(0); }
+  }
+
+  &__logo {
+    @include flex-start;
+    gap:           $s3;
+    padding:       $s5 $s5;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink:   0;
+
+    // Logo mark: electric cyan gradient
+    .logo-mark {
+      width:         32px; height:32px;
+      background:    linear-gradient(135deg, $color-glow, #38BDF8);
+      border-radius: $r-md;
+      @include flex-center;
+      font-weight:   800; font-size:$text-md;
+      color:         #fff; flex-shrink:0;
+      box-shadow:    0 0 12px rgba(0,201,255,0.4);
+    }
+
+    .logo-text {
+      strong { display:block; color:#fff; font-size:$text-md; font-weight:700; line-height:1.1; }
+      small  { color:$sidebar-text; font-size:$text-xs; }
+    }
+  }
+
+  &__nav {
+    flex:       1;
+    padding:    $s3 $s3;
+    overflow-y: auto;
+    @include thin-scroll;
+  }
+
+  &__group {
+    margin-bottom: $s2;
+
+    &-label {
+      padding:        $s3 $s3 $s1;
+      font-size:      10px;
+      font-weight:    700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color:          rgba(255,255,255,0.25);
+    }
+  }
+
+  &__item {
+    @include flex-start;
+    gap:           $s3;
+    padding:       $s2 $s3;
+    border-radius: $r-md;
+    color:         $sidebar-text;
+    font-size:     $text-sm;
+    font-weight:   500;
+    margin-bottom: 1px;
+    transition:    all $t-fast;
+    cursor:        pointer;
+    @include focus-ring-glow;
+
+    svg { width:15px; height:15px; flex-shrink:0; opacity:0.7; }
+
+    &:hover {
+      background: $sidebar-item-hover;   // cyan glow hover
+      color:      $sidebar-text-active;
+      svg { opacity:1; }
+    }
+
+    &.active {
+      background: $sidebar-item-active;  // stronger cyan glow
+      color:      $sidebar-text-active;
+      font-weight: 600;
+      svg { opacity:1; }
+      // Glow left border to indicate active page
+      box-shadow: inset 3px 0 0 $color-glow;
+    }
+  }
+
+  &__footer {
+    border-top: 1px solid rgba(255,255,255,0.07);
+    padding:    $s3;
+    flex-shrink: 0;
+  }
+
+  &__logout {
+    @include flex-start;
+    gap:      $s3; width:100%;
+    padding:  $s2 $s3; border-radius:$r-md;
+    color:    #FDA4AF; font-size:$text-sm; font-weight:500; transition:all $t-fast;
+    svg { width:15px; height:15px; }
+    &:hover { background:rgba(220,38,38,0.15); }
+  }
+}
+
+// ── Sidebar overlay ───────────────────────────────────────────────
+.sidebar-overlay {
+  display:none; position:fixed; inset:0;
+  background:rgba(7,20,40,0.5); z-index:199;
+  @include below-md { &.show { display:block; } }
+}
+
+// ── Main ──────────────────────────────────────────────────────────
+.main {
+  flex:1; margin-left:$sidebar-w; min-height:100vh;
+  @include flex-col;
+  overflow-x: hidden;
+  @include below-md { margin-left:0; }
+}
+
+// ── Topbar ────────────────────────────────────────────────────────
+.topbar {
+  height:     $topbar-h;
+  background: $color-surface;
+  border-bottom: 1px solid $color-border;
+  @include flex-between;
+  padding:    0 $s6;
+  position:   sticky; top:0;
+  z-index:    100;
+  box-shadow: $shadow-xs;
+  flex-shrink: 0;
+
+  &__left  { @include flex-start; gap:$s3; }
+  &__right { @include flex-start; gap:$s2; }
+
+  &__title {
+    font-size:  $text-lg; font-weight:600; color:$color-text;
+    @include below-md { display:none; }
+  }
+
+  &__hamburger {
+    @include flex-center; width:36px; height:36px;
+    border-radius:$r-md; color:$color-muted; transition:all $t-fast;
+    svg { width:18px; height:18px; }
+    &:hover { background:$color-bg; color:$color-text; }
+  }
+
+  &__icon-btn {
+    @include flex-center; width:34px; height:34px;
+    border-radius:$r-md; color:$color-muted;
+    position:relative; transition:all $t-fast;
+    svg { width:17px; height:17px; }
+    &:hover { background:$color-bg; color:$color-text; }
+
+    .dot {
+      position:absolute; top:5px; right:5px;
+      width:7px; height:7px;
+      background:$color-danger; border-radius:50%;
+      border:2px solid $color-surface;
+    }
+  }
+
+  &__avatar {
+    width:32px; height:32px; border-radius:$r-full;
+    background: linear-gradient(135deg, $color-primary-mid, $color-primary-hover);
+    color:#fff; @include flex-center; font-size:$text-xs; font-weight:700;
+    cursor:pointer; flex-shrink:0; transition:opacity $t-fast;
+    box-shadow: $shadow-glow;
+    &:hover { opacity:0.85; }
+  }
+}
+
+// ── Page wrapper ──────────────────────────────────────────────────
+.page {
+  flex:1; padding:$s6; max-width:1632px; width:100%;
+  @include below-md { padding:$s4; }
+
+  &__header {
+    @include flex-between;
+    margin-bottom:$s6; gap:$s4; flex-wrap:wrap;
+
+    h1 { font-size:$text-2xl; font-weight:700; color:$color-text; letter-spacing:-0.3px; }
+    p  { font-size:$text-sm;  color:$color-muted; margin-top:2px; }
+  }
+}

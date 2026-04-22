@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npx next:*)",
+      "Bash(timeout 240 npx tsx src/__tests__/proofManipulationScan.ts)",
+      "Bash(npx --no pm2 list)",
+      "Bash(npx tsx:*)",
+      "Bash(xargs grep:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npm test:*)",
+      "Bash(nslookup www.nseindia.com)",
+      "Bash(ping -n 1 www.nseindia.com)",
+      "Bash(/c/wamp64/bin/mysql/mysql9.1.0/bin/mysql.exe:*)",
+      "Bash(node -e \"const x=require\\('xlsx'\\);const fs=require\\('fs'\\);const wb=x.readFile\\('C:/Users/pranj/Downloads/nse_stocks_list.xlsx'\\);const s=wb.Sheets['NSE_STOCKS'];const rows=x.utils.sheet_to_json\\(s,{defval:null}\\);const out=rows.map\\(r=>\\({symbol:String\\(r['Trading Symbol']\\).trim\\(\\).toUpperCase\\(\\),token:Number\\(r['Instrument Token']\\),name:String\\(r['Company Name']||''\\).trim\\(\\),exchange:String\\(r['Exchange']||'NSE'\\).trim\\(\\)}\\)\\).filter\\(r=>r.symbol && /^[A-Z0-9&_-]+$/.test\\(r.symbol\\)\\);fs.writeFileSync\\('src/data/nseUniverse.json',JSON.stringify\\(out\\)\\);console.log\\('wrote',out.length,'symbols'\\);\")",
+      "WebFetch(domain:www.screener.in)",
+      "Bash(find /c/Users/pranj/OneDrive/Desktop/Compnay/q365-aligned/src -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) -exec grep -l \"tradingsymbol\" {} \\\\;)",
+      "Bash(find /c/Users/pranj/OneDrive/Desktop/Compnay/q365-aligned/src -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) -exec grep -l \"instrument_id\" {} \\\\;)",
+      "Bash(node -e ' *)",
+      "Bash(curl -s http://localhost:3000/api/market-data/health --max-time 10)",
+      "Bash(curl -s -X POST -o /tmp/reseed.json -w \"HTTP %{http_code} TIME %{time_total}s\\\\n\" http://localhost:3000/api/market-data/reseed --max-time 120)"
+    ]
+  }
+}

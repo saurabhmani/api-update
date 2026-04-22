@@ -1,0 +1,158 @@
+// BotIndicator — CSS-only animations, no external deps.
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+}
+
+.bot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: transform 220ms ease;
+
+  &:hover { transform: scale(1.06); }
+}
+
+.svg { display: block; }
+
+.pulseRing {
+  position: absolute;
+  inset: -4px;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* ── Head/body base colors ───────────────────────────────────── */
+.head    { fill: #E9F2FF; stroke: #CBD5E1; stroke-width: 1.2; }
+.mouth   { fill: #94A3B8; }
+.antenna { stroke: #94A3B8; stroke-width: 1.4; }
+.antennaDot { fill: #94A3B8; }
+.base    { fill: #E2E8F0; }
+.eye     { fill: #1E293B; }
+
+/* ── LIVE (Kite) — green pulse + blinking eyes ──────────────── */
+.live {
+  .pulseRing {
+    background: radial-gradient(closest-side, rgba(34,197,94,0.45), transparent 70%);
+    animation: pulseLive 1.4s ease-out infinite;
+  }
+  .head    { fill: #D1FAE5; stroke: #10B981; }
+  .mouth   { fill: #10B981; animation: scan 1.8s ease-in-out infinite; }
+  .antennaDot { fill: #10B981; animation: blink 1.4s infinite; }
+  .eye {
+    fill: #065F46;
+    transform-origin: center;
+    animation: blinkEye 3s infinite;
+  }
+}
+
+/* ── DELAYED (Yahoo) — amber scanning pulse ─────────────────── */
+.delayed {
+  .pulseRing {
+    background: radial-gradient(closest-side, rgba(245,158,11,0.40), transparent 70%);
+    animation: pulseDelayed 2s ease-in-out infinite;
+  }
+  .head    { fill: #FEF3C7; stroke: #F59E0B; }
+  .mouth   { fill: #F59E0B; animation: scanSlow 2.4s linear infinite; }
+  .antennaDot { fill: #F59E0B; }
+  .eye     { fill: #92400E; }
+}
+
+/* ── STALE (market closed) — grey subtle idle ───────────────── */
+.stale {
+  .pulseRing { display: none; }
+  .head    { fill: #F1F5F9; stroke: #94A3B8; }
+  .mouth   { fill: #94A3B8; }
+  .antennaDot { fill: #94A3B8; animation: blink 3s infinite; }
+  .eye     {
+    fill: #475569;
+    animation: sleepyBlink 4s infinite;
+  }
+}
+
+/* ── OFFLINE — red, jitter, flat eyes ──────────────────────── */
+.offline {
+  .pulseRing {
+    background: radial-gradient(closest-side, rgba(239,68,68,0.35), transparent 70%);
+    animation: pulseOffline 1s ease-in-out infinite;
+  }
+  .head    { fill: #FEE2E2; stroke: #EF4444; animation: jitter 0.6s ease-in-out infinite; }
+  .mouth   { fill: #EF4444; }
+  .antennaDot { fill: #EF4444; }
+  .eye     {
+    fill: #7F1D1D;
+    transform: scaleY(0.2);
+    transform-origin: center;
+  }
+}
+
+/* ── Meta label next to bot ─────────────────────────────────── */
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+
+  .wrap:has(.live)    & { color: #065F46; }
+  .wrap:has(.delayed) & { color: #92400E; }
+  .wrap:has(.stale)   & { color: #475569; }
+  .wrap:has(.offline) & { color: #7F1D1D; }
+}
+.counts {
+  font-size: 10px;
+  color: #64748B;
+  letter-spacing: 0.3px;
+}
+
+/* ── Keyframes ──────────────────────────────────────────────── */
+@keyframes pulseLive {
+  0%   { transform: scale(1);   opacity: 0.85; }
+  60%  { transform: scale(1.28); opacity: 0;    }
+  100% { transform: scale(1.28); opacity: 0;    }
+}
+@keyframes pulseDelayed {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50%      { opacity: 0.70; transform: scale(1.12); }
+}
+@keyframes pulseOffline {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 0.65; }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+@keyframes blinkEye {
+  0%, 94%, 100% { transform: scaleY(1); }
+  96%, 98%      { transform: scaleY(0.12); }
+}
+@keyframes sleepyBlink {
+  0%, 100% { transform: scaleY(0.55); }
+  50%      { transform: scaleY(0.12); }
+}
+@keyframes scan {
+  0%, 100% { transform: translateX(0);  opacity: 0.6; }
+  50%      { transform: translateX(3px); opacity: 1;   }
+}
+@keyframes scanSlow {
+  0%   { transform: translateX(-2px); }
+  50%  { transform: translateX(2px);  }
+  100% { transform: translateX(-2px); }
+}
+@keyframes jitter {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-1px); }
+  75%      { transform: translateX(1px); }
+}

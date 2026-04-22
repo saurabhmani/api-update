@@ -1,0 +1,218 @@
+.hero {
+  padding-top: 180px;
+  padding-bottom: 100px;
+  position: relative;
+  overflow: hidden;
+}
+
+.heroGrid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black 40%, transparent 100%);
+}
+
+.heroContainer {
+  position: relative;
+  z-index: 1;
+}
+
+.heroHeading {
+  max-width: 740px;
+  margin-bottom: 24px;
+}
+
+.heroLede {
+  max-width: 560px;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+
+.archSection {
+  background: var(--surface-1);
+}
+
+.archIntro {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 80px;
+  margin-bottom: 56px;
+}
+
+.archIntroPara {
+  padding-top: 8px;
+  font-size: 0.9375rem;
+}
+
+.archList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.archItem {
+  display: grid;
+  grid-template-columns: 48px 200px 1fr;
+  gap: 32px;
+  align-items: center;
+  padding: 28px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.archIndex {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
+
+.archLabelWrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.archIcon {
+  color: var(--gold);
+  font-size: 1.2rem;
+}
+
+.archLabel {
+  font-weight: 500;
+  font-size: 0.9375rem;
+}
+
+.archDesc {
+  font-size: 0.875rem;
+}
+
+.engineGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+}
+
+.engineHeading {
+  margin-bottom: 24px;
+}
+
+.enginePara {
+  margin-bottom: 20px;
+  font-size: 0.9375rem;
+}
+
+.engineParaLast {
+  margin-bottom: 32px;
+  font-size: 0.9375rem;
+}
+
+.capList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.capItem {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.capCheck {
+  color: var(--gold);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.capText {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.principlesSection {
+  background: var(--surface-1);
+}
+
+.principlesHeading {
+  max-width: 480px;
+  margin-bottom: 56px;
+}
+
+.principlesGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+}
+
+.principleDivider {
+  width: 32px;
+  height: 1px;
+  background: var(--gold);
+  margin-bottom: 20px;
+}
+
+.principleTitle {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  margin-bottom: 12px;
+}
+
+.principleBody {
+  font-size: 0.8125rem;
+}
+
+.ctaGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: center;
+}
+
+.ctaHeading {
+  margin-bottom: 20px;
+}
+
+.ctaPara {
+  font-size: 0.9375rem;
+  margin-bottom: 32px;
+}
+
+.ctaButtons {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.statusPanel {
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 40px;
+}
+
+.statusPanelLabel {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.statusRowLabel {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}

@@ -1,0 +1,120 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins' as *;
+
+.page {
+  min-height: 100vh;
+  @include flex-center;
+  background: linear-gradient(135deg, $color-primary 0%, #2563EB 100%);
+  padding: $s4;
+}
+
+.card {
+  background: $color-surface;
+  border-radius: $r-2xl;
+  padding: $s10;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: $shadow-xl;
+  animation: fade-up 0.25s ease;
+}
+
+.logo {
+  @include flex-start;
+  gap: $s3;
+  margin-bottom: $s8;
+}
+
+.logoMark {
+  width: 40px; height: 40px;
+  background: linear-gradient(135deg, $color-primary, $color-primary-hover);
+  border-radius: $r-lg;
+  @include flex-center;
+  font-size: $text-lg;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.logo strong {
+  display: block;
+  font-size: $text-lg;
+  font-weight: 700;
+  color: $color-text;
+}
+
+.logo small {
+  font-size: $text-xs;
+  color: $color-muted;
+}
+
+.title {
+  font-size: $text-2xl;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.3px;
+  margin-bottom: $s1;
+}
+
+.sub {
+  font-size: $text-sm;
+  color: $color-muted;
+  margin-bottom: $s6;
+}
+
+.error {
+  background: $color-danger-light;
+  color: $color-danger;
+  border: 1px solid rgba($color-danger, 0.25);
+  border-radius: $r-md;
+  padding: $s3 $s4;
+  font-size: $text-sm;
+  font-weight: 500;
+  margin-bottom: $s4;
+}
+
+.form { display: flex; flex-direction: column; gap: $s1; }
+
+.field {
+  margin-bottom: $s3;
+  label {
+    display: block;
+    font-size: $text-sm;
+    font-weight: 500;
+    color: $color-text-2;
+    margin-bottom: $s2;
+  }
+}
+
+.pwWrap {
+  position: relative;
+  input { padding-right: 40px; }
+}
+
+.eyeBtn {
+  position: absolute;
+  right: 12px; top: 50%;
+  transform: translateY(-50%);
+  color: $color-subtle;
+  background: none; border: none;
+  cursor: pointer; display: flex;
+  &:hover { color: $color-muted; }
+}
+
+.forgot {
+  text-align: right;
+  margin-bottom: $s4;
+  a { font-size: $text-sm; color: $color-primary-hover; &:hover { text-decoration: underline; } }
+}
+
+.back {
+  display: block;
+  width: 100%;
+  text-align: center;
+  margin-top: $s3;
+  font-size: $text-sm;
+  color: $color-muted;
+  cursor: pointer;
+  background: none; border: none;
+  font-family: inherit;
+  &:hover { color: $color-primary-hover; }
+}

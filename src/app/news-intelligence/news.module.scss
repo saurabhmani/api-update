@@ -1,0 +1,64 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+.pageHeader { @include flex-between; margin-bottom:$s6; }
+.pageTitle { font-size:$text-2xl; font-weight:800; @include gradient-text; }
+.refreshBtn {
+  @include flex-center; gap:$s2; padding:$s2 $s4; border-radius:$r-md;
+  font-size:$text-sm; font-weight:600; background:$color-primary; color:white; cursor:pointer;
+  transition:all $t-fast; border:none;
+  &:hover { background:$color-primary-hover; box-shadow:$shadow-glow; }
+}
+.spin { animation:spin 0.9s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.statsRow { display:grid; gap:$s4; grid-template-columns:repeat(2,1fr); margin-bottom:$s6; @include xl { grid-template-columns:repeat(5,1fr); } }
+.statBox { @include card; padding:$s4; text-align:center; transition:box-shadow $t-fast; &:hover { box-shadow:$shadow-glow; } }
+.statLabel { font-size:$text-xs; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; color:$color-glow-dark; margin-bottom:$s2; }
+.statValue { font-size:1.5rem; font-weight:800; }
+
+.grid2 { display:grid; gap:$s4; grid-template-columns:1fr; @include lg { grid-template-columns:1fr 1fr; } }
+.section { margin-bottom:$s6; }
+.sectionHead { @include flex-start; gap:$s2; margin-bottom:$s4; padding-bottom:$s3; border-bottom:2px solid $color-glow-light; }
+.sectionHead span { font-size:$text-md; font-weight:700; @include gradient-text; }
+.sectionHead svg { color:$color-glow-dark; flex-shrink:0; }
+
+.eventCard {
+  @include card; padding:$s4; margin-bottom:$s3; transition:all $t-fast;
+  border-left:4px solid transparent;
+  &:hover { box-shadow:$shadow-glow; transform:translateY(-1px); }
+  &.positive { border-left-color:$color-accent; }
+  &.negative { border-left-color:$color-danger; }
+  &.neutral  { border-left-color:$color-border; }
+}
+.eventTitle { font-size:$text-sm; font-weight:700; color:$color-text; margin-bottom:$s2; line-height:1.4; }
+.eventMeta { @include flex-start; gap:$s3; font-size:$text-xs; color:$color-muted; flex-wrap:wrap; }
+.metaChip {
+  display:inline-flex; align-items:center; gap:3px; padding:2px 8px; border-radius:$r-full;
+  font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.3px;
+  border:1px solid $color-border; background:rgba($color-border,0.2);
+}
+.scoreBar { @include flex-start; gap:$s3; margin-top:$s2; }
+.scorePill {
+  display:inline-flex; align-items:center; gap:3px; padding:2px 8px; border-radius:$r-full;
+  font-size:10px; font-weight:700; font-family:$font-mono;
+}
+
+.impactRow {
+  @include card; padding:$s3 $s4; margin-bottom:$s2; @include flex-between; transition:all $t-fast;
+  &:hover { box-shadow:$shadow-sm; border-color:$color-glow-mid; }
+}
+.impactSymbol { font-weight:800; font-size:$text-sm; width:100px; }
+.impactBar { flex:1; height:6px; background:$color-border; border-radius:$r-full; margin:0 $s4; overflow:hidden; }
+.impactFill { height:100%; border-radius:$r-full; transition:width $t-base; }
+.impactScore { font-weight:700; font-family:$font-mono; font-size:$text-sm; width:50px; text-align:right; }
+
+.tabBar { @include flex-start; gap:$s2; margin-bottom:$s4; border-bottom:1px solid $color-border; }
+.tab {
+  padding:$s2 $s4; font-size:$text-sm; font-weight:600; color:$color-muted; cursor:pointer; border-bottom:2px solid transparent;
+  transition:all $t-fast;
+  &:hover { color:$color-text; }
+  &.active { color:$color-glow-dark; border-bottom-color:$color-glow; }
+}
+
+.empty { @include flex-center; flex-direction:column; gap:$s4; padding:$s16 0; color:$color-muted; }

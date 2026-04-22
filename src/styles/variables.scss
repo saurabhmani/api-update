@@ -1,0 +1,119 @@
+// ═══════════════════════════════════════════════════════════════════
+//  Quantorus365 Design Tokens — v2 Theme
+//
+//  Primary:  Deep Navy      (#0B1F3A → #1A3A6B)
+//  Accent:   Electric Cyan  (#00C9FF)  — glowing light
+//  Danger:   Coral Red      (#DC2626)  — unchanged, legibility critical
+//  Charts:   8-colour palette           — multi-colour, non-monochrome
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Primary (deep navy) ───────────────────────────────────────────
+$color-primary:        #0B1F3A;   // deepest — hero bg, sidebar
+$color-primary-mid:    #1A3A6B;   // buttons, section headers
+$color-primary-hover:  #2563EB;   // hover states, links, focus
+$color-primary-pale:   #DBEAFE;   // badge backgrounds, icon tints
+$color-primary-subtle: #EFF6FF;   // row hover backgrounds
+
+// ── Accent (positive / growth) ────────────────────────────────────
+$color-accent:         #059669;   // emerald — BUY, gain, score ring
+$color-accent-light:   #D1FAE5;   // light bg for BUY badges
+
+// ── Glow (electric cyan) — used for highlights, chart-1, actives ──
+$color-glow:           #00C9FF;   // electric cyan — glowing light
+$color-glow-mid:       #06B6D4;   // readable cyan for text/borders
+$color-glow-light:     #CFFAFE;   // tint for chip backgrounds
+$color-glow-dark:      #0E7490;   // dark cyan for text on light bg
+
+// ── Semantic ──────────────────────────────────────────────────────
+$color-danger:         #DC2626;
+$color-danger-light:   #FEE2E2;
+$color-warning:        #D97706;
+$color-warning-light:  #FEF3C7;
+$color-info:           $color-primary-hover;
+$color-info-light:     $color-primary-pale;
+
+// ── Neutrals ──────────────────────────────────────────────────────
+$color-white:    #FFFFFF;
+$color-bg:       #F0F4F8;
+$color-surface:  #FFFFFF;
+$color-border:   #E1E8F0;
+$color-text:     #0B1120;
+$color-text-2:   #2D3748;
+$color-muted:    #5A6A7E;
+$color-subtle:   #8B9DB0;
+$color-disabled: #C5D0DC;
+
+// ── Sidebar ───────────────────────────────────────────────────────
+$sidebar-w:           240px;
+$sidebar-bg:          #071428;
+$sidebar-item:        rgba(255,255,255,0.05);
+$sidebar-item-hover:  rgba(0,201,255,0.10);
+$sidebar-item-active: rgba(0,201,255,0.16);
+$sidebar-text:        #8BACC8;
+$sidebar-text-active: #FFFFFF;
+$topbar-h:            60px;
+
+// ── Chart palette (8 colours, multi-hue) ─────────────────────────
+// Use via CSS custom properties (--chart-N) in JS/TSX
+$chart-1:  #00C9FF;   // Electric Cyan   — primary / LTP line
+$chart-2:  #6366F1;   // Indigo          — secondary series
+$chart-3:  #F59E0B;   // Amber           — volume bars
+$chart-4:  #10B981;   // Emerald         — positive / gainers
+$chart-5:  #F43F5E;   // Rose            — negative / losers
+$chart-6:  #8B5CF6;   // Purple          — signals / OI
+$chart-7:  #0EA5E9;   // Sky             — secondary price
+$chart-8:  #FB923C;   // Orange          — momentum / alerts
+
+// ── Glow shadows ──────────────────────────────────────────────────
+$shadow-xs:         0 1px 2px rgba(11,31,58,0.05);
+$shadow-sm:         0 1px 3px rgba(11,31,58,0.08), 0 1px 2px rgba(11,31,58,0.05);
+$shadow-md:         0 4px 12px rgba(11,31,58,0.10);
+$shadow-lg:         0 10px 28px rgba(11,31,58,0.14);
+$shadow-xl:         0 20px 48px rgba(11,31,58,0.18);
+$shadow-glow:       0 0 0 3px rgba(0,201,255,0.18), 0 4px 16px rgba(0,201,255,0.12);
+$shadow-glow-green: 0 0 0 3px rgba(5,150,105,0.18), 0 4px 16px rgba(5,150,105,0.12);
+
+// ── Typography ────────────────────────────────────────────────────
+$font:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+$font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+
+$text-xs:   0.6875rem;
+$text-sm:   0.8125rem;
+$text-base: 0.9375rem;
+$text-md:   1rem;
+$text-lg:   1.125rem;
+$text-xl:   1.25rem;
+$text-2xl:  1.5rem;
+$text-3xl:  1.875rem;
+
+// ── Spacing ───────────────────────────────────────────────────────
+$s1:  0.25rem;
+$s2:  0.5rem;
+$s3:  0.75rem;
+$s4:  1rem;
+$s5:  1.25rem;
+$s6:  1.5rem;
+$s8:  2rem;
+$s10: 2.5rem;
+$s12: 3rem;
+$s16: 4rem;
+
+// ── Radius ────────────────────────────────────────────────────────
+$r-sm:   4px;
+$r-md:   8px;
+$r-lg:   12px;
+$r-xl:   16px;
+$r-2xl:  20px;
+$r-full: 9999px;
+
+// ── Transitions ───────────────────────────────────────────────────
+$t-fast: 150ms ease;
+$t-base: 220ms ease;
+$t-slow: 350ms ease;
+
+// ── Breakpoints ───────────────────────────────────────────────────
+$bp-sm:  640px;
+$bp-md:  768px;
+$bp-lg:  1024px;
+$bp-xl:  1280px;
+$bp-2xl: 1536px;

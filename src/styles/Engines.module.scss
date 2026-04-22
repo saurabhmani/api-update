@@ -1,0 +1,224 @@
+.page {
+  min-height: 100vh;
+  background: var(--navy-950);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+
+.hero {
+  padding-top: 180px;
+  padding-bottom: 100px;
+  position: relative;
+  overflow: hidden;
+}
+
+.heroGrid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black 40%, transparent 100%);
+}
+
+.heroContainer {
+  position: relative;
+  z-index: 1;
+}
+
+.heroHeading {
+  max-width: 700px;
+  margin-bottom: 24px;
+}
+
+.heroLede {
+  max-width: 540px;
+  font-size: 1.0625rem;
+}
+
+.activeSection {
+  background: var(--surface-1);
+}
+
+.activeCard {
+  background: linear-gradient(135deg, rgba(201,168,76,0.06) 0%, rgba(201,168,76,0.02) 100%);
+  border: 1px solid rgba(201,168,76,0.25);
+  border-radius: 4px;
+  padding: 56px;
+  position: relative;
+  overflow: hidden;
+}
+
+.activeTopEdge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 10%, var(--gold) 50%, transparent 90%);
+}
+
+.activeGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  align-items: start;
+}
+
+.activeHeader {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.activeCodename {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--gold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.activeName {
+  margin-bottom: 20px;
+  font-size: clamp(1.8rem, 2.5vw, 2.4rem);
+}
+
+.activeDesc {
+  font-size: 0.9375rem;
+  margin-bottom: 32px;
+  line-height: 1.75;
+}
+
+.activeCapLabel {
+  margin-bottom: 20px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.activeCapRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(201,168,76,0.12);
+}
+
+.activeCapArrow {
+  color: var(--gold);
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 0.75rem;
+}
+
+.activeCapText {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.devIntro {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 80px;
+  margin-bottom: 56px;
+}
+
+.devIntroPara {
+  padding-top: 8px;
+  font-size: 0.9375rem;
+}
+
+.devList {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.devRow {
+  display: grid;
+  grid-template-columns: 240px 1fr 320px;
+  gap: 48px;
+  padding: 36px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  opacity: 0.7;
+}
+
+.devCodename {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.devName {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-bottom: 10px;
+  color: var(--gray-400);
+}
+
+.devDesc {
+  font-size: 0.875rem;
+  max-width: 520px;
+}
+
+.devCapLabel {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-muted);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.devCapRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.devCapBullet {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.devCapText {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.ctaSection {
+  background: var(--surface-1);
+}
+
+.ctaContainer {
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.ctaHeading {
+  margin-bottom: 20px;
+}
+
+.ctaPara {
+  margin-bottom: 40px;
+  font-size: 0.9375rem;
+}
+
+.ctaButtons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}

@@ -1,0 +1,121 @@
+# ════════════════════════════════════════════════════════════════
+#  docker-compose.dev.yml — local multi-service run
+#
+#  Usage:
+#    docker compose -f docker-compose.dev.yml up --build
+#
+#  Starts:
+#    • postgres:16      — port 5432 (maps the Phase-2 schemas)
+#    • market-ingestion — port 4100
+#    • market-intelligence — port 4200
+#    • alerting         — port 4300
+#    • nextjs           — port 3000 (gateway)
+#
+#  Env is read from .env.local. Put secrets there; compose picks them
+#  up via env_file. Services talk to each other via internal DNS
+#  (e.g. http://market-ingestion:4100).
+# ════════════════════════════════════════════════════════════════
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: q365-postgres
+    environment:
+      POSTGRES_USER:     ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB:       ${PGDATABASE}
+    ports:
+      - "5432:5432"
+    volumes:
+      - q365-pgdata:/var/lib/postgresql/data
+      # Migrations auto-applied on first-boot if the data dir is empty.
+      - ./migrations/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  market-ingestion:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE: market-ingestion
+    container_name: q365-market-ingestion
+    env_file: .env.local
+    environment:
+      MARKET_INGESTION_PORT: 4100
+      HC_PORT: 4100
+      # Gateway reaches this service by its compose name, not localhost.
+      MARKET_INGESTION_URL: http://market-ingestion:4100
+      PGHOST: postgres
+    ports:
+      - "4100:4100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  market-intelligence:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE: market-intelligence
+    container_name: q365-market-intelligence
+    env_file: .env.local
+    environment:
+      MARKET_INTELLIGENCE_PORT: 4200
+      HC_PORT: 4200
+      MARKET_INTELLIGENCE_URL: http://market-intelligence:4200
+      PGHOST: postgres
+    ports:
+      - "4200:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  alerting:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE: alerting
+    container_name: q365-alerting
+    env_file: .env.local
+    environment:
+      ALERTING_PORT: 4300
+      HC_PORT: 4300
+      ALERTING_URL: http://alerting:4300
+      PGHOST: postgres
+    ports:
+      - "4300:4300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Gateway runs Next.js. In dev we mount the source for HMR; in prod
+  # you'd build a separate image with `next build` baked in.
+  nextjs:
+    image: node:20-alpine
+    container_name: q365-nextjs
+    working_dir: /app
+    env_file: .env.local
+    environment:
+      PGHOST: postgres
+      MARKET_INGESTION_URL:    http://market-ingestion:4100
+      MARKET_INTELLIGENCE_URL: http://market-intelligence:4200
+      ALERTING_URL:            http://alerting:4300
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - market-ingestion
+      - market-intelligence
+      - alerting
+
+volumes:
+  q365-pgdata:

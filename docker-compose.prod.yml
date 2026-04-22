@@ -1,0 +1,212 @@
+# ════════════════════════════════════════════════════════════════
+#  docker-compose.prod.yml — production multi-service run
+#
+#  Differs from docker-compose.dev.yml in that:
+#    • Next.js image is built (no source mount), uses `next start`
+#    • Postgres data volume is NOT auto-seeded from migrations/; you
+#      bootstrap the DB via `docker exec` or a separate init Job.
+#    • Every service has explicit restart policy + resource limits.
+#
+#  This file is provider-agnostic — it will run on any Docker host
+#  (VPS / docker-in-VM / bare metal) and serves as the baseline for
+#  k8s Deployments or ECS task definitions when you move up the
+#  stack. DO NOT treat it as "deployable as-is to k8s" — k8s needs
+#  Deployment + Service + Ingress manifests derived from this shape.
+# ════════════════════════════════════════════════════════════════
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB:       ${PGDATABASE}
+    ports: ["5432:5432"]
+    volumes:
+      - q365-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:   { memory: 2G,   cpus: "2.0" }
+        reservations: { memory: 512M }
+
+  market-ingestion:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: market-ingestion }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      MARKET_INGESTION_PORT: 4100
+      HC_PORT: 4100
+      MARKET_INGESTION_URL: http://market-ingestion:4100
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4100:4100"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 512M, cpus: "1.0" }
+        reservations: { memory: 128M }
+
+  market-intelligence:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: market-intelligence }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      MARKET_INTELLIGENCE_PORT: 4200
+      HC_PORT: 4200
+      MARKET_INTELLIGENCE_URL: http://market-intelligence:4200
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4200:4200"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 384M, cpus: "0.5" }
+        reservations: { memory: 96M }
+
+  alerting:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: alerting }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      ALERTING_PORT: 4300
+      HC_PORT: 4300
+      ALERTING_URL: http://alerting:4300
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4300:4300"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 256M, cpus: "0.5" }
+        reservations: { memory: 64M }
+
+  signal-engine:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: signal-engine }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      SIGNAL_ENGINE_PORT: 4400
+      HC_PORT: 4400
+      SIGNAL_ENGINE_URL: http://signal-engine:4400
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4400:4400"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 512M, cpus: "1.0" }
+
+  portfolio:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: portfolio }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      PORTFOLIO_PORT: 4500
+      HC_PORT: 4500
+      PORTFOLIO_URL: http://portfolio:4500
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4500:4500"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 384M, cpus: "0.5" }
+
+  identity:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: identity }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      IDENTITY_PORT: 4600
+      HC_PORT: 4600
+      IDENTITY_URL: http://identity:4600
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4600:4600"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 384M, cpus: "0.5" }
+
+  reporting:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:  { SERVICE: reporting }
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      REPORTING_PORT: 4700
+      HC_PORT: 4700
+      REPORTING_URL: http://reporting:4700
+      PGHOST: postgres
+      NODE_ENV: production
+    ports: ["4700:4700"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:   { memory: 384M, cpus: "0.5" }
+
+  nextjs:
+    # Built image — produces the Next standalone bundle at build time.
+    build:
+      context: .
+      dockerfile: Dockerfile.nextjs
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      NODE_ENV: production
+      PGHOST: postgres
+      MARKET_INGESTION_URL:    http://market-ingestion:4100
+      MARKET_INTELLIGENCE_URL: http://market-intelligence:4200
+      ALERTING_URL:            http://alerting:4300
+      SIGNAL_ENGINE_URL:       http://signal-engine:4400
+      PORTFOLIO_URL:           http://portfolio:4500
+      IDENTITY_URL:            http://identity:4600
+      REPORTING_URL:           http://reporting:4700
+    ports: ["3000:3000"]
+    depends_on:
+      - market-ingestion
+      - market-intelligence
+      - alerting
+      - signal-engine
+      - portfolio
+      - identity
+      - reporting
+    deploy:
+      resources:
+        limits:   { memory: 1G, cpus: "1.0" }
+
+volumes:
+  q365-pgdata:

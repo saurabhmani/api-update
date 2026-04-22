@@ -1,0 +1,89 @@
+@use 'variables' as *;
+
+// ── Responsive ────────────────────────────────────────────────────
+@mixin sm        { @media (min-width: #{$bp-sm})               { @content; } }
+@mixin md        { @media (min-width: #{$bp-md})               { @content; } }
+@mixin lg        { @media (min-width: #{$bp-lg})               { @content; } }
+@mixin xl        { @media (min-width: #{$bp-xl})               { @content; } }
+@mixin below-md  { @media (max-width: #{calc($bp-md - 1px)})   { @content; } }
+@mixin below-lg  { @media (max-width: #{calc($bp-lg - 1px)})   { @content; } }
+
+// ── Flex ─────────────────────────────────────────────────────────
+@mixin flex-center  { display:flex; align-items:center; justify-content:center; }
+@mixin flex-between { display:flex; align-items:center; justify-content:space-between; }
+@mixin flex-start   { display:flex; align-items:center; justify-content:flex-start; }
+@mixin flex-col     { display:flex; flex-direction:column; }
+
+// ── Card ─────────────────────────────────────────────────────────
+@mixin card {
+  background:    $color-surface;
+  border:        1px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow:    $shadow-sm;
+}
+
+// Card with cyan glow — used on active/highlighted cards
+@mixin card-glow {
+  @include card;
+  border-color: $color-glow-mid;
+  box-shadow:   $shadow-glow;
+}
+
+// ── Truncate ─────────────────────────────────────────────────────
+@mixin truncate {
+  overflow:      hidden;
+  text-overflow: ellipsis;
+  white-space:   nowrap;
+}
+
+// ── Thin scrollbar ────────────────────────────────────────────────
+@mixin thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: $color-border transparent;
+  &::-webkit-scrollbar       { width:4px; height:4px; }
+  &::-webkit-scrollbar-track { background:transparent; }
+  &::-webkit-scrollbar-thumb { background:$color-border; border-radius:$r-full; }
+}
+
+// ── Standard focus ring ───────────────────────────────────────────
+@mixin focus-ring {
+  &:focus-visible {
+    outline:        2px solid $color-primary-hover;
+    outline-offset: 2px;
+  }
+}
+
+// ── Glow focus ring (cyan) — used on primary interactive elements ──
+@mixin focus-ring-glow {
+  &:focus-visible {
+    outline:        2px solid $color-glow;
+    outline-offset: 2px;
+    box-shadow:     $shadow-glow;
+  }
+}
+
+// ── Positive / Negative ───────────────────────────────────────────
+@mixin positive { color: $color-accent; }
+@mixin negative { color: $color-danger; }
+
+// ── Skeleton shimmer (updated to cooler tones) ────────────────────
+@mixin skeleton {
+  background:      linear-gradient(90deg, #E1E8F0 25%, #EBF0F7 50%, #E1E8F0 75%);
+  background-size: 200% 100%;
+  animation:       skeleton-pulse 1.4s ease-in-out infinite;
+  border-radius:   $r-sm;
+}
+
+// ── Glow text effect — for live/active numbers ────────────────────
+@mixin glow-text {
+  color:       $color-glow;
+  text-shadow: 0 0 12px rgba(0,201,255,0.4);
+}
+
+// ── Gradient text — primary to glow ──────────────────────────────
+@mixin gradient-text {
+  background:              linear-gradient(135deg, $color-primary-hover, $color-glow);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip:         text;
+}

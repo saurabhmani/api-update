@@ -1,0 +1,218 @@
+@use '../variables' as *;
+@use '../mixins'    as *;
+
+// ── Ticker strip ──────────────────────────────────────────────────
+// Sits directly below the topbar. Height: 36px.
+// Uses pure CSS animation (no JS transforms) for smooth scroll.
+
+$ticker-h:       36px;
+$ticker-bg:      $color-text;         // #0F172A — dark bar
+$ticker-surface: rgba(255,255,255,0.05);
+$ticker-text:    rgba(255,255,255,0.85);
+$ticker-muted:   rgba(255,255,255,0.40);
+$ticker-speed:   40s;                 // full loop duration
+
+.ticker {
+  position:   sticky;
+  top:        $topbar-h;             // directly below topbar (60px)
+  z-index:    99;
+  height:     $ticker-h;
+  background: $ticker-bg;
+  display:    flex;
+  align-items: center;
+  overflow:   hidden;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  box-shadow: 0 2px 8px rgba(15,23,42,0.2);
+  flex-shrink: 0;
+  user-select: none;
+
+  // ── LIVE label ──────────────────────────────────────────────────
+  &__label {
+    display:        flex;
+    align-items:    center;
+    gap:            5px;
+    padding:        0 $s4;
+    font-size:      9px;
+    font-weight:    800;
+    letter-spacing: 1.2px;
+    color:          $color-accent;
+    text-transform: uppercase;
+    white-space:    nowrap;
+    border-right:   1px solid rgba(255,255,255,0.10);
+    flex-shrink:    0;
+    height:         100%;
+    background:     rgba(22,163,74,0.08);
+  }
+
+  &__dot {
+    width:         6px;
+    height:        6px;
+    border-radius: 50%;
+    background:    $color-accent;
+    flex-shrink:   0;
+    animation:     ticker-pulse 1.8s ease-in-out infinite;
+  }
+
+  // ── Scrollable viewport ─────────────────────────────────────────
+  &__viewport {
+    flex:     1;
+    overflow: hidden;
+    height:   100%;
+    // Fade edges to create soft clip effect
+    mask-image: linear-gradient(
+      to right,
+      transparent 0%,
+      #000 3%,
+      #000 97%,
+      transparent 100%
+    );
+  }
+
+  // ── Scrolling track ─────────────────────────────────────────────
+  // Width is 200% so both copies (original + duplicate) fit side by side.
+  // Animation slides the track left by exactly 50% (= 1 copy width),
+  // then snaps back to 0 — creating a seamless infinite loop.
+  &__track {
+    display:    flex;
+    align-items: center;
+    height:     100%;
+    width:      max-content;
+    animation:  ticker-scroll $ticker-speed linear infinite;
+    will-change: transform;
+
+    &--paused {
+      animation-play-state: paused;
+    }
+  }
+
+  // ── Single item ─────────────────────────────────────────────────
+  &__item {
+    display:     flex;
+    align-items: center;
+    gap:         6px;
+    padding:     0 $s3;
+    height:      100%;
+    white-space: nowrap;
+    cursor:      default;
+    transition:  background $t-fast;
+
+    &:hover {
+      background: $ticker-surface;
+    }
+  }
+
+  &__symbol {
+    font-size:   $text-xs;
+    font-weight: 700;
+    color:       #fff;
+    letter-spacing: 0.3px;
+  }
+
+  &__price {
+    font-size:   $text-xs;
+    font-weight: 600;
+    color:       $ticker-text;
+    font-family: $font-mono;
+  }
+
+  &__change {
+    display:     flex;
+    align-items: center;
+    gap:         2px;
+    font-size:   $text-xs;
+    font-weight: 700;
+    font-family: $font-mono;
+    min-width:   52px;
+
+    // Re-declare here because global .positive/.negative use !important
+    &.positive { color: #34D399; }   // brighter green for dark bg
+    &.negative { color: #F87171; }   // brighter red for dark bg
+    &:not(.positive):not(.negative) { color: $ticker-muted; }
+  }
+
+  &__arrow {
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  &__sep {
+    color:     $ticker-muted;
+    font-size: $text-xs;
+    padding:   0 2px;
+  }
+
+  // ── Pause badge ─────────────────────────────────────────────────
+  &__paused-badge {
+    position:    absolute;
+    right:       $s3;
+    font-size:   10px;
+    color:       $ticker-muted;
+    font-weight: 500;
+    pointer-events: none;
+    background:  $ticker-bg;
+    padding:     2px 6px;
+    border-radius: $r-sm;
+    border:      1px solid rgba(255,255,255,0.08);
+  }
+
+  // ── Loading skeleton ─────────────────────────────────────────────
+  &__loading {
+    display:     flex;
+    align-items: center;
+    gap:         $s4;
+    padding:     0 $s4;
+    width:       100%;
+  }
+
+  &__skeleton {
+    @include skeleton;
+    height:       14px;
+    border-radius: $r-sm;
+    flex-shrink:  0;
+
+    // Varying widths for natural look
+    &:nth-child(1)  { width: 90px; }
+    &:nth-child(2)  { width: 70px; }
+    &:nth-child(3)  { width: 80px; }
+    &:nth-child(4)  { width: 65px; }
+    &:nth-child(5)  { width: 90px; }
+    &:nth-child(6)  { width: 75px; }
+    &:nth-child(7)  { width: 85px; }
+    &:nth-child(8)  { width: 70px; }
+
+    // Override shimmer colours for dark background
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0.06) 25%,
+      rgba(255,255,255,0.10) 50%,
+      rgba(255,255,255,0.06) 75%
+    );
+    background-size: 200% 100%;
+  }
+
+  // ── Error state ──────────────────────────────────────────────────
+  &--error {
+    justify-content: center;
+  }
+
+  &__error-msg {
+    font-size:  $text-xs;
+    color:      $ticker-muted;
+    font-style: italic;
+  }
+}
+
+// ── Keyframes ──────────────────────────────────────────────────────
+
+// Continuous left scroll — moves by exactly 50% of track width
+// (which equals the width of one copy of items).
+@keyframes ticker-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+// Live dot pulse
+@keyframes ticker-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.75); }
+}

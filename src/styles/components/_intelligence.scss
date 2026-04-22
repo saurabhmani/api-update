@@ -1,0 +1,260 @@
+@use '../variables' as *;
+@use '../mixins'    as *;
+
+// ── Signal chip ───────────────────────────────────────────────────
+.signal-chip {
+  display:       inline-flex;
+  align-items:   center;
+  gap:           $s1;
+  padding:       3px 10px;
+  border-radius: $r-full;
+  font-size:     $text-xs;
+  font-weight:   700;
+  letter-spacing: 0.5px;
+
+  &--BUY  { background:$color-accent-light;  color:darken(#059669,8%); }
+  &--SELL { background:$color-danger-light;  color:$color-danger; }
+  &--HOLD { background:#F0F4F8;              color:$color-muted; }
+
+  // New: glowing LIVE chip variant
+  &--LIVE {
+    background: $color-glow-light;
+    color:      $color-glow-dark;
+    border:     1px solid $color-glow-mid;
+    box-shadow: 0 0 6px rgba(0,201,255,0.2);
+  }
+}
+
+// ── Confidence bar ────────────────────────────────────────────────
+.confidence-bar {
+  &__label {
+    @include flex-between;
+    font-size:     $text-xs;
+    color:         $color-muted;
+    margin-bottom: $s1;
+    strong { color:$color-text; font-size:$text-sm; }
+  }
+
+  &__track {
+    height:        6px;
+    background:    $color-border;
+    border-radius: $r-full;
+    overflow:      hidden;
+  }
+
+  &__fill {
+    height:        100%;
+    border-radius: $r-full;
+    transition:    width 0.6s ease;
+
+    // Updated: richer gradients using new palette
+    &--high   { background: linear-gradient(90deg, $color-accent, #34D399); }
+    &--medium { background: linear-gradient(90deg, $color-warning, #FCD34D); }
+    &--low    { background: linear-gradient(90deg, $color-danger, #F87171); }
+  }
+}
+
+// ── Trade setup card ─────────────────────────────────────────────
+.setup-card {
+  @include card;
+  padding:     $s5;
+  border-left: 3px solid $color-border;
+  transition:  box-shadow $t-fast;
+
+  &--BUY  { border-left-color: $color-accent; }
+  &--SELL { border-left-color: $color-danger; }
+
+  &:hover { box-shadow: $shadow-md; }
+
+  &__header { @include flex-between; margin-bottom:$s3; }
+  &__symbol { font-size:$text-lg; font-weight:700; color:$color-primary-mid; }
+
+  &__levels {
+    display:               grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap:    $s3; margin:$s4 0;
+  }
+
+  &__level {
+    text-align:    center;
+    padding:       $s2;
+    background:    $color-bg;
+    border-radius: $r-md;
+
+    .label { font-size:$text-xs; color:$color-muted; font-weight:500; }
+    .value { font-size:$text-base; font-weight:700; color:$color-text; margin-top:2px; }
+
+    &--entry .value { color:$color-primary-mid; }
+    &--sl    .value { color:$color-danger; }
+    &--t1    .value { color:$color-accent; }
+  }
+
+  &__meta {
+    @include flex-start;
+    gap:$s3; flex-wrap:wrap;
+    font-size:$text-xs; color:$color-muted;
+  }
+
+  &__reason {
+    font-size:    $text-sm;
+    color:        $color-text-2;
+    line-height:  1.5;
+    margin-top:   $s3;
+    padding-top:  $s3;
+    border-top:   1px solid $color-border;
+  }
+}
+
+// ── Opportunity row ───────────────────────────────────────────────
+.opportunity-row {
+  @include flex-between;
+  padding:       $s3 $s4;
+  border-bottom: 1px solid $color-border;
+  gap:           $s3;
+  transition:    background $t-fast;
+
+  &:hover      { background:rgba(0,201,255,0.04); }
+  &:last-child { border-bottom:none; }
+
+  &__left   { @include flex-start; gap:$s3; flex:1; }
+  &__symbol { font-weight:700; color:$color-primary-mid; font-size:$text-sm; }
+  &__name   { font-size:$text-xs; color:$color-muted; @include truncate; max-width:140px; }
+
+  &__score {
+    width:38px; height:38px; border-radius:50%;
+    @include flex-center; font-size:$text-sm; font-weight:800; flex-shrink:0;
+
+    &--high   { background:$color-accent-light;  color:darken(#059669,5%); box-shadow:$shadow-glow-green; }
+    &--medium { background:$color-warning-light; color:$color-warning; }
+    &--low    { background:#F0F4F8;              color:$color-muted; }
+  }
+
+  &__alert { color:$color-warning; font-size:14px; }
+}
+
+// ── Market explanation card ───────────────────────────────────────
+.market-card {
+  @include card;
+  padding: $s5;
+
+  &__sentiment {
+    @include flex-start;
+    gap:$s2; margin-bottom:$s3;
+    font-size:$text-xs; font-weight:700;
+    text-transform:uppercase; letter-spacing:0.8px;
+
+    &--Bullish { color:$color-accent; }
+    &--Bearish { color:$color-danger; }
+    &--Mixed   { color:$color-warning; }
+    &--Neutral { color:$color-muted; }
+  }
+
+  &__headline {
+    font-size:$text-lg; font-weight:700; color:$color-text;
+    line-height:1.4; margin-bottom:$s4;
+  }
+
+  &__explanation {
+    font-size:$text-sm; color:$color-text-2; line-height:1.7;
+    background:$color-bg; border-radius:$r-md; padding:$s4;
+    border-left: 3px solid $color-glow-mid;  // cyan accent instead of pale blue
+  }
+
+  &__sections {
+    display:grid; grid-template-columns:1fr 1fr;
+    gap:$s4; margin-top:$s4;
+    @include below-md { grid-template-columns:1fr; }
+  }
+
+  &__section-title {
+    font-size:$text-xs; font-weight:700; text-transform:uppercase;
+    letter-spacing:0.8px; color:$color-muted; margin-bottom:$s2;
+  }
+
+  &__pill {
+    display:inline-block; background:$color-bg;
+    border:1px solid $color-border; border-radius:$r-full;
+    padding:3px 10px; font-size:$text-xs; font-weight:500;
+    margin:2px; color:$color-text-2;
+
+    &--leader { border-color:$color-accent-light;  background:$color-accent-light;  color:darken(#059669,5%); }
+    &--lagger { border-color:$color-danger-light;  background:$color-danger-light;  color:$color-danger; }
+  }
+}
+
+// ── Option intelligence ───────────────────────────────────────────
+.option-intel {
+  &__pcr-bar {
+    height:8px; background:$color-border; border-radius:$r-full;
+    overflow:hidden; position:relative; margin:$s2 0;
+    &-fill { height:100%; border-radius:$r-full; transition:width 0.5s; }
+  }
+
+  &__zone-row {
+    @include flex-between; padding:$s2 0;
+    border-bottom:1px solid $color-border; font-size:$text-sm;
+    &:last-child { border-bottom:none; }
+    .strike { font-weight:700; font-variant-numeric:tabular-nums; }
+    .oi     { color:$color-muted; font-size:$text-xs; }
+  }
+
+  &__buildup {
+    @include flex-start; gap:$s3; padding:$s2 $s3;
+    border-radius:$r-md; margin-bottom:$s2; font-size:$text-sm;
+    &--long_buildup   { background:$color-accent-light; }
+    &--short_buildup  { background:$color-danger-light; }
+    &--short_covering { background:$color-primary-pale; }
+    &--long_unwinding { background:$color-warning-light; }
+  }
+
+  &__trap {
+    background:rgba($color-warning,0.1); border:1px dashed $color-warning;
+    border-radius:$r-md; padding:$s3 $s4;
+    font-size:$text-sm; color:$color-text-2; margin-top:$s3;
+  }
+}
+
+// ── Reason item ───────────────────────────────────────────────────
+.reason-item {
+  @include flex-start; gap:$s3; padding:$s2 0;
+  border-bottom:1px solid $color-border; font-size:$text-sm;
+  &:last-child { border-bottom:none; }
+
+  &__dot {
+    width:8px; height:8px; border-radius:50%; flex-shrink:0; margin-top:4px;
+    &--positive { background:$color-accent; }
+    &--negative { background:$color-danger; }
+    &--neutral  { background:$color-disabled; }
+  }
+
+  &__label { font-weight:600; color:$color-text; }
+  &__desc  { color:$color-muted; font-size:$text-xs; margin-top:2px; }
+}
+
+// ── Plan gate ─────────────────────────────────────────────────────
+.plan-gate {
+  position:relative;
+  &__overlay {
+    position:absolute; inset:0;
+    background:rgba(255,255,255,0.88); backdrop-filter:blur(3px);
+    z-index:10; border-radius:$r-lg;
+    @include flex-center; flex-direction:column; gap:$s3;
+    text-align:center; padding:$s6;
+  }
+  &__icon  { font-size:28px; }
+  &__title { font-weight:700; color:$color-text; }
+  &__desc  { font-size:$text-sm; color:$color-muted; max-width:220px; }
+}
+
+// ── Trade journal row ─────────────────────────────────────────────
+.journal-row {
+  display:grid;
+  grid-template-columns: 1fr 80px 80px 80px 80px 100px 80px;
+  gap:$s3; align-items:center; padding:$s3 $s4;
+  border-bottom:1px solid $color-border; font-size:$text-sm;
+  transition:background $t-fast;
+  &:hover    { background:rgba(0,201,255,0.04); }
+  &--win     { border-left:3px solid $color-accent; }
+  &--loss    { border-left:3px solid $color-danger; }
+  &--open    { border-left:3px solid $color-glow-mid; }
+}

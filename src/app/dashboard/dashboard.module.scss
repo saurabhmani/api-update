@@ -1,0 +1,209 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+// ── Spin ──────────────────────────────────────────────────────────
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+// ── Section ───────────────────────────────────────────────────────
+.section {
+  margin-bottom: $s8;
+  &:last-child { margin-bottom: 0; }
+}
+
+// ── Section heading ───────────────────────────────────────────────
+.sectionHead {
+  @include flex-start;
+  gap:           $s2;
+  margin-bottom: $s4;
+  padding-bottom: $s3;
+  // Updated: cyan underline instead of grey border
+  border-bottom: 2px solid $color-glow-light;
+
+  span {
+    font-size:   $text-md;
+    font-weight: 700;
+    // Updated: gradient text on section headers
+    @include gradient-text;
+  }
+
+  svg { color: $color-glow-dark; flex-shrink: 0; }
+}
+
+// ── 4-box intel row ───────────────────────────────────────────────
+.intelRow {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(2, 1fr); }
+  @include xl { grid-template-columns: repeat(4, 1fr); }
+}
+
+// ── Intel box ─────────────────────────────────────────────────────
+.intelBox {
+  @include card;
+  padding:    $s4;
+  min-height: 94px;
+  transition: box-shadow $t-fast, border-color $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+  }
+}
+
+// ── Box label ─────────────────────────────────────────────────────
+.boxLabel {
+  font-size:      $text-xs;
+  font-weight:    700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color:          $color-glow-dark;   // cyan instead of grey for labels
+}
+
+// ── Sector grid ───────────────────────────────────────────────────
+.sectorGrid {
+  display: grid;
+  gap:     $s3;
+  grid-template-columns: repeat(2, 1fr);
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(4, 1fr); }
+  @include xl { grid-template-columns: repeat(8, 1fr); }
+}
+
+.sectorChip {
+  border:        1px solid $color-border;
+  border-radius: $r-md;
+  padding:       $s3;
+  display:       flex;
+  flex-direction: column;
+  gap:           $s1;
+  transition:    all $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-sm;
+    border-color: $color-glow-mid;
+    transform:    translateY(-1px);
+  }
+}
+
+// ── Backtesting grid ─────────────────────────────────────────────
+.btGrid {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(2, 1fr); }
+  @include xl { grid-template-columns: repeat(4, 1fr); }
+}
+
+.btStatBox {
+  @include card;
+  padding:    $s4;
+  text-align: center;
+  transition: box-shadow $t-fast, border-color $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+  }
+}
+
+.btStatLabel {
+  font-size:      $text-xs;
+  font-weight:    700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color:          $color-glow-dark;
+  margin-bottom:  $s2;
+}
+
+.btStatValue {
+  font-size:   1.5rem;
+  font-weight: 800;
+}
+
+.btStatSub {
+  font-size:  $text-xs;
+  color:      #64748B;
+  margin-top: $s1;
+}
+
+.btRunRow {
+  display:       flex;
+  align-items:   center;
+  gap:           $s3;
+  padding:       $s3 $s4;
+  border-bottom: 1px solid $color-border;
+  cursor:        pointer;
+  transition:    background $t-fast;
+
+  &:hover { background: rgba($color-glow-light, 0.2); }
+  &:last-child { border-bottom: none; }
+}
+
+.btRunName {
+  flex:        1;
+  font-weight: 700;
+  font-size:   $text-sm;
+}
+
+.btRunMeta {
+  font-size: $text-xs;
+  color:     #64748B;
+}
+
+.btGrid3 {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(3, 1fr); }
+}
+
+.btTradeTable {
+  width:           100%;
+  border-collapse: collapse;
+
+  th {
+    padding:        $s2 $s3;
+    text-align:     right;
+    font-size:      $text-xs;
+    color:          #94A3B8;
+    font-weight:    700;
+    background:     #F8FAFC;
+
+    &:first-child, &:nth-child(2) { text-align: left; }
+  }
+
+  td {
+    padding:   $s2 $s3;
+    font-size: $text-sm;
+    text-align: right;
+    border-top: 1px solid #F8FAFC;
+
+    &:first-child, &:nth-child(2) { text-align: left; }
+  }
+}
+
+// ── Opportunity card ──────────────────────────────────────────────
+.oppCard {
+  background:    $color-surface;
+  border:        1px solid $color-border;
+  border-left:   3px solid $color-primary-mid;
+  border-radius: $r-lg;
+  padding:       $s5;
+  box-shadow:    $shadow-sm;
+  transition:    all $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+    transform:    translateY(-2px);
+  }
+}

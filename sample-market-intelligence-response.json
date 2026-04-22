@@ -1,0 +1,70 @@
+{
+  "marketTrend": "Bull",
+  "trendScore": 42,
+  "breadth": {
+    "advancing": 312,
+    "declining": 156,
+    "unchanged": 32,
+    "ratio": 0.67
+  },
+  "sectorStrength": [
+    { "sector": "Banking",  "change_percent":  1.42, "trend": "up"   },
+    { "sector": "IT",       "change_percent":  0.87, "trend": "up"   },
+    { "sector": "Auto",     "change_percent":  0.65, "trend": "up"   },
+    { "sector": "FMCG",     "change_percent":  0.21, "trend": "up"   },
+    { "sector": "Pharma",   "change_percent": -0.18, "trend": "flat" },
+    { "sector": "Metal",    "change_percent": -0.74, "trend": "down" },
+    { "sector": "Realty",   "change_percent": -1.23, "trend": "down" },
+    { "sector": "Energy",   "change_percent": -1.61, "trend": "down" }
+  ],
+  "topGainers": [
+    { "symbol": "HDFCBANK",  "name": "HDFC Bank Ltd",           "ltp": 1685.40, "change_percent":  3.24, "change_abs": 52.85,  "volume": 8432100 },
+    { "symbol": "TCS",       "name": "Tata Consultancy",        "ltp": 3892.15, "change_percent":  2.87, "change_abs": 108.70, "volume": 2310450 },
+    { "symbol": "INFY",      "name": "Infosys Ltd",             "ltp": 1543.60, "change_percent":  2.45, "change_abs": 36.95,  "volume": 4120700 },
+    { "symbol": "RELIANCE",  "name": "Reliance Industries",     "ltp": 2934.75, "change_percent":  1.98, "change_abs": 57.10,  "volume": 6230900 },
+    { "symbol": "AXISBANK",  "name": "Axis Bank Ltd",           "ltp": 1102.30, "change_percent":  1.76, "change_abs": 19.10,  "volume": 3890200 }
+  ],
+  "topLosers": [
+    { "symbol": "ONGC",      "name": "Oil & Natural Gas Corp",  "ltp":  278.45, "change_percent": -2.41, "change_abs": -6.87,  "volume": 9123400 },
+    { "symbol": "COALINDIA", "name": "Coal India Ltd",          "ltp":  412.80, "change_percent": -1.95, "change_abs": -8.20,  "volume": 5640300 },
+    { "symbol": "NTPC",      "name": "NTPC Ltd",                "ltp":  358.90, "change_percent": -1.72, "change_abs": -6.30,  "volume": 4230100 },
+    { "symbol": "JSWSTEEL",  "name": "JSW Steel Ltd",           "ltp":  832.15, "change_percent": -1.54, "change_abs": -13.05, "volume": 2780500 },
+    { "symbol": "TATASTEEL", "name": "Tata Steel Ltd",          "ltp":  162.40, "change_percent": -1.31, "change_abs": -2.15,  "volume": 7890400 }
+  ],
+  "fiiDii": [
+    {
+      "date":      "30-Mar-2026",
+      "fii_buy":   14823.45,
+      "fii_sell":  11204.30,
+      "fii_net":    3619.15,
+      "dii_buy":   9342.80,
+      "dii_sell":  7891.20,
+      "dii_net":   1451.60,
+      "fii_label": "FII net bought ₹36 Cr",
+      "dii_label": "DII net bought ₹14 Cr"
+    },
+    {
+      "date":      "29-Mar-2026",
+      "fii_buy":   10234.15,
+      "fii_sell":  13891.60,
+      "fii_net":  -3657.45,
+      "dii_buy":  12043.90,
+      "dii_sell":  9234.70,
+      "dii_net":   2809.20,
+      "fii_label": "FII net sold ₹36 Cr",
+      "dii_label": "DII net bought ₹28 Cr"
+    }
+  ],
+  "volatility": {
+    "nifty_vix":        14.32,
+    "avg_range_pct":    1.87,
+    "high_vol_count":   34,
+    "low_vol_count":    89,
+    "volatility_label": "Normal"
+  },
+  "meta": {
+    "asOf":        "2026-03-30T10:15:42.000Z",
+    "dataSource":  "redis",
+    "cacheAgeSec": 23
+  }
+}
