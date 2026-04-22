@@ -33,6 +33,8 @@
     "db:seed-users": "tsx src/lib/db/seedUsers.ts",
     "verify:sell-fix": "tsx scripts/verifySellFix.ts",
     "verify:news": "tsx --tsconfig tsconfig.node.json scripts/verifyNewsPipeline.ts",
+    "news:rebuild-symbols": "tsx --tsconfig tsconfig.node.json scripts/rebuildSymbolIndex.ts",
+    "news:reclassify":      "tsx --tsconfig tsconfig.node.json scripts/reclassifyNewsSentiment.ts",
     "db:ensure": "tsx src/lib/db/ensureSchemasCli.ts",
     "ws-server": "tsx src/lib/ws/streamServerCli.ts",
     "db:setup": "ts-node -P tsconfig.node.json src/lib/db/setup.ts",

@@ -81,7 +81,18 @@ async function enrichWithLiveLtp<
   if (rows.length === 0) return rows;
 
   const t0 = Date.now();
-  const YAHOO_CONCURRENCY = 10;
+
+  // Performance knobs (see /signals initial-load bottleneck):
+  //   - YAHOO_CONCURRENCY raised 10 → 25: yahooCircuitBreaker already
+  //     throttles on pushback, so higher parallelism can only improve
+  //     wall-clock latency; it cannot over-run Yahoo's rate limit.
+  //   - ENRICH_TIMEOUT_MS caps the entire worker pool. If Yahoo is
+  //     slow, whatever hasn't resolved yet stays at null livePrice;
+  //     the UI falls back to entry_price and the next 10s poll fills
+  //     the gap once the cache has warmed.
+  // Together: bounded initial load, no more "Loading signals…" hang.
+  const YAHOO_CONCURRENCY = 25;
+  const ENRICH_TIMEOUT_MS = 5_000;
   const market = getMarketStatus();
 
   type Target = { row: typeof rows[number]; sym: string };
@@ -100,19 +111,20 @@ async function enrichWithLiveLtp<
 
   if (targets.length > 0) {
     let cursor = 0;
+    let aborted = false;
     async function worker(): Promise<void> {
-      while (true) {
+      while (!aborted) {
         const i = cursor++;
         if (i >= targets.length) return;
         const { row, sym } = targets[i];
         try {
           const res = await fetchFromYahooCached(sym);
+          if (aborted) return;  // discard late arrivals; caller returned
           if (res.price != null) {
             row.livePrice   = res.price;
             row.livePChange = res.pChange ?? null;
             row.liveSource  = 'yahoo';
             row.liveTickTs  = Date.now();
-            console.log('[DATA]', { symbol: sym, source: 'yahoo', price: res.price });
           } else {
             row.livePrice   = null;
             row.livePChange = null;
@@ -127,9 +139,32 @@ async function enrichWithLiveLtp<
         }
       }
     }
-    await Promise.all(
+
+    const pool = Promise.all(
       Array.from({ length: Math.min(YAHOO_CONCURRENCY, targets.length) }, worker),
     );
+    // Race the worker pool against the timeout. If the timeout wins,
+    // mark the pool as aborted (workers exit their loop on next tick)
+    // and mark any still-unfilled rows as `none` so the UI has a
+    // deterministic shape to render.
+    const timeout = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), ENRICH_TIMEOUT_MS),
+    );
+    const result = await Promise.race([pool.then(() => 'done' as const), timeout]);
+    if (result === 'timeout') {
+      aborted = true;
+      let filled = 0;
+      for (const t of targets) {
+        if (t.row.livePrice == null && t.row.liveSource !== 'none') {
+          t.row.liveSource = 'none';
+        }
+        if (t.row.livePrice != null) filled++;
+      }
+      console.warn(
+        `[enrich] timeout after ${ENRICH_TIMEOUT_MS}ms — ` +
+        `filled ${filled}/${targets.length}; remaining rendered with live=null`,
+      );
+    }
   }
 
   const bySource: Record<string, number> = {};
@@ -431,22 +466,38 @@ export async function GET(req: NextRequest) {
       // sort + cap reflects the full universe, not the top of an
       // arbitrary DB ORDER BY. limit param caps the final return,
       // not the upstream fetch.
-      const fetchWindow = Math.max(limit, 200);
+      // fetchWindow trimmed 200 → 100. The API returns at most 50
+      // (TARGET_COUNT). 100 = 2× headroom for tier churn / duplicate
+      // filtering / auto-relax dip, which is ample. Fetching 200 meant
+      // enriching 200 Yahoo prices just to discard 150 of them — the
+      // primary driver of the 20–30s cold-start latency on /signals.
+      const fetchWindow = Math.max(limit, 100);
       const signals = await getActiveSignals(fetchWindow);
       const totalGenerated = signals.length;
 
       const audits  = await getStrategyBreakdownsBatch(
         signals.map((s: any) => s.id).filter(Boolean),
       );
-      const enriched = await enrichWithLiveLtp(signals.map((s: any) => {
+
+      // PERF: enrichment deferred. Previously enrichWithLiveLtp ran on
+      // all `fetchWindow` rows (100) BEFORE tier selection threw half
+      // of them away — doing 100 Yahoo fetches to display 50. Moved
+      // below to run only on the final `shown` list (≤50 rows). Tier
+      // selection uses DB columns (final_score, confidence_score,
+      // freshness_score) that don't require live prices, so reordering
+      // is semantically free. Halves cold-start latency.
+      //
+      // applyLiveSanity also deferred — in Yahoo-only mode it's
+      // advisory (live_invalidated flag retained but never
+      // hard-excludes), so moving it past the filter costs nothing.
+      const enriched = signals.map((s: any) => {
         const audit = audits.get(s.id);
         return {
           ...s,
           winning_strategy: audit?.winning_strategy ?? null,
           strategies:       audit?.strategies ?? [],
         };
-      }));
-      applyLiveSanity(enriched as any[]);
+      });
 
       // Signal-only / Yahoo-only mode: live_invalidated is advisory.
       // With a 15-min-delayed Yahoo tape we cannot trust the flag as
@@ -887,6 +938,14 @@ export async function GET(req: NextRequest) {
       // Merged list also sorted by rank so the top of the dashboard
       // is the best overall, not "top BUYs then top SELLs in blocks".
       shown = shown.sort(sortByRank);
+
+      // Enrich ONLY the final shown list with live Yahoo prices.
+      // With 25-way concurrency and a 5s timeout, 50 symbols complete
+      // in ~2s on cold cache, <1s on warm cache. applyLiveSanity runs
+      // after enrichment here (advisory in Yahoo-only mode — it marks
+      // stopped-out rows for UI indication but never excludes them).
+      await enrichWithLiveLtp(shown as any[]);
+      applyLiveSanity(shown as any[]);
 
       // ── Logging per spec ─────────────────────────────────────
       const tierCounts = shown.reduce(

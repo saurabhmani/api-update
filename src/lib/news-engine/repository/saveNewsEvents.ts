@@ -23,6 +23,33 @@ export async function saveNewsEvents(events: NewsEvent[]): Promise<NewsEvent[]> 
 
   for (const event of events) {
     try {
+      // Dedup-aware UPSERT.
+      //
+      // The INSERT columns are unchanged.
+      //
+      // The ON DUPLICATE KEY UPDATE clause used to set only
+      //   `updated_at = NOW()`
+      // which meant the FIRST insert's rule-based output
+      // (symbols_json, sentiment, category, etc.) was permanently
+      // frozen. When the alias map or classifier later improved, the
+      // same article re-ingested would hit the dedup guard and keep
+      // its stale empty symbols / outdated sentiment — producing the
+      // observed "news_events_with_symbols=0 while scoring works"
+      // symptom: fresh score cards had real symbols (from the current
+      // resolver running in-memory on the same event), but the
+      // persisted row kept the empty snapshot from the older run.
+      //
+      // The refresh now covers every column that is derived from a
+      // rule-based layer upstream:
+      //   - symbols_json / sectors_json / macro_factors_json /
+      //     commodities_json   → entity resolver output
+      //   - category / sentiment / sentiment_score → classifier output
+      //   - is_processed       → normalization flag
+      //
+      // Columns NOT refreshed (intentionally):
+      //   - source_id, external_id, dedup_hash, title, body, url,
+      //     published_at, fetched_at  → truth-source facts. An article
+      //     doesn't change its title or publish time between ingests.
       const result = await db.query(
         `INSERT INTO q365_news_events
            (source_id, external_id, dedup_hash, title, body, url,
@@ -30,7 +57,16 @@ export async function saveNewsEvents(events: NewsEvent[]): Promise<NewsEvent[]> 
             symbols_json, sectors_json, macro_factors_json, commodities_json,
             is_processed)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+         ON DUPLICATE KEY UPDATE
+            category          = VALUES(category),
+            sentiment         = VALUES(sentiment),
+            sentiment_score   = VALUES(sentiment_score),
+            symbols_json      = VALUES(symbols_json),
+            sectors_json      = VALUES(sectors_json),
+            macro_factors_json = VALUES(macro_factors_json),
+            commodities_json  = VALUES(commodities_json),
+            is_processed      = VALUES(is_processed),
+            updated_at        = NOW()`,
         [
           event.sourceId,
           event.externalId,

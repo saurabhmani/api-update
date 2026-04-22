@@ -6,7 +6,26 @@ import { Card, Loading } from '@/components/ui';
 import { Newspaper, RefreshCw, TrendingUp, AlertTriangle, Zap, BarChart3, Shield } from 'lucide-react';
 import s from './news.module.scss';
 
-interface NewsEvent { id: number; title: string; category: string; sentiment: string; source_id: string; publishedAt: string; }
+interface NewsEvent {
+  id:          number;
+  title:       string;
+  category:    string;
+  sentiment:   string;
+  source_id:   string;
+  publishedAt: string;
+  symbols?:    string[];   // extracted NSE symbols (from readNewsEvents.ts:33)
+  sectors?:    string[];   // extracted sectors
+}
+
+// Safe ISO formatter — returns "—" for anything that can't parse into
+// a finite timestamp. Prevents the literal string "Invalid Date" from
+// ever reaching the UI when a row's publishedAt slips through malformed.
+function formatPublishedAt(raw: unknown): string {
+  if (raw == null || raw === '') return '—';
+  const t = new Date(String(raw)).getTime();
+  if (!Number.isFinite(t)) return '—';
+  return new Date(t).toLocaleString();
+}
 interface ScoreRow { symbol: string; trust_score: number; sentiment_score: number; importance_score: number; symbol_impact_score: number; event_risk_score: number; manipulation_risk_boost: number; }
 interface ImpactRow { symbol: string; confidenceModifier: number; riskPenalty: number; aggregateImpact: number; netSentiment: string; eventCount: number; }
 
@@ -22,9 +41,9 @@ export default function NewsIntelligencePage() {
     try {
       const [evRes, impRes] = await Promise.allSettled([
         fetch('/api/news-engine?limit=50&days=3', { cache: 'no-store' }).then(r => r.ok ? r.json() : { events: [] }),
-        fetch('/api/news-engine?impact=true', { cache: 'no-store' }).then(r => r.ok ? r.json() : { symbolImpacts: {} }),
+        fetch('/api/news-engine?impact=true',     { cache: 'no-store' }).then(r => r.ok ? r.json() : { symbolImpacts: {} }),
       ]);
-      const evData = evRes.status === 'fulfilled' ? evRes.value : { events: [] };
+      const evData  = evRes.status  === 'fulfilled' ? evRes.value  : { events: [] };
       const impData = impRes.status === 'fulfilled' ? impRes.value : { symbolImpacts: {} };
       setEvents(evData.events ?? []);
       setImpacts(impData.symbolImpacts ?? {});
@@ -79,8 +98,40 @@ export default function NewsIntelligencePage() {
   }, [lastEvent, load]);
 
   const impactEntries = Object.entries(impacts).sort(([, a], [, b]) => b.aggregateImpact - a.aggregateImpact);
+
+  // "Symbols Impacted" — union of symbols across all loaded events
+  // AND symbols already scored into impact rows. Previously this was
+  // `impactEntries.length`, which only counts symbols that have score
+  // cards in q365_news_scores. Newly-ingested articles with extracted
+  // symbols but no score cards yet (scoring runs after ingestion)
+  // were invisible. This union surfaces every symbol the resolver
+  // attached to any event in the current window, whether or not
+  // scoring has caught up.
+  const symbolsImpactedSet = new Set<string>();
+  for (const [sym] of impactEntries) symbolsImpactedSet.add(sym.toUpperCase());
+  for (const e of events) {
+    if (Array.isArray(e.symbols)) {
+      for (const sym of e.symbols) {
+        if (sym) symbolsImpactedSet.add(String(sym).toUpperCase());
+      }
+    }
+  }
+  const symbolsImpactedCount = symbolsImpactedSet.size;
+
+  // Classifier emits 5 labels (strongly_positive, positive, neutral,
+  // negative, strongly_negative) but the UI shows 3 buckets. Without
+  // this collapse, the previous code `if (k in sentimentCounts)` was
+  // literally checking `k === 'positive'` etc. and silently skipping
+  // strongly_* rows — producing `positive = 0` whenever the classifier
+  // had confidence to use the strong tier. Fold strong tiers back into
+  // their base polarity so the bucket sum matches events.length.
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
-  events.forEach(e => { const k = e.sentiment as keyof typeof sentimentCounts; if (k in sentimentCounts) sentimentCounts[k]++; });
+  events.forEach(e => {
+    const raw = String(e.sentiment ?? '').toLowerCase();
+    if (raw === 'positive' || raw === 'strongly_positive') sentimentCounts.positive++;
+    else if (raw === 'negative' || raw === 'strongly_negative') sentimentCounts.negative++;
+    else sentimentCounts.neutral++;
+  });
 
   return (
     <AppShell>
@@ -113,7 +164,7 @@ export default function NewsIntelligencePage() {
 
       <div className={s.statsRow}>
         <div className={s.statBox}><div className={s.statLabel}>Events (3d)</div><div className={s.statValue}>{events.length}</div></div>
-        <div className={s.statBox}><div className={s.statLabel}>Symbols Impacted</div><div className={s.statValue}>{impactEntries.length}</div></div>
+        <div className={s.statBox}><div className={s.statLabel}>Symbols Impacted</div><div className={s.statValue}>{symbolsImpactedCount}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#059669' }}>Positive</div><div className={s.statValue} style={{ color:'#059669' }}>{sentimentCounts.positive}</div></div>
         <div className={s.statBox}><div className={s.statLabel}>Neutral</div><div className={s.statValue}>{sentimentCounts.neutral}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#DC2626' }}>Negative</div><div className={s.statValue} style={{ color:'#DC2626' }}>{sentimentCounts.negative}</div></div>
@@ -147,19 +198,45 @@ export default function NewsIntelligencePage() {
                 {running ? 'Loading...' : 'Load News Now'}
               </button>
             </div>
-          ) : events.map(e => (
-            <div key={e.id} className={`${s.eventCard} ${s[e.sentiment] ?? s.neutral}`}>
-              <div className={s.eventTitle}>{e.title}</div>
-              <div className={s.eventMeta}>
-                <span className={s.metaChip}>{e.category}</span>
-                <span className={s.metaChip} style={{ borderColor: e.sentiment === 'positive' ? '#059669' : e.sentiment === 'negative' ? '#DC2626' : undefined }}>
-                  {e.sentiment}
-                </span>
-                <span>{e.source_id}</span>
-                <span>{new Date(e.publishedAt).toLocaleString()}</span>
+          ) : events.map(e => {
+            // Collapse 5 classifier labels → 3 UI buckets for styling.
+            // `base` drives color/CSS; `display` keeps the strong-tier
+            // text so operators still see "STRONGLY POSITIVE" / etc.
+            const raw = String(e.sentiment ?? '').toLowerCase();
+            const base = raw === 'positive' || raw === 'strongly_positive' ? 'positive'
+                       : raw === 'negative' || raw === 'strongly_negative' ? 'negative'
+                       : 'neutral';
+            const borderColor = base === 'positive' ? '#059669'
+                              : base === 'negative' ? '#DC2626' : undefined;
+            const syms = Array.isArray(e.symbols) ? e.symbols : [];
+            return (
+              <div key={e.id} className={`${s.eventCard} ${s[base] ?? s.neutral}`}>
+                <div className={s.eventTitle}>{e.title}</div>
+                <div className={s.eventMeta}>
+                  <span className={s.metaChip}>{e.category}</span>
+                  <span className={s.metaChip} style={{ borderColor }}>
+                    {raw.replace('_', ' ')}
+                  </span>
+                  {syms.length > 0 && syms.slice(0, 6).map(sym => (
+                    <span
+                      key={sym}
+                      className={s.metaChip}
+                      style={{ borderColor: '#1D4ED8', color: '#1D4ED8', fontWeight: 700 }}
+                    >
+                      {sym}
+                    </span>
+                  ))}
+                  {syms.length > 6 && (
+                    <span className={s.metaChip} style={{ color: '#5A6A7E' }}>
+                      +{syms.length - 6}
+                    </span>
+                  )}
+                  <span>{e.source_id}</span>
+                  <span>{formatPublishedAt(e.publishedAt)}</span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div>

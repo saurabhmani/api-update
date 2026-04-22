@@ -185,3 +185,15 @@ When every box above is green for 48h, flip:
 — and the system is at **~90%** (Phase-1 and Phase-2 DoD complete).
 The last 10% (remaining services + deployment) is the quarter of
 work after this conversation ends.
+
+
+ # 1. Repair symbol arrays stuck empty (from prior resolver
+  expansion)
+  npm run news:rebuild-symbols
+
+  # 2. Repair sentiment labels stuck on old classifier output
+  (this turn)
+  npm run news:reclassify
+
+  # 3. Confirm distribution
+  npm run verify:news -- --verbose
