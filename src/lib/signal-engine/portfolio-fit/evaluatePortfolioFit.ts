@@ -123,10 +123,28 @@ function computeDirectionExposure(
   const shortPct = (shortGross / total) * 100;
   const netPct = longPct - shortPct;
 
+  // Direction-imbalance penalty — REBALANCING-AWARE.
+  //
+  // Old behaviour: penalty on `max(longPct, shortPct)` regardless of
+  // which way the incoming signal was pushing the portfolio. In
+  // practice this killed SELL signals during bull scans: BUYs are
+  // evaluated first and fill `openPositions` with longs, so by the
+  // time a bearish candidate arrives, longPct is 90%+ and the new
+  // short is docked up to 25 fit points — often enough to drop
+  // `fitScore < 50` → deferred → rejected. That's the
+  // "sell_generated > 0 but final_sell = 0" pipeline leak.
+  //
+  // New behaviour: only penalize when the INCOMING direction is the
+  // SAME as the dominant side (i.e. actually deepening imbalance).
+  // When the incoming direction is OPPOSITE to the dominant side,
+  // it's rebalancing — we waive the penalty entirely. A portfolio
+  // sitting at 95% long NEEDS incoming shorts to come in unimpeded.
   let penalty = 0;
-  const dominant = Math.max(longPct, shortPct);
-  if (dominant > cfg.maxDirectionImbalancePct) {
-    penalty = Math.min(25, Math.round((dominant - cfg.maxDirectionImbalancePct) * 1.5));
+  const dominantPct  = Math.max(longPct, shortPct);
+  const dominantSide: 'long' | 'short' = longPct >= shortPct ? 'long' : 'short';
+  const addingToDominant = direction === dominantSide;
+  if (addingToDominant && dominantPct > cfg.maxDirectionImbalancePct) {
+    penalty = Math.min(25, Math.round((dominantPct - cfg.maxDirectionImbalancePct) * 1.5));
   }
 
   return { longCount: p.openPositions.filter(pos => pos.side === 'long').length,

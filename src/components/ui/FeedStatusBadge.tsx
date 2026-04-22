@@ -6,7 +6,7 @@ interface Props {
   connected: boolean;
   lastAt:    number | null;
   /** Source of the most recent frame for the symbol being displayed. */
-  source?:   'kite' | 'yahoo' | null;
+  source?:   'yahoo' | null;
   /** Frame older than this (ms) → STALE. Default 15s. */
   staleMs?:  number;
   className?: string;
@@ -42,14 +42,12 @@ export default function FeedStatusBadge({
   } else if (age != null && age > staleMs) {
     label = 'STALE';        tone = 'stale';
   } else if (source === 'yahoo') {
-    label = 'YAHOO FALLBACK'; tone = 'fallback';
-  } else if (source === 'kite') {
-    label = 'KITE LIVE';    tone = 'live';
+    label = 'YAHOO';        tone = 'fallback';
   } else {
     label = 'CONNECTING';   tone = 'idle';
   }
   const c = PALETTE[tone];
-  const pulsing = tone === 'live' || tone === 'fallback';
+  const pulsing = tone === 'fallback';
 
   return (
     <span

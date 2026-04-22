@@ -18,11 +18,18 @@
  * Thresholds are intentionally conservative — tune in one place.
  */
 
-const BUY_SOFT_DROP  = -1.5; // %  → confidence penalty
-const BUY_HARD_DROP  = -3.0; // %  → full invalidation
-const SELL_SOFT_RISE =  1.5;
-const SELL_HARD_RISE =  3.0;
-const CONF_PENALTY   =   15;
+// Yahoo-only mode: thresholds relaxed because the tape is ~15 min
+// delayed and normal intraday drift can trigger spurious invalidation.
+// Hard-invalidation is kept only for "stopped out on the live price"
+// (a price-vs-stop comparison that holds regardless of feed delay).
+// The adverse-move invalidation that compared livePChange against
+// -3% / +3% has been removed — those moves are indistinguishable
+// from delayed-feed drift.
+const BUY_SOFT_DROP  = -3.0; // %  → confidence penalty
+const BUY_HARD_DROP  = -Infinity; // disabled: delayed-feed drift would fabricate hits
+const SELL_SOFT_RISE =  3.0;
+const SELL_HARD_RISE =  Infinity; // disabled: see above
+const CONF_PENALTY   =   10;
 
 export interface LiveSanityRow {
   direction?:        string;

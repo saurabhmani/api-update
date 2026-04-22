@@ -53,14 +53,14 @@ function StocksPageInner() {
   };
   for (const e of entries.values()) counts[e.status] += 1;
 
-  // Figure out current source for the floating badge — take the
-  // modal source across entries (kite wins ties, then yahoo, none).
-  const srcTally = { kite: 0, yahoo: 0, none: 0 };
-  for (const e of entries.values()) srcTally[e.source] += 1;
-  const floatingSource: 'kite' | 'yahoo' | 'none' =
-    srcTally.kite >= srcTally.yahoo && srcTally.kite > 0 ? 'kite' :
-    srcTally.yahoo > 0                                   ? 'yahoo' :
-    'none';
+  // Yahoo-only mode: source is either yahoo or none for the floating badge.
+  const srcTally = { yahoo: 0, none: 0 };
+  for (const e of entries.values()) {
+    const s = (e.source === 'yahoo' ? 'yahoo' : 'none') as 'yahoo' | 'none';
+    srcTally[s] += 1;
+  }
+  const floatingSource: 'yahoo' | 'none' =
+    srcTally.yahoo > 0 ? 'yahoo' : 'none';
 
   return (
     <div className="page">

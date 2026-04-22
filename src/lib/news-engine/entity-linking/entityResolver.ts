@@ -20,80 +20,181 @@ import { SECTOR_MAP } from '@/lib/signal-engine/constants/phase3.constants';
 // All known NSE symbols from our universe
 const KNOWN_SYMBOLS = new Set(Object.keys(SECTOR_MAP));
 
-// Company name → symbol alias map (common references in news)
+// Company name → symbol alias map (common references in news).
+//
+// IMPORTANT: more-specific aliases MUST appear before shorter ones
+// that are their prefixes. Example: "adani green" must resolve to
+// ADANIGREEN, but the previous version had "adani" → ADANIENT first
+// and the loop used `textLower.includes(alias)`, so "Adani Green" was
+// tagged as ADANIENT (Adani Enterprises, wrong company). At runtime
+// we iterate by descending key length (see resolveEntities) so a
+// longer alias always wins over a shorter prefix.
 const COMPANY_ALIASES: Record<string, string> = {
+  // Reliance
   'reliance industries':  'RELIANCE',
   'reliance':             'RELIANCE',
+  // Tata group
   'tata consultancy':     'TCS',
   'tata motors':          'TATAMOTORS',
   'tata steel':           'TATASTEEL',
+  'tata power':           'TATAPOWER',
+  'tata chemicals':       'TATACHEM',
+  'tata consumer':        'TATACONSUM',
+  'indian hotels':        'INDHOTEL',
+  'titan company':        'TITAN',
+  'titan':                'TITAN',
+  // IT
   'infosys':              'INFY',
-  'hcl tech':             'HCLTECH',
   'hcl technologies':     'HCLTECH',
+  'hcl tech':             'HCLTECH',
   'wipro':                'WIPRO',
   'tech mahindra':        'TECHM',
+  'ltimindtree':          'LTIM',
+  'l&t technology':       'LTTS',
+  'persistent systems':   'PERSISTENT',
+  'coforge':              'COFORGE',
+  'mphasis':              'MPHASIS',
+  // Banks + financials
   'hdfc bank':            'HDFCBANK',
   'icici bank':           'ICICIBANK',
   'kotak mahindra':       'KOTAKBANK',
   'kotak bank':           'KOTAKBANK',
   'axis bank':            'AXISBANK',
+  'state bank of india':  'SBIN',
   'state bank':           'SBIN',
   'sbi':                  'SBIN',
+  'indusind bank':        'INDUSINDBK',
+  'bandhan bank':         'BANDHANBNK',
+  'bank of baroda':       'BANKBARODA',
+  'au small finance':     'AUBANK',
+  'idfc first bank':      'IDFCFIRSTB',
+  'punjab national bank': 'PNB',
+  'canara bank':          'CANBK',
+  'federal bank':         'FEDERALBNK',
   'bajaj finance':        'BAJFINANCE',
   'bajaj finserv':        'BAJAJFINSV',
+  'bajaj auto':           'BAJAJ_AUTO',
+  'cholamandalam':        'CHOLAFIN',
+  'shriram finance':      'SHRIRAMFIN',
+  'muthoot finance':      'MUTHOOTFIN',
+  'sbi life':             'SBILIFE',
+  'hdfc life':            'HDFCLIFE',
+  'icici prudential':     'ICICIPRULI',
+  'icici lombard':        'ICICIGI',
+  // Telecom
   'bharti airtel':        'BHARTIARTL',
   'airtel':               'BHARTIARTL',
+  'vodafone idea':        'IDEA',
+  // FMCG / consumer
   'hindustan unilever':   'HINDUNILVR',
   'hul':                  'HINDUNILVR',
   'itc':                  'ITC',
   'nestle india':         'NESTLEIND',
   'britannia':            'BRITANNIA',
-  'sun pharma':           'SUNPHARMA',
+  'dabur':                'DABUR',
+  'godrej consumer':      'GODREJCP',
+  'marico':               'MARICO',
+  'colgate palmolive':    'COLPAL',
+  'united spirits':       'MCDOWELL_N',
+  'varun beverages':      'VBL',
+  'avenue supermarts':    'DMART',
+  'dmart':                'DMART',
+  'trent limited':        'TRENT',
+  // Pharma
   'sun pharmaceutical':   'SUNPHARMA',
-  'dr reddy':             'DRREDDY',
+  'sun pharma':           'SUNPHARMA',
   "dr reddy's":           'DRREDDY',
+  'dr reddy':             'DRREDDY',
   'cipla':                'CIPLA',
-  'divi\'s lab':          'DIVISLAB',
+  "divi's lab":           'DIVISLAB',
   'divis lab':            'DIVISLAB',
+  'lupin':                'LUPIN',
+  'aurobindo pharma':     'AUROPHARMA',
+  'zydus lifesciences':   'ZYDUSLIFE',
+  'torrent pharma':       'TORNTPHARM',
+  'alkem laboratories':   'ALKEM',
+  'biocon':               'BIOCON',
+  'apollo hospitals':     'APOLLOHOSP',
+  'fortis healthcare':    'FORTIS',
+  'max healthcare':       'MAXHEALTH',
+  // Autos
   'maruti suzuki':        'MARUTI',
   'maruti':               'MARUTI',
   'eicher motors':        'EICHERMOT',
   'hero motocorp':        'HEROMOTOCO',
   'mahindra & mahindra':  'M_M',
   'm&m':                  'M_M',
+  'ashok leyland':        'ASHOKLEY',
+  'motherson sumi':       'MOTHERSON',
+  'tvs motor':            'TVSMOTOR',
+  // Industrials / infra
   'larsen & toubro':      'LT',
   'l&t':                  'LT',
   'ultratech cement':     'ULTRACEMCO',
   'ultratech':            'ULTRACEMCO',
+  'ambuja cement':        'AMBUJACEM',
+  'shree cement':         'SHREECEM',
   'asian paints':         'ASIANPAINT',
-  'titan company':        'TITAN',
-  'titan':                'TITAN',
+  'berger paints':        'BERGEPAINT',
+  'pidilite':             'PIDILITIND',
+  'havells':              'HAVELLS',
+  'siemens':              'SIEMENS',
+  'abb india':            'ABB',
+  'bhel':                 'BHEL',
+  'cummins india':        'CUMMINSIND',
+  // Power / utilities / energy
   'ntpc':                 'NTPC',
   'power grid':           'POWERGRID',
   'ongc':                 'ONGC',
   'bpcl':                 'BPCL',
+  'hpcl':                 'HINDPETRO',
+  'ioc':                  'IOC',
+  'indian oil':           'IOC',
   'coal india':           'COALINDIA',
+  'gail':                 'GAIL',
+  'sjvn':                 'SJVN',
+  // Adani group — longer forms first in source order (runtime also
+  // sorts by length desc, so "adani green" beats "adani" regardless).
   'adani enterprises':    'ADANIENT',
   'adani ports':          'ADANIPORTS',
+  'adani green energy':   'ADANIGREEN',
+  'adani green':          'ADANIGREEN',
+  'adani transmission':   'ADANIENSOL',   // renamed to Adani Energy Solutions
+  'adani energy solutions': 'ADANIENSOL',
+  'adani total gas':      'ATGL',
+  'adani wilmar':         'AWL',
+  'adani power':          'ADANIPOWER',
   'adani':                'ADANIENT',
+  // Metals
   'jsw steel':            'JSWSTEEL',
+  'jsw energy':            'JSWENERGY',
   'hindalco':             'HINDALCO',
   'vedanta':              'VEDL',
-  'apollo hospitals':     'APOLLOHOSP',
-  'fortis healthcare':    'FORTIS',
-  'pidilite':             'PIDILITIND',
-  'berger paints':        'BERGEPAINT',
-  'havells':              'HAVELLS',
-  'mphasis':              'MPHASIS',
-  'sbi life':             'SBILIFE',
-  'hdfc life':            'HDFCLIFE',
-  'indusind bank':        'INDUSINDBK',
-  'bandhan bank':         'BANDHANBNK',
-  'bank of baroda':       'BANKBARODA',
-  'biocon':               'BIOCON',
-  'dabur':                'DABUR',
-  'godrej consumer':      'GODREJCP',
+  'sail':                 'SAIL',
+  'nalco':                'NATIONALUM',
+  // New-age / internet
+  'zomato':               'ZOMATO',
+  'paytm':                'PAYTM',
+  'nykaa':                'NYKAA',
+  'fsn e-commerce':       'NYKAA',
+  'policybazaar':         'POLICYBZR',
+  'pb fintech':           'POLICYBZR',
+  'delhivery':            'DELHIVERY',
+  'mapmyindia':           'MAPMYINDIA',
+  'cartrade':             'CARTRADE',
+  'easy trip':            'EASEMYTRIP',
+  'easemytrip':           'EASEMYTRIP',
+  // Diversified / misc common names in press
   'grasim':               'GRASIM',
+  'ubl':                  'UBL',
+  'united breweries':     'UBL',
+  'indigo':               'INDIGO',
+  'interglobe aviation':  'INDIGO',
+  'spicejet':             'SPICEJET',
+  'irctc':                'IRCTC',
+  'indian railways':      'IRCTC',
+  'lic':                  'LICI',
+  'life insurance corporation': 'LICI',
 };
 
 // ── Sector keywords ──────────────────────────────────────────────
@@ -180,14 +281,26 @@ export function resolveEntities(
   }
 
   // ── 2. Symbol resolution: alias match ──────────────────────
-  for (const [alias, symbol] of Object.entries(COMPANY_ALIASES)) {
-    if (textLower.includes(alias)) {
+  // Iterate longest aliases first and consume (blank out) matched
+  // substrings in a working copy. Prevents "Adani Green Energy" from
+  // double-matching as both ADANIGREEN and ADANIENT (via the shorter
+  // "adani" alias) — the longer, more-specific match wins and the
+  // shorter prefix is no longer reachable in that region of text.
+  const aliasesByLength = Object.entries(COMPANY_ALIASES).sort(
+    (a, b) => b[0].length - a[0].length,
+  );
+  let textWorking = textLower;
+  for (const [alias, symbol] of aliasesByLength) {
+    if (textWorking.includes(alias)) {
       add({
         entityType: 'symbol',
         entityValue: symbol,
         confidence: 80,
         matchMethod: 'alias',
       });
+      // Blank out every occurrence so a shorter prefix in the same
+      // span can't match again.
+      textWorking = textWorking.split(alias).join(' '.repeat(alias.length));
     }
   }
 

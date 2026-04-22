@@ -125,11 +125,8 @@ function LiveCell({
       ? 'no tick yet'
       : `last tick ${(ageMs / 1000).toFixed(1)}s ago`;
 
-  // K = green = Kite WebSocket = real-time (<3s freshness)
-  // Y = amber = Yahoo fallback = ~15-min delayed
-  // Tooltip spells out the meaning so new operators aren't lost.
+  // Y = amber = Yahoo (signal-only mode, ~15-min delayed).
   const sourceMap: Record<string, [string, string, string, string]> = {
-    kite:  ['#16A34A', '#fff', 'K', 'Kite • real-time'],
     yahoo: ['#D97706', '#fff', 'Y', 'Yahoo • ~15-min delayed'],
   };
   const srcCfg = source ? sourceMap[source] : null;
@@ -340,26 +337,19 @@ export default function SignalsPage() {
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [freshness, setFreshness] = useState<any>(null);
   const [termLogs, setTermLogs] = useState<string[]>([]);
-  const [kiteStatus, setKiteStatus] = useState<{
-    connected: boolean;
-    loginRequired: boolean;
-    subscribed: number;
-    ticksCached: number;
-    lastError: string | null;
-    // Real-time visibility fields surfaced by /api/kite/status
+  // Kite status polling removed — Yahoo-only mode. Market-hours info
+  // now comes exclusively from the /api/signals freshness block.
+  const kiteStatus = null as null | {
+    connected?:      boolean;
+    loginRequired?:  boolean;
+    marketIsOpen?:   boolean;
+    marketLabel?:    string;
     lastTickTimeIST?: string | null;
-    lastTickIST?: string | null;
-    tickAgeMs?: number | null;
+    lastTickIST?:    string | null;
+    tickAgeMs?:      number | null;
     tickRatePerSec?: number | null;
-    serverNowIST?: string | null;
-    realtimeOk?: boolean;
-    realtimeReason?: string;
-    // Market-hours fields — also served by /api/kite/status so the
-    // banner can pick the correct (Live/Delayed/Closed) state even
-    // before the first /api/signals payload with `freshness` lands.
-    marketIsOpen?: boolean;
-    marketLabel?: string;
-  } | null>(null);
+    lastError?:      string | null;
+  };
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   // Monotonic request id — only the latest issued load() is allowed
@@ -505,16 +495,27 @@ export default function SignalsPage() {
     pushLog('[ENV] mode=' + (process.env.NODE_ENV ?? 'unknown') + '  page=/signals  transport=ws+sse');
 
     // One initial heavy load to populate signal rows from the DB.
-    // After this, the 2s `/api/signals` light-poll is GONE — live
-    // price deltas arrive over WebSocket and are merged in render.
     load({ heavy: true }).finally(() => {
       autoRefreshIfStale();
     });
 
+    // Signal-only / Yahoo-only mode: no WebSocket tick stream any
+    // more, so we top up the table with a light 10s poll. /api/signals
+    // reads from the DB + a cached Yahoo fetch (PRICE_CACHE_TTL_MS=8s
+    // by default), so a 10s poll sits almost entirely on cache hits
+    // and never hammers Yahoo directly. Skipped while a heavier load
+    // is already in flight to avoid piling up requests.
+    const pollId = setInterval(() => {
+      if (loading) return;
+      load({ spinner: false, heavy: false });
+    }, 10_000);
+
     return () => {
+      clearInterval(pollId);
       // Bump the seq so any in-flight response is discarded on arrival.
       reqSeqRef.current++;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -587,46 +588,7 @@ export default function SignalsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsConnected, wsLastAt, wsPrices, kiteStatus, freshness, stream.connected, stream.lastPushAt]);
 
-  // Poll Kite ticker status every 5s so the connect button reflects
-  // current state without a hard refresh. Light request — /api/kite/status
-  // just reads in-memory ticker fields, no DB hit.
-  useEffect(() => {
-    let cancelled = false;
-    const fetchStatus = async () => {
-      try {
-        const res = await fetch('/api/kite/status', { cache: 'no-store' });
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        setKiteStatus({
-          connected:     !!data.connected,
-          loginRequired: !!data.loginRequired,
-          subscribed:    Number(data.subscribedCount ?? data.subscribed) || 0,
-          ticksCached:   Number(data.ticksCached) || 0,
-          lastError:     data.lastError ?? null,
-          lastTickTimeIST: data.lastTickTimeIST ?? data.lastTickIST ?? null,
-          lastTickIST:     data.lastTickIST ?? data.lastTickTimeIST ?? null,
-          tickAgeMs:       typeof data.tickAgeMs === 'number' ? data.tickAgeMs : null,
-          tickRatePerSec:  typeof data.tickRatePerSec === 'number' ? data.tickRatePerSec : null,
-          serverNowIST:    data.serverNowIST ?? null,
-          realtimeOk:      !!data.realtimeOk,
-          realtimeReason:  data.realtimeReason ?? '',
-          marketIsOpen:    typeof data.marketIsOpen === 'boolean' ? data.marketIsOpen : undefined,
-          marketLabel:     data.marketLabel ?? undefined,
-        });
-      } catch { /* swallow — status probe is best-effort */ }
-    };
-    fetchStatus();
-    const id = setInterval(fetchStatus, 5_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
-
-  const connectKite = () => {
-    // Full-page navigation (not fetch) — Kite OAuth redirects back to
-    // /api/kite/callback which sets the access_token cookie and then
-    // bounces to /signals. Stay on the same tab so the redirect chain
-    // can complete cleanly.
-    window.location.href = '/api/kite/login';
-  };
+  // Kite status polling + OAuth login removed — signal-only mode.
 
   // Stale-signal auto-refresh. Reads the freshness object written
   // by the just-completed heavy load(); if it's missing or the
@@ -867,7 +829,7 @@ export default function SignalsPage() {
         // 'kite' for real Kite frames and 'yahoo' only for symbols
         // that have never been Kite-observed (the streamServer
         // guarantees Yahoo never overwrites a Kite entry).
-        liveSource:  live.source ?? 'kite',
+        liveSource:  live.source ?? 'yahoo',
         liveTickTs:  live.ts ?? null,
       };
     }
@@ -902,7 +864,7 @@ export default function SignalsPage() {
     const serverPriceAcceptable =
       serverLive != null &&
       serverLive > 0 &&
-      (serverSource === 'yahoo' || serverSource === 'kite') &&
+      serverSource === 'yahoo' &&
       (entry == null || serverLive !== entry);
 
     if (serverPriceAcceptable) {
@@ -910,7 +872,7 @@ export default function SignalsPage() {
         ...sig,
         livePrice:   serverLive,
         livePChange: typeof (sig as any).livePChange === 'number' ? (sig as any).livePChange : null,
-        liveSource:  serverSource, // 'yahoo' | 'kite' — UI renders badge from this
+        liveSource:  serverSource, // 'yahoo' — only source in signal-only mode
         liveTickTs:  (sig as any).liveTickTs ?? null,
       };
     }
@@ -1034,41 +996,6 @@ export default function SignalsPage() {
               <div style={{ fontSize: 20, fontWeight: 800, color: '#DC2626' }}>{sellSignals.length}</div>
               <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>SELL</div>
             </div>
-            {/* ── Kite login button — visible ONLY when not logged in ── */}
-            {(() => {
-              const ks = kiteStatus;
-              const live = ks?.connected && !ks.loginRequired;
-              if (live) return null;
-              const bg = ks?.loginRequired ? '#DC2626' : '#94A3B8';
-              const label = ks?.loginRequired
-                ? 'Reconnect Kite'
-                : ks
-                  ? 'Connect Kite'
-                  : 'Kite…';
-              const title = ks?.lastError
-                ? `Last error: ${ks.lastError}`
-                : 'Open Zerodha OAuth login';
-              return (
-                <button
-                  onClick={connectKite}
-                  title={title}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    background: bg, color: '#fff',
-                    border: 'none', borderRadius: 6,
-                    padding: '8px 12px', fontSize: 12, fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span style={{
-                    display: 'inline-block', width: 8, height: 8, borderRadius: 99,
-                    background: '#fff', opacity: 0.6,
-                  }} />
-                  {label}
-                </button>
-              );
-            })()}
-
             <button
               className="btn btn--primary btn--sm"
               onClick={runPipeline}
@@ -1114,49 +1041,23 @@ export default function SignalsPage() {
             kiteStatus?.marketLabel ??
             freshness?.market_label ??
             (marketOpen ? 'Open' : 'Closed');
-          const kiteLive = kiteStatus?.connected && !kiteStatus?.loginRequired;
-          // IST wall-clock for the last tick. Prefer the server-
-          // formatted string so every client sees the exact same
-          // "09:45:08 IST" regardless of local timezone.
-          const lastTickIST = kiteStatus?.lastTickTimeIST
-            ?? kiteStatus?.lastTickIST
-            ?? null;
-          const tickAgeMs: number | null = kiteStatus?.tickAgeMs ?? null;
-          const tickRate:  number | null = kiteStatus?.tickRatePerSec ?? null;
+          // Yahoo-only mode: no tick telemetry. Tri-state dot reduced
+          // to a simple "source is yahoo" indicator; age and rate are
+          // not exposed by the upstream.
+          const lastTickIST: string | null = null;
+          const tickDot = '#F59E0B';
+          const tickDotLabel = 'yahoo snapshot';
 
-          // Tri-state freshness dot driven by tick age.
-          //   🟢 < 3_000 ms   (fresh Kite tick)
-          //   🟠 3_000–30_000 ms (aging — still usable)
-          //   🔴 > 30_000 ms  or null (stale / no tick)
-          let tickDot: string;
-          let tickDotLabel: string;
-          if (tickAgeMs == null) {
-            tickDot = '#94A3B8'; tickDotLabel = 'no ticks';
-          } else if (tickAgeMs < 3_000) {
-            tickDot = '#10B981'; tickDotLabel = `${tickAgeMs}ms (fresh)`;
-          } else if (tickAgeMs < 30_000) {
-            tickDot = '#F59E0B'; tickDotLabel = `${(tickAgeMs / 1000).toFixed(1)}s (aging)`;
-          } else {
-            tickDot = '#EF4444'; tickDotLabel = `${Math.round(tickAgeMs / 1000)}s (stale)`;
-          }
-
-          let bg = '#ECFDF5', fg = '#047857', border = '#A7F3D0';
-          let dot = '#10B981';
+          let bg = '#FFFBEB', fg = '#92400E', border = '#FDE68A';
+          let dot = '#F59E0B';
           let headline: string;
           let sub: string;
           if (!marketOpen) {
-            bg = '#FFFBEB'; fg = '#92400E'; border = '#FDE68A'; dot = '#F59E0B';
             headline = `Market ${marketLabel}`;
             sub = 'Showing last-close prices (Yahoo). No real-time ticks expected until next session.';
-          } else if (kiteLive) {
-            headline = 'Live — Kite WebSocket';
-            sub = tickRate != null
-              ? `${tickRate}/sec streaming · prices tick in real time`
-              : 'Sub-second streaming updates · prices tick in real time';
           } else {
-            bg = '#FEF2F2'; fg = '#B91C1C'; border = '#FECACA'; dot = '#EF4444';
-            headline = 'Delayed — Yahoo fallback';
-            sub = 'Kite session not connected. Prices are ~15 min delayed. Click "Reconnect Kite" to restore real-time.';
+            headline = 'Yahoo (delayed)';
+            sub = 'Prices are ~15 min delayed. Signal-only mode — broker-independent.';
           }
 
           return (
@@ -1222,46 +1123,24 @@ export default function SignalsPage() {
           {srResult && !srLoading && <SearchResult data={srResult} symbol={query.toUpperCase()} />}
         </Card>
 
-        {/* ── Diagnostic strip: proves the full universe is flowing ── */}
+        {/* ── Diagnostic strip — signal-only / Yahoo mode ── */}
         <div style={{
           display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
           padding: '8px 12px', marginBottom: 12, borderRadius: 8,
-          background: wsConnected ? '#F0FDF4' : '#FEF2F2',
-          border: `1px solid ${wsConnected ? '#BBF7D0' : '#FECACA'}`,
+          background: '#FFFBEB',
+          border: '1px solid #FDE68A',
           fontSize: 11, fontWeight: 600, color: '#334155',
         }}>
-          <span style={{
-            display: 'inline-block', width: 8, height: 8, borderRadius: 99,
-            background: wsConnected ? '#16A34A' : '#DC2626',
-          }} />
-          <span>WS: {wsConnected ? 'LIVE' : 'DISCONNECTED'}</span>
-          <span>·</span>
-          <span>WS UNIVERSE: <strong>{wsPrices.size}</strong></span>
-          <span>·</span>
-          {/* Last tick age + mode indicator. If this number is frozen
-              and WS UNIVERSE > 0, the WS connection is stuck. If it
-              increments every ~1s, push updates are working. */}
-          <span>LAST TICK: <strong>{
-            wsLastAt
-              ? `${Math.max(0, Math.round((Date.now() - wsLastAt) / 1000))}s ago`
-              : '—'
-          }</strong></span>
-          <span>·</span>
-          {/* Composite mode from useLivePrices — see LiveMode in the hook.
-              Colour: green when live, amber on fallback / waiting, grey
-              when market is closed (expected quiet, not a fault). */}
           <span>MODE: <strong style={{
             color:
-              wsMode === 'KITE_LIVE'      ? '#16A34A' :
               wsMode === 'YAHOO_FALLBACK' ? '#D97706' :
               wsMode === 'MARKET_CLOSED'  ? '#64748B' :
               wsMode === 'WAITING'        ? '#D97706' :
                                             '#DC2626',
           }}>{
-            wsMode === 'KITE_LIVE'      ? 'KITE LIVE' :
-            wsMode === 'YAHOO_FALLBACK' ? 'YAHOO FALLBACK' :
+            wsMode === 'YAHOO_FALLBACK' ? 'YAHOO' :
             wsMode === 'MARKET_CLOSED'  ? `MARKET CLOSED — ${wsMarketLabel}` :
-            wsMode === 'WAITING'        ? 'WAITING FOR FIRST TICK' :
+            wsMode === 'WAITING'        ? 'WAITING' :
                                           'DISCONNECTED'
           }</strong></span>
           <span>·</span>

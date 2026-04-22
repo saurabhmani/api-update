@@ -46,14 +46,12 @@ const next = require('next');
 const { spawn } = require('child_process');
 const cron = require('node-cron');
 
-const NEXT_PORT      = Number(process.env.PORT || process.env.NEXT_PORT) || 5000;
-const STREAM_WS_PORT = Number(process.env.STREAM_WS_PORT) || 5001;
-const HOSTNAME       = process.env.HOST || '0.0.0.0';
-const DEV            = process.env.NODE_ENV !== 'production';
+const NEXT_PORT = Number(process.env.PORT || process.env.NEXT_PORT) || 5000;
+const HOSTNAME  = process.env.HOST || '0.0.0.0';
+const DEV       = process.env.NODE_ENV !== 'production';
 
-// Make sure startStreamServer() (called inside instrumentation.ts)
-// binds to the port this file advertises, regardless of launch path.
-process.env.STREAM_WS_PORT = String(STREAM_WS_PORT);
+// Kite WebSocket stream server (port 5001) removed — signal-only mode
+// does not serve live ticks. Only the Next.js HTTP listener remains.
 
 // tsx binary used to run TypeScript worker entrypoints. Same binary
 // PM2 used to invoke in the old ecosystem config.
@@ -238,7 +236,7 @@ async function main() {
 
   httpServer.listen(NEXT_PORT, HOSTNAME, () => {
     console.log(`[server] Next.js ready on http://${HOSTNAME}:${NEXT_PORT}`);
-    console.log(`[server] WS stream on ws://${HOSTNAME}:${STREAM_WS_PORT} (via instrumentation)`);
+    console.log(`[server] Signal-only mode — Yahoo data source, no WS feed`);
   });
 
   startAllWorkers();

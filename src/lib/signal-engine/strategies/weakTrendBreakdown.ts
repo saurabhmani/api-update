@@ -42,50 +42,53 @@ export function evaluateWeakTrendBreakdown(features: SignalFeatures): StrategyMa
     return reject('Weak trend breakdown blocked in Strong Bullish regime');
   }
 
-  // ── Structural weakness: price below EMA50 ────────────────
-  // Closing below the 50-EMA is the medium-term trend boundary.
-  // If close is above EMA50, the stock is technically in an uptrend
-  // — wrong pool for this strategy.
-  if (trend.closeAbove50Ema) {
-    return reject('Price still above 50-EMA — not in downtrend');
+  // ── Structural weakness: price at or below EMA50 ──────────
+  // SELL-balance tune: allow close up to 1% ABOVE EMA50 (sideways
+  // regime). Previously required close strictly below — that
+  // eliminated every "stalling near EMA50" setup, which is where
+  // weak-trend continuation patterns usually start.
+  const ema50Tol = trend.ema50 * 1.01;
+  if (trend.close > ema50Tol) {
+    return reject(`Price ${((trend.close / trend.ema50 - 1) * 100).toFixed(2)}% above 50-EMA — not in downtrend`);
   }
 
-  // ── Bearish EMA stack ─────────────────────────────────────
-  // ema20 below ema50 confirms the short-term MA is pulling the
-  // longer MA down. A bullish or flat stack would mean the trend
-  // is at best stalling, not weakening.
-  if (trend.ema20 >= trend.ema50) {
-    return reject('EMA stack is not bearish (EMA20 ≥ EMA50)');
+  // ── Bearish EMA stack (or flat) ───────────────────────────
+  // SELL-balance tune: allow EMA20 within 0.5% above EMA50 — a
+  // flat/rolling-over stack is still actionable for this strategy.
+  // Hard-reject only when EMA20 is meaningfully above EMA50
+  // (>0.5%) which would mean the short-term trend is bullish.
+  if (trend.ema20 > trend.ema50 * 1.005) {
+    return reject('EMA stack is bullish (EMA20 > EMA50 by >0.5%)');
   }
 
-  // ── Price in lower half of 20-day range ───────────────────
-  // Proxy for "lower highs + lower lows". If price is in the top
-  // half of its 20-day range, it's likely bouncing off recent
-  // support — wrong setup for a downtrend continuation short.
+  // ── Price in lower 60% of 20-day range ────────────────────
+  // SELL-balance tune: 0.5 → 0.6. A stock sitting at 55% of range
+  // in a downtrending EMA stack is still a valid continuation
+  // short; the previous 0.5 cap rejected those.
   const hi20   = structure.recentResistance20;
   const lo20   = structure.recentSupport20;
   const range  = hi20 - lo20;
   if (range <= 0) return reject('20-day range is degenerate');
   const positionInRange = (trend.close - lo20) / range;   // 0 = at low, 1 = at high
-  if (positionInRange > 0.5) {
-    return reject(`Price in upper half of 20-day range: ${(positionInRange * 100).toFixed(0)}%`);
+  if (positionInRange > 0.6) {
+    return reject(`Price in upper range: ${(positionInRange * 100).toFixed(0)}%`);
   }
 
   // ── Room for the trade to develop ─────────────────────────
-  // If price is within 3% of recent support, there's no room to
-  // fall before hitting the first technical floor — risk/reward
-  // is poor. Require at least 5% of headroom downward.
+  // SELL-balance tune: 5% → 3% headroom. Even 3% to the next
+  // support is usable downside for a continuation short on a
+  // weak trend. Previously required 5% and was eliminating
+  // most mid-trend setups.
   const distToSupport = structure.distanceToSupportPct;
-  if (distToSupport < 5) {
+  if (distToSupport < 3) {
     return reject(`Too close to 20-day support: ${distToSupport.toFixed(2)}% — limited downside runway`);
   }
 
   // ── Momentum confirms downside (soft gate) ────────────────
-  // Unlike bearish_breakdown which requires RSI < 55, we accept
-  // up to 58 here — the trend is the primary signal, not a fresh
-  // momentum crack. But we reject MACD positive, which would
-  // indicate momentum is diverging from trend (possible reversal).
-  if (momentum.rsi14 > 58) {
+  // SELL-balance tune: RSI ceiling 58 → 62. The trend is the
+  // primary signal here; a modestly-elevated RSI in a bearish
+  // stack often precedes the next leg down.
+  if (momentum.rsi14 > 62) {
     return reject(`RSI too high for weak-trend continuation: ${momentum.rsi14}`);
   }
   if (momentum.macdHistogram > 0) {

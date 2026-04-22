@@ -19,15 +19,28 @@ export function evaluateBearishBreakdown(features: SignalFeatures): StrategyMatc
     return reject('Bearish breakdown blocked in Strong Bullish regime');
   }
 
-  // ── Price broke below support ─────────────────────────────
-  // Close below recent 20-day low (support breakdown)
-  if (trend.close >= structure.recentSupport20) {
-    return reject('Price has not broken below 20-day support');
+  // ── Price at or below support ─────────────────────────────
+  // SELL-balance tune: accept "near-support breakdown" within 1.5%
+  // ABOVE the 20-day low. Intraday dips that close right at support
+  // often continue lower next session — the previous strict
+  // `close < support` gate rejected every candidate mid-break.
+  // Still rejects names that are 1.5%+ above support (no breakdown
+  // structure at all).
+  const supportTolerance = structure.recentSupport20 * 1.015;
+  if (trend.close > supportTolerance) {
+    return reject(
+      `Price ${(((trend.close / structure.recentSupport20) - 1) * 100).toFixed(2)}% above 20-day support — not breaking down`,
+    );
   }
 
   // ── Trend deterioration ───────────────────────────────────
-  if (trend.closeAbove20Ema && trend.closeAbove50Ema) {
-    return reject('Price still above both EMAs — no breakdown structure');
+  // SELL-balance tune: "above both EMAs" is too strict when the
+  // stock is testing support from above — that IS a breakdown setup.
+  // Kept as a sanity gate only for names that are BOTH above EMAs
+  // AND materially above support, i.e. no breakdown structure at all.
+  if (trend.closeAbove20Ema && trend.closeAbove50Ema &&
+      trend.close > structure.recentSupport20 * 1.005) {
+    return reject('Price above both EMAs and above support — no breakdown structure');
   }
 
   // ── Momentum confirms weakness ────────────────────────────

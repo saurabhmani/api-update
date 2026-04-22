@@ -173,6 +173,20 @@ export async function generatePhase3Signals(
     canonicalRejection:  { approved: 0, rejected: 0 },
   };
 
+  // [SELL TRACE] — per-stage SELL attrition. Incremented only when
+  // the candidate is a bearish strategy. At the end of the scan we
+  // emit one roll-up line so the operator can see exactly where
+  // SELL candidates are being dropped.
+  const sellTrace = {
+    after_generation:        0,  // survived runAllStrategies
+    after_trade_plan:        0,  // passed stop-width + R:R gates
+    after_position_sizing:   0,  // sizing didn't invalidate
+    after_portfolio_fit:     0,  // portfolio_fit decision != rejected
+    after_execution_ready:   0,  // execution readiness approved
+    after_canonical_reject:  0,  // canonical rejection engine approved
+    final_saved:             0,  // actually pushed into signals[]
+  };
+
   // ── Step 2: Process each symbol ───────────────────────────
   for (const symbol of p1Config.universe) {
     try {
@@ -227,6 +241,8 @@ export async function generatePhase3Signals(
     // signal save) runs once per surviving candidate, so a stock
     // with a clear BUY + a near-parity SELL produces two rows.
     for (const best of toBuild) {
+      const isSellCandidate = BEARISH_STRATEGIES.has(best.strategy);
+      if (isSellCandidate) sellTrace.after_generation++;
       // Early confidence filter REMOVED. The pipeline used to drop
       // any candidate below minConfidenceToSave here, which meant
       // the API never saw the bottom of the ranked distribution.
@@ -256,6 +272,7 @@ export async function generatePhase3Signals(
         rejected++;
         continue;
       }
+      if (isSellCandidate) sellTrace.after_trade_plan++;
 
       // ── Step 7: Position sizing ─────────────────────────────
       const currentGross = runPortfolio.openPositions.reduce((s, p) => s + p.grossValue, 0);
@@ -273,6 +290,18 @@ export async function generatePhase3Signals(
       else if (sizing.validationStatus === 'invalid') engineCounts.positionSize.invalid++;
       else                                             engineCounts.positionSize.ok++;
 
+      if (isSellCandidate && sizing.validationStatus !== 'invalid') {
+        sellTrace.after_position_sizing++;
+      }
+      if (isSellCandidate && process.env.DEBUG_SELL_DOWNSTREAM === '1' &&
+          sizing.validationStatus === 'invalid') {
+        console.log('[SIZE REJECT]', symbol, {
+          reason: sizing.warnings[0] ?? 'zero_size',
+          entry:  tradePlan.entryZoneHigh,
+          stop:   tradePlan.stopLoss,
+        });
+      }
+
       // ── Step 8: Portfolio fit ───────────────────────────────
       // Use the shared BEARISH_STRATEGIES Set so new bearish strategies
       // are recognised as SHORT. Prior bug: hardcoded === 'bearish_breakdown'
@@ -285,6 +314,19 @@ export async function generatePhase3Signals(
       if      (portfolioFit.portfolioDecision === 'rejected') engineCounts.portfolioFit.rejected++;
       else if (portfolioFit.portfolioDecision === 'deferred') engineCounts.portfolioFit.deferred++;
       else                                                     engineCounts.portfolioFit.approved++;
+
+      if (isSellCandidate && portfolioFit.portfolioDecision !== 'rejected') {
+        sellTrace.after_portfolio_fit++;
+      }
+      if (isSellCandidate && process.env.DEBUG_SELL_DOWNSTREAM === '1' &&
+          portfolioFit.portfolioDecision === 'rejected') {
+        console.log('[PORTFOLIO REJECT]', {
+          symbol,
+          reason: portfolioFit.penalties[0] ?? 'fit_score_too_low',
+          fit_score:      portfolioFit.fitScore,
+          direction_impact: portfolioFit.directionImpact,
+        });
+      }
 
       // ── Step 8b: Real correlation penalty (upgrades sector proxy) ─
       if (correlationMatrix) {
@@ -320,6 +362,18 @@ export async function generatePhase3Signals(
       if      (execution.approvalDecision === 'rejected') engineCounts.executionReadiness.rejected++;
       else if (execution.approvalDecision === 'deferred') engineCounts.executionReadiness.deferred++;
       else                                                 engineCounts.executionReadiness.approved++;
+
+      if (isSellCandidate && execution.approvalDecision !== 'rejected') {
+        sellTrace.after_execution_ready++;
+      }
+      if (isSellCandidate && process.env.DEBUG_SELL_DOWNSTREAM === '1') {
+        console.log('[EXECUTION STATE]', {
+          symbol,
+          status:     execution.status,
+          decision:   execution.approvalDecision,
+          reason:     execution.reasons[0] ?? null,
+        });
+      }
 
       // ── Step 10b: Manipulation check ──────────────────────────
       let manipulationContext: RejectionInput['manipulationContext'] = undefined;
@@ -377,6 +431,10 @@ export async function generatePhase3Signals(
       if (rejectionDecision.finalDecision === 'rejected') engineCounts.canonicalRejection.rejected++;
       else                                                 engineCounts.canonicalRejection.approved++;
 
+      if (isSellCandidate && rejectionDecision.finalDecision !== 'rejected') {
+        sellTrace.after_canonical_reject++;
+      }
+
       // Override execution approval if rejection engine says no
       if (rejectionDecision.finalDecision === 'rejected' && execution.approvalDecision !== 'rejected') {
         execution.approvalDecision = 'rejected';
@@ -412,6 +470,7 @@ export async function generatePhase3Signals(
         // Don't add more, but still push the signal
       }
 
+      if (isSellCandidate) sellTrace.final_saved++;
       signals.push({
         symbol,
         signalType: best.strategy,
@@ -475,8 +534,51 @@ export async function generatePhase3Signals(
     rejected,
     regime: regime.label,
   });
+  // ── [STRATEGY SUMMARY] — BUY/SELL roll-up at generation layer ─
+  // Separate from [SELL DEBUG AGG] (which only counts bearish
+  // strategy matches/rejections). This counts actual SIGNAL rows
+  // produced per direction after Phase 3 has also run position-
+  // sizing + portfolio-fit + execution gates. A mismatch between
+  // the two — e.g. [SELL DEBUG AGG].matched = 40 but
+  // [STRATEGY SUMMARY].sell_generated = 2 — points the operator
+  // straight at the downstream gate eating the SELLs.
+  let buyGenerated  = 0;
+  let sellGenerated = 0;
+  for (const s of signals) {
+    if (BEARISH_STRATEGIES.has(s.signalType as any)) sellGenerated++;
+    else                                             buyGenerated++;
+  }
+  // [SELL TRACE] — downstream attrition. The bottleneck is wherever
+  // the count drops the most between consecutive stages.
+  //
+  //   generation → trade_plan : R:R or stop-width too wide
+  //   trade_plan → sizing     : zero/invalid position size
+  //   sizing     → fit        : portfolio fit score < 30
+  //                             (direction imbalance now rebalancing-aware,
+  //                              so this should be rare for SELLs unless
+  //                              sector/correlation clusters bite)
+  //   fit        → exec       : risk score > 75 or deferred by fit
+  //   exec       → canonical  : canonical rejection engine (manipulation etc.)
+  //   canonical  → saved      : always equal — a row past canonical is saved
+  console.log('[SELL TRACE]', sellTrace);
+
+  console.log('[STRATEGY SUMMARY]', {
+    scanned:          p1Config.universe.length,
+    total_generated:  signals.length,
+    buy_generated:    buyGenerated,
+    sell_generated:   sellGenerated,
+    sell_ratio_pct:   signals.length > 0
+      ? Math.round((sellGenerated / signals.length) * 100)
+      : 0,
+    regime:           regime.label,
+    hint:
+      sellGenerated === 0  ? 'Zero SELL at generation — see [SELL DEBUG AGG] above for bottleneck.' :
+      sellGenerated < 10   ? 'Thin SELL pool — downstream auto-relax will kick in at /api/signals.' :
+      'Healthy BUY/SELL mix at generation.',
+  });
+
   // Flush the SELL generation aggregate — one line per scan that
-  // tells the operator EXACTLY how many bearish_breakdown
+  // tells the operator EXACTLY how many bearish strategy
   // candidates matched vs. were rejected, and which gate killed
   // them.
   flushSellDebugAgg();

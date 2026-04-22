@@ -39,6 +39,7 @@ import { buildDexterNarratives, type DexterSignalIntelligence } from '../dexter/
 import { eventBus } from '@/lib/eventBus';
 import type { CandleProvider } from './generatePhase1Signals';
 import type { StrategyName } from '../types/signalEngine.types';
+import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 
 export interface Phase4Result {
   signals: Phase4SignalEnvelope[];
@@ -385,7 +386,20 @@ export async function generatePhase4Signals(
       timeframe: 'daily' as const,
       signalType: sig.signalType,
       signalSubtype: sig.signalSubtype ?? 'primary',
-      action: sig.executionReadiness.approvalDecision === 'approved' ? 'BUY' : 'WATCH',
+      // CRITICAL: action drives BUY/SELL direction downstream
+      // (`saveSignals.ts:197` maps `action === 'enter_short'` → SELL,
+      // everything else → BUY). The previous literal 'BUY'|'WATCH'
+      // forced every bearish strategy (bearish_breakdown,
+      // overbought_reversal, weak_trend_breakdown) to be persisted as
+      // BUY — producing rows with SHORT-semantics trade plans
+      // (stop > entry, target < entry) but direction='BUY' in the DB,
+      // which (a) made `sell_in_db_pool = 0`, (b) tripped
+      // applyLiveSanity's BUY stop-out check → `stopped_out_live`
+      // flags on every fresh overbought_reversal row. Derive from
+      // BEARISH_STRATEGIES instead.
+      action: BEARISH_STRATEGIES.has(sig.signalType as StrategyName)
+        ? 'enter_short' as const
+        : 'enter_on_breakout' as const,
       marketRegime: sig.marketRegime,
       marketContextTag: 'normal',
       strengthTag: 'moderate',

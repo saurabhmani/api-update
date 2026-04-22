@@ -46,30 +46,14 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     warnings.push(`SESSION_SECRET is short (${sessionSecret.length} chars). Recommend 32+ for production.`);
   }
 
-  // Kite OAuth credentials. Not strictly required to boot the app
-  // (we want dev to come up without them), but if either is missing
-  // the callback/exchange flow fails silently at runtime — so we
-  // warn loudly at boot so operators notice before clicking Reconnect.
-  const kiteKey    = process.env.KITE_API_KEY?.trim();
-  const kiteSecret = process.env.KITE_API_SECRET?.trim();
-  if (!kiteKey) {
-    warnings.push('KITE_API_KEY not set — Zerodha OAuth login will fail. Add it to .env.local.');
-  }
-  if (!kiteSecret) {
-    warnings.push('KITE_API_SECRET not set — request_token → access_token exchange will fail. Add it to .env.local.');
-  }
-  if (kiteKey && / |\t|\r|\n/.test(process.env.KITE_API_KEY ?? '')) {
-    warnings.push('KITE_API_KEY has leading/trailing whitespace in .env.local — checksum will mismatch.');
-  }
-  if (kiteSecret && / |\t|\r|\n/.test(process.env.KITE_API_SECRET ?? '')) {
-    warnings.push('KITE_API_SECRET has leading/trailing whitespace in .env.local — checksum will mismatch.');
-  }
+  // Kite removed — signal-only mode. KITE_* env vars are no longer
+  // consulted; leaving them in .env.local is harmless.
 
   // Encryption key validation
   const encKey = process.env.ENCRYPTION_KEY?.trim();
   if (!encKey || encKey.length < 64) {
     warnings.push(
-      'ENCRYPTION_KEY not set or too short. Kite tokens and TOTP secrets will use ' +
+      'ENCRYPTION_KEY not set or too short. TOTP secrets will use ' +
       'SHA-256(SESSION_SECRET) as fallback. For production, set a 64-char hex key: ' +
       'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
     );

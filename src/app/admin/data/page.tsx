@@ -48,14 +48,14 @@ function AdminDataContent() {
               : <AlertTriangle size={20} color="#D97706" />}
             <h3 style={{ fontWeight: 700 }}>Data Sources</h3>
             <Badge variant={srcStatus?.ok ? 'green' : 'red'}>
-              {srcStatus?.ok ? `Live — ${srcStatus.source ?? 'kite'}` : 'Checking…'}
+              {srcStatus?.ok ? `Live — ${srcStatus.source ?? 'yahoo'}` : 'Checking…'}
             </Badge>
           </div>
           <p style={{ fontSize: 13, color: '#64748B', marginBottom: 4 }}>
-            <strong>Primary:</strong> Kite WebSocket (real-time ticks)
+            <strong>Source:</strong> Yahoo Finance (~15-min delayed, no auth)
           </p>
           <p style={{ fontSize: 13, color: '#64748B', marginBottom: 4 }}>
-            <strong>Fallback:</strong> Yahoo Finance (historical bars, public, no auth)
+            <strong>Mode:</strong> Signal-only — no broker dependency
           </p>
           {srcStatus?.asOf && (
             <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>

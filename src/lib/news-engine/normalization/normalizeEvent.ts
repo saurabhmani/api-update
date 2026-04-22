@@ -55,50 +55,131 @@ function classifyCategory(title: string, body: string | null): NewsCategory {
 }
 
 // ── Sentiment Scoring ────────────────────────────────────────────
-// Rule-based sentiment until an ML model is integrated.
-// Score range: -1.0 (strongly negative) to +1.0 (strongly positive).
+// Rule-based sentiment. Two-pass design:
+//   1. Phrase pass — matches multi-word expressions that a single-word
+//      tokenizer cannot resolve. "profit fall", "sell-off", "miss
+//      estimates", "buy recommendation" are the exact cases the user
+//      reported wrong. Phrases carry ±2 weight — a phrase outweighs a
+//      solitary opposite-polarity word. Without this pass, "profit
+//      fall" became [profit, fall] → pos=1 neg=1 → neutral. Wrong.
+//   2. Word pass — single-token scan, each hit carries ±1.
+//
+// Final tier rule — uses ABSOLUTE net signal, not normalized ratio.
+// Previously `total = pos+neg` was the denominator, so a headline
+// with one positive word and zero negative got ratio=1.0 → strongly_
+// positive. That's why the DB over-produced strongly_positive.
+// Now: strongly_* requires net >= 3 net signal strength; milder
+// labels otherwise.
+//
+// Score range kept at [-1, 1] for downstream consumers, but it's now
+// `clamp(net / 5, -1, 1)` — meaning you need ~5 net hits to saturate.
+
+const POSITIVE_PHRASES: string[] = [
+  // actions / recommendations
+  'buy recommendation', 'buy rating', 'upgrade to buy', 'target raised',
+  'price target raised', 'strong buy', 'overweight rating',
+  // performance
+  'record profit', 'record high', 'all-time high', 'beat estimates',
+  'beat expectations', 'beat forecast', 'exceeds expectations',
+  'better than expected', 'strong growth', 'robust growth', 'profit jump',
+  'profit surge', 'profit rises', 'revenue jump', 'revenue surge',
+  'sales growth', 'margin expansion', 'earnings beat',
+  // market moves
+  'hits record', 'hits high', 'breakout above', 'breaks out',
+  'sharp rally', 'strong rally', 'bull run',
+  // corporate
+  'dividend hike', 'bonus issue', 'stock split announced', 'share buyback',
+  'order win', 'new contract', 'acquisition completed',
+];
+
+const NEGATIVE_PHRASES: string[] = [
+  // performance drops
+  'profit fall', 'profit falls', 'profit drop', 'profit plunge',
+  'profit slump', 'profit miss', 'profit warning', 'earnings miss',
+  'revenue fall', 'revenue miss', 'revenue decline', 'sales drop',
+  'sales fall', 'margin pressure', 'margin compression', 'margin squeeze',
+  'miss estimates', 'miss expectations', 'miss forecast',
+  'worse than expected', 'below estimates', 'below expectations',
+  // actions / recommendations
+  'sell recommendation', 'sell rating', 'downgrade to sell',
+  'target cut', 'target lowered', 'underweight rating', 'price target cut',
+  // market moves
+  'sell-off', 'sell off', 'heavy selling', 'sharp fall', 'sharp decline',
+  'sharp drop', 'stock plunge', 'stock crash', 'shares tumble',
+  'shares fall', 'shares drop', 'shares plunge', 'hits low', 'hits 52-week low',
+  'bear market', 'bear run',
+  // corporate / governance
+  'dividend cut', 'debt concerns', 'debt burden', 'regulatory action',
+  'sebi probe', 'sebi action', 'tax notice', 'fraud charge',
+  'class action', 'insolvency', 'bankruptcy filing', 'going concern',
+];
 
 const POSITIVE_WORDS = new Set([
   'surge', 'rally', 'jump', 'gain', 'rise', 'bull', 'bullish', 'upbeat',
-  'outperform', 'upgrade', 'beat', 'record', 'high', 'boom', 'optimistic',
-  'growth', 'profit', 'dividend', 'buyback', 'strong', 'recovery', 'breakout',
-  'positive', 'expansion', 'approve', 'exceed', 'robust', 'momentum',
+  'outperform', 'upgrade', 'beat', 'record', 'boom', 'optimistic',
+  'growth', 'dividend', 'buyback', 'strong', 'recovery', 'breakout',
+  'expansion', 'approve', 'exceed', 'robust', 'momentum',
 ]);
+// `profit`, `positive`, `high` removed from single-word positives —
+// too ambiguous without context. "profit fall" / "52-week high" /
+// "positive news → no…" are common traps.
 
 const NEGATIVE_WORDS = new Set([
   'crash', 'plunge', 'drop', 'fall', 'decline', 'bear', 'bearish', 'slump',
-  'loss', 'downgrade', 'miss', 'low', 'bust', 'pessimistic', 'weak',
-  'default', 'penalty', 'fraud', 'scam', 'ban', 'warning', 'risk',
-  'correction', 'sell-off', 'selloff', 'negative', 'contraction', 'reject',
-  'debt', 'concern', 'fear', 'recession', 'crisis', 'fail',
+  'loss', 'downgrade', 'miss', 'bust', 'pessimistic', 'weak',
+  'default', 'penalty', 'fraud', 'scam', 'ban', 'warning',
+  'correction', 'selloff', 'negative', 'contraction', 'reject',
+  'concern', 'recession', 'crisis', 'fail',
 ]);
 
+function countPhraseHits(lowerText: string, phrases: string[]): number {
+  let n = 0;
+  for (const p of phrases) {
+    if (lowerText.includes(p)) n++;
+  }
+  return n;
+}
+
 function scoreSentiment(title: string, body: string | null): { label: SentimentLabel; score: number } {
-  const text = `${title} ${body ?? ''}`.toLowerCase();
+  const text  = `${title} ${body ?? ''}`.toLowerCase();
   const words = text.split(/\W+/).filter(Boolean);
 
-  let positiveCount = 0;
-  let negativeCount = 0;
+  // Phrases weighted 2× — a phrase is a stronger signal than a
+  // solitary opposite-polarity keyword (fixes "profit fall" neutral bug).
+  const posPhrases = countPhraseHits(text, POSITIVE_PHRASES);
+  const negPhrases = countPhraseHits(text, NEGATIVE_PHRASES);
 
+  let posWords = 0;
+  let negWords = 0;
   for (const w of words) {
-    if (POSITIVE_WORDS.has(w)) positiveCount++;
-    if (NEGATIVE_WORDS.has(w)) negativeCount++;
+    if (POSITIVE_WORDS.has(w)) posWords++;
+    if (NEGATIVE_WORDS.has(w)) negWords++;
   }
 
-  const total = positiveCount + negativeCount;
+  const posSignal = posPhrases * 2 + posWords;
+  const negSignal = negPhrases * 2 + negWords;
+  const net       = posSignal - negSignal;
+  const total     = posSignal + negSignal;
+
   if (total === 0) return { label: 'neutral', score: 0 };
 
-  const rawScore = (positiveCount - negativeCount) / total;
-  // Clamp to [-1, 1]
-  const score = Math.max(-1, Math.min(1, rawScore));
-
+  // Absolute-threshold tier rule. `strongly_*` requires at least
+  // 3 net signal strength AND the opposite polarity must be weak
+  // (at most 1/3 of the dominant polarity), so "great earnings but
+  // slim margin risk" → positive, not strongly_positive.
   let label: SentimentLabel;
-  if (score >= 0.5) label = 'strongly_positive';
-  else if (score > 0.1) label = 'positive';
-  else if (score > -0.1) label = 'neutral';
-  else if (score > -0.5) label = 'negative';
-  else label = 'strongly_negative';
+  const dominant    = Math.max(posSignal, negSignal);
+  const opposite    = Math.min(posSignal, negSignal);
+  const decisive    = dominant >= 3 && opposite <= dominant / 3;
 
+  if (net >=  3 && decisive) label = 'strongly_positive';
+  else if (net >=  1)        label = 'positive';
+  else if (net <= -3 && decisive) label = 'strongly_negative';
+  else if (net <= -1)        label = 'negative';
+  else                        label = 'neutral';
+
+  // Score in [-1, 1], saturating at ~5 net hits.
+  const score = Math.max(-1, Math.min(1, net / 5));
   return { label, score: Math.round(score * 1000) / 1000 };
 }
 

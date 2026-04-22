@@ -20,9 +20,14 @@
 
 import type { PriceResponse } from './getLivePrice';
 
+// Yahoo-only mode: default 8s matches the spec's 8–10s cache band and
+// pairs well with a 10s client-side poll — most polls land on a cache
+// hit, sparing Yahoo from a 2000-symbol thundering herd every cycle.
+// Clamp kept at 1–9s so a misconfigured env can't serve minute-old
+// prices.
 const TTL_MS = (() => {
   const raw = Number(process.env.PRICE_CACHE_TTL_MS);
-  if (!Number.isFinite(raw) || raw <= 0) return 2_000;
+  if (!Number.isFinite(raw) || raw <= 0) return 8_000;
   return Math.min(Math.max(raw, 1_000), 9_000);
 })();
 

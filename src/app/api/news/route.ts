@@ -38,6 +38,30 @@ function extractAttr(xml: string, tag: string, attr: string): string {
   return m?.[1] ?? '';
 }
 
+// Safe ISO parser. Returns null when the input is missing or
+// unparseable — caller decides whether to skip the article or use
+// a fallback. The previous code called `.toISOString()` directly,
+// which throws `RangeError: Invalid time value` on malformed RSS
+// dates (some Indian feeds emit non-RFC2822 strings like
+// "Jan 1, 2024 12:00" or a trailing BOM), killing the whole parse
+// batch and leaving "Invalid Date" strings in downstream consumers
+// that tried to catch and stringify the error.
+function safeIsoDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  const ms = d.getTime();
+  if (!Number.isFinite(ms)) return null;
+  // Sanity window: reject dates > 2 days in the future and older
+  // than 10 years — those are almost always parse artefacts
+  // (year=0001, year=9999, etc.) rather than real news.
+  const now = Date.now();
+  if (ms > now + 2 * 24 * 3600 * 1000) return null;
+  if (ms < now - 10 * 365 * 24 * 3600 * 1000) return null;
+  return d.toISOString();
+}
+
 function parseRss(xml: string, source: string, category: string): RssItem[] {
   const items: RssItem[] = [];
   const itemMatches = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) ?? [];
@@ -55,7 +79,13 @@ function parseRss(xml: string, source: string, category: string): RssItem[] {
     // Strip HTML from description
     const summary = desc.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
 
-    const published_at = pubDate ? new Date(pubDate).toISOString() : new Date().toISOString();
+    // Skip articles with no meaningful content AND no valid date —
+    // those are feed noise (empty `<item>` shells or malformed XML).
+    // A real article is allowed to have an empty summary as long as
+    // title + link + a parseable date are present.
+    const parsedDate = safeIsoDate(pubDate);
+    if (!parsedDate && !summary) continue;
+    const published_at = parsedDate ?? new Date().toISOString();
 
     items.push({
       id:           Buffer.from(link).toString('base64').slice(0, 32),

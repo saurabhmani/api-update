@@ -38,7 +38,7 @@ export interface FloatingBotIndicatorProps {
   status:       FloatingBotState;
   counts?:      Partial<Record<FloatingBotState, number>>;
   lastUpdated?: number | null;
-  source?:      'kite' | 'yahoo' | 'none' | null;
+  source?:      'yahoo' | 'none' | null;
   /** Corner positioning. Defaults to top-right. */
   position?:    'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
   /** Hide on mobile — lets the caller render a different shell there. */
@@ -46,7 +46,7 @@ export interface FloatingBotIndicatorProps {
 }
 
 const LABEL: Record<FloatingBotState, string> = {
-  LIVE:    'LIVE • Kite',
+  LIVE:    'LIVE • Yahoo',
   DELAYED: 'DELAYED • Yahoo',
   CLOSED:  'MARKET CLOSED',
   STALE:   'LAST CLOSE',
@@ -103,7 +103,7 @@ export default function FloatingBotIndicator({
   const palette = useMemo(() => getPalette(status), [status]);
   const label   = LABEL[status];
   const agoStr  = formatAgo(lastUpdated, now);
-  const srcBadge = source === 'kite' ? 'K' : source === 'yahoo' ? 'Y' : null;
+  const srcBadge = source === 'yahoo' ? 'Y' : null;
 
   // Counts for the hover tooltip — hide entries with zero.
   const countItems: Array<[FloatingBotState, number]> = [];

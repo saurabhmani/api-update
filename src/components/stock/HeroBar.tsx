@@ -25,7 +25,7 @@ export default function HeroBar({ data, inWatchlist, onAddWatchlist, onCopyPlan,
   const ltp          = live?.price   ?? data.ltp;
   const changeAbs    = live?.change  ?? data.change_abs;
   const changePct    = live?.pChange ?? data.change_percent;
-  const liveSource   = (live?.source as 'kite' | 'yahoo' | undefined) ?? null;
+  const liveSource   = (live?.source as 'yahoo' | undefined) ?? null;
 
   const positive   = changePct >= 0;
   const marketOpen = isMarketOpen();

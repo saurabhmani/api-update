@@ -24,7 +24,7 @@ export interface BotIndicatorProps {
 }
 
 const LABEL_MAP: Record<BotIndicatorStatus, string> = {
-  LIVE:    'LIVE (Kite)',
+  LIVE:    'LIVE (Yahoo)',
   DELAYED: 'DELAYED (Yahoo)',
   CLOSED:  'MARKET CLOSED',
   STALE:   'LAST CLOSE',

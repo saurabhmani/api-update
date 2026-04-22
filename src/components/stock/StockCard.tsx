@@ -5,7 +5,7 @@
 //  Renders: symbol, price, change%, source badge, status ring.
 //
 //  Animations:
-//    LIVE    (Kite)   — green/red flash on price tick, pulse ring
+//    LIVE    (Yahoo)  — green/red flash on price tick, pulse ring
 //    DELAYED (Yahoo)  — amber glow, "Delayed" badge, soft pulse
 //    CLOSED           — grey, "Market Closed", no flashing
 //    OFFLINE          — red muted, "No data"
@@ -29,7 +29,7 @@ interface Palette {
 function palette(status: StockBotEntry['status']): Palette {
   switch (status) {
     case 'LIVE':
-      return { bg: '#F0FDF4', ring: 'rgba(34,197,94,0.35)', border: '#10B981', badgeBg: '#10B981', badgeText: '#fff',     label: 'LIVE (Kite)' };
+      return { bg: '#F0FDF4', ring: 'rgba(34,197,94,0.35)', border: '#10B981', badgeBg: '#10B981', badgeText: '#fff',     label: 'LIVE (Yahoo)' };
     case 'DELAYED':
       return { bg: '#FFFBEB', ring: 'rgba(245,158,11,0.35)', border: '#F59E0B', badgeBg: '#F59E0B', badgeText: '#fff',     label: 'DELAYED (Yahoo)' };
     case 'CLOSED':

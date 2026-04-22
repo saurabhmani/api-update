@@ -6,7 +6,7 @@ import { Card, Loading } from '@/components/ui';
 import { Newspaper, RefreshCw, TrendingUp, AlertTriangle, Zap, BarChart3, Shield } from 'lucide-react';
 import s from './news.module.scss';
 
-interface NewsEvent { id: number; title: string; category: string; sentiment: string; source_id: string; published_at: string; }
+interface NewsEvent { id: number; title: string; category: string; sentiment: string; source_id: string; publishedAt: string; }
 interface ScoreRow { symbol: string; trust_score: number; sentiment_score: number; importance_score: number; symbol_impact_score: number; event_risk_score: number; manipulation_risk_boost: number; }
 interface ImpactRow { symbol: string; confidenceModifier: number; riskPenalty: number; aggregateImpact: number; netSentiment: string; eventCount: number; }
 
@@ -156,7 +156,7 @@ export default function NewsIntelligencePage() {
                   {e.sentiment}
                 </span>
                 <span>{e.source_id}</span>
-                <span>{new Date(e.published_at).toLocaleString()}</span>
+                <span>{new Date(e.publishedAt).toLocaleString()}</span>
               </div>
             </div>
           ))}

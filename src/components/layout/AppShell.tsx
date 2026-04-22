@@ -12,7 +12,6 @@ import {
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
 import TickerStrip from './TickerStrip';
-import KiteStatusButton from '@/components/KiteStatusButton';
 import '@/styles/components/_layout.scss';
 
 interface NavItem { href: string; icon: React.ElementType; label: string; }
@@ -56,7 +55,6 @@ const NAV: NavGroup[] = [
     label: 'Admin',
     adminOnly: true,
     items: [
-      { href: '/admin/zerodha',    icon: Zap,           label: 'Zerodha Connect' },
       { href: '/admin/users',      icon: Users,         label: 'Users' },
       { href: '/admin/news',       icon: Newspaper,     label: 'News Mgmt' },
       { href: '/admin/data',       icon: Database,      label: 'Data Management' },
@@ -130,7 +128,6 @@ export default function AppShell({ children, title }: Props) {
             {title && <h1 className="topbar__title">{title}</h1>}
           </div>
           <div className="topbar__right">
-            <KiteStatusButton />
             <Link href="/notifications" className="topbar__icon-btn" aria-label="Notifications">
               <Bell size={17} />
               <span className="dot" />

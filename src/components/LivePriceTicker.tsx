@@ -50,7 +50,7 @@ interface PriceApiResponse {
   price?:   number | null;
   pChange?: number | null;
   change?:  number | null;
-  source?:  'kite' | 'yahoo' | 'none' | null;
+  source?:  'yahoo' | 'none' | null;
   error?:   string;
 }
 
@@ -171,7 +171,7 @@ export function LivePriceTicker({
 
   const flashClass = flash === 'up' ? 'ltp-up' : flash === 'down' ? 'ltp-down' : '';
   const pctClass   = pChange == null ? '' : pChange >= 0 ? 'ltp-positive' : 'ltp-negative';
-  const isDelayed  = source !== 'kite';
+  const isDelayed  = source !== 'yahoo' ? false : true;  // Yahoo is always delayed
 
   return (
     <span className={`ltp-root ltp-${size} ${flashClass} ${className ?? ''}`}>

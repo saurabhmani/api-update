@@ -14,55 +14,17 @@ export async function register() {
   const log = logger.child({ component: 'boot' });
 
   // ── Global crash handlers ───────────────────────────────────
-  // Prevent silent process death on unhandled errors. Every crash
-  // emits a [CRITICAL] line (grep target for alerting) and, when
-  // the error touched the tick path, attempts to re-boot the Kite
-  // ticker in-process so a transient bug doesn't sideline the feed
-  // until the next manual restart.
-  //
-  // Idempotent — guarded so HMR re-registration doesn't stack.
+  // Prevent silent process death on unhandled errors. Kite removal
+  // took the ticker-restart path with it — crashes are now just
+  // logged. Idempotent — guarded so HMR re-registration doesn't stack.
   if (!(globalThis as any).__Q365_CRASH_HOOKS__) {
     (globalThis as any).__Q365_CRASH_HOOKS__ = true;
-
-    // Coalesce rapid-fire restart attempts — if the crash cascade
-    // is firing every frame, we don't want 1000 bootTicker calls.
-    let lastRestartAt = 0;
-    const RESTART_COOLDOWN_MS = 10_000;
-
-    async function safeRestartTicker(tag: string, reason: string): Promise<void> {
-      const now = Date.now();
-      if (now - lastRestartAt < RESTART_COOLDOWN_MS) {
-        console.error(
-          `[CRITICAL] ${tag} restart skipped — cooldown ` +
-          `(${Math.round((RESTART_COOLDOWN_MS - (now - lastRestartAt)) / 1000)}s remaining)`,
-        );
-        return;
-      }
-      lastRestartAt = now;
-      console.error(`[CRITICAL] ${tag} crash detected → restarting ticker  reason=${reason}`);
-      try {
-        const { bootTickerSafe } = await import('@/lib/marketData/bootTicker');
-        // Force re-boot by clearing the idempotency flag. bootTickerSafe
-        // respects the global flag to avoid double-booting during normal
-        // HMR; on a crash path we explicitly want it to run again.
-        (globalThis as any).__q365_ticker_booted__ = undefined;
-        const result = await bootTickerSafe();
-        if ('booted' in result && result.booted) {
-          console.log(`[CRITICAL] ticker restart OK  universe=${result.universeSize}`);
-        } else if ('error' in result) {
-          console.error(`[CRITICAL] ticker restart failed — ${result.error}`);
-        }
-      } catch (err: any) {
-        console.error(`[CRITICAL] ticker restart threw — ${err?.message ?? err}`);
-      }
-    }
 
     process.on('uncaughtException', (err) => {
       console.error(
         `[CRITICAL] uncaughtException — ${err?.message ?? err}\n${err?.stack ?? ''}`,
       );
       log.fatal('Uncaught exception', err);
-      void safeRestartTicker('uncaughtException', err?.message ?? 'unknown');
     });
 
     process.on('unhandledRejection', (reason) => {
@@ -73,7 +35,6 @@ export async function register() {
         'Unhandled rejection',
         reason instanceof Error ? reason : { reason: String(reason) },
       );
-      void safeRestartTicker('unhandledRejection', msg);
     });
   }
 
@@ -165,50 +126,11 @@ export async function register() {
     return true;
   });
 
-  // ── Kite ticker boot (subscribes universe → ticks flow) ─────
-  // MUST run before startStreamServer() so the tickBus has frames
-  // ready (or is actively producing) by the time the fan-out
-  // server wires its listener. bootTicker loads the universe,
-  // seeds the symbol↔token map from nseUniverse.json, subscribes
-  // after the socket opens, and is idempotent against HMR.
-  await withBudget('Kite ticker boot', 15_000, async () => {
-    const { bootTickerSafe } = await import('@/lib/marketData/bootTicker');
-    const result = await bootTickerSafe();
-    if ('booted' in result && result.booted) {
-      log.info('Kite ticker booted', { universeSize: result.universeSize, mode: result.mode });
-    } else if ('alreadyBooted' in result && (result as { alreadyBooted?: boolean }).alreadyBooted) {
-      log.info('Kite ticker already booted');
-    } else if ('error' in result) {
-      console.error(`[ERROR] bootTicker not executed — ${result.error}`);
-      log.warn('Kite ticker boot deferred', { error: result.error });
-    }
-    return result;
-  });
-
-  // ── Dynamic subscription sync ───────────────────────────────
-  // Drives a narrow, active-signals-only Kite subscription (target
-  // 50–200 tokens) instead of a blanket 2700-symbol fan-out. Runs
-  // on an interval so freshly-generated signals hit the live feed
-  // within one cycle.
-  await withBudget('Dynamic subscription sync start', 5_000, async () => {
-    const { startDynamicSubscriptionSync } = await import(
-      '@/lib/marketData/dynamicSubscriptionSync'
-    );
-    startDynamicSubscriptionSync();
-    log.info('Dynamic subscription sync started');
-    return true;
-  });
-
-  // ── Real-time price stream (WebSocket fan-out) ──────────────
-  // Started AFTER bootTicker so the tickBus is already wired to
-  // the Kite socket; any tick that arrives during the wss handshake
-  // is captured rather than lost.
-  await withBudget('Stream server start', 5_000, async () => {
-    const { startStreamServer } = await import('@/lib/ws/streamServer');
-    startStreamServer();
-    log.info('Stream server started');
-    return true;
-  });
+  // Kite ticker + dynamic subscription sync + WebSocket stream
+  // server were all removed with the Kite integration. Signal-only
+  // mode serves from the Yahoo cache per request; no background
+  // tick feed is required.
+  log.info('Signal-only mode: Kite ticker / WS stream / sub-sync disabled');
 
   // ── 60s OHLC refresh scheduler ──────────────────────────────
   await withBudget('Candle scheduler start', 5_000, async () => {

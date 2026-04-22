@@ -88,6 +88,12 @@ export async function queryNewsEvents(filter: NewsQueryFilter = {}): Promise<New
   if (filter.fromDate) {
     conditions.push('ne.published_at >= ?');
     params.push(filter.fromDate);
+  } else {
+    // Default freshness window: 72h (3 days). Keeps legacy 2024-era
+    // rows from leaking into the current feed when the caller didn't
+    // pass an explicit fromDate. Callers that need the full archive
+    // (backfill / audit) can pass fromDate explicitly to override.
+    conditions.push("ne.published_at >= DATE_SUB(NOW(), INTERVAL 72 HOUR)");
   }
 
   if (filter.toDate) {

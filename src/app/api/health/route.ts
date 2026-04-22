@@ -32,6 +32,9 @@ interface HealthCheck {
 interface HealthResponse {
   status: HealthStatus;
   timestamp: string;
+  source:   'yahoo';
+  mode:     'signal-only';
+  realtime: false;
   checks: Record<string, HealthCheck>;
   process?: {
     uptimeSec: number;
@@ -323,6 +326,9 @@ export async function GET() {
   const response: HealthResponse = {
     status: overallStatus,
     timestamp: new Date().toISOString(),
+    source:   'yahoo',
+    mode:     'signal-only',
+    realtime: false,
     checks,
     process: processInfo,
     responseTimeMs: Date.now() - startMs,

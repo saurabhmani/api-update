@@ -27,84 +27,17 @@ import {
 }                                     from '@/lib/signal-engine/live/analyzeInstrument';
 import { applyLiveSanity }            from '@/lib/signal-engine/live/validateAgainstLive';
 import { checkCandleFreshness }       from '@/lib/signal-engine/live/candleFreshnessGuard';
-import { getTicker, isFresh }  from '@/lib/marketData/kiteTicker';
 import { fetchFromYahooCached }        from '@/lib/marketData/priceCache';
 import { getMarketStatus }             from '@/lib/marketData/marketHours';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
 
-// ── Kite EOD lookup (Pass 2 source for enrichWithLiveLtp) ─────
-//
-// When the in-memory Kite cache has no entry for a symbol (cold
-// boot during closed hours, or a symbol that hasn't ticked yet),
-// `market_data_daily` carries the Kite-sourced last-trading-session
-// close via the VIEW projecting `candles` with candle_type='eod'.
-// This is authoritative last traded price until the next session
-// opens — strictly more trustworthy than a 15-min-delayed Yahoo
-// scrape, and critically it stays labelled source='kite'.
-//
-// Returns a Map<UPPERCASE_SYMBOL, {close, pChange, ts}>.
-async function loadKiteEodCloses(symbols: string[]): Promise<Map<string, {
-  close:   number;
-  pChange: number;
-  ts:      number;
-}>> {
-  const out = new Map<string, { close: number; pChange: number; ts: number }>();
-  if (!symbols || symbols.length === 0) return out;
-  // Dedup + cap — the IN clause with thousands of params is fine on
-  // MySQL but we keep a ceiling so a pathological call doesn't build
-  // a 100KB query string.
-  const uniq = [...new Set(symbols.map((s) => s.toUpperCase()))].slice(0, 2000);
-  // PERF: window-function rewrite. The correlated-subquery form via
-  // `market_data_daily` VIEW would hang for tens of minutes on a
-  // populated candles table (see git log 2026-04-22). We query
-  // `candles` directly with the EOD filter, use LEAD() for the
-  // previous close, and ROW_NUMBER() to pick the newest bar per
-  // instrument — single pass using idx_candles_key_ts.
-  //
-  // Build IN() over instrument_key suffixes. Symbol is the suffix
-  // after the '|' in instrument_key (NSE_EQ|RELIANCE → RELIANCE).
-  const placeholders = uniq.map(() => '?').join(',');
-  const { rows } = await db.query<{
-    symbol:     string;
-    ts:         Date | string | number;
-    close:      number | string;
-    prev_close: number | string | null;
-  }>(
-    `SELECT symbol, ts, close, prev_close FROM (
-       SELECT
-         SUBSTRING_INDEX(instrument_key, '|', -1) AS symbol,
-         ts,
-         close,
-         LEAD(close) OVER (PARTITION BY instrument_key ORDER BY ts DESC) AS prev_close,
-         ROW_NUMBER()  OVER (PARTITION BY instrument_key ORDER BY ts DESC) AS rn
-       FROM candles
-       WHERE candle_type = 'eod' AND interval_unit = '1day'
-         AND SUBSTRING_INDEX(instrument_key, '|', -1) IN (${placeholders})
-     ) r
-     WHERE r.rn = 1`,
-    uniq,
-  );
-  for (const r of rows as any[]) {
-    const sym = String(r.symbol ?? '').toUpperCase();
-    const close = Number(r.close);
-    if (!Number.isFinite(close) || close <= 0) continue;
-    const prev = r.prev_close != null ? Number(r.prev_close) : null;
-    const pChange =
-      prev != null && Number.isFinite(prev) && prev > 0
-        ? ((close - prev) / prev) * 100
-        : 0;
-    const ts =
-      r.ts instanceof Date
-        ? r.ts.getTime()
-        : typeof r.ts === 'number'
-          ? r.ts
-          : new Date(r.ts as string).getTime();
-    out.set(sym, { close, pChange, ts: Number.isFinite(ts) ? ts : Date.now() });
-  }
-  return out;
-}
+// Kite EOD lookup previously lived here (source='kite' Pass 2 of
+// enrichWithLiveLtp). Removed when the system moved to Yahoo-only
+// signal-analytics mode. See enrichWithLiveLtp below — it now calls
+// fetchFromYahooCached directly for every row that has no in-memory
+// live price attached.
 
 // ── Live-price enrichment ───────────────────────────────────────
 //
@@ -124,15 +57,15 @@ async function loadKiteEodCloses(symbols: string[]): Promise<Map<string, {
 // quote used to make "entry price" drift with the market in the
 // UI table — the exact bug this separation prevents.
 //
-// LIVE-PRICE RESOLUTION: Kite primary, Yahoo fallback. Those are
-// the only two upstreams permitted anywhere in the system.
-//   1. tryGetLiveTick(symbol) → Kite tick cache, strict freshness
-//   2. If Kite has no fresh tick → fetchFromYahooCached(symbol)
-//   3. If both miss → livePrice = null (UI renders '—')
+// LIVE-PRICE RESOLUTION: Yahoo-only (signal-analytics mode).
+// Every row is filled from fetchFromYahooCached() with a bounded
+// concurrency pool. Cache hits are effectively free; misses hit
+// Yahoo once per symbol per TTL window.
 //
-// When livePrice is null, the UI must fall back to rendering
-// the frozen entry with a visual "stale" indicator — NOT a
-// different price from a different source.
+// Yahoo is delayed ~15 minutes during market hours. We accept that
+// delay as a trade-off for broker-independence — the signal engine
+// no longer hard-invalidates on small adverse moves (see
+// applyLiveSanity) because those moves can be the delay itself.
 async function enrichWithLiveLtp<
   T extends {
     tradingsymbol?: string;
@@ -148,42 +81,11 @@ async function enrichWithLiveLtp<
   if (rows.length === 0) return rows;
 
   const t0 = Date.now();
-
-  // STRICT PRIORITY ORDER (Kite-first, fallback gated on market state):
-  //
-  //   Pass 1 — Kite in-memory cache (any age).
-  //            ticker.getTickBySymbolSync() returns the last Kite WS
-  //            tick for the symbol regardless of age. After close,
-  //            this is the authoritative last-traded price; mid-session
-  //            it's the freshest tick. We DO NOT gate on the 2s
-  //            strict-fresh threshold — a Kite tick is a Kite tick.
-  //
-  //   Pass 2 — Kite EOD close from market_data_daily (VIEW over
-  //            candles). If the in-memory cache has nothing for a
-  //            symbol (cold boot during closed hours), the EOD bar
-  //            IS the authoritative Kite close.
-  //
-  //   Pass 3 — Yahoo SNAPSHOT fallback. ONLY when market is CLOSED
-  //            and passes 1 and 2 both missed (no in-memory Kite tick,
-  //            no Kite EOD bar in market_data_daily). This is the
-  //            "use Yahoo ONLY if no Kite data" rule — during market
-  //            hours Yahoo is DISABLED completely and a missed Kite
-  //            read becomes 'none' rather than silently switching
-  //            sources mid-screen.
-  //
-  //   Pass 4 — 'none'. No data anywhere.
   const YAHOO_CONCURRENCY = 10;
   const market = getMarketStatus();
-  const ticker = getTicker();
-  // Reject Kite data older than this — above the threshold a cached
-  // tick or EOD bar is likely from a symbol whose ingest pipeline
-  // stopped, and a 15-min-delayed Yahoo snapshot is more useful
-  // than a months-old close. Default 3 days covers a weekend gap.
-  const STALE_KITE_MS =
-    Number(process.env.STALE_KITE_MS) || 3 * 24 * 60 * 60 * 1000;
 
-  // Pass 1 — Kite in-memory cache (sync, O(rows), bounded age gate)
-  const needsEod: Array<{ row: typeof rows[number]; sym: string }> = [];
+  type Target = { row: typeof rows[number]; sym: string };
+  const targets: Target[] = [];
   for (const row of rows) {
     const sym = (row.tradingsymbol ?? row.symbol ?? '').toString().toUpperCase();
     if (!sym) {
@@ -193,95 +95,40 @@ async function enrichWithLiveLtp<
       row.liveTickTs  = null;
       continue;
     }
-    const tick = ticker.getTickBySymbolSync(sym);
-    if (tick && tick.lastPrice != null && tick.lastPrice > 0) {
-      const age = Date.now() - (tick.ts ?? 0);
-      // Market OPEN  → require fresh live tick (≤3s by default)
-      // Market CLOSED → accept any age up to STALE_KITE_MS
-      const acceptable = market.isOpen
-        ? isFresh(tick, 30_000)  // aging-but-usable during hours
-        : age < STALE_KITE_MS;
-      if (acceptable) {
-        row.livePrice   = tick.lastPrice;
-        row.livePChange = tick.pChange ?? null;
-        row.liveSource  = 'kite';
-        row.liveTickTs  = tick.ts ?? null;
-        if (market.isOpen && tick.ts && !isFresh(tick, 30_000)) {
-          console.log(
-            `[STALE] symbol=${sym} kite_age=${Math.round(age / 1000)}s ` +
-            `market=OPEN — investigate Kite feed`,
-          );
-        }
-        continue;
-      }
-      // Too old — fall through to EOD lookup, then Yahoo if needed.
-    }
-    // No in-memory Kite tick (or it's ancient) — queue for EOD lookup.
-    needsEod.push({ row, sym });
+    targets.push({ row, sym });
   }
 
-  // Pass 2 — Kite EOD close from market_data_daily (single batched query)
-  const needsYahoo: Array<{ row: typeof rows[number]; sym: string }> = [];
-  if (needsEod.length > 0) {
-    try {
-      const eodMap = await loadKiteEodCloses(needsEod.map((x) => x.sym));
-      for (const { row, sym } of needsEod) {
-        const eod = eodMap.get(sym);
-        const eodAge = eod ? Date.now() - eod.ts : Infinity;
-        // Accept EOD only if the bar itself is within STALE_KITE_MS.
-        // Ancient EOD rows (symbols whose candle ingest stopped) are
-        // worse than a 15-min-delayed Yahoo snapshot — fall through.
-        if (eod && eod.close > 0 && eodAge < STALE_KITE_MS) {
-          row.livePrice   = eod.close;
-          row.livePChange = eod.pChange;
-          row.liveSource  = 'kite'; // Kite-sourced EOD bar from candles
-          row.liveTickTs  = eod.ts;
-          continue;
-        }
-        // Either no EOD row or it's ancient. Queue for Yahoo fallback
-        // regardless of market state — per user requirement a
-        // delayed-but-fresh Yahoo snapshot beats showing nothing or
-        // rendering a months-old cached Kite close.
-        needsYahoo.push({ row, sym });
-      }
-    } catch (err) {
-      console.warn(
-        `[enrich] EOD lookup failed: ${(err as Error).message} — ` +
-        `falling through to Yahoo snapshot`,
-      );
-      for (const { row, sym } of needsEod) {
-        needsYahoo.push({ row, sym });
-      }
-    }
-  }
-
-  // Pass 3 — Yahoo SNAPSHOT fallback (bounded parallel).
-  // Runs whenever Kite cache + EOD both missed, regardless of
-  // market state. Spec: "Yahoo fine even 15-min delayed, better
-  // than showing ancient data."
-  if (needsYahoo.length > 0) {
+  if (targets.length > 0) {
     let cursor = 0;
     async function worker(): Promise<void> {
       while (true) {
         const i = cursor++;
-        if (i >= needsYahoo.length) return;
-        const { row, sym } = needsYahoo[i];
+        if (i >= targets.length) return;
+        const { row, sym } = targets[i];
         try {
           const res = await fetchFromYahooCached(sym);
           if (res.price != null) {
             row.livePrice   = res.price;
             row.livePChange = res.pChange ?? null;
             row.liveSource  = 'yahoo';
+            row.liveTickTs  = Date.now();
+            console.log('[DATA]', { symbol: sym, source: 'yahoo', price: res.price });
           } else {
-            row.liveSource = 'none';
+            row.livePrice   = null;
+            row.livePChange = null;
+            row.liveSource  = 'none';
+            row.liveTickTs  = null;
           }
         } catch {
-          row.liveSource = 'none';
+          row.livePrice   = null;
+          row.livePChange = null;
+          row.liveSource  = 'none';
+          row.liveTickTs  = null;
         }
       }
     }
     await Promise.all(
-      Array.from({ length: Math.min(YAHOO_CONCURRENCY, needsYahoo.length) }, worker),
+      Array.from({ length: Math.min(YAHOO_CONCURRENCY, targets.length) }, worker),
     );
   }
 
@@ -292,52 +139,28 @@ async function enrichWithLiveLtp<
     bySource[src] = (bySource[src] ?? 0) + 1;
     if (r.livePrice != null) totalLive++;
   }
-  const parts = Object.entries(bySource)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('  ');
-  const kiteCount   = bySource.kite  ?? 0;
-  const yahooCount  = bySource.yahoo ?? 0;
-  const noneCount   = bySource.none  ?? 0;
-  const kiteRatio   = rows.length > 0 ? Math.round((kiteCount  / rows.length) * 100) : 0;
-  const yahooRatio  = rows.length > 0 ? Math.round((yahooCount / rows.length) * 100) : 0;
+  const yahooCount = bySource.yahoo ?? 0;
+  const noneCount  = bySource.none  ?? 0;
+  const yahooRatio = rows.length > 0 ? Math.round((yahooCount / rows.length) * 100) : 0;
 
-  // Honest freshness label that reflects the three real states:
-  //
-  //   LIVE        — Kite WebSocket ticks are flowing (≥50% rows)
-  //   NEAR_LIVE   — market is OPEN and Yahoo is serving (<1m lag,
-  //                 works without a Kite login; still actionable)
-  //   LAST_CLOSE  — market is CLOSED, Yahoo returns last-traded
-  //                 price from the previous session (expected;
-  //                 nothing is "real-time" when nothing trades)
-  //   NO_DATA     — both upstreams missed the row
-  //
-  // The previous log printed `real_time=NO ✗` whenever Kite wasn't
-  // the majority source, which looked like a failure in a closed
-  // market or a dropped Kite login — but the Yahoo fallback was
-  // working fine. This labelling tells the truth instead.
-  // `market` was already computed in Pass 1 above; reuse it.
   let freshnessLabel: string;
-  if (kiteCount > 0 && kiteCount >= rows.length * 0.5) {
-    freshnessLabel = 'LIVE (kite)';
-  } else if (yahooCount > 0 && market.isOpen) {
-    freshnessLabel = 'NEAR_LIVE (yahoo, kite-login=' +
-      (kiteCount > 0 ? 'partial' : 'missing') + ')';
+  if (yahooCount > 0 && market.isOpen) {
+    freshnessLabel = 'NEAR_LIVE (yahoo, ~15min delay)';
   } else if (yahooCount > 0) {
     freshnessLabel = 'LAST_CLOSE (market closed — yahoo)';
   } else if (noneCount === rows.length) {
-    freshnessLabel = 'NO_DATA (both upstreams failed)';
+    freshnessLabel = 'NO_DATA (yahoo upstream failed)';
   } else {
     freshnessLabel = 'PARTIAL';
   }
 
   console.log(
-    `[DATA SOURCE] path=LIVE  channel=KITE+YAHOO  rows=${rows.length}  ` +
-    `live=${totalLive}  ${parts}  ` +
+    `[DATA SOURCE] path=LIVE  channel=YAHOO  rows=${rows.length}  ` +
+    `live=${totalLive}  yahoo=${yahooCount}  none=${noneCount}  ` +
     `status=${freshnessLabel}  elapsed=${Date.now() - t0}ms`,
   );
   console.log(
-    `[DATA] kite_ratio=${kiteRatio}%  yahoo_ratio=${yahooRatio}%  ` +
-    `market=${market.isOpen ? 'OPEN' : 'CLOSED'}`,
+    `[DATA] yahoo_ratio=${yahooRatio}%  market=${market.isOpen ? 'OPEN' : 'CLOSED'}`,
   );
 
   return rows;
@@ -391,27 +214,7 @@ async function buildFreshnessProbe(rows: any[]) {
     console.warn('[API/signals] candle freshness probe failed:', e?.message);
   }
 
-  // 3. Tick freshness — scan the ticker's in-memory cache
-  let tickNewestAge: number | null = null;
-  let tickOldestAge: number | null = null;
-  let tickerStatus: any = null;
-  try {
-    const ticker = getTicker();
-    tickerStatus = ticker.getStatus();
-    // Sample up to first 30 cached ticks to avoid walking thousands
-    const anyTicker = ticker as any;
-    const map: Map<any, any> | undefined = anyTicker.ticks;
-    if (map && typeof map.values === 'function') {
-      let i = 0;
-      for (const t of map.values()) {
-        if (!t?.ts) continue;
-        const age = serverNow - t.ts;
-        if (tickNewestAge == null || age < tickNewestAge) tickNewestAge = age;
-        if (tickOldestAge == null || age > tickOldestAge) tickOldestAge = age;
-        if (++i >= 30) break;
-      }
-    }
-  } catch {}
+  // Tick-freshness probe removed — no Kite ticker in signal-only mode.
 
   const market = getMarketStatus();
 
@@ -425,11 +228,9 @@ async function buildFreshnessProbe(rows: any[]) {
     signal_age_minutes:      signalLatest ? Math.round((serverNow - signalLatest) / 60_000) : null,
     candle_latest_ts:        candleLatest ? new Date(candleLatest).toISOString() : null,
     candle_age_hours:        candleLatest ? Math.round((serverNow - candleLatest) / 3_600_000 * 10) / 10 : null,
-    tick_ws_state:           tickerStatus?.state ?? 'unknown',
-    tick_subscribed:         tickerStatus?.subscribed ?? 0,
-    tick_cached:             tickerStatus?.ticksCached ?? 0,
-    tick_newest_age_ms:      tickNewestAge,
-    tick_oldest_age_ms:      tickOldestAge,
+    tick_ws_state:           'disabled',
+    tick_subscribed:         0,
+    tick_cached:             0,
   };
 
   return probe;
@@ -646,11 +447,77 @@ export async function GET(req: NextRequest) {
         };
       }));
       applyLiveSanity(enriched as any[]);
-      const droppedCount = (enriched as any[]).filter(r => r.live_invalidated).length;
-      const filtered = (enriched as any[]).filter(r => !r.live_invalidated);
-      if (droppedCount > 0) {
-        console.log(`[API/signals] live-sanity dropped ${droppedCount}/${enriched.length} rows (adverse live move / stopped out)`);
+
+      // Signal-only / Yahoo-only mode: live_invalidated is advisory.
+      // With a 15-min-delayed Yahoo tape we cannot trust the flag as
+      // a hard-exclusion signal — intraday drift of a few percent is
+      // normal and the frozen entry may still be valid. We retain
+      // flagged rows and let the hard gate (expired-only) decide.
+      const invalidatedRows = (enriched as any[]).filter(r => r.live_invalidated);
+      const droppedCount    = invalidatedRows.length;
+
+      if (invalidatedRows.length > 0) {
+        for (const r of invalidatedRows.slice(0, 10)) {
+          console.log('[INVALIDATION]', {
+            symbol:              r.symbol,
+            live_invalidated:    r.live_invalidated,
+            invalidation_reason: r.live_warnings,
+            entry_price:         r.entry_price,
+            live_price:          r.livePrice ?? r.ltp,
+            live_pchange:        r.livePChange,
+            live_source:         r.liveSource,
+          });
+        }
+        if (invalidatedRows.length > 10) {
+          console.log(`[INVALIDATION] …and ${invalidatedRows.length - 10} more (logging capped at 10 rows).`);
+        }
       }
+
+      // RETAIN flagged rows — Yahoo delay is the most likely cause.
+      const filtered = (enriched as any[]);
+      if (droppedCount > 0) {
+        console.log(`[API/signals] live-sanity flagged ${droppedCount}/${enriched.length} rows — RETAINED (Yahoo-only mode, hard gate decides).`);
+      }
+
+      // Pipeline-level penalty for soft-excluded rows (user TASK 2).
+      // Match the spec exactly: stale → -5, Avoid → -5. These rows
+      // still participate in tier selection (Tier 4 / Tier 5) but
+      // now rank below equivalently-scored healthy rows.
+      for (const r of filtered) {
+        const decay = String(r.decay_state ?? '').toLowerCase();
+        const band  = String(r.conviction_band ?? '').toLowerCase();
+        if (decay === 'stale') {
+          r.final_score   = Math.max(0, Number(r.final_score ?? 0) - 5);
+          r.demoted_stale = true;
+        }
+        if (band === 'avoid') {
+          r.final_score   = Math.max(0, Number(r.final_score ?? 0) - 5);
+          r.demoted_avoid = true;
+        }
+      }
+
+      // [TRACE] stage counters (user TASK 1) — single-line funnel so
+      // the operator can see exactly where rows are being shed.
+      const trace_generated        = enriched.length;
+      const trace_after_invalidated = filtered.length;
+      const trace_stale_count = filtered.filter(
+        (r: any) => String(r.decay_state ?? '').toLowerCase() === 'stale',
+      ).length;
+      const trace_expired_count = filtered.filter(
+        (r: any) => String(r.decay_state ?? '').toLowerCase() === 'expired',
+      ).length;
+      const trace_avoid_count = filtered.filter(
+        (r: any) => String(r.conviction_band ?? '').toLowerCase() === 'avoid',
+      ).length;
+      console.log('[TRACE]', {
+        generated:         trace_generated,
+        after_invalidated: trace_after_invalidated,
+        after_decay:       trace_after_invalidated - trace_expired_count,   // only expired drops
+        after_conviction:  trace_after_invalidated - trace_expired_count,   // Avoid stays (demoted)
+        stale_demoted:     trace_stale_count,
+        avoid_demoted:     trace_avoid_count,
+        source:            'yahoo',
+      });
 
       // ── Quality-tiered BUY/SELL selector ─────────────────────
       //
@@ -697,10 +564,14 @@ export async function GET(req: NextRequest) {
       const dominantRegime = Object.entries(regimeCounts)
         .sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'NEUTRAL';
 
-      const BUY_LIMIT  = Math.ceil(TARGET_COUNT / 2);       // 25 when TARGET=50
-      const SELL_LIMIT = TARGET_COUNT - BUY_LIMIT;          // 25 when TARGET=50
-      const MIN_SELL   = SELL_LIMIT;                        // auto-relax threshold
-      const ratio      = { buy: 0.5, sell: 0.5, label: 'fixed (25/25)' };
+      // Spec band: BUY 25–30 / SELL 20–25. We cap BUY at the upper
+      // end of its band (30) and target the lower end of SELL's (20)
+      // as the auto-relax floor — this matches the "SELL must be
+      // present, BUY gets the slack" intent.
+      const BUY_LIMIT  = Math.round(TARGET_COUNT * 0.6);    // 30 when TARGET=50
+      const SELL_LIMIT = TARGET_COUNT - BUY_LIMIT;          // 20 when TARGET=50
+      const MIN_SELL   = SELL_LIMIT;                        // auto-relax floor
+      const ratio      = { buy: 0.6, sell: 0.4, label: 'band (30/20)' };
 
       // ── Context-aware hard-exclusion gate ────────────────────
       //
@@ -720,26 +591,16 @@ export async function GET(req: NextRequest) {
       //      applyLiveSanity is comparing the frozen entry against
       //      a 15-min-delayed Yahoo price — a comparison that can
       //      fabricate "adverse moves" that aren't real. In that
-      //      state we IGNORE the flag. This is what the user hit:
-      //      Kite down → every row live_invalidated → pool collapsed.
-      //
       // Soft-excluded (demoted to later tiers, not removed):
       //   - decay_state === 'stale'     → allowed in Tier 4+
       //   - conviction_band === 'Avoid' → allowed in Tier 5+
       //
-      // Emergency relax: if the hard gate leaves fewer than 10 rows,
-      // even live_invalidated gets ignored — better than returning
-      // nothing. `expired` always stays out.
-      let kiteLive = false;
-      try {
-        const { getTicker } = await import('@/lib/marketData/kiteTicker');
-        const st = getTicker().getStatus();
-        kiteLive = st.state === 'open' && !st.loginRequired;
-      } catch { /* no ticker context — treat as not-live */ }
+      // With Kite removed, the hard gate uses a single rule:
+      // `decay_state === 'expired'`. live_invalidated can fire on a
+      // delayed Yahoo tape and would produce spurious exclusions if
+      // used here — it is retained on the row as an advisory flag
+      // (visible in [INVALIDATION] logs) but never hard-excludes.
 
-      // Diagnostics — count what the strict gate WOULD remove, even
-      // when emergency relax keeps them. The user asked for this
-      // explicit breakdown so the "culprit" is obvious in logs.
       let removed_live_invalidated = 0;
       let removed_stale            = 0;
       let removed_avoid            = 0;
@@ -753,21 +614,14 @@ export async function GET(req: NextRequest) {
         if (band === 'avoid')   removed_avoid++;
       }
 
-      // Strict gate evaluated first — tells us whether emergency mode
-      // is needed.
-      const strictHardExclude = (r: any): boolean => {
-        const decay = String(r.decay_state ?? '').toLowerCase();
-        if (decay === 'expired') return true;
-        if (kiteLive && r.live_invalidated) return true;
-        return false;
-      };
+      const strictHardExclude = (r: any): boolean =>
+        String(r.decay_state ?? '').toLowerCase() === 'expired';
       const strictSurvivors = filtered.filter((r: any) => !strictHardExclude(r)).length;
       const emergencyMode   = strictSurvivors < 10;
 
-      // Emergency gate: only 'expired' stays out. live_invalidated
-      // is dropped as a gate regardless of Kite state.
-      const emergencyHardExclude = (r: any): boolean =>
-        String(r.decay_state ?? '').toLowerCase() === 'expired';
+      // Emergency gate: identical to strict in Yahoo-only mode.
+      // Kept for symmetry with logging/warnings that reference it.
+      const emergencyHardExclude = strictHardExclude;
 
       const hardExclude = emergencyMode ? emergencyHardExclude : strictHardExclude;
 
@@ -967,6 +821,11 @@ export async function GET(req: NextRequest) {
       const sellAfterT2   = sellPoolRaw.filter(tier2Pass).length;
       const sellAfterT3   = sellPoolRaw.filter(tier3Pass).length;
       console.log('[SELL DEBUG]', {
+        // spec aliases (stable grep shape)
+        sell_generated:       sellPoolRaw.length,
+        sell_after_filter:    sellAfterHard,
+        sell_after_rank:      sellSelected.length,
+        // existing fields retained for backward-compat dashboards
         sell_in_db_pool:      sellPoolRaw.length,
         sell_after_hard_gate: sellAfterHard,
         sell_tier1_eligible:  sellAfterT1,
@@ -1008,6 +867,23 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      // Final top-up: if both sides were under target, the branches
+      // above do nothing and `shown` stays short. Walk the full tier
+      // ladder against every remaining filtered row (any direction)
+      // and fill to TARGET_COUNT. This is the spec's "NEVER < 50"
+      // guarantee — the only reason we can still finish short is if
+      // the DB literally doesn't have enough rows past the hard gate.
+      if (shown.length < TARGET_COUNT) {
+        const usedIds = new Set(shown.map((r: any) => r.id));
+        const remaining = filtered.filter((r: any) => r.id && !usedIds.has(r.id));
+        const extra = selectWithTiers(
+          remaining,
+          TARGET_COUNT - shown.length,
+          ALL_TIERS,
+        ).map((r: any) => ({ ...r, topped_up: true }));
+        shown = [...shown, ...extra];
+      }
+
       // Merged list also sorted by rank so the top of the dashboard
       // is the best overall, not "top BUYs then top SELLs in blocks".
       shown = shown.sort(sortByRank);
@@ -1036,8 +912,8 @@ export async function GET(req: NextRequest) {
       console.log(
         '\n[HARD FILTER]\n' +
         `  total_generated:           ${totalGenerated}\n` +
-        `  kite_live:                 ${kiteLive}\n` +
-        `  removed_live_invalidated:  ${removed_live_invalidated}${kiteLive ? '' : ' (IGNORED — Kite not live)'}\n` +
+        `  source:                    yahoo\n` +
+        `  removed_live_invalidated:  ${removed_live_invalidated} (advisory — never hard-excluded in Yahoo-only mode)\n` +
         `  removed_stale:             ${removed_stale} (demoted to Tier 4)\n` +
         `  removed_expired:           ${removed_expired} (always excluded)\n` +
         `  removed_avoid:             ${removed_avoid} (demoted to Tier 5)\n` +
@@ -1068,13 +944,24 @@ export async function GET(req: NextRequest) {
         `  sell:             ${sellCount}`,
       );
 
+      // Spec-named alias block. Same data as [HARD FILTER] but with
+      // the field names called out in the Phase-4 debug spec so that
+      // `grep '[DEBUG FILTER]'` lands on a stable shape.
+      console.log('[DEBUG FILTER]', {
+        removed_due_to_invalidated: 0,             // advisory only in Yahoo-only mode
+        removed_due_to_expired:     removed_expired,
+        removed_due_to_conviction:  0,             // Avoid is demoted, not removed
+        removed_due_to_decay:       0,             // stale is demoted, not removed
+        flagged_live_invalidated:   removed_live_invalidated,
+        demoted_stale:              removed_stale,
+        demoted_avoid:              removed_avoid,
+      });
+
       if (emergencyMode) {
         console.warn(
           `[WARNING] EMERGENCY RELAX ACTIVE — only ${afterStrictFilter} rows ` +
-          `survived the strict gate. Hard gate relaxed (live_invalidated ignored) ` +
-          `to keep the list populated. Root cause candidates: ` +
-          `Kite down (live_invalidated fabricated from delayed Yahoo prices), ` +
-          `or rescore lag (most rows aged into 'stale').`,
+          `survived the strict gate. Most likely cause: many rows aged into ` +
+          `'expired'. Check rescore cadence and signal-generation freshness.`,
         );
       } else if (filterTooStrict) {
         console.warn(
@@ -1137,7 +1024,8 @@ export async function GET(req: NextRequest) {
           filter_too_strict:   filterTooStrict,
           emergency_mode:      emergencyMode,
           sell_auto_relaxed:   sellAutoRelaxed,
-          kite_live:           kiteLive,
+          mode:                'signal-only',
+          realtime:            false,
           balance: {
             regime:       dominantRegime,
             ratio_label:  ratio.label,
@@ -1161,7 +1049,8 @@ export async function GET(req: NextRequest) {
             sell_tier3_eligible:  sellAfterT3,
             sell_selected:        sellSelected.length,
           },
-          source:              'database',
+          source:              'yahoo',
+          data_origin:         'database',
           freshness,
         },
         { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },

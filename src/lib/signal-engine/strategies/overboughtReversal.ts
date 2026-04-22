@@ -31,31 +31,32 @@ export function evaluateOverboughtReversal(features: SignalFeatures): StrategyMa
   }
 
   // ── Overbought momentum (core trigger) ────────────────────
-  // RSI > 70 is the classic overbought threshold. We accept 68+ to
-  // catch setups that are knocking on the door and likely to roll
-  // over; a strict >70 gate misses the early entry.
-  if (momentum.rsi14 < 68) {
-    return reject(`RSI not overbought enough: ${momentum.rsi14}`);
+  // SELL-balance tune: RSI gate 68 → 60 per operator spec. Classic
+  // overbought is 70, 60 is "elevated" — we admit stretched names
+  // earlier to keep the SELL pool populated. Combined with the
+  // resistance/extension gates below, this still rules out random
+  // mid-range stocks.
+  if (momentum.rsi14 < 60) {
+    return reject(`RSI not elevated enough: ${momentum.rsi14}`);
   }
 
   // ── Price near resistance ─────────────────────────────────
-  // distanceToResistancePct measures how far below the 20-day
-  // resistance the close sits. Positive = below resistance,
-  // negative = above. We want the price AT resistance or just
-  // above — within 2% either side.
+  // SELL-balance tune: proximity band 2% → 3%. Stocks that have
+  // punched 2.5% through resistance still roll over; the previous
+  // strict gate was filtering out mid-breakout exhaustion setups.
   const distToRes = structure.distanceToResistancePct;
-  if (Math.abs(distToRes) > 2) {
+  if (Math.abs(distToRes) > 3) {
     return reject(`Price not near 20-day resistance: ${distToRes.toFixed(2)}% away`);
   }
 
   // ── Price extended above EMA20 ────────────────────────────
-  // Mean-reversion edge scales with how stretched price is from
-  // the short MA. Require price to be at least 3% above EMA20 —
-  // anything closer is a minor wiggle, not a rubber band.
+  // SELL-balance tune: extension floor 3% → 2%. A 2% stretch above
+  // EMA20 in an overbought name already has mean-reversion pressure;
+  // waiting for 3%+ was too late for the early-entry edge.
   const ema20 = trend.ema20;
   if (ema20 <= 0) return reject('EMA20 not available');
   const extensionPct = ((trend.close - ema20) / ema20) * 100;
-  if (extensionPct < 3) {
+  if (extensionPct < 2) {
     return reject(`Price not extended above EMA20: ${extensionPct.toFixed(2)}%`);
   }
 

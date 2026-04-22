@@ -31,6 +31,8 @@
     "news-scheduler:dev": "NODE_ENV=development tsx src/lib/workers/newsIngestionScheduler.ts",
     "db:migrate-q365": "ts-node -P tsconfig.node.json -r tsconfig-paths/register src/lib/db/migrateQ365.ts",
     "db:seed-users": "tsx src/lib/db/seedUsers.ts",
+    "verify:sell-fix": "tsx scripts/verifySellFix.ts",
+    "verify:news": "tsx --tsconfig tsconfig.node.json scripts/verifyNewsPipeline.ts",
     "db:ensure": "tsx src/lib/db/ensureSchemasCli.ts",
     "ws-server": "tsx src/lib/ws/streamServerCli.ts",
     "db:setup": "ts-node -P tsconfig.node.json src/lib/db/setup.ts",

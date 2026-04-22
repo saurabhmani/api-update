@@ -11,7 +11,6 @@ import {
   Briefcase, Scale, Gavel,
 } from 'lucide-react';
 import ConvictionDistribution from '@/components/dashboard/ConvictionDistribution';
-import { useKiteStatus } from '@/hooks/useKiteStatus';
 import styles from './dashboard.module.scss';
 
 interface MarketIntel {
@@ -183,7 +182,6 @@ export default function DashboardPage() {
   const [opps,     setOpps]     = useState<OpportunityRow[]>([]);
   const [loading,  setLoading]  = useState(true);
   const [lastAt,   setLastAt]   = useState<string | null>(null);
-  const { status: kiteStatus, connectKite } = useKiteStatus();
 
   // ── Backtesting state ───────────────────────────────────
   const [btRuns,       setBtRuns]       = useState<BacktestRunRow[]>([]);
@@ -462,31 +460,6 @@ export default function DashboardPage() {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {(() => {
-              const live = kiteStatus?.connected && !kiteStatus.loginRequired;
-              if (live) return null;
-              const bg = kiteStatus?.loginRequired ? '#DC2626' : '#94A3B8';
-              const label = kiteStatus?.loginRequired
-                ? 'Reconnect Kite'
-                : kiteStatus
-                  ? 'Connect Kite'
-                  : 'Kite…';
-              return (
-                <button
-                  onClick={connectKite}
-                  title={kiteStatus?.lastError ? `Last error: ${kiteStatus.lastError}` : 'Open Zerodha OAuth login'}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    background: bg, color: '#fff',
-                    border: 'none', borderRadius: 6,
-                    padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                  }}
-                >
-                  <span style={{ width: 8, height: 8, borderRadius: 99, background: '#fff', opacity: 0.6 }} />
-                  {label}
-                </button>
-              );
-            })()}
             <button className="btn btn--secondary btn--sm" onClick={() => load(true)} disabled={loading}>
               <RefreshCw size={13} className={loading ? styles.spin : ''} /> Refresh
             </button>

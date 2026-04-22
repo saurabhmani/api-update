@@ -145,6 +145,29 @@ export function runAllStrategies(
       const bucket = _bucketReason(rej.reason);
       _sellDebugAgg.reasons[bucket] = (_sellDebugAgg.reasons[bucket] ?? 0) + 1;
     }
+
+    // Per-symbol per-strategy trace — OFF by default (a 2000-symbol
+    // scan × 3 bearish strategies = 6000 lines/scan). Turn on with
+    // DEBUG_SELL_STRATEGY=1 when a specific symbol-level rejection
+    // needs to be seen. Printing is gated behind the env check to
+    // keep production logs clean.
+    if (process.env.DEBUG_SELL_STRATEGY === '1') {
+      // Symbol is not attached to SignalFeatures; the caller (Phase 3
+      // scan loop) knows it and can correlate via timestamp proximity.
+      console.log('[SELL STRATEGY CHECK]', {
+        strategy:          name,
+        rsi:               features.momentum.rsi14,
+        trend:             features.trend.closeAbove50Ema
+          ? 'above_50ema'
+          : features.trend.closeAbove20Ema
+            ? 'above_20ema'
+            : 'below_emas',
+        volume:            features.volume.volumeVs20dAvg,
+        atr_pct:           features.volatility.atrPct,
+        condition_passed:  !!cand,
+        failure_reason:    rej?.reason ?? null,
+      });
+    }
   }
 
   return { candidates, rejections };
