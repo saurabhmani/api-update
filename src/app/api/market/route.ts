@@ -21,9 +21,67 @@ import { fetchQuote,
          fetchIndices }               from '@/services/marketQuote';
 import type { MarketSnapshot }        from '@/services/marketDataService';
 import type { Tick }                  from '@/types';
+import { DEFAULT_PHASE1_CONFIG }      from '@/lib/signal-engine/constants/signalEngine.constants';
+import { fetchYahooQuotesBatch }      from '@/lib/marketData/yahooBatch';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
+
+// ── Search helper: filter the static signal-engine universe ─────
+//
+// This is a deliberate "always-available" fallback. The preceding
+// search layers (instruments table, NSE Redis cache, rankings) all
+// depend on something having populated them — on a fresh install
+// those are all empty and the search returned zero rows for every
+// query. The engine's configured universe is ~245 liquid NSE
+// equities that we KNOW are tradeable, so it's a safe last resort
+// that keeps the page usable. Also includes the handful of Indian
+// indices users search by ticker (NIFTY / BANKNIFTY / etc.) which
+// never live in the equities path.
+const STATIC_INDEX_ROWS: Array<{ instrument_key: string; exchange: string; tradingsymbol: string; name: string }> = [
+  { instrument_key: 'NSE_INDEX|NIFTY 50',           exchange: 'NSE', tradingsymbol: 'NIFTY',      name: 'NIFTY 50' },
+  { instrument_key: 'NSE_INDEX|NIFTY BANK',         exchange: 'NSE', tradingsymbol: 'BANKNIFTY',  name: 'NIFTY BANK' },
+  { instrument_key: 'NSE_INDEX|NIFTY FIN SERVICE',  exchange: 'NSE', tradingsymbol: 'FINNIFTY',   name: 'NIFTY Financial Services' },
+  { instrument_key: 'NSE_INDEX|NIFTY MID SELECT',   exchange: 'NSE', tradingsymbol: 'MIDCPNIFTY', name: 'NIFTY Midcap Select' },
+  { instrument_key: 'NSE_INDEX|NIFTY IT',           exchange: 'NSE', tradingsymbol: 'NIFTYIT',    name: 'NIFTY IT' },
+  { instrument_key: 'BSE_INDEX|SENSEX',             exchange: 'BSE', tradingsymbol: 'SENSEX',     name: 'BSE SENSEX' },
+  { instrument_key: 'NSE_INDEX|INDIA VIX',          exchange: 'NSE', tradingsymbol: 'INDIAVIX',   name: 'India VIX' },
+];
+
+function searchStaticUniverse(q: string, limit: number) {
+  const qUp  = q.toUpperCase();
+  const qLow = q.toLowerCase();
+
+  const indexHits = STATIC_INDEX_ROWS
+    .filter(r => r.tradingsymbol.includes(qUp) || r.name.toLowerCase().includes(qLow))
+    .map(r => ({
+      ...r,
+      instrument_type: 'INDEX',
+      expiry: null, strike: null, option_type: null,
+    }));
+
+  const eqHits = DEFAULT_PHASE1_CONFIG.universe
+    .filter(sym => sym.toUpperCase().includes(qUp))
+    .map(sym => ({
+      instrument_key:  `NSE_EQ|${sym}`,
+      exchange:        'NSE',
+      tradingsymbol:   sym,
+      name:            sym,
+      instrument_type: 'EQ',
+      expiry: null, strike: null, option_type: null,
+    }));
+
+  const merged = [...indexHits, ...eqHits];
+
+  // Prefix matches first, then alphabetical.
+  merged.sort((a, b) => {
+    const aExact = a.tradingsymbol.toUpperCase().startsWith(qUp) ? 0 : 1;
+    const bExact = b.tradingsymbol.toUpperCase().startsWith(qUp) ? 0 : 1;
+    return aExact - bExact || a.tradingsymbol.localeCompare(b.tradingsymbol);
+  });
+
+  return merged.slice(0, limit);
+}
 
 // ── Search helper: filter NIFTY 500 Redis cache by query ─────────
 function searchUniverseCache(stocks: any[], q: string, exchange: string | null, limit: number) {
@@ -112,6 +170,64 @@ export async function GET(req: NextRequest) {
     return res;
   }
 
+  // ── Yahoo-direct bulk LTP (live prices, no stale cache) ───────
+  // Bypasses the Kite/Redis path used by action=ltp and goes
+  // straight to Yahoo's v7/quote batch endpoint (with parallel
+  // v8/chart fallback). One HTTP call covers up to ~100 symbols,
+  // so polling 200+ symbols is cheap. Response is keyed by the
+  // same instrument_key format the page already consumes, so the
+  // client just swaps the endpoint.
+  if (action === 'yahoo-ltp') {
+    const keysParam = searchParams.get('keys')    || '';
+    const symParam  = searchParams.get('symbols') || '';
+    const keys      = keysParam.split(',').map(k => k.trim()).filter(Boolean);
+    const extraSyms = symParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+
+    // Accept either NSE_EQ|SYMBOL keys or bare symbol strings; index
+    // rows carry 'NSE_INDEX|...' keys that Yahoo's .NS path can't
+    // resolve, so we drop them upfront. The top-of-page indices
+    // strip gets its prices from action=indices already.
+    const symFromKeys: string[] = [];
+    for (const k of keys) {
+      if (k.startsWith('NSE_INDEX|') || k.startsWith('BSE_INDEX|')) continue;
+      const sym = (k.split('|')[1] ?? k).toUpperCase();
+      if (sym) symFromKeys.push(sym);
+    }
+    const allSyms = [...new Set([...symFromKeys, ...extraSyms])];
+    if (allSyms.length === 0) return NextResponse.json({ data: {}, count: 0 });
+    if (allSyms.length > 500)  return NextResponse.json({ error: 'Max 500 symbols' }, { status: 400 });
+
+    const quotes = await fetchYahooQuotesBatch(allSyms);
+    const data: Record<string, Tick> = {};
+    const nowIso = new Date().toISOString();
+    for (const [sym, q] of quotes.entries()) {
+      const key = `NSE_EQ|${sym}`;
+      data[key] = {
+        instrument_key: key,
+        ltp:        q.price   ?? 0,
+        net_change: q.change  ?? 0,
+        pct_change: q.pChange ?? 0,
+        volume:     0,
+        oi:         0,
+        ts:         q.marketTime ? new Date(q.marketTime).toISOString() : nowIso,
+      };
+    }
+    const res = NextResponse.json({ data, count: Object.keys(data).length, source: 'yahoo' });
+    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    return res;
+  }
+
+  // ── Full list (for "all stocks" view on /market) ──────────────
+  // Returns the entire static universe + known indices in one
+  // response. The page filters client-side as the user types, so
+  // there's no per-keystroke API round-trip and no dependency on
+  // any DB table being populated.
+  if (action === 'list') {
+    const limit = parseInt(searchParams.get('limit') || '1000');
+    const results = searchStaticUniverse('', limit);
+    return NextResponse.json({ results, count: results.length, source: 'universe' });
+  }
+
   // ── Search / Suggest ──────────────────────────────────────────
   if (action === 'search' || action === 'suggest') {
     const q        = searchParams.get('q')        || '';
@@ -182,7 +298,7 @@ export async function GET(req: NextRequest) {
       }
     } catch { /* rankings table may be empty */ }
 
-    // ── Layer 4: Direct live quote fetch (exact symbol only, last resort) ──
+    // ── Layer 4: Direct live quote fetch (exact symbol only) ──
     // Only attempt if the query looks like a trading symbol (short, no spaces)
     if (q.length <= 20 && !q.includes(' ')) {
       try {
@@ -203,6 +319,15 @@ export async function GET(req: NextRequest) {
           return NextResponse.json({ results: result, count: 1, source: 'live' });
         }
       } catch { /* resolver unavailable */ }
+    }
+
+    // ── Layer 5: Static universe fallback (always available) ──
+    // When nothing else is populated, match against the signal
+    // engine's configured universe + known indices. No live prices;
+    // the UI fetches LTP separately via /api/market?action=ltp.
+    const staticHits = searchStaticUniverse(q, limit);
+    if (staticHits.length > 0) {
+      return NextResponse.json({ results: staticHits, count: staticHits.length, source: 'universe' });
     }
 
     return NextResponse.json({ results: [], count: 0 });

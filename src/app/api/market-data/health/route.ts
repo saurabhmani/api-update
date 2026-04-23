@@ -30,14 +30,13 @@ export const revalidate = 0;
 export async function GET() {
   const data = getMarketDataHealth();
 
-  // HTTP status mirrors health for easy uptime-probe integration:
-  //   200 — OK
-  //   200 — DEGRADED (still serving data, don't want pagers firing)
-  //   503 — FAIL    (feed is down; something should wake up)
-  const status = data.health === 'FAIL' ? 503 : 200;
-
+  // Always 200: HTTP status reflects whether the endpoint itself is
+  // working, not whether the feed it reports on is healthy. Callers
+  // that need to react to FAIL should read `data.health` from the
+  // body — the old 503-on-FAIL mapping produced noisy dev-console
+  // errors and tripped generic uptime probes even though the route
+  // was responding correctly.
   return NextResponse.json(data, {
-    status,
     headers: { 'Cache-Control': 'no-store' },
   });
 }

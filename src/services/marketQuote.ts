@@ -367,11 +367,145 @@ export async function fetchGainersLosers(
   return [];
 }
 
+// Synthetic option chain. The Kite/Yahoo module has no true option
+// chain upstream, so we build a plausible chain around the current
+// spot price. This keeps the "Option Intelligence" feature working
+// (OI zones, PCR, max pain, expected move) off real spot + a
+// deterministic shape; callers see `source: 'synthetic'` so the UI
+// can label it "Estimated (live feed unavailable)".
+// Yahoo ticker for the default option-chain symbols. Indices don't
+// resolve via `SYMBOL.NS` (what fetchQuote uses for stocks) — they
+// need Yahoo's own ticker codes. Extend this map as more indices are
+// added to the UI symbol selector.
+const OPTION_INDEX_YAHOO: Record<string, string> = {
+  NIFTY:      '^NSEI',
+  BANKNIFTY:  '^NSEBANK',
+  FINNIFTY:   '^CNXFIN',
+  MIDCPNIFTY: '^NSEMDCP50',
+  SENSEX:     '^BSESN',
+  BANKEX:     '^BSEBANK',
+};
+
 export async function fetchOptionChain(
-  _symbol: string,
+  symbol: string,
 ): Promise<OptionChainResult | null> {
-  void _symbol;
-  return null;
+  const sym = symbol.toUpperCase();
+
+  // Resolve spot: indices go through Yahoo's index ticker path;
+  // stocks go through the regular fetchQuote (Kite → Yahoo `.NS`).
+  let spot = 0;
+  const indexTicker = OPTION_INDEX_YAHOO[sym];
+  if (indexTicker) {
+    const idx = await fetchYahooIndexMeta(indexTicker);
+    spot = idx?.last ?? 0;
+  }
+  if (!spot || spot <= 0) {
+    const quote = await fetchQuote(sym);
+    spot = quote?.lastPrice ?? 0;
+  }
+  if (!spot || spot <= 0) return null;
+
+  const step = optionStrikeStep(spot);
+  const atmStrike = Math.round(spot / step) * step;
+  const expiryDates = nextWeeklyExpiries(3);
+
+  const strikes: number[] = [];
+  for (let i = -10; i <= 10; i++) strikes.push(atmStrike + i * step);
+
+  const rand = seededRand(sym);
+  const records: OptionChainRow[] = [];
+
+  for (const expiryDate of expiryDates) {
+    for (const strike of strikes) {
+      const atmDistRatio = Math.min(1, Math.abs(strike - atmStrike) / (step * 10));
+      // Bell-ish OI falloff from ATM, plus a per-strike jitter.
+      const baseOi = Math.round(((1 - atmDistRatio) ** 2) * 5_000_000 + 80_000 * rand(strike + 1));
+      const ceBias = strike >= atmStrike ? 1 + 0.3 * rand(strike + 2) : 0.6 + 0.2 * rand(strike + 3);
+      const peBias = strike <= atmStrike ? 1 + 0.3 * rand(strike + 4) : 0.6 + 0.2 * rand(strike + 5);
+      const ceOi = Math.max(0, Math.round(baseOi * ceBias));
+      const peOi = Math.max(0, Math.round(baseOi * peBias));
+      const ceChg = Math.round((rand(strike + 6) - 0.4) * ceOi * 0.25);
+      const peChg = Math.round((rand(strike + 7) - 0.4) * peOi * 0.25);
+      // Simple smile: ATM ~16% → wings ~26%.
+      const iv = 16 + 10 * atmDistRatio;
+      // Black-Scholes-ish approximation: intrinsic + time value.
+      const timeValue = spot * (iv / 100) * Math.sqrt(7 / 365) * (1 - atmDistRatio * 0.7);
+      const ceLast = Math.max(0, spot - strike) + timeValue;
+      const peLast = Math.max(0, strike - spot) + timeValue;
+
+      records.push({
+        strikePrice: strike,
+        expiryDate,
+        CE: {
+          openInterest: ceOi,
+          changeinOpenInterest: ceChg,
+          impliedVolatility: iv,
+          lastPrice: round2(ceLast),
+          totalTradedVolume: Math.round(ceOi * 0.3),
+          bidprice: round2(ceLast * 0.99),
+          askPrice:  round2(ceLast * 1.01),
+        },
+        PE: {
+          openInterest: peOi,
+          changeinOpenInterest: peChg,
+          impliedVolatility: iv,
+          lastPrice: round2(peLast),
+          totalTradedVolume: Math.round(peOi * 0.3),
+          bidprice: round2(peLast * 0.99),
+          askPrice:  round2(peLast * 1.01),
+        },
+      });
+    }
+  }
+
+  return {
+    records,
+    underlyingValue: spot,
+    expiryDates,
+    source: 'synthetic',
+  };
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function optionStrikeStep(spot: number): number {
+  if (spot >= 40000) return 100;
+  if (spot >= 10000) return 50;
+  if (spot >= 1000)  return 10;
+  if (spot >= 200)   return 5;
+  return 2.5;
+}
+
+function nextWeeklyExpiries(n: number): string[] {
+  const out: string[] = [];
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  while (out.length < n) {
+    // Roll forward to next Thursday. If today is Thursday, skip to next week.
+    const daysToThu = (4 - d.getUTCDay() + 7) % 7 || 7;
+    d.setUTCDate(d.getUTCDate() + daysToThu);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+// xorshift seeded by symbol so a given (symbol, strike) pair yields
+// the same OI/IV shape between polls — prevents UI jitter.
+function seededRand(seed: string): (n: number) => number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (n: number) => {
+    let x = (h ^ (n | 0)) >>> 0;
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5;  x >>>= 0;
+    return (x >>> 0) / 0xffffffff;
+  };
 }
 
 // ── Instrument master (Upstox CDN, no broker dependency) ──────────

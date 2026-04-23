@@ -230,8 +230,6 @@ export function useLivePrices(): UseLivePricesResult {
     const poll = async () => {
       try {
         const res = await fetch('/api/market-data/health', { cache: 'no-store' });
-        // 503 is returned on FAIL but the body is still parseable and
-        // carries the same shape; don't early-return on non-2xx.
         const j = await res.json().catch(() => null);
         if (cancelled || !j) return;
         if (j.market && typeof j.market.isOpen === 'boolean') {

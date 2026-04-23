@@ -45,8 +45,12 @@ export const marketApi = {
     get(`/market?action=search&q=${encodeURIComponent(q)}${exchange ? `&exchange=${exchange}` : ''}`),
   suggest: (q: string) =>
     get(`/market?action=suggest&q=${encodeURIComponent(q)}`),
+  list:    (limit = 1000) =>
+    get(`/market?action=list&limit=${limit}`),
   ltp:     (keys: string[]) =>
     get(`/market?action=ltp&keys=${encodeURIComponent(keys.join(','))}`),
+  yahooLtp:(keys: string[]) =>
+    get(`/market?action=yahoo-ltp&keys=${encodeURIComponent(keys.join(','))}`),
   quotes:  (keys: string[]) =>
     get(`/market?action=quotes&keys=${encodeURIComponent(keys.join(','))}`),
 };

@@ -116,12 +116,25 @@ async function saveExecutionReadiness(signalId: number, r: ExecutionReadiness): 
   );
 }
 
+// MySQL DATETIME columns (strict mode) reject ISO-8601 strings
+// like '2026-04-22T21:34:14.486Z'. mysql2 serializes a JS Date
+// into the correct 'YYYY-MM-DD HH:MM:SS' form, so we convert here
+// at the binding boundary. Accepts either a Date or an ISO string.
+function toMysqlDate(v: string | Date | undefined | null): Date {
+  if (v instanceof Date) return v;
+  if (typeof v === 'string' && v) {
+    const d = new Date(v);
+    if (Number.isFinite(d.getTime())) return d;
+  }
+  return new Date();
+}
+
 async function saveLifecycle(signalId: number, lc: SignalLifecycle): Promise<void> {
   await db.query(
     `INSERT INTO q365_signal_lifecycle
       (signal_id, state, reason, changed_at)
      VALUES (?, ?, ?, ?)`,
-    [signalId, lc.state, lc.reason, lc.changedAt],
+    [signalId, lc.state, lc.reason, toMysqlDate(lc.changedAt)],
   );
 }
 
@@ -164,7 +177,7 @@ export async function transitionSignalLifecycle(
     `INSERT INTO q365_signal_lifecycle
       (signal_id, state, reason, changed_at)
      VALUES (?, ?, ?, ?)`,
-    [signalId, state, reason, changedAt],
+    [signalId, state, reason, toMysqlDate(changedAt)],
   );
 }
 

@@ -10,6 +10,18 @@ import { db } from '@/lib/db';
 import { ensureNewsSchemas } from './ensureNewsSchemas';
 import type { NewsEvent } from '../types/newsEngine.types';
 
+// MySQL DATETIME columns reject ISO-8601 strings with the `T` separator and
+// `Z` suffix (e.g. `2026-04-23T05:37:06.000Z`). Convert to `YYYY-MM-DD HH:MM:SS`
+// in UTC so MySQL accepts the value regardless of session time zone.
+function toMysqlDateTime(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
+  );
+}
+
 /**
  * Save a batch of news events. Skips duplicates via dedup_hash.
  * Also inserts entity links for each new event.
@@ -77,8 +89,8 @@ export async function saveNewsEvents(events: NewsEvent[]): Promise<NewsEvent[]> 
           event.category,
           event.sentiment,
           event.sentimentScore,
-          event.publishedAt,
-          event.fetchedAt,
+          toMysqlDateTime(event.publishedAt),
+          toMysqlDateTime(event.fetchedAt),
           JSON.stringify(event.symbols),
           JSON.stringify(event.sectors),
           JSON.stringify(event.macroFactors),

@@ -153,6 +153,7 @@ export default function DexterPage() {
         <div className={s.statBox}><div className={s.statLabel}>Total Signals</div><div className={s.statValue}>{data.length}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#059669' }}>High Conviction</div><div className={s.statValue} style={{ color:'#059669' }}>{counts.high}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#2563EB' }}>Moderate</div><div className={s.statValue} style={{ color:'#2563EB' }}>{counts.moderate}</div></div>
+        <div className={s.statBox}><div className={s.statLabel} style={{ color:'#D97706' }}>Low</div><div className={s.statValue} style={{ color:'#D97706' }}>{counts.low}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#DC2626' }}>Avoid</div><div className={s.statValue} style={{ color:'#DC2626' }}>{counts.avoid}</div></div>
       </div>
 

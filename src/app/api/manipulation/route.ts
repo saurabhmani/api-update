@@ -68,6 +68,31 @@ interface LegacyAlert {
   detected_at: string;
 }
 
+// The engine types severity as 'low' | 'medium' | 'high' | 'severe'
+// (src/lib/manipulation-engine/types/index.ts), and that string is
+// what lands in q365_manipulation_events.severity. The UI, however,
+// inherits the legacy 'critical' | 'warning' | 'info' vocabulary
+// and its summary cards, severity chip, and filter dropdown only
+// react to those three values. Normalize on the way out so the UI
+// keeps working against the engine-written data.
+function toLegacySeverity(s: string | null | undefined): 'critical' | 'warning' | 'info' {
+  const v = String(s ?? '').toLowerCase();
+  if (v === 'severe' || v === 'high' || v === 'critical') return 'critical';
+  if (v === 'medium' || v === 'warning') return 'warning';
+  return 'info';
+}
+
+// Inverse map for the severity filter: the UI posts 'critical' /
+// 'warning' / 'info' but the DB stores the engine's vocabulary, so
+// expand to the matching engine values.
+function engineSeveritiesFor(legacy: string): string[] {
+  const v = legacy.toLowerCase();
+  if (v === 'critical') return ['severe', 'high', 'critical'];
+  if (v === 'warning')  return ['medium', 'warning'];
+  if (v === 'info')     return ['low', 'info'];
+  return [legacy]; // pass-through for anything else
+}
+
 function eventRowToLegacyAlert(r: any): LegacyAlert {
   const evidence =
     typeof r.evidence_json === 'string'
@@ -78,7 +103,7 @@ function eventRowToLegacyAlert(r: any): LegacyAlert {
       ? r.event_date
       : new Date(r.event_date).toISOString().split('T')[0];
   const type = String(r.event_type ?? 'unknown');
-  const severity = String(r.severity ?? 'info');
+  const severity = toLegacySeverity(r.severity);
   return {
     alertId: String(r.id),
     alert_id: String(r.id),
@@ -324,12 +349,15 @@ async function buildSummary(): Promise<{
   );
 
   const byType: Record<string, number> = {};
-  const bySeverity: Record<string, number> = {};
+  // Pre-seed the three buckets the UI cards read so they render as 0
+  // rather than undefined even before the first scan.
+  const bySeverity: Record<string, number> = { critical: 0, warning: 0, info: 0 };
   let total = 0;
   for (const r of countRows) {
     const cnt = Number(r.cnt);
     byType[r.event_type] = (byType[r.event_type] ?? 0) + cnt;
-    bySeverity[r.severity] = (bySeverity[r.severity] ?? 0) + cnt;
+    const legacySev = toLegacySeverity(r.severity);
+    bySeverity[legacySev] = (bySeverity[legacySev] ?? 0) + cnt;
     total += cnt;
   }
 
@@ -378,8 +406,13 @@ async function buildAlertList(filters: {
     args.push(filters.type);
   }
   if (filters.severity) {
-    where.push('severity = ?');
-    args.push(filters.severity);
+    // Expand the UI's legacy severity ('critical'/'warning'/'info')
+    // into the engine's vocabulary stored in the DB. A single UI
+    // value may match multiple engine rows (e.g. 'critical' covers
+    // both 'severe' and 'high').
+    const expanded = engineSeveritiesFor(filters.severity);
+    where.push(`severity IN (${expanded.map(() => '?').join(',')})`);
+    args.push(...expanded);
   }
   if (filters.status) {
     where.push('status = ?');

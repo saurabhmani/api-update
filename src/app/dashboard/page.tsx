@@ -204,6 +204,8 @@ export default function DashboardPage() {
   const [riskSummary,   setRiskSummary]  = useState<RiskSummaryData | null>(null);
   const [breaches,      setBreaches]     = useState<BreachAlert[]>([]);
   const [decisions,     setDecisions]    = useState<DecisionTraceRow[]>([]);
+  const [evalRunning,   setEvalRunning]  = useState(false);
+  const [evalError,     setEvalError]    = useState<string | null>(null);
 
   // ── Manipulation detection state ────────────────────────
   const [mdAlerts,     setMdAlerts]     = useState<any[]>([]);
@@ -389,6 +391,49 @@ export default function DashboardPage() {
       if (spinner) setLoading(false);
     }
   }, []);
+
+  const evaluateTopOpportunities = useCallback(async () => {
+    if (!opps.length || evalRunning) return;
+    setEvalRunning(true);
+    setEvalError(null);
+    try {
+      const targets = opps.filter(o => o.entry_price && o.entry_price > 0);
+      if (!targets.length) {
+        setEvalError('No opportunities have a usable entry price to evaluate.');
+        return;
+      }
+      const results = await Promise.allSettled(
+        targets.map(o =>
+          fetch('/api/opportunities/evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ticker: o.tradingsymbol,
+              quantity: 1,
+              price: o.entry_price,
+            }),
+          }).then(async r => {
+            if (!r.ok) {
+              const body = await r.json().catch(() => ({}));
+              throw new Error(body?.error ?? `HTTP ${r.status}`);
+            }
+            return r.json();
+          }),
+        ),
+      );
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length === results.length) {
+        const firstErr = (failed[0] as PromiseRejectedResult).reason;
+        setEvalError(firstErr instanceof Error ? firstErr.message : 'Evaluation failed');
+      }
+      const dRes = await fetch('/api/decisions/traces?limit=10').then(r => r.json());
+      setDecisions(dRes.data ?? []);
+    } catch (err) {
+      setEvalError(err instanceof Error ? err.message : 'Evaluation failed');
+    } finally {
+      setEvalRunning(false);
+    }
+  }, [opps, evalRunning]);
 
   useEffect(() => {
     load();
@@ -769,6 +814,23 @@ export default function DashboardPage() {
               <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
                 <Gavel size={20} style={{ marginBottom: 6, opacity: 0.5 }} />
                 <div>No institutional decisions recorded yet. Decisions are created when trades are evaluated through the gate chain.</div>
+                <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                  <button
+                    className="btn btn--primary btn--sm"
+                    onClick={evaluateTopOpportunities}
+                    disabled={evalRunning || !opps.length}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    {evalRunning ? <RefreshCw size={13} className={styles.spin} /> : <Play size={13} />}
+                    {evalRunning ? 'Evaluating…' : `Evaluate ${opps.length || ''} top opportunit${opps.length === 1 ? 'y' : 'ies'}`}
+                  </button>
+                  {!opps.length && (
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>Generate signals first from Admin → Recompute Signals.</div>
+                  )}
+                  {evalError && (
+                    <div style={{ fontSize: 11, color: '#DC2626' }}>{evalError}</div>
+                  )}
+                </div>
               </div>
             </Card>
           )}

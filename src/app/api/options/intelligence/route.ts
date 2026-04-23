@@ -13,7 +13,15 @@ export async function GET(req: NextRequest) {
   const expiryIndex = parseInt(req.nextUrl.searchParams.get('expiry') || '0');
 
   const intel = await analyzeOptionChain(symbol, expiryIndex);
-  if (!intel)  return NextResponse.json({ error: 'Option chain data unavailable for this symbol' }, { status: 503 });
+  if (!intel) {
+    // Always 200: the endpoint itself is working. Callers detect
+    // unavailability via `intelligence: null` (the UI already handles
+    // this with an empty state).
+    return NextResponse.json({
+      intelligence: null,
+      error: 'Option chain data unavailable for this symbol',
+    });
+  }
 
   return NextResponse.json({ intelligence: intel });
 }

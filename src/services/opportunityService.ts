@@ -145,8 +145,8 @@ export async function getOpportunities(opts?: {
     `SELECT s.*, i.name, i.sector AS inst_sector,
             r.ltp, r.score AS rank_score
      FROM q365_signals s
-     LEFT JOIN instruments i ON s.tradingsymbol = i.tradingsymbol AND i.is_active = 1
-     LEFT JOIN rankings r ON s.tradingsymbol = r.tradingsymbol
+     LEFT JOIN instruments i ON s.symbol = i.tradingsymbol AND i.is_active = 1
+     LEFT JOIN rankings r ON s.symbol = r.tradingsymbol
      ${where}
      ORDER BY s.opportunity_score DESC, s.confidence_score DESC
      LIMIT ? OFFSET ?`,
@@ -177,8 +177,8 @@ export async function getRankedOpportunities(opts?: {
   const { rows } = await db.query(
     `SELECT s.*, i.name, i.sector AS inst_sector, r.ltp
      FROM q365_signals s
-     LEFT JOIN instruments i ON s.tradingsymbol = i.tradingsymbol AND i.is_active = 1
-     LEFT JOIN rankings r ON s.tradingsymbol = r.tradingsymbol
+     LEFT JOIN instruments i ON s.symbol = i.tradingsymbol AND i.is_active = 1
+     LEFT JOIN rankings r ON s.symbol = r.tradingsymbol
      WHERE s.generated_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
        AND s.conviction_band IN ('high_conviction', 'actionable')
        AND s.confidence_score >= 60
@@ -215,8 +215,8 @@ export async function evaluateOpportunity(
   const { rows } = await db.query(
     `SELECT s.*, i.name, i.sector
      FROM q365_signals s
-     LEFT JOIN instruments i ON s.tradingsymbol = i.tradingsymbol AND i.is_active = 1
-     WHERE s.tradingsymbol = ?
+     LEFT JOIN instruments i ON s.symbol = i.tradingsymbol AND i.is_active = 1
+     WHERE s.symbol = ?
      ORDER BY s.generated_at DESC LIMIT 1`,
     [ticker],
   );
