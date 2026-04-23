@@ -46,7 +46,18 @@ const CATEGORY_RULES: Array<{ pattern: RegExp; category: NewsCategory }> = [
   { pattern: /\b(dividend|split|buyback|bonus|rights\s+issue|record\s+date)\b/i, category: 'corporate_action' },
 ];
 
+// Title-leading markers for stories whose PRIMARY subject is a
+// global/macro event. An article titled "US stocks today: …" is a
+// macro piece even if the body mentions "earnings" or a specific
+// ticker — classifying it as `earnings` (and attaching NSE symbols)
+// was the source of false-positive symbol tags on global news.
+const TITLE_GLOBAL_CUE_RE =
+  /^\s*(US\s+stocks?|Wall\s+Street|Dow|Nasdaq|S&P\s*500|Asian\s+markets?|European\s+markets?|Global\s+markets?|World\s+markets?)\b/i;
+
 function classifyCategory(title: string, body: string | null): NewsCategory {
+  // 1. Strong title-leading check — wins before any substring rule.
+  if (TITLE_GLOBAL_CUE_RE.test(title)) return 'global_cue';
+
   const text = `${title} ${body ?? ''}`;
   for (const rule of CATEGORY_RULES) {
     if (rule.pattern.test(text)) return rule.category;
@@ -488,6 +499,13 @@ export function normalizeRawItem(raw: RawNewsItem): NewsEvent | null {
   const { label: sentiment, score: sentimentScore } = scoreSentiment(raw.title, raw.body, category);
   const entities = resolveEntities(raw.title, raw.body, raw.rawMeta);
 
+  // Global / macro stories (US market moves, Fed policy, geopolitics)
+  // should NOT be tagged with individual NSE tickers. The resolver
+  // will still surface sectors / macroFactors / commodities — those
+  // are genuinely useful on a macro article — but per-symbol impact
+  // attachment is wrong for "US stocks opened lower…"-style rows.
+  const suppressSymbols = category === 'global_cue' || category === 'macro_policy';
+
   const symbols: string[] = [];
   const sectors: string[] = [];
   const macroFactors: string[] = [];
@@ -495,7 +513,7 @@ export function normalizeRawItem(raw: RawNewsItem): NewsEvent | null {
 
   for (const e of entities) {
     switch (e.entityType) {
-      case 'symbol':       symbols.push(e.entityValue); break;
+      case 'symbol':       if (!suppressSymbols) symbols.push(e.entityValue); break;
       case 'sector':       sectors.push(e.entityValue); break;
       case 'macro_factor': macroFactors.push(e.entityValue); break;
       case 'commodity':    commodities.push(e.entityValue); break;

@@ -183,8 +183,64 @@ export async function GET(req: NextRequest) {
   filter.limit = Math.min(parseInt(sp.get('limit') ?? '50', 10) || 50, 200);
   filter.offset = parseInt(sp.get('offset') ?? '0', 10) || 0;
 
-  const events = await queryNewsEvents(filter);
-  return NextResponse.json({ count: events.length, events });
+  const dbEvents = await queryNewsEvents(filter);
+
+  // ── STRICT JS post-filter (authoritative) ──────────────────
+  // rowToNewsEvent now emits a genuine UTC ISO for publishedAt
+  // (see readNewsEvents.ts:datetimeToUtcIso), so this compare is
+  // TZ-safe. A small tolerance buffer (60s) absorbs clock skew
+  // between ingest host and serving host so borderline fresh
+  // rows never disappear one second after they land.
+  const TOLERANCE_MS = 60_000;
+  let fromMs: number | null = null;
+  if (from) {
+    const normalized = from.includes('T') ? from : `${from.replace(' ', 'T')}Z`;
+    const ms = new Date(normalized).getTime();
+    if (Number.isFinite(ms)) fromMs = ms;
+  }
+  let events = dbEvents;
+  let droppedSample: Array<{ publishedAt: string; diffMs: number }> = [];
+  if (fromMs != null) {
+    const thresholdMs = fromMs - TOLERANCE_MS;
+    events = [];
+    for (const e of dbEvents) {
+      const pMs = new Date(e.publishedAt).getTime();
+      if (!Number.isFinite(pMs)) continue;
+      if (pMs >= thresholdMs) {
+        events.push(e);
+      } else if (droppedSample.length < 3) {
+        droppedSample.push({
+          publishedAt: e.publishedAt,
+          diffMs: pMs - fromMs,
+        });
+      }
+    }
+  }
+
+  // Debug trail — log per-call so operators can grep the server log
+  // to reconcile UI counts against DB state, and inspect *why* rows
+  // were dropped when the filter removes everything.
+  console.log(
+    `[news-engine] GET events  from=${from ?? '(default 72h)'}  ` +
+    `serverNow=${new Date().toISOString()}  ` +
+    `dbRows=${dbEvents.length}  afterStrictFilter=${events.length}  ` +
+    (dbEvents.length > 0 && events.length === 0
+      ? `FIRST_DROPPED=${JSON.stringify(droppedSample)}  `
+      : ''),
+  );
+
+  return NextResponse.json({
+    count: events.length,
+    events,
+    debug: {
+      from,
+      serverNow: new Date().toISOString(),
+      dbRows: dbEvents.length,
+      afterStrictFilter: events.length,
+      toleranceMs: TOLERANCE_MS,
+      droppedSample,
+    },
+  });
 
   } catch (err) {
     // Catch-all for any unhandled DB/import error — return empty data

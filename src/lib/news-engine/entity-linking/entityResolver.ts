@@ -280,18 +280,28 @@ export function resolveEntities(
     }
   }
 
-  // ── 2. Symbol resolution: alias match ──────────────────────
+  // ── 2. Symbol resolution: alias match (WORD-BOUNDARY) ──────
   // Iterate longest aliases first and consume (blank out) matched
   // substrings in a working copy. Prevents "Adani Green Energy" from
   // double-matching as both ADANIGREEN and ADANIENT (via the shorter
-  // "adani" alias) — the longer, more-specific match wins and the
-  // shorter prefix is no longer reachable in that region of text.
+  // "adani" alias) — the longer, more-specific match wins.
+  //
+  // IMPORTANT: matches MUST be whole words. The previous
+  // `.includes(alias)` substring test attached NSE tickers to wholly
+  // unrelated US/global news — e.g. `'lic'` → LICI triggered on any
+  // article mentioning "conflict" / "public" / "policy" because they
+  // contain the letters "lic". We now require a word boundary on both
+  // sides so the matcher only fires on genuine company mentions.
+  function escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
   const aliasesByLength = Object.entries(COMPANY_ALIASES).sort(
     (a, b) => b[0].length - a[0].length,
   );
   let textWorking = textLower;
   for (const [alias, symbol] of aliasesByLength) {
-    if (textWorking.includes(alias)) {
+    const re = new RegExp(`\\b${escapeRe(alias)}\\b`, 'g');
+    if (re.test(textWorking)) {
       add({
         entityType: 'symbol',
         entityValue: symbol,
@@ -300,7 +310,10 @@ export function resolveEntities(
       });
       // Blank out every occurrence so a shorter prefix in the same
       // span can't match again.
-      textWorking = textWorking.split(alias).join(' '.repeat(alias.length));
+      textWorking = textWorking.replace(
+        new RegExp(`\\b${escapeRe(alias)}\\b`, 'g'),
+        ' '.repeat(alias.length),
+      );
     }
   }
 

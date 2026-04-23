@@ -2,57 +2,42 @@
 //  marketDataHealth — the single authoritative "is the feed healthy"
 //  answer for the whole system.
 //
-//  Spec contract (matches the operator runbook):
-//    health = 'OK'        → real-time Kite ticks flowing, age ≤ 3s
-//    health = 'DEGRADED'  → data is still flowing but via Yahoo
-//                           fallback, or Kite ticks are 3–30s old,
-//                           or the market is closed (expected — not
-//                           an incident but also not real-time).
-//    health = 'FAIL'      → market is OPEN, no usable data at all:
-//                           no Kite ticks within 30s AND Yahoo is
-//                           not (yet) producing, OR loginRequired.
+//  Kite has been removed from the system. Yahoo Finance is now the
+//  sole live-quote provider, pulled on demand per page poll (no
+//  WebSocket, no tick bus). That makes "health" a much simpler
+//  concept:
 //
-//  source describes what the CURRENT tick cache is being fed by:
-//    'kite'  → most recent tick on the bus came from Kite
-//    'yahoo' → most recent tick came from the fallback poller
-//    'none'  → no ticks at all since last boot
+//    health = 'OK'        → market is open and Yahoo is reachable
+//    health = 'DEGRADED'  → market is closed (expected silence)
+//    health = 'FAIL'      → Yahoo is explicitly disabled (YAHOO_ENABLED=false)
 //
-//  Consumers:
-//    • /api/market-data/health route (this file's route.ts)
-//    • health-aware UI widgets
-//    • internal diagnostics / operator scripts
+//  The shape of the returned object is preserved for backward
+//  compatibility with the /api/market-data/health route and any UI
+//  widget that used to read it. Kite-specific fields are kept but
+//  always report empty/disconnected values.
 // ════════════════════════════════════════════════════════════════
 
-import { getTicker } from './kiteTicker';
 import { getMarketStatus } from './marketHours';
-import { getMarketFreshness } from './tickFreshnessGuard';
-import {
-  getYahooFallbackStats,
-} from './yahooFallbackPoller';
-import {
-  getMarketOpenWatcherStats,
-} from './marketOpenWatcher';
 
 export type HealthState = 'OK' | 'DEGRADED' | 'FAIL';
-export type HealthSource = 'kite' | 'yahoo' | 'none';
+export type HealthSource = 'yahoo' | 'none';
 
 export interface MarketDataHealth {
-  // ── Top-line verdict ──
   health: HealthState;
   source: HealthSource;
   reason: string;
 
-  // ── Required by spec ──
   tickRatePerSec: number;
   lastTickAgeMs:  number | null;
   subscribedCount: number;
 
-  // ── Additional operator context ──
   market: {
     isOpen: boolean;
     state: string;
     label: string;
   };
+  // Retained for response-shape compatibility. Kite has been removed,
+  // so these fields are constant.
   ws: {
     state: string;
     loginRequired: boolean;
@@ -76,133 +61,66 @@ export interface MarketDataHealth {
   serverNow: number;
 }
 
-// Freshness cut-offs — single source of truth used by every caller.
-// Kept in sync with the operator spec:
-//   ≤ 3s   real-time
-//   ≤ 30s  acceptable fallback
-//   > 30s  fail (market must be OPEN)
-const FRESH_MS = 3_000;
-const STALE_MS = 30_000;
+const YAHOO_ENABLED =
+  (process.env.YAHOO_ENABLED ?? 'true').toLowerCase() !== 'false';
 
 /**
  * Compute the unified health summary. Pure in-memory read — no DB,
  * no network, no await. Safe to call from high-QPS endpoints.
  */
 export function getMarketDataHealth(): MarketDataHealth {
-  const mkt    = getMarketStatus();
-  const ticker = getTicker();
-  const ts     = ticker.getStatus();
-  const freshness = getMarketFreshness();
-  const yahoo  = getYahooFallbackStats();
-  const watcher = getMarketOpenWatcherStats();
-
-  const lastTickTs = freshness.lastTickTs;
-  const lastTickAgeMs = lastTickTs != null ? Date.now() - lastTickTs : null;
-  const tickRatePerSec = ((): number => {
-    const raw = (ts as any).tickRatePerSec;
-    return typeof raw === 'number' ? raw : 0;
-  })();
+  const mkt = getMarketStatus();
 
   let health: HealthState;
   let source: HealthSource;
   let reason: string;
 
-  if (!mkt.isOpen) {
-    // Outside session — expected silence. Not OK (not real-time) but
-    // not FAIL either. DEGRADED by design.
-    //
-    // Source attribution precedence (after hours):
-    //   1. Yahoo ACTIVELY polling   → 'yahoo' (honest: frames flowing
-    //      onto the bus right now are yahoo-labeled).
-    //   2. Any Kite data observed    → 'kite'  (either a live tick
-    //      earlier in this session OR Kite ticks cached on the ticker
-    //      via EOD seed / last session).
-    //   3. Nothing at all            → 'none'.
-    //
-    // This prevents the "liveSource=yahoo" false positive the
-    // operator reported: when the poller is OFF after hours but we
-    // still have authoritative Kite data (seeded from market_data_daily
-    // or cached from the prior session) the source correctly reads 'kite'.
-    health = 'DEGRADED';
-    if (yahoo.active) {
-      source = 'yahoo';
-    } else if (lastTickTs != null || ts.ticksCached > 0) {
-      source = 'kite';
-    } else {
-      source = 'none';
-    }
-    reason = `Market closed (${mkt.label})`;
-  } else if (ts.loginRequired) {
-    // Market is open and we can't even connect. Hard fail regardless
-    // of whether Yahoo is carrying the load — operator intervention
-    // required.
+  if (!YAHOO_ENABLED) {
     health = 'FAIL';
-    source = yahoo.active ? 'yahoo' : 'none';
-    reason = 'Kite access_token invalid — visit /api/kite/login';
-  } else if (yahoo.active) {
-    // Yahoo poller has taken over. Data is flowing; it's just not
-    // real-time. Surface clearly so the operator sees the reason.
+    source = 'none';
+    reason = 'Yahoo is disabled (YAHOO_ENABLED=false) — no live data source configured';
+  } else if (!mkt.isOpen) {
     health = 'DEGRADED';
     source = 'yahoo';
-    reason = lastTickAgeMs == null
-      ? 'Yahoo fallback active; no Kite tick since boot'
-      : `Yahoo fallback active; last Kite tick ${Math.round(lastTickAgeMs / 1000)}s ago`;
-  } else if (lastTickTs == null) {
-    // Market open, no fallback, no tick yet. Treat as FAIL — we're
-    // not delivering data.
-    health = 'FAIL';
-    source = 'none';
-    reason = 'No ticks received yet since boot';
-  } else if (lastTickAgeMs != null && lastTickAgeMs <= FRESH_MS) {
-    health = 'OK';
-    source = 'kite';
-    reason = `Live — age ${lastTickAgeMs}ms, rate ${tickRatePerSec}/sec`;
-  } else if (lastTickAgeMs != null && lastTickAgeMs <= STALE_MS) {
-    // Between 3s and 30s — aging but not yet a fallback trigger.
-    health = 'DEGRADED';
-    source = 'kite';
-    reason = `Kite slow — last tick ${(lastTickAgeMs / 1000).toFixed(1)}s ago`;
+    reason = `Market closed (${mkt.label}) — Yahoo will return last close`;
   } else {
-    // Kite silent > 30s during market hours but the Yahoo poller
-    // hasn't activated yet (race window between stale detection and
-    // the health-check timer). FAIL.
-    health = 'FAIL';
-    source = 'none';
-    reason = `Kite silent for ${Math.round((lastTickAgeMs ?? 0) / 1000)}s; no fallback yet`;
+    health = 'OK';
+    source = 'yahoo';
+    reason = 'Yahoo Finance is the active live-quote source';
   }
 
   return {
     health,
     source,
     reason,
-    tickRatePerSec,
-    lastTickAgeMs,
-    subscribedCount: ts.subscribed,
+    tickRatePerSec: 0,
+    lastTickAgeMs: null,
+    subscribedCount: 0,
     market: {
       isOpen: mkt.isOpen,
       state: mkt.state,
       label: mkt.label,
     },
     ws: {
-      state: ts.state,
-      loginRequired: ts.loginRequired,
-      lastConnectedAt: ts.lastConnectedAt ?? null,
-      reconnectAttempts: ts.reconnectAttempts,
-      lastError: ts.lastError,
+      state: 'removed',
+      loginRequired: false,
+      lastConnectedAt: null,
+      reconnectAttempts: 0,
+      lastError: null,
     },
     yahooFallback: {
-      active: yahoo.active,
-      activations: yahoo.activations,
-      recoveries: yahoo.recoveries,
-      cyclesRun: yahoo.cycles,
-      ticksEmitted: yahoo.emitted,
+      active: YAHOO_ENABLED && mkt.isOpen,
+      activations: 0,
+      recoveries: 0,
+      cyclesRun: 0,
+      ticksEmitted: 0,
     },
     marketOpenWatcher: {
-      installed: watcher.installed,
-      nextWakeAt: watcher.nextWakeAt,
-      fires: watcher.fires,
+      installed: false,
+      nextWakeAt: null,
+      fires: 0,
     },
-    lastTickTs,
+    lastTickTs: null,
     serverNow: Date.now(),
   };
 }

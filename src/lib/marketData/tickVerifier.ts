@@ -103,9 +103,8 @@ async function sampleOnce(): Promise<void> {
     // playbook can grep for.
     console.error(
       `[ERROR] market=OPEN but no ticks in store — ` +
-      `Kite login likely expired or WebSocket disconnected. ` +
-      `Falling back to Yahoo for all symbols. ` +
-      `Check /api/kite/status → visit /api/kite/login to restore.`,
+      `expected, since Kite has been removed. Yahoo is now the ` +
+      `sole live-quote source and is polled per-request by the UI.`,
     );
     return;
   }

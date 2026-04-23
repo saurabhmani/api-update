@@ -29,7 +29,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
 import { getTopRankings }            from '@/services/rankingsService';
-import { getTicker }                 from '@/lib/marketData/kiteTicker';
+import { fetchYahooQuotesBatch }     from '@/lib/marketData/yahooBatch';
 import { getLivePrice }              from '@/lib/marketData/getLivePrice';
 import { db }                        from '@/lib/db';
 
@@ -42,15 +42,6 @@ import { db }                        from '@/lib/db';
 const STALE_DELTA_PCT = Number(process.env.RANKINGS_STALE_DELTA_PCT ?? 2);
 
 // Max age of a tick we still consider "live" for overlaying onto
-// a ranking row. 10s tolerates quiet names that don't tick every
-// second while still rejecting anything that's genuinely stale.
-const MAX_TICK_AGE_MS = 10_000;
-
-// Lazy-subscribe tracking so we don't flood the ticker with repeat
-// subscribe calls for symbols already in the cache (the same
-// pattern /api/signals uses).
-const lazySubscribed = new Set<string>();
-
 function applyTickToRow(
   row: any,
   tick: { lastPrice: number; pChange?: number | null; close?: number | null; open?: number | null }
@@ -96,96 +87,47 @@ function applyTickToRow(
 async function enrichRankingsWithLiveLtp(rows: any[]): Promise<void> {
   if (!rows.length) return;
   const t0 = Date.now();
-  let ticker;
-  try { ticker = getTicker(); } catch { return; }
 
-  const st = ticker.getStatus();
-  if (st.state !== 'open') {
-    console.log(
-      `[API/rankings] kite ws ${st.state} — skipping live enrichment ` +
-      `(rows=${rows.length} rendered with DB prices only)`
-    );
-    return;
-  }
-
-  // ── PASS 1: read cache, queue unseen symbols ──────────
-  const toSubscribe: string[] = [];
-  const pending: Array<{ row: any; sym: string }> = [];
-  let hits = 0, stale = 0, miss = 0, corrected = 0;
-
+  // Single Yahoo batch for every symbol in the response. Kite has
+  // been removed; Yahoo is the sole live-quote upstream.
+  const symbols: string[] = [];
   for (const row of rows) {
     const sym = (row.symbol ?? '').toString().toUpperCase();
-    if (!sym) continue;
-
-    const tick = ticker.getTickBySymbolSync(sym);
-    if (tick && tick.ts && Date.now() - tick.ts < MAX_TICK_AGE_MS) {
-      const r = applyTickToRow(row, tick);
-      if (r.corrected) corrected++;
-      hits++;
-    } else if (tick) {
-      // Tick exists but is older than our window — name is
-      // already subscribed, market is just quiet. Use the tick
-      // value (still better than the DB row) but count it stale.
-      const r = applyTickToRow(row, tick);
-      if (r.corrected) corrected++;
-      stale++;
-    } else {
-      miss++;
-      if (!lazySubscribed.has(sym)) {
-        toSubscribe.push(sym);
-        lazySubscribed.add(sym);
-      }
-      pending.push({ row, sym });
-    }
+    if (sym) symbols.push(sym);
   }
 
-  // ── PASS 2: subscribe + brief wait + re-read ──────────
-  // Same pattern /api/signals uses. We block ~700ms total so the
-  // ticker can: send the subscribe frame, receive the first tick
-  // for each symbol, and bridge it into the cache. Without this
-  // the first-ever request for an unseen symbol returns its stale
-  // DB price even though the WS would have delivered the real
-  // one half a second later.
-  if (toSubscribe.length > 0) {
-    console.log(
-      `[API/rankings] lazy-subscribing ${toSubscribe.length} symbols: ` +
-      `${toSubscribe.slice(0, 5).join(', ')}${toSubscribe.length > 5 ? ' …' : ''}`
-    );
-    try {
-      await ticker.subscribeSymbols(toSubscribe, 'quote');
-    } catch (err: any) {
-      console.error('[API/rankings] lazy subscribe failed:', err?.message);
-    }
-    await new Promise(r => setTimeout(r, 700));
-
-    let recovered = 0;
-    for (const { row, sym } of pending) {
-      const tick = ticker.getTickBySymbolSync(sym);
-      if (tick && tick.lastPrice > 0) {
-        const r = applyTickToRow(row, tick);
+  let hits = 0, miss = 0, corrected = 0;
+  try {
+    const yahooMap = await fetchYahooQuotesBatch(symbols);
+    for (const row of rows) {
+      const sym = (row.symbol ?? '').toString().toUpperCase();
+      if (!sym) continue;
+      const y = yahooMap.get(sym);
+      if (y && y.price != null && y.price > 0) {
+        const r = applyTickToRow(row, {
+          lastPrice: y.price,
+          pChange:   y.pChange,
+          close:     y.previousClose,
+          open:      null,
+        });
         if (r.corrected) corrected++;
-        recovered++;
         hits++;
-        miss--;
+      } else {
+        miss++;
       }
     }
-    console.log(
-      `[API/rankings] pass-2 recovered ${recovered}/${pending.length} after 700ms wait`
-    );
+  } catch (err: any) {
+    console.warn('[API/rankings] Yahoo enrichment failed:', err?.message);
   }
 
   console.log(
-    `[DATA SOURCE] path=LIVE-RANKINGS  channel=Kite WebSocket  ` +
-    `rows=${rows.length}  hits=${hits}  stale=${stale}  miss=${miss}  ` +
+    `[DATA SOURCE] path=LIVE-RANKINGS  channel=Yahoo Finance  ` +
+    `rows=${rows.length}  hits=${hits}  miss=${miss}  ` +
     `corrected=${corrected}  elapsed=${Date.now() - t0}ms`
   );
 
-  // ── Guaranteed pct_change fallback from market_data_daily ──
-  // Anything still sitting at 0% (WS skipped, tick had no close,
-  // seeder wrote 0) gets a real value computed from the last two
-  // daily closes in the engine's own candle table — the same
-  // source the signal engine uses. This is the path the user
-  // means by "im using engine so you can fix out the problem".
+  // Guaranteed pct_change fallback from market_data_daily for any
+  // row Yahoo didn't enrich (or enriched with 0%).
   await backfillPctChangeFromCandles(rows);
 }
 

@@ -107,7 +107,7 @@ export function getMarketFreshness(maxAgeMs: number = STALE_MAX_MS): MarketFresh
     return {
       ...base,
       state: 'unauthenticated' as MarketState,
-      reason: 'Kite access_token invalid — visit /api/kite/login',
+      reason: 'Live tick bus disabled — Yahoo is the live-quote source',
     };
   }
   if (st.state !== 'open') {

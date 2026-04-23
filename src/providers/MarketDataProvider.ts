@@ -77,28 +77,13 @@ import { withProviderFrame } from '@/lib/marketData/enforcer';
 import * as IndianAPI from './adapters/IndianAPIAdapter';
 import type { NewsItem, BatchQuoteResult } from './adapters/IndianAPIAdapter';
 import * as Yahoo from './adapters/YahooAdapter';
-// Kite is the authoritative source of market-data truth per the
-// system spec. The adapter reads directly from the in-process WS
-// tick cache (sync, O(1)) and applies a market-state freshness
-// policy — fresh ≤3s when OPEN, any age when CLOSED. See
-// src/providers/adapters/KiteAdapter.ts for policy details.
-import * as Kite from './adapters/KiteAdapter';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
-import { db as sqlDb } from '@/lib/db';
 
-// Yahoo fallback is policy-controlled. Set YAHOO_ENABLED=false to
-// remove the delayed-quote tier entirely (chain collapses to
-// IndianAPI → cache → DB). Useful in environments where even 15-min
-// delayed data is considered unsafe to return.
+// Yahoo is now the sole live-quote source. Kite has been removed.
+// Setting YAHOO_ENABLED=false will leave the live-quote chain with
+// only cache + DB (no live data) — use only in environments where
+// even 15-min delayed data is unsafe to serve.
 const YAHOO_ENABLED = (process.env.YAHOO_ENABLED ?? 'true').toLowerCase() !== 'false';
-
-// Max acceptable age for Kite cached tick OR EOD bar before we
-// fall through to Yahoo. Default 3 days (covers a weekend gap).
-// Symbols whose candles haven't been refreshed in months would
-// otherwise pin the UI to an ancient price — showing a 15-min-
-// delayed Yahoo snapshot is strictly better in that case.
-const STALE_KITE_MS =
-  Number(process.env.STALE_KITE_MS) || 3 * 24 * 60 * 60 * 1000;
 
 import type {
   CorporateIntel,
@@ -282,133 +267,35 @@ export async function getLiveSnapshot(
   const trail: AttemptLog[] = [];
   const marketOpen = isMarketOpen();
 
-  // ── 0. Kite WebSocket (AUTHORITATIVE) ──────────────────────────
-  // Per spec the Kite in-process tick cache is the primary source of
-  // market-data truth. Reading here is sync O(1), never hits the
-  // network, and never throws on age (the adapter applies its own
-  // market-state freshness policy). When this hits:
-  //   • market OPEN  → tick is ≤3s old, label quality='near-live'
-  //   • market CLOSED → any last-traded tick, label quality='stale'
-  //                     so signal-critical callers reject it.
-  const kiteHit = await tryStep('kite', trail, () =>
-    guarded('kite', () => Kite.getQuote(sym), { timeoutMs: 500, attempts: 1 }),
-  );
-  if (kiteHit) {
-    await cache.set(key, kiteHit, QUOTE_TTL_S);
-    return rejectIfStale(
-      wrap(kiteHit, 'kite', marketOpen ? 'near-live' : 'stale', trail),
-      !!opts.signalCritical,
-    );
-  }
-
-  // ── 0b. Market-CLOSED early-exit path (Kite EOD from candles) ──
-  // Outside market hours we MUST NOT fall to IndianAPI / Yahoo. The
-  // user-visible UI contract is "Kite-sourced data or nothing after
-  // close." The `market_data_daily` VIEW projects Kite EOD bars from
-  // the candles store; reading it here keeps `source='kite'` while
-  // giving the UI a real close price.
-  if (!marketOpen) {
-    const eod = await tryStep('kite', trail, async () => {
-      const { rows } = await sqlDb.query<{
-        ts: Date | string | number;
-        close: number | string;
-        prev_close: number | string | null;
-      }>(
-        `SELECT t.ts, t.close,
-           (SELECT close FROM market_data_daily
-             WHERE symbol = t.symbol AND ts < t.ts
-             ORDER BY ts DESC LIMIT 1) AS prev_close
-         FROM market_data_daily t
-         WHERE t.symbol = ?
-         ORDER BY t.ts DESC
-         LIMIT 1`,
-        [sym],
-      );
-      const r = (rows as any[])[0];
-      if (!r) throw new Error('no EOD row for symbol');
-      const close = Number(r.close);
-      if (!Number.isFinite(close) || close <= 0) throw new Error('invalid EOD close');
-      const prev = r.prev_close != null ? Number(r.prev_close) : null;
-      const tsMs = r.ts instanceof Date
-        ? r.ts.getTime()
-        : typeof r.ts === 'number'
-          ? r.ts
-          : new Date(r.ts as string).getTime();
-      const snap: MarketSnapshot = {
-        symbol: sym,
-        price: close,
-        ltp: close,
-        change:        prev != null && Number.isFinite(prev) ? close - prev : 0,
-        changePercent: prev != null && Number.isFinite(prev) && prev > 0 ? ((close - prev) / prev) * 100 : 0,
-        volume: 0,
-        open: close,
-        high: close,
-        low: close,
-        prevClose: prev != null && Number.isFinite(prev) ? prev : close,
-        timestamp: Number.isFinite(tsMs) ? tsMs : Date.now(),
-      };
-      return snap;
-    });
-    if (eod) {
-      // Accept the EOD bar only if its timestamp is within
-      // STALE_KITE_MS. Older than that is almost certainly a symbol
-      // whose candle ingest pipeline has stopped — showing a months-
-      // old "last close" is worse than showing a 15-min-delayed
-      // Yahoo snapshot. Fall through in that case.
-      const eodAge = Date.now() - (eod.timestamp || 0);
-      if (eodAge <= STALE_KITE_MS) {
-        await cache.set(key, eod, QUOTE_TTL_S);
-        return rejectIfStale(wrap(eod, 'kite', 'stale', trail), !!opts.signalCritical);
-      }
-    }
-
-    // ── 0c. Closed-hours Yahoo SNAPSHOT fallback ─────────────────
-    // Market closed, no Kite live tick, no FRESH Kite EOD in the DB.
-    // Yahoo is the last-resort snapshot here — 15-min-delayed but
-    // still more useful than a months-old DB bar.
-    if (YAHOO_ENABLED) {
-      const yah = await tryStep('yahoo', trail, () =>
-        withProviderFrame(() =>
-          guarded('yahoo', () => Yahoo.getQuote(sym), { timeoutMs: 2000, attempts: 2 }),
-        ),
-      );
-      if (yah) {
-        await cache.set(key, yah, QUOTE_TTL_S);
-        return rejectIfStale(wrap(yah, 'yahoo', 'fallback-delayed', trail), !!opts.signalCritical);
-      }
-    }
-    // Nothing worked after close — fall through to DB last-resort.
-  }
-
-  // ── 1. IndianAPI — only consulted when market is OPEN ───────────
-  // Per spec: during market hours Kite WebSocket is the ONLY
-  // acceptable data path. IndianAPI is kept as an internal,
-  // Kite-equivalent Indian live feed (the UI maps source='indian'
-  // to 'kite'). Yahoo is DISABLED during open hours.
-  if (marketOpen) {
-    const live = await tryStep('indian', trail, () =>
+  // ── 1. Yahoo Finance (SOLE live-quote source) ──────────────────
+  // Kite has been removed from the system; Yahoo is now the only
+  // live-quote provider. During market hours we treat it as near-live
+  // (it's ~15 min delayed but is the best we have); after hours it
+  // returns yesterday's close which we label 'stale' so signal-
+  // critical callers can reject it.
+  if (YAHOO_ENABLED) {
+    const yah = await tryStep('yahoo', trail, () =>
       withProviderFrame(() =>
-        guarded('indian', () => IndianAPI.getQuote(sym), { timeoutMs: 2000, attempts: 3 }),
+        guarded('yahoo', () => Yahoo.getQuote(sym), { timeoutMs: 2000, attempts: 2 }),
       ),
     );
-    if (live) {
-      await cache.set(key, live, QUOTE_TTL_S);
-      // Fire-and-forget budget accounting — a failed spend() shouldn't block reads.
+    if (yah) {
+      await cache.set(key, yah, QUOTE_TTL_S);
       void spend('adhoc', 1);
-      return rejectIfStale(wrap(live, 'indian', 'near-live', trail), !!opts.signalCritical);
+      return rejectIfStale(
+        wrap(yah, 'yahoo', marketOpen ? 'near-live' : 'stale', trail),
+        !!opts.signalCritical,
+      );
     }
+  }
 
-    // 2. Cache (skip if forceRefresh)
-    if (!opts.forceRefresh) {
-      const cached = await cache.get<MarketSnapshot>(key);
-      if (cached) {
-        trail.push({ source: 'cache', ok: true });
-        return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
-      }
+  // ── 2. Cache (skip if forceRefresh) ─────────────────────────────
+  if (!opts.forceRefresh) {
+    const cached = await cache.get<MarketSnapshot>(key);
+    if (cached) {
+      trail.push({ source: 'cache', ok: true });
+      return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
     }
-
-    // Yahoo is DELIBERATELY NOT consulted during market hours.
-    // Rule: "MARKET OPEN — Disable Yahoo completely".
   }
 
   // 4. PostgreSQL stale last-resort (legacy snapshot table, if registered)

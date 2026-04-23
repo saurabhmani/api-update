@@ -36,7 +36,9 @@ const GLOBAL_KEY = '__q365_inproc_scheduler__';
 interface InProcState {
   rescoreTask:       ScheduledTask | null;
   regenTask:         ScheduledTask | null;
+  newsTask:          ScheduledTask | null;
   regenInFlight:     Promise<void> | null;
+  newsInFlight:      Promise<void> | null;
   bootedAt:          number | null;
 }
 
@@ -46,7 +48,9 @@ function getState(): InProcState {
     g[GLOBAL_KEY] = {
       rescoreTask:    null,
       regenTask:      null,
+      newsTask:       null,
       regenInFlight:  null,
+      newsInFlight:   null,
       bootedAt:       null,
     };
   }
@@ -115,6 +119,10 @@ export function bootInProcScheduler(): void {
     try { state.regenTask.stop(); } catch { /* already stopped */ }
     state.regenTask = null;
   }
+  if (state.newsTask) {
+    try { state.newsTask.stop(); } catch { /* already stopped */ }
+    state.newsTask = null;
+  }
 
   // ── 1-minute rescore ─────────────────────────────────────────
   state.rescoreTask = cron.schedule('* 9-15 * * 1-5', () => {
@@ -168,14 +176,59 @@ export function bootInProcScheduler(): void {
     }, { timezone: IST });
   }
 
+  // ── 5-minute news pipeline (always on) ──────────────────────
+  // Keeps q365_news_events fresh without the UI having to click
+  // "Run Pipeline". RSS upstreams cache for several minutes so 5
+  // minutes is the polite floor; faster and we'd just hammer our
+  // own HTTP cache without getting fresher headlines.
+  //
+  // Self-coalescing via newsInFlight — a slow run that spans two
+  // firings becomes a single run, not overlapping runs.
+  state.newsTask = cron.schedule('*/5 * * * *', () => {
+    if (state.newsInFlight) {
+      log.warn('[INPROC NEWS] previous run still in flight — skipping');
+      return;
+    }
+    state.newsInFlight = runNewsPipelineInProc()
+      .catch((err) => log.error('[INPROC NEWS] failed', { err: err?.message ?? String(err) }))
+      .finally(() => { state.newsInFlight = null; });
+  }, { timezone: IST });
+
+  // Fire once on boot so a fresh dev server populates the DB
+  // immediately instead of waiting 5 min for the first cron tick.
+  setTimeout(() => {
+    if (state.newsInFlight) return;
+    state.newsInFlight = runNewsPipelineInProc()
+      .catch((err) => log.error('[INPROC NEWS] boot-fire failed', { err: err?.message ?? String(err) }))
+      .finally(() => { state.newsInFlight = null; });
+  }, 5_000);
+
   state.bootedAt = Date.now();
   log.info('in-proc scheduler booted', {
-    jobs: regenInProc
-      ? ['*/1 min rescore (09:20-15:30 IST)', '*/10 min regen (09:30-15:30 IST)']
-      : ['*/1 min rescore (09:20-15:30 IST)'],
+    jobs: [
+      '*/1 min rescore (09:20-15:30 IST)',
+      ...(regenInProc ? ['*/10 min regen (09:30-15:30 IST)'] : []),
+      '*/5 min news ingestion (24x7)',
+    ],
     regen_in_proc: regenInProc,
     regen_hint:    regenInProc ? undefined : 'regen disabled in-proc — run standalone scheduler.ts or POST /api/run-signal-engine',
   });
+}
+
+async function runNewsPipelineInProc(): Promise<void> {
+  const started = Date.now();
+  try {
+    const { runFullPipeline } = await import('@/lib/news-engine/pipeline/runNewsPipeline');
+    const result = await runFullPipeline('Indian stock market NSE', 15);
+    log.info('[INPROC NEWS] complete', {
+      fetched:   result.ingestion?.totalFetched ?? 0,
+      newEvents: result.ingestion?.newEvents ?? 0,
+      scored:    result.scoring?.totalScored ?? 0,
+      elapsedMs: Date.now() - started,
+    });
+  } catch (err: any) {
+    log.error('[INPROC NEWS] pipeline threw', { err: err?.message ?? String(err) });
+  }
 }
 
 async function runRegenInProc(): Promise<void> {
@@ -247,8 +300,10 @@ export function stopInProcScheduler(): void {
   const state = getState();
   state.rescoreTask?.stop();
   state.regenTask?.stop();
+  state.newsTask?.stop();
   state.rescoreTask = null;
   state.regenTask = null;
+  state.newsTask = null;
   state.bootedAt = null;
   log.info('in-proc scheduler stopped');
 }

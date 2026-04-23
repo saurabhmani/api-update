@@ -11,6 +11,42 @@ import type { NewsEvent, NewsQueryFilter, EntityLink } from '../types/newsEngine
 
 // ── Reconstruct NewsEvent from DB row ────────────────────────────
 
+/**
+ * The write path (saveNewsEvents.ts:toMysqlDateTime) stores UTC as
+ * plain "YYYY-MM-DD HH:MM:SS" into MySQL DATETIME (which has NO
+ * timezone). The mysql2 driver, on read, parses that literal as
+ * *local server time* — so a row written at UTC 12:33:35 and read
+ * on an IST server comes back as a Date whose .getTime() encodes
+ * "local IST 12:33:35", which is UTC 07:03:35. Calling
+ * .toISOString() on it would emit "2026-04-23T07:03:35.000Z",
+ * shifting the timestamp backward by the server's offset and
+ * causing strict "last 10 min" filters to drop everything.
+ *
+ * This helper reverses the driver's local-interpretation mistake:
+ * whether mysql2 returns a Date or a raw string, we reconstruct
+ * the UTC instant by taking the literal Y/M/D/H/M/S fields and
+ * feeding them through Date.UTC().
+ */
+function datetimeToUtcIso(val: unknown): string {
+  if (val == null) return '';
+  if (val instanceof Date) {
+    // Take the string-visible fields (which mysql2 set from the raw
+    // DB literal) and treat them as UTC instead of local.
+    return new Date(Date.UTC(
+      val.getFullYear(), val.getMonth(),   val.getDate(),
+      val.getHours(),    val.getMinutes(), val.getSeconds(),
+      val.getMilliseconds(),
+    )).toISOString();
+  }
+  const s = String(val).trim();
+  if (!s) return '';
+  // Raw string mode: "2026-04-23 12:33:35" → "2026-04-23T12:33:35Z"
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
+  const iso = (s.includes('T') ? s : s.replace(' ', 'T')) + (hasTz ? '' : 'Z');
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : s;
+}
+
 function rowToNewsEvent(row: any): NewsEvent {
   return {
     id:             row.id,
@@ -23,12 +59,8 @@ function rowToNewsEvent(row: any): NewsEvent {
     category:       row.category,
     sentiment:      row.sentiment,
     sentimentScore: parseFloat(row.sentiment_score) || 0,
-    publishedAt:    row.published_at instanceof Date
-      ? row.published_at.toISOString()
-      : String(row.published_at),
-    fetchedAt:      row.fetched_at instanceof Date
-      ? row.fetched_at.toISOString()
-      : String(row.fetched_at),
+    publishedAt:    datetimeToUtcIso(row.published_at),
+    fetchedAt:      datetimeToUtcIso(row.fetched_at),
     entities:       [],  // loaded separately if needed
     symbols:        safeJsonParse(row.symbols_json, []),
     sectors:        safeJsonParse(row.sectors_json, []),
@@ -86,13 +118,20 @@ export async function queryNewsEvents(filter: NewsQueryFilter = {}): Promise<New
   }
 
   if (filter.fromDate) {
-    conditions.push('ne.published_at >= ?');
+    // Widen the SQL bound by an extra 6 h to absorb any timezone
+    // offset between the caller's UTC threshold and the session's
+    // interpretation of the DATETIME column. The authoritative
+    // per-row filter runs in JS in the route handler
+    // (rowToNewsEvent returns a genuine UTC ISO via datetimeToUtcIso,
+    // so the post-filter is timezone-safe). This prevents the
+    // previous symptom where a UTC/IST offset in the driver wiped
+    // out every visible row in a "last 10 min" query.
+    conditions.push('ne.published_at >= DATE_SUB(?, INTERVAL 6 HOUR)');
     params.push(filter.fromDate);
   } else {
     // Default freshness window: 72h (3 days). Keeps legacy 2024-era
     // rows from leaking into the current feed when the caller didn't
-    // pass an explicit fromDate. Callers that need the full archive
-    // (backfill / audit) can pass fromDate explicitly to override.
+    // pass an explicit fromDate.
     conditions.push("ne.published_at >= DATE_SUB(NOW(), INTERVAL 72 HOUR)");
   }
 

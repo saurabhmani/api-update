@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useEventStream } from '@/hooks/useEventStream';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Loading } from '@/components/ui';
@@ -11,11 +11,21 @@ interface NewsEvent {
   title:       string;
   category:    string;
   sentiment:   string;
-  source_id:   string;
+  // API returns sourceId (camelCase); accept the snake_case form too
+  // so older responses don't break this surface.
+  sourceId?:   string;
+  source_id?:  string;
   publishedAt: string;
   symbols?:    string[];   // extracted NSE symbols (from readNewsEvents.ts:33)
   sectors?:    string[];   // extracted sectors
 }
+
+// On-mount: if the freshest DB event is older than this threshold,
+// kick the pipeline once to catch up. Normal ingestion is owned by
+// the in-process scheduler (every 5 min server-side), so this only
+// fires after a long absence — freshly opened tab, server restart,
+// etc.
+const AUTO_PIPELINE_STALE_MS = 10 * 60 * 1000; // 10 min
 
 // Safe ISO formatter — returns "—" for anything that can't parse into
 // a finite timestamp. Prevents the literal string "Invalid Date" from
@@ -26,6 +36,32 @@ function formatPublishedAt(raw: unknown): string {
   if (!Number.isFinite(t)) return '—';
   return new Date(t).toLocaleString();
 }
+
+// "5 min ago" / "2 h ago" — recomputed on every poll against the
+// current clock so the label stays honest as time passes.
+function formatRelative(raw: unknown, nowMs: number): string {
+  if (raw == null || raw === '') return '';
+  const t = new Date(String(raw)).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diff = Math.max(0, nowMs - t);
+  if (diff < 60_000)         return 'just now';
+  if (diff < 3_600_000)      return `${Math.floor(diff / 60_000)} min ago`;
+  if (diff < 86_400_000)     return `${Math.floor(diff / 3_600_000)} h ago`;
+  return `${Math.floor(diff / 86_400_000)} d ago`;
+}
+
+// Freshness presets on the filter bar. `hours` is a float so we can
+// express sub-hour windows cleanly (10 min = 1/6 h). The value is
+// converted to an ISO `from=` timestamp on each fetch.
+const WINDOW_OPTIONS: Array<{ key: string; label: string; hours: number }> = [
+  { key: '10m', label: 'Last 10 min', hours: 10 / 60 },
+  { key: '30m', label: 'Last 30 min', hours: 30 / 60 },
+  { key: '1h',  label: 'Last 1h',     hours: 1 },
+  { key: '6h',  label: 'Last 6h',     hours: 6 },
+  { key: '24h', label: 'Last 24h',    hours: 24 },
+  { key: '3d',  label: 'Last 3d',     hours: 72 },
+];
+const DEFAULT_WINDOW_KEY = '10m';
 interface ScoreRow { symbol: string; trust_score: number; sentiment_score: number; importance_score: number; symbol_impact_score: number; event_risk_score: number; manipulation_risk_boost: number; }
 interface ImpactRow { symbol: string; confidenceModifier: number; riskPenalty: number; aggregateImpact: number; netSentiment: string; eventCount: number; }
 
@@ -35,21 +71,96 @@ export default function NewsIntelligencePage() {
   const [tab, setTab] = useState<'events' | 'impact'>('events');
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [windowKey, setWindowKey] = useState(DEFAULT_WINDOW_KEY);
+  const [lastAt, setLastAt] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const load = useCallback(async () => {
+  // 1s wall clock so relative timestamps ("5 min ago") stay honest
+  // without having to re-fetch. Cheap: one setState per second.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Timestamp of last successful poll — used for the LIVE "updated Xs
+  // ago" badge. Stored as ms so a 1s clock can recompute the delta.
+  const [lastFetchMs, setLastFetchMs] = useState<number | null>(null);
+
+  const load = useCallback(async (winKey: string = windowKey) => {
     setLoading(true);
     try {
+      const win = WINDOW_OPTIONS.find(w => w.key === winKey) ?? WINDOW_OPTIONS[1];
+      const winMs = win.hours * 3600_000;
+      // The DB column is MySQL DATETIME and rows are written as UTC
+      // `YYYY-MM-DD HH:MM:SS` (see saveNewsEvents.ts → toMysqlDateTime).
+      // An ISO-Z string comparison against DATETIME is ambiguous in
+      // MySQL — send the same UTC shape the DB stores.
+      const thresholdMs = Date.now() - winMs;
+      const d = new Date(thresholdMs);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const fromMysql =
+        `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+        `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+      const qs = `limit=100&from=${encodeURIComponent(fromMysql)}`;
+      const impactHours = Math.max(1, Math.ceil(win.hours));
       const [evRes, impRes] = await Promise.allSettled([
-        fetch('/api/news-engine?limit=50&days=3', { cache: 'no-store' }).then(r => r.ok ? r.json() : { events: [] }),
-        fetch('/api/news-engine?impact=true',     { cache: 'no-store' }).then(r => r.ok ? r.json() : { symbolImpacts: {} }),
+        fetch(`/api/news-engine?${qs}`,                          { cache: 'no-store' }).then(r => r.ok ? r.json() : { events: [] }),
+        fetch(`/api/news-engine?impact=true&hours=${impactHours}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : { symbolImpacts: {} }),
       ]);
       const evData  = evRes.status  === 'fulfilled' ? evRes.value  : { events: [] };
       const impData = impRes.status === 'fulfilled' ? impRes.value : { symbolImpacts: {} };
-      setEvents(evData.events ?? []);
+      const fetched: NewsEvent[] = evData.events ?? [];
+
+      // ── CLIENT-SIDE STRICT FILTER (with 60s tolerance) ────────
+      // rowToNewsEvent on the server now emits a genuine UTC ISO,
+      // so this compare is TZ-safe. A 60s tolerance absorbs clock
+      // skew so fresh rows landing right at the boundary don't
+      // flicker in and out of view.
+      const TOLERANCE_MS = 60_000;
+      const floorMs = thresholdMs - TOLERANCE_MS;
+      const droppedPreview: Array<{ title: string; publishedAt: string; diffMinutes: number }> = [];
+      const strict = fetched.filter((e) => {
+        const pMs = new Date(e.publishedAt).getTime();
+        if (!Number.isFinite(pMs)) return false;
+        if (pMs >= floorMs) return true;
+        if (droppedPreview.length < 3) {
+          droppedPreview.push({
+            title: e.title,
+            publishedAt: e.publishedAt,
+            diffMinutes: Math.round((pMs - thresholdMs) / 60_000),
+          });
+        }
+        return false;
+      });
+
+      // Debug trail — visible in the browser console so you can
+      // reconcile the dashboard counts against the raw payload.
+      // When the server returns rows but the client filters them
+      // all out, the dropped sample surfaces the exact timestamps
+      // so a timezone bug is diagnosable from the console alone.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[news-intelligence] window=${winKey}  fetched=${fetched.length}  ` +
+        `afterStrictFilter=${strict.length}  ` +
+        (fetched.length > 0 && strict.length === 0
+          ? `ALL_FILTERED — droppedPreview=${JSON.stringify(droppedPreview)}  `
+          : ''),
+        `serverDebug=`, evData.debug,
+      );
+
+      setEvents(strict);
       setImpacts(impData.symbolImpacts ?? {});
-    } catch { /* empty */ }
+      const nowDate = new Date();
+      setLastFetchMs(nowDate.getTime());
+      setLastAt(nowDate.toLocaleTimeString('en-IN', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+      }));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[news-intelligence] load failed:', err);
+    }
     setLoading(false);
-  }, []);
+  }, [windowKey]);
 
   const [pipelineMsg, setPipelineMsg] = useState<string | null>(null);
 
@@ -81,7 +192,51 @@ export default function NewsIntelligencePage() {
     setRunning(false);
   };
 
+  // Guard: a pipeline run can take several seconds. This ref blocks
+  // overlapping runs — whether triggered by the on-mount stale check,
+  // the hourly interval, or a fast double-click on the manual button.
+  const pipelineInFlightRef = useRef(false);
+  // Guard so the on-mount stale trigger only fires once per session
+  // (without it, every 10s re-render would re-run the pipeline).
+  const didInitialStaleTriggerRef = useRef(false);
+
+  const runPipelineSilent = useCallback(async () => {
+    if (pipelineInFlightRef.current) return;
+    pipelineInFlightRef.current = true;
+    try {
+      await fetch('/api/news-engine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      await load();
+    } catch { /* best effort — manual "Run Pipeline" button still works */ }
+    finally { pipelineInFlightRef.current = false; }
+  }, [load]);
+
+  // Re-fetch whenever the window changes (load itself is memoized on windowKey).
   useEffect(() => { load(); }, [load]);
+
+  // On first DB read, if the newest row is older than the staleness
+  // threshold, silently kick the pipeline so the page shows fresh
+  // news on arrival without a manual button click.
+  useEffect(() => {
+    if (loading || didInitialStaleTriggerRef.current) return;
+    if (events.length === 0) return;
+    const latest = events[0]?.publishedAt;
+    if (!latest) return;
+    const ageMs = Date.now() - new Date(latest).getTime();
+    if (!Number.isFinite(ageMs) || ageMs < AUTO_PIPELINE_STALE_MS) return;
+
+    didInitialStaleTriggerRef.current = true;
+    void runPipelineSilent();
+  }, [loading, events, runPipelineSilent]);
+
+  // NOTE: the client-side hourly pipeline trigger has been removed.
+  // The in-process scheduler (src/lib/workers/bootInProc.ts) runs the
+  // full news pipeline every 5 min on the server, so we no longer
+  // need the tab to babysit ingestion. The 10-second DB poll below
+  // is enough to pick up what the server writes.
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
@@ -99,16 +254,12 @@ export default function NewsIntelligencePage() {
 
   const impactEntries = Object.entries(impacts).sort(([, a], [, b]) => b.aggregateImpact - a.aggregateImpact);
 
-  // "Symbols Impacted" — union of symbols across all loaded events
-  // AND symbols already scored into impact rows. Previously this was
-  // `impactEntries.length`, which only counts symbols that have score
-  // cards in q365_news_scores. Newly-ingested articles with extracted
-  // symbols but no score cards yet (scoring runs after ingestion)
-  // were invisible. This union surfaces every symbol the resolver
-  // attached to any event in the current window, whether or not
-  // scoring has caught up.
+  // "Symbols Impacted" — count ONLY symbols attached to events in the
+  // currently-visible window. The `impactEntries` feed comes from a
+  // separate 24 h query on q365_news_scores, so unioning with it
+  // (previous logic) produced the "1 event, 20 symbols" inconsistency
+  // the user reported. Scoped tight to what's on screen.
   const symbolsImpactedSet = new Set<string>();
-  for (const [sym] of impactEntries) symbolsImpactedSet.add(sym.toUpperCase());
   for (const e of events) {
     if (Array.isArray(e.symbols)) {
       for (const sym of e.symbols) {
@@ -136,10 +287,75 @@ export default function NewsIntelligencePage() {
   return (
     <AppShell>
       <div className={s.pageHeader}>
-        <span className={s.pageTitle}><Newspaper size={24} style={{ display:'inline', verticalAlign:'middle', marginRight:8 }} />News Intelligence</span>
-        <button className={s.refreshBtn} onClick={triggerPipeline} disabled={running}>
-          <RefreshCw size={14} className={running ? s.spin : ''} /> {running ? 'Running Pipeline...' : 'Run Pipeline'}
-        </button>
+        <span className={s.pageTitle}>
+          <Newspaper size={24} style={{ display:'inline', verticalAlign:'middle', marginRight:8 }} />
+          News Intelligence
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* LIVE status pill — ticks every second from the 1Hz
+              wall clock, so "updated Xs ago" is honest without
+              needing a re-fetch. Dot pulses while visible. */}
+          {lastFetchMs != null && (() => {
+            const ageMs = Math.max(0, nowMs - lastFetchMs);
+            const live  = ageMs < 30_000;
+            const dotColor = live ? '#16A34A' : '#D97706';
+            const label =
+              ageMs < 2_000  ? 'just now'  :
+              ageMs < 60_000 ? `${Math.floor(ageMs / 1000)}s ago` :
+              ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)}m ago` :
+              `${Math.floor(ageMs / 3_600_000)}h ago`;
+            return (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                fontSize: 11, fontWeight: 700,
+                padding: '3px 10px', borderRadius: 99,
+                background: live ? '#ECFDF5' : '#FFFBEB',
+                color:      live ? '#166534' : '#92400E',
+                border: `1px solid ${live ? '#BBF7D0' : '#FDE68A'}`,
+              }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: dotColor,
+                  boxShadow: live ? `0 0 0 0 ${dotColor}80` : 'none',
+                  animation: live ? 'ni-pulse 1.6s ease-out infinite' : 'none',
+                }} />
+                {live ? 'LIVE' : 'STALE'} · updated {label}
+              </span>
+            );
+          })()}
+          <style jsx global>{`
+            @keyframes ni-pulse {
+              0%   { box-shadow: 0 0 0 0 rgba(22,163,74,0.55); }
+              70%  { box-shadow: 0 0 0 8px rgba(22,163,74,0); }
+              100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); }
+            }
+          `}</style>
+          <button className={s.refreshBtn} onClick={triggerPipeline} disabled={running}>
+            <RefreshCw size={14} className={running ? s.spin : ''} /> {running ? 'Running Pipeline...' : 'Run Pipeline'}
+          </button>
+        </div>
+      </div>
+
+      {/* Freshness filter bar */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+        {WINDOW_OPTIONS.map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setWindowKey(opt.key)}
+            style={{
+              padding: '4px 12px',
+              fontSize: 11,
+              fontWeight: 700,
+              borderRadius: 99,
+              cursor: 'pointer',
+              border: `1px solid ${windowKey === opt.key ? '#1D4ED8' : '#E2E8F0'}`,
+              background: windowKey === opt.key ? '#DBEAFE' : 'white',
+              color: windowKey === opt.key ? '#1D4ED8' : '#475569',
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
       {pipelineMsg && (
@@ -163,7 +379,7 @@ export default function NewsIntelligencePage() {
       )}
 
       <div className={s.statsRow}>
-        <div className={s.statBox}><div className={s.statLabel}>Events (3d)</div><div className={s.statValue}>{events.length}</div></div>
+        <div className={s.statBox}><div className={s.statLabel}>Events ({windowKey})</div><div className={s.statValue}>{events.length}</div></div>
         <div className={s.statBox}><div className={s.statLabel}>Symbols Impacted</div><div className={s.statValue}>{symbolsImpactedCount}</div></div>
         <div className={s.statBox}><div className={s.statLabel} style={{ color:'#059669' }}>Positive</div><div className={s.statValue} style={{ color:'#059669' }}>{sentimentCounts.positive}</div></div>
         <div className={s.statBox}><div className={s.statLabel}>Neutral</div><div className={s.statValue}>{sentimentCounts.neutral}</div></div>
@@ -231,8 +447,13 @@ export default function NewsIntelligencePage() {
                       +{syms.length - 6}
                     </span>
                   )}
-                  <span>{e.source_id}</span>
-                  <span>{formatPublishedAt(e.publishedAt)}</span>
+                  <span>{e.sourceId ?? e.source_id ?? '—'}</span>
+                  <span style={{ color: '#475569', fontWeight: 600 }}>
+                    {formatRelative(e.publishedAt, nowMs) || formatPublishedAt(e.publishedAt)}
+                  </span>
+                  <span style={{ color: '#94A3B8', fontSize: 10 }}>
+                    {formatPublishedAt(e.publishedAt)}
+                  </span>
                 </div>
               </div>
             );
