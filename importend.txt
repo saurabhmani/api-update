@@ -1,0 +1,457 @@
+You are working on the Quantorus365 News Intelligence module.
+
+Objective:
+Verify that the expected result after NewsAPI integration is actually working.
+
+Context:
+The following adapters should now be available or already existing:
+
+1. Economic Times RSS
+2. MoneyControl RSS
+3. GNews
+4. NewsData.io
+5. Finnhub
+6. NewsAPI.org
+
+Recent work completed:
+- newsApiAdapter.ts was created.
+- newsapi was added to NewsSourceId and SOURCE_CLASS_MAP.
+- newsapi was registered in ingestAll.ts.
+- newsapi trust scoring was added.
+- newsapi calibration config was added.
+- GNews, NewsData, and Finnhub adapters were audited.
+- Typecheck passed.
+- Build passed.
+
+Now verify the expected result end-to-end.
+
+IMPORTANT:
+Do not fake news.
+Do not insert dummy news.
+Do not show UI refresh time as latest news time.
+Do not expose API keys in frontend.
+Do not break existing RSS adapters.
+Do not break Signal Engine.
+Do not treat news as direct BUY/SELL signals.
+
+================================================================================
+STEP 1 — VERIFY ENV VARIABLES
+================================================================================
+
+Check that the backend reads these environment variables:
+
+GNEWS_API_KEY
+NEWSDATA_API_KEY
+FINNHUB_API_KEY
+NEWSAPI_API_KEY
+
+Important:
+The NewsAPI adapter uses:
+
+NEWSAPI_API_KEY
+
+not:
+
+NEWSAPI_KEY
+
+If any key is missing:
+- the source should be marked NOT_CONFIGURED or skipped safely.
+- the pipeline should continue with other sources.
+- the app should not crash.
+
+Verify .env.local or deployment env contains:
+
+GNEWS_API_KEY=...
+NEWSDATA_API_KEY=...
+FINNHUB_API_KEY=...
+NEWSAPI_API_KEY=...
+
+Optional:
+NEWS_PIPELINE_ENABLED=true
+NEWS_PIPELINE_INTERVAL_MINUTES=5
+NEWS_DEFAULT_COUNTRY=in
+NEWS_DEFAULT_LANGUAGE=en
+
+================================================================================
+STEP 2 — VERIFY ADAPTER REGISTRATION
+================================================================================
+
+Review:
+
+src/lib/news-engine/ingestion/ingestAll.ts
+src/lib/news-engine/ingestion/gnewsAdapter.ts
+src/lib/news-engine/ingestion/newsDataAdapter.ts
+src/lib/news-engine/ingestion/finnhubAdapter.ts
+src/lib/news-engine/ingestion/newsApiAdapter.ts
+src/lib/news-engine/ingestion/rssAdapter.ts
+
+Confirm that ALL_ADAPTERS includes:
+
+- RSS adapter / Economic Times
+- RSS adapter / MoneyControl
+- GNews adapter
+- NewsData adapter
+- Finnhub adapter
+- NewsAPI adapter
+
+Expected:
+The orchestrator should call all configured adapters during Run Pipeline.
+
+================================================================================
+STEP 3 — VERIFY API KEY SAFETY
+================================================================================
+
+Confirm:
+
+1. API keys are read only on server side.
+2. No API key is referenced in client components.
+3. No API key is printed to browser console.
+4. No API key is returned in API response.
+5. No API key is committed into source code.
+
+Search for:
+
+GNEWS_API_KEY
+NEWSDATA_API_KEY
+FINNHUB_API_KEY
+NEWSAPI_API_KEY
+
+Expected:
+They should appear only in server-side ingestion/config files.
+
+================================================================================
+STEP 4 — RUN NEWS PIPELINE
+================================================================================
+
+Run the news pipeline manually.
+
+Use one or more of these depending on existing API structure:
+
+POST /api/news-engine
+POST /api/news-engine?action=run-pipeline
+GET /api/news-engine?action=summary
+GET /api/news-engine?action=source-status
+GET /api/news-engine?action=events
+
+If exact API format differs, inspect:
+
+src/app/api/news-engine/route.ts
+
+Then use the correct endpoints.
+
+Expected pipeline summary should show:
+
+- fetchedTotal
+- insertedTotal
+- duplicateTotal
+- failedSources
+- sourceStatus array
+- latestPipelineRunAt
+- latestNewsPublishedAt
+
+Each source status should include:
+
+{
+  source,
+  configured,
+  fetched,
+  inserted,
+  duplicates,
+  error,
+  lastFetchedAt
+}
+
+================================================================================
+STEP 5 — VERIFY SOURCE STATUS
+================================================================================
+
+Check source-level results.
+
+Expected sources:
+
+1. Economic Times RSS
+2. MoneyControl RSS
+3. GNews
+4. NewsData
+5. Finnhub
+6. NewsAPI
+
+For each source, verify one of these states:
+
+ACTIVE:
+- configured: true
+- fetched > 0 or duplicates > 0
+- no fatal error
+
+NOT_CONFIGURED:
+- API key missing
+- skipped safely
+
+FAILED:
+- API call failed
+- error captured
+- pipeline continued
+
+NO_RECENT_NEWS:
+- configured but provider returned no fresh articles
+
+Expected:
+One source failure must not fail the whole pipeline.
+
+================================================================================
+STEP 6 — VERIFY NEWS EVENTS STORAGE
+================================================================================
+
+Check whether normalized news events are stored.
+
+Inspect database table used by News Intelligence, likely something like:
+
+q365_news_events
+news_events
+q365_news_intelligence_events
+
+Search code for insert/upsert logic.
+
+Verify stored rows include:
+
+- source
+- title
+- summary or description
+- url
+- published_at
+- fetched_at
+- sentiment
+- sentiment_score
+- event_type
+- impact_score
+- source_trust_score
+- freshness_score
+- symbols / companies if available
+- external_id / dedup key
+
+Confirm deduplication works:
+- Same URL/title should not create repeated duplicates on every pipeline run.
+- duplicateTotal should increase on repeated runs.
+
+================================================================================
+STEP 7 — VERIFY NEWS INTELLIGENCE UI
+================================================================================
+
+Open:
+
+/news-intelligence
+
+Important:
+Default testing window should be Last 24h, not Last 10 min.
+
+Verify the page shows:
+
+- News Pipeline Status
+- Active Sources
+- Configured Sources count
+- Latest Pipeline Run
+- Latest News Event
+- Source-wise counts
+- Failed / Not Configured sources
+- Events in Last 24h if available
+
+Expected:
+Last 10 min can naturally be 0.
+Last 24h should show events if APIs/RSS returned articles.
+
+Fix misleading label if present:
+Do not show:
+
+"FRESH · updated just now"
+
+if only the UI refreshed.
+
+Instead distinguish:
+
+- UI refreshed at
+- Pipeline last ran at
+- Latest news event published at
+
+================================================================================
+STEP 8 — VERIFY API RESPONSES ARE JSON
+================================================================================
+
+All News Intelligence APIs must return JSON even on error.
+
+Test:
+
+curl -i http://localhost:3000/api/news-engine
+curl -i http://localhost:3000/api/news-engine?action=summary
+curl -i http://localhost:3000/api/news-engine?action=source-status
+curl -i http://localhost:3000/api/news-engine?action=events
+curl -i -X POST http://localhost:3000/api/news-engine
+
+Expected:
+content-type includes application/json
+
+Not acceptable:
+text/html error page
+
+If any route returns HTML, wrap route logic in try/catch and return JSON error envelope:
+
+{
+  ok: false,
+  error,
+  route,
+  generatedAt
+}
+
+================================================================================
+STEP 9 — VERIFY SIGNAL ENGINE NEWS IMPACT READINESS
+================================================================================
+
+Review if newsImpact object exists or is prepared.
+
+Search for:
+
+newsImpact
+news_event
+news intelligence
+sourceTrustScore
+eventRiskScore
+impactScore
+sentimentScore
+
+Expected newsImpact shape:
+
+newsImpact: {
+  sentiment,
+  sentimentScore,
+  impactScore,
+  eventRiskScore,
+  latestNewsAt,
+  sourceTrustScore,
+  eventTypes,
+  canAffectSignalEngine,
+  explanation
+}
+
+Policy:
+- Positive news can only slightly boost confidence.
+- Negative/regulatory/fraud news can reduce confidence or risk-restrict.
+- Breaking news can add volatility warning.
+- Old news should not affect live approval.
+- Missing news should not block approval.
+- Low-trust source should not hard-block signals.
+
+If full Signal Engine integration is not implemented yet, confirm at least:
+- news events are available for future signal context.
+- TODO is documented.
+
+================================================================================
+STEP 10 — VERIFY LIVE NEWS EXPECTATION
+================================================================================
+
+Clarify expected behavior:
+
+1. Last 10 min may be 0 naturally.
+2. Last 24h should show events if providers returned news.
+3. UI refresh does not mean fresh news.
+4. Pipeline run time and latest article publish time must be separate.
+5. Missing API key should show NOT_CONFIGURED, not crash.
+6. Provider rate limit/error should show FAILED/PARTIAL, not crash.
+7. Duplicate articles should be deduped.
+
+================================================================================
+STEP 11 — BUILD AND TYPECHECK
+================================================================================
+
+Run:
+
+npx tsc --noEmit -p tsconfig.json
+npm run build
+
+If available:
+
+npm test
+npm run lint
+
+If lint requires interactive setup, report it clearly.
+
+================================================================================
+STEP 12 — FINAL OUTPUT REQUIRED
+================================================================================
+
+After verification, provide:
+
+1. Env keys detected:
+   - GNEWS_API_KEY
+   - NEWSDATA_API_KEY
+   - FINNHUB_API_KEY
+   - NEWSAPI_API_KEY
+
+Do not print actual key values.
+Only say configured / missing.
+
+2. Adapters registered:
+   - ET RSS
+   - MoneyControl RSS
+   - GNews
+   - NewsData
+   - Finnhub
+   - NewsAPI
+
+3. Pipeline run result:
+   - fetchedTotal
+   - insertedTotal
+   - duplicateTotal
+   - failedSources
+   - latestPipelineRunAt
+   - latestNewsPublishedAt
+
+4. Source-wise status:
+   - source name
+   - configured yes/no
+   - fetched count
+   - inserted count
+   - duplicate count
+   - error if any
+
+5. UI verification:
+   - /news-intelligence loads yes/no
+   - Last 24h shows events yes/no
+   - Last 10 min behavior explained
+   - freshness label corrected yes/no
+
+6. API verification:
+   - /api/news-engine returns JSON yes/no
+   - summary returns JSON yes/no
+   - events returns JSON yes/no
+   - source-status returns JSON yes/no
+   - run-pipeline returns JSON yes/no
+
+7. Signal Engine readiness:
+   - newsImpact added/prepared yes/no
+   - whether news currently affects signal scoring
+   - whether effect is warning/context only or scoring modifier
+
+8. Build/typecheck status.
+
+9. Remaining TODOs.
+
+Expected final result:
+News Intelligence should confirm whether these sources are active:
+
+- Economic Times RSS
+- MoneyControl RSS
+- GNews
+- NewsData
+- Finnhub
+- NewsAPI
+
+The page should not show "live news 0" just because Last 10 min is empty.
+It should clearly show:
+- pipeline status
+- source status
+- latest pipeline run
+- latest news event
+- source coverage
+- Last 24h events
+- missing/failed providers
+
+No fake news should be inserted.

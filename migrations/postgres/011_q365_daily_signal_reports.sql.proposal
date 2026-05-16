@@ -1,0 +1,71 @@
+-- ════════════════════════════════════════════════════════════════
+--  PHASE_3_DAILY_INTELLIGENCE_2026-05 — recommended (NOT APPLIED).
+--
+--  Persistence sketch for daily report snapshots + per-symbol
+--  learning observations.
+--
+--  STATUS: PROPOSAL ONLY
+--  - `.proposal` suffix keeps the file out of `npm run db:migrate:pg`.
+--  - Phase 3 currently computes the report dynamically on every GET
+--    /api/signals/daily-report request. Persisting the snapshot is
+--    a Phase 3B / Phase 4 optimisation so historical reports can be
+--    retrieved without recomputing.
+--
+--  TODO (Phase 3B / Phase 4):
+--   1. Confirm Postgres schema (`q365`) vs MySQL placement.
+--   2. Wire a writer in a scheduled job (see scheduler hook in
+--      src/lib/workers/scheduler.ts) that runs after market close
+--      ~ 16:00 IST and inserts one report row per trade_date.
+--   3. Backfill historical reports from any persisted signal rows.
+-- ════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS q365_daily_signal_reports (
+  id                 BIGSERIAL PRIMARY KEY,
+  report_date        DATE        NOT NULL,
+  report_status      VARCHAR(24) NOT NULL,         -- COMPLETE / PARTIAL / PENDING / INSUFFICIENT_DATA
+  data_status        VARCHAR(24) NOT NULL,         -- LIVE / STALE / FALLBACK / BOOTSTRAP / INSUFFICIENT_DATA
+  market_status      VARCHAR(64),
+  report_json        JSONB       NOT NULL,         -- full DailySignalReport object
+  data_quality_json  JSONB,                        -- DailyDataQuality slice for fast indexing
+  generated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- One report per trade date.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_q365_daily_reports_date
+  ON q365_daily_signal_reports (report_date);
+
+CREATE INDEX IF NOT EXISTS idx_q365_daily_reports_status
+  ON q365_daily_signal_reports (report_status, report_date DESC);
+
+-- ── Learning observations table (governance-flagged) ─────────────
+-- Records every learning recommendation the daily report surfaces so
+-- analysts can review historical observations and the governance
+-- pipeline can audit which observations were applied / rejected.
+CREATE TABLE IF NOT EXISTS q365_signal_learning_observations (
+  id                  BIGSERIAL PRIMARY KEY,
+  report_date         DATE        NOT NULL,
+  symbol              VARCHAR(64),                  -- nullable; some observations are global
+  observation_type    VARCHAR(48) NOT NULL,         -- INDICATOR / BLOCKER / REGIME / FALSE_NEGATIVE / GLOBAL
+  observation         TEXT        NOT NULL,
+  evidence_json       JSONB,
+  suggested_action    TEXT,
+  governance_status   VARCHAR(48) NOT NULL,         -- REVIEW_REQUIRED / READY_FOR_ANALYST_REVIEW / DO_NOT_APPLY_AUTOMATICALLY
+  priority            VARCHAR(16) NOT NULL,         -- LOW / MEDIUM / HIGH / CRITICAL
+  applied             BOOLEAN     NOT NULL DEFAULT FALSE,
+  applied_at          TIMESTAMPTZ,
+  applied_by          VARCHAR(128),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_q365_learning_obs_date
+  ON q365_signal_learning_observations (report_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_q365_learning_obs_governance
+  ON q365_signal_learning_observations (governance_status, applied, priority);
+
+COMMIT;

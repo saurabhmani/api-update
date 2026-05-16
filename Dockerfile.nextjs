@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════════
+#  Dockerfile.nextjs — production Next.js image
+#
+#  Two-stage build:
+#    1. builder — installs all deps, runs `next build`
+#    2. runner  — copies standalone output, drops dev deps
+#
+#  Assumes `next.config.js` sets `output: 'standalone'` — if it
+#  doesn't, add it. Standalone mode trims node_modules to what the
+#  app actually imports.
+# ════════════════════════════════════════════════════════════════
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+
+RUN addgroup -S q365 && adduser -S q365 -G q365
+
+# If next.config.js uses `output: 'standalone'`:
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+
+USER q365
+EXPOSE 3000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+  CMD wget --spider -q http://localhost:3000/api/market/quote?symbol=HEALTH || exit 1
+
+CMD ["node", "server.js"]

@@ -1,0 +1,309 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+// ── Spin ──────────────────────────────────────────────────────────
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+// ── Section ───────────────────────────────────────────────────────
+// Every dashboard section gets its own stacking context + paint
+// containment so that any absolutely-positioned descendant (Recharts
+// tooltip wrappers, lucide drop-shadow filters, hover state SVGs)
+// CANNOT escape into a sibling section. Without this the chart
+// tooltip used to render numeric labels and dashed reference lines
+// over the Top Rankings / Risk / Manipulation Detection headers
+// (the "ghost numeric labels over section headers" symptom).
+.section {
+  margin-bottom: $s8;
+  position:      relative;
+  isolation:     isolate;
+  // `contain: layout paint` is intentionally NOT used here — too
+  // aggressive (it stops sticky positioning and would clip the
+  // sticky header on long tables). Per-section isolation is enough
+  // because every chart inside is itself contained.
+  &:last-child { margin-bottom: 0; }
+}
+
+// ── Section heading ───────────────────────────────────────────────
+.sectionHead {
+  @include flex-start;
+  gap:           $s2;
+  margin-bottom: $s4;
+  padding-bottom: $s3;
+  // Updated: cyan underline instead of grey border
+  border-bottom: 2px solid $color-glow-light;
+
+  // Title styling applies ONLY to the first <span> directly inside
+  // .sectionHead — that's the actual section title (e.g. "Recent
+  // Decisions", "Top Rankings"). Subsequent badge/metadata spans
+  // (status pills, "As of: <date>" subtitles, "Sorted by..."
+  // captions) must NOT inherit the gradient-text mixin or they get
+  // -webkit-text-fill-color: transparent applied and their inline
+  // colors stop rendering — which is exactly the symptom that broke
+  // the closed-market pills earlier.
+  //
+  // `> span:first-of-type` matches the first <span> direct child;
+  // svg/icon siblings before it don't count toward "first of type".
+  > span:first-of-type {
+    font-size:   $text-md;
+    font-weight: 700;
+    @include gradient-text;
+  }
+
+  // Belt-and-suspenders: any subsequent span gets explicit non-
+  // gradient text so even an accidental ancestor rule cannot make it
+  // transparent. Inline `color` styles win against this baseline
+  // (specificity equal, source-order wins).
+  > span:not(:first-of-type) {
+    -webkit-text-fill-color: currentColor;
+    background-clip:         border-box;
+    -webkit-background-clip: border-box;
+  }
+
+  svg { color: $color-glow-dark; flex-shrink: 0; }
+}
+
+// ── 4-box intel row ───────────────────────────────────────────────
+.intelRow {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(2, 1fr); }
+  @include xl { grid-template-columns: repeat(4, 1fr); }
+}
+
+// ── Intel box ─────────────────────────────────────────────────────
+.intelBox {
+  @include card;
+  padding:    $s4;
+  min-height: 94px;
+  transition: box-shadow $t-fast, border-color $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+  }
+}
+
+// ── Box label ─────────────────────────────────────────────────────
+.boxLabel {
+  font-size:      $text-xs;
+  font-weight:    700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color:          $color-glow-dark;   // cyan instead of grey for labels
+}
+
+// ── Sector grid ───────────────────────────────────────────────────
+.sectorGrid {
+  display: grid;
+  gap:     $s3;
+  grid-template-columns: repeat(2, 1fr);
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(4, 1fr); }
+  @include xl { grid-template-columns: repeat(8, 1fr); }
+}
+
+.sectorChip {
+  border:        1px solid $color-border;
+  border-radius: $r-md;
+  padding:       $s3;
+  display:       flex;
+  flex-direction: column;
+  gap:           $s1;
+  transition:    all $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-sm;
+    border-color: $color-glow-mid;
+    transform:    translateY(-1px);
+  }
+}
+
+// ── Backtesting grid ─────────────────────────────────────────────
+.btGrid {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(2, 1fr); }
+  @include xl { grid-template-columns: repeat(4, 1fr); }
+}
+
+.btStatBox {
+  @include card;
+  padding:    $s4;
+  text-align: center;
+  transition: box-shadow $t-fast, border-color $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+  }
+}
+
+.btStatLabel {
+  font-size:      $text-xs;
+  font-weight:    700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color:          $color-glow-dark;
+  margin-bottom:  $s2;
+}
+
+.btStatValue {
+  font-size:   1.5rem;
+  font-weight: 800;
+}
+
+.btStatSub {
+  font-size:  $text-xs;
+  color:      #64748B;
+  margin-top: $s1;
+}
+
+.btRunRow {
+  display:       flex;
+  align-items:   center;
+  gap:           $s3;
+  padding:       $s3 $s4;
+  border-bottom: 1px solid $color-border;
+  cursor:        pointer;
+  transition:    background $t-fast;
+
+  &:hover { background: rgba($color-glow-light, 0.2); }
+  &:last-child { border-bottom: none; }
+}
+
+.btRunName {
+  flex:        1;
+  font-weight: 700;
+  font-size:   $text-sm;
+}
+
+.btRunMeta {
+  font-size: $text-xs;
+  color:     #64748B;
+}
+
+.btGrid3 {
+  display: grid;
+  gap:     $s4;
+  grid-template-columns: 1fr;
+  margin-bottom: $s4;
+
+  @include md { grid-template-columns: repeat(3, 1fr); }
+}
+
+.btTradeTable {
+  width:           100%;
+  border-collapse: collapse;
+
+  th {
+    padding:        $s2 $s3;
+    text-align:     right;
+    font-size:      $text-xs;
+    color:          #94A3B8;
+    font-weight:    700;
+    background:     #F8FAFC;
+
+    &:first-child, &:nth-child(2) { text-align: left; }
+  }
+
+  td {
+    padding:   $s2 $s3;
+    font-size: $text-sm;
+    text-align: right;
+    border-top: 1px solid #F8FAFC;
+
+    &:first-child, &:nth-child(2) { text-align: left; }
+  }
+}
+
+// ── Opportunity card ──────────────────────────────────────────────
+.oppCard {
+  background:    $color-surface;
+  border:        1px solid $color-border;
+  border-left:   3px solid $color-primary-mid;
+  border-radius: $r-lg;
+  padding:       $s5;
+  box-shadow:    $shadow-sm;
+  transition:    all $t-fast;
+
+  &:hover {
+    box-shadow:   $shadow-glow;
+    border-color: $color-glow-mid;
+    transform:    translateY(-2px);
+  }
+}
+
+// ── Compact opportunity row (dashboard preview only) ──────────
+// The dashboard used to render the SAME big oppCard for every
+// signal it received from /api/signals?action=top — a 6-card stack
+// roughly half a screen tall each, identical to the cards on the
+// /signals page. Operators correctly complained the dashboard
+// became "extremely long because of signals." On the dashboard we
+// now show a tight horizontal row per signal with just the fields
+// that drive a glance decision (symbol / signal / conf / E / SL /
+// T / R:R / Last-Close badge), capped at top-3 with a "View all"
+// link to the dedicated /signals page.
+.oppRowCompact {
+  display:       grid;
+  grid-template-columns: 80px 64px 90px 1fr 1fr 1fr 56px auto;
+  align-items:   center;
+  gap:           $s3;
+  padding:       $s3 $s4;
+  border:        1px solid $color-border;
+  border-left:   3px solid $color-primary-mid;
+  border-radius: $r-md;
+  background:    $color-surface;
+  font-size:     12px;
+  transition:    background $t-fast, border-color $t-fast;
+
+  &:hover {
+    background:   #F8FAFC;
+    border-color: $color-glow-mid;
+  }
+
+  // On narrow screens the 8-column row collapses to a stacked
+  // mini-card (still much more compact than oppCard).
+  @media (max-width: 920px) {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: $s2;
+  }
+}
+
+// ── 3-column grid for dashboard signal preview ────────────────
+// `styles.grid3` was referenced in dashboard/page.tsx but not
+// defined here — the className silently resolved to `undefined`
+// and the signal cards fell back to no-layout, which is partly
+// why the section visually exploded on narrow screens. This
+// class also caps the dashboard signal preview to a single
+// column on desktop so the row reads horizontally (compact).
+.grid3 {
+  display:       grid;
+  grid-template-columns: 1fr;
+  gap:           $s3;
+  margin-bottom: $s4;
+}
+
+// "View all signals" footer link below the compact preview.
+.viewAllLink {
+  display:        inline-flex;
+  align-items:    center;
+  gap:            $s2;
+  margin-top:     $s3;
+  padding:        $s2 $s3;
+  color:          #1D4ED8;
+  font-size:      12px;
+  font-weight:    600;
+  text-decoration:none;
+  border-radius:  $r-md;
+  transition:     background $t-fast;
+
+  &:hover { background: #EFF6FF; }
+}

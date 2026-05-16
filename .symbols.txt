@@ -1,0 +1,17 @@
+{"sym":"BERGEPAINT","dir":"SELL","status":"APPROVED_SIGNAL","cls":"WATCHLIST_ONLY"}
+{"sym":"AFFLE","dir":"SELL","status":"APPROVED_SIGNAL","cls":"WATCHLIST_ONLY"}
+{"sym":"MEDANTA","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"HINDCOPPER","dir":"BUY","status":"APPROVED_SIGNAL","cls":"WATCHLIST_ONLY"}
+{"sym":"GLAND","dir":"BUY","status":"DEVELOPING_SETUP","cls":"WATCHLIST_ONLY"}
+{"sym":"ANTHEM","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"NYKAA","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"CAMS","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"HDFCAMC","dir":"BUY","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"ICICIGI","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"GLENMARK","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"HDFCLIFE","dir":"BUY","status":"DEVELOPING_SETUP","cls":"WATCHLIST_ONLY"}
+{"sym":"BHARTIHEXA","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"DEEPAKNTR","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"DEEPAKFERT","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"CHALET","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}
+{"sym":"GODIGIT","dir":"SELL","status":"DEVELOPING_SETUP","cls":"NO_TRADE"}

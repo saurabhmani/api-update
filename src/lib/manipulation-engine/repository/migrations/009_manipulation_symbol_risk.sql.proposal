@@ -1,0 +1,53 @@
+-- ════════════════════════════════════════════════════════════════
+--  Manipulation Symbol Risk Memory — proposal (not yet applied)
+--
+--  Status: PROPOSAL ONLY. This file is intentionally not wired into
+--  src/lib/manipulation-engine/repository/migrate.ts. The /api/manipulation
+--  ?action=symbols endpoint computes the same shape on the fly from
+--  q365_manipulation_events + q365_manipulation_snapshots, so we get
+--  the UI without taking on the risk of an unverified migration.
+--
+--  When/if we promote this to a real migration:
+--    1. Move this content into a numbered .sql or into migrate.ts.
+--    2. Backfill rows from the existing snapshots/events history.
+--    3. Switch the API helper buildSymbolRiskList() to read from the
+--       table when present, fall back to dynamic computation otherwise.
+--    4. Add a daily worker to upsert one row per (symbol, trade_date).
+--
+--  Risk bands map (kept in sync with SUSPICION_BANDS in
+--  src/lib/manipulation-engine/constants/thresholds.ts):
+--      0-24   LOW
+--      25-49  WATCH
+--      50-69  ELEVATED
+--      70-84  HIGH
+--      85-100 SEVERE
+-- ════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS q365_manipulation_symbol_risk (
+  id                       INT AUTO_INCREMENT PRIMARY KEY,
+  symbol                   VARCHAR(50)   NOT NULL,
+  trade_date               DATE          NOT NULL,
+  latest_event_date        DATE          NULL,
+  latest_scan_at           DATETIME      NULL,
+  manipulation_score       DECIMAL(6,2)  NOT NULL DEFAULT 0,
+  -- LOW | WATCH | ELEVATED | HIGH | SEVERE | UNKNOWN
+  risk_band                VARCHAR(20)   NOT NULL DEFAULT 'UNKNOWN',
+  -- FRESH | STALE | NO_DATA | PARTIAL
+  freshness_status         VARCHAR(20)   NOT NULL DEFAULT 'NO_DATA',
+  alert_count              INT           NOT NULL DEFAULT 0,
+  critical_count           INT           NOT NULL DEFAULT 0,
+  warning_count            INT           NOT NULL DEFAULT 0,
+  dominant_patterns_json   JSON          NULL,
+  evidence_json            JSON          NULL,
+  -- NO_IMPACT | WARNING_ONLY | PENALIZE | RISK_RESTRICT | BLOCK_APPROVAL
+  recommended_action       VARCHAR(30)   NOT NULL DEFAULT 'NO_IMPACT',
+  can_affect_signal_engine TINYINT(1)    NOT NULL DEFAULT 0,
+  created_at               DATETIME      DEFAULT CURRENT_TIMESTAMP,
+  updated_at               DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_qmsr_symbol_date (symbol, trade_date),
+  INDEX idx_qmsr_symbol      (symbol),
+  INDEX idx_qmsr_trade_date  (trade_date),
+  INDEX idx_qmsr_risk_band   (risk_band),
+  INDEX idx_qmsr_freshness   (freshness_status),
+  INDEX idx_qmsr_can_affect  (can_affect_signal_engine)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,0 +1,495 @@
+.heroSection {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  padding-top: 120px;
+  padding-bottom: 80px;
+}
+
+.heroGrid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 40%, transparent 100%);
+}
+
+.heroGlow {
+  position: absolute;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 900px;
+  height: 600px;
+  background: radial-gradient(ellipse at center, rgba(201,168,76,0.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.heroContainer {
+  position: relative;
+  z-index: 1;
+}
+
+.heroInner {
+  max-width: 860px;
+}
+
+.heroStatus {
+  margin-bottom: 32px;
+}
+
+.heroHeadline {
+  margin-bottom: 28px;
+}
+
+.heroHeadlineAccent {
+  display: block;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.heroLede {
+  font-size: clamp(1rem, 1.4vw, 1.2rem);
+  max-width: 620px;
+  margin-bottom: 48px;
+  line-height: 1.75;
+}
+
+.heroCtas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.heroMetrics {
+  margin-top: 80px;
+  padding-top: 40px;
+  border-top: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  max-width: 580px;
+}
+
+.heroMetricNum {
+  font-family: var(--font-display);
+  font-size: 2.8rem;
+  color: var(--gold);
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.heroMetricLabel {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.problemSection {
+  background: var(--surface-1);
+}
+
+.problemGrid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 80px;
+  align-items: start;
+}
+
+.problemHeading {
+  max-width: 320px;
+}
+
+.problemList {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
+.problemItem {
+  padding-left: 24px;
+  border-left: 1px solid var(--border-gold);
+}
+
+.problemItemTitle {
+  margin-bottom: 12px;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: 1.05rem;
+}
+
+.problemItemBody {
+  font-size: 0.9375rem;
+}
+
+.buildingGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: center;
+}
+
+.buildingHeading {
+  margin-bottom: 24px;
+}
+
+.buildingPara {
+  margin-bottom: 20px;
+  font-size: 0.9375rem;
+}
+
+.buildingParaLast {
+  margin-bottom: 32px;
+  font-size: 0.9375rem;
+}
+
+.buildingCards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.buildingCard {
+  padding: 24px;
+}
+
+.buildingCardDot {
+  width: 8px;
+  height: 8px;
+  background: var(--gold);
+  border-radius: 50%;
+  margin-bottom: 16px;
+}
+
+.buildingCardTitle {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  margin-bottom: 8px;
+}
+
+.buildingCardBody {
+  font-size: 0.8125rem;
+}
+
+.engineSection {
+  background: var(--surface-1);
+}
+
+.engineHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 56px;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.engineHeading {
+  max-width: 480px;
+}
+
+.engineHeaderLink {
+  color: var(--gold);
+  font-size: 0.875rem;
+}
+
+.engineGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.engineGridLast {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.engineCardTopRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.engineCardCodename {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.engineCardName {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+}
+
+.engineCardPurpose {
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+
+.engineCardCta {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--gold);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.diffGrid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 80px;
+}
+
+.diffItems {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}
+
+.diffNum {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--gold);
+  margin-bottom: 16px;
+  letter-spacing: 0.1em;
+}
+
+.diffTitle {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  margin-bottom: 10px;
+}
+
+.diffBody {
+  font-size: 0.8125rem;
+}
+
+.maturitySection {
+  background: var(--surface-1);
+}
+
+.maturityIntro {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 80px;
+  margin-bottom: 60px;
+}
+
+.maturityIntroPara {
+  font-size: 0.9375rem;
+  padding-top: 8px;
+}
+
+.maturityTimelineWrap {
+  position: relative;
+}
+
+.maturityTimelineLine {
+  position: absolute;
+  left: 20px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.maturityPhases {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.maturityPhase {
+  display: flex;
+  gap: 40px;
+  align-items: flex-start;
+  padding-bottom: 40px;
+}
+
+.maturityDotWrap {
+  flex-shrink: 0;
+  width: 40px;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.maturityDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.maturityPhaseContent {
+  padding-bottom: 8px;
+}
+
+.maturityPhaseTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.maturityPhaseLabel {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+.maturityPhasePill {
+  font-size: 0.6rem;
+}
+
+.maturityPhaseTitle {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
+.maturityPhaseDesc {
+  font-size: 0.8125rem;
+  max-width: 560px;
+}
+
+.insightsHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 48px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.insightsHeaderLink {
+  color: var(--gold);
+  font-size: 0.875rem;
+}
+
+.insightsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+}
+
+.insightCard {
+  display: block;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 36px;
+  transition: all 0.25s ease;
+  text-decoration: none;
+}
+
+.insightCardCategory {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 16px;
+}
+
+.insightCardTitle {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.2rem;
+  line-height: 1.3;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
+.insightCardExcerpt {
+  font-size: 0.8125rem;
+  margin-bottom: 24px;
+}
+
+.insightCardMeta {
+  display: flex;
+  gap: 16px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.contactSection {
+  background: var(--surface-1);
+}
+
+.contactGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  align-items: center;
+}
+
+.contactHeading {
+  margin-bottom: 20px;
+}
+
+.contactPara {
+  font-size: 0.9375rem;
+  margin-bottom: 32px;
+}
+
+.contactCtas {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.contactList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.contactItem {
+  padding: 20px 24px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.contactItemDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
+.contactItemLabel {
+  font-weight: 500;
+  font-size: 0.875rem;
+  margin-bottom: 4px;
+}
+
+.contactItemDesc {
+  font-size: 0.8125rem;
+}

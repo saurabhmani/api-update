@@ -1,0 +1,641 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+// ── Hero header ───────────────────────────────────────────────────
+.hero {
+  @include card;
+  padding: $s6;
+  margin-bottom: $s5;
+  background: linear-gradient(135deg, $color-primary 0%, #2E75B6 100%);
+  border: none;
+  color: #fff;
+}
+
+.heroTop {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s4;
+  margin-bottom: $s5;
+}
+
+.heroLeft { @include flex-col; gap: $s2; }
+
+.symbol {
+  font-size: $text-3xl;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+}
+
+.companyName {
+  font-size: $text-sm;
+  color: rgba(255,255,255,0.65);
+  font-weight: 400;
+}
+
+.heroRight {
+  text-align: right;
+}
+
+.ltp {
+  font-size: 2.4rem;
+  font-weight: 800;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+
+.change {
+  font-size: $text-md;
+  font-weight: 700;
+  margin-top: $s1;
+
+  &Positive { color: #6EE7B7; }   // lighter green on dark bg
+  &Negative { color: #FCA5A5; }   // lighter red on dark bg
+}
+
+// Quick stats strip in hero
+.heroStats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $s3;
+
+  @include md { grid-template-columns: repeat(4, 1fr); }
+  @include lg { grid-template-columns: repeat(7, 1fr); }
+}
+
+.heroStat {
+  background: rgba(255,255,255,0.10);
+  border-radius: $r-md;
+  padding: $s3 $s4;
+
+  &Label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    margin-bottom: $s1;
+  }
+
+  &Value {
+    font-size: $text-sm;
+    font-weight: 700;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// 52W range bar inside hero
+.rangeBar {
+  margin-top: $s5;
+  padding-top: $s4;
+  border-top: 1px solid rgba(255,255,255,0.15);
+}
+
+.rangeLabels {
+  @include flex-between;
+  font-size: $text-xs;
+  color: rgba(255,255,255,0.55);
+  margin-bottom: $s2;
+}
+
+.rangeTrack {
+  height: 4px;
+  background: rgba(255,255,255,0.2);
+  border-radius: $r-full;
+  position: relative;
+}
+
+.rangeFill {
+  position: absolute;
+  top: 0; left: 0;
+  height: 100%;
+  background: rgba(255,255,255,0.6);
+  border-radius: $r-full;
+}
+
+.rangeDot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.3);
+}
+
+// ── Tab bar ───────────────────────────────────────────────────────
+.tabBar {
+  display: flex;
+  gap: 2px;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  padding: $s1;
+  margin-bottom: $s5;
+  overflow-x: auto;
+  @include thin-scroll;
+  flex-wrap: nowrap;
+}
+
+.tab {
+  padding: $s2 $s4;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-muted;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all $t-fast;
+  border: 1px solid transparent;
+  background: none;
+  font-family: inherit;
+  @include focus-ring;
+
+  &:hover { color: $color-text; background: $color-bg; }
+
+  &Active {
+    background: $color-primary;
+    color: #fff;
+    border-color: transparent;
+    box-shadow: $shadow-xs;
+  }
+}
+
+// ── Panel base ────────────────────────────────────────────────────
+.panel {
+  animation: fade-up 0.18s ease;
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// SUMMARY TAB
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.summaryGrid {
+  display: grid;
+  gap: $s4;
+  grid-template-columns: 1fr;
+
+  @include lg { grid-template-columns: 1fr 1fr; }
+}
+
+.kv {
+  @include flex-between;
+  padding: $s3 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+
+  &Label { color: $color-muted; font-weight: 500; }
+  &Value { font-weight: 600; color: $color-text; font-variant-numeric: tabular-nums; }
+}
+
+// Score ring
+.scoreRing {
+  @include flex-center;
+  flex-direction: column;
+  gap: $s2;
+  padding: $s6;
+}
+
+.ringWrap {
+  position: relative;
+  width: 100px; height: 100px;
+}
+
+.ringLabel {
+  font-size: $text-xs;
+  color: $color-muted;
+  text-align: center;
+  font-weight: 500;
+}
+
+.ringValue {
+  position: absolute;
+  inset: 0;
+  @include flex-center;
+  flex-direction: column;
+  font-size: $text-xl;
+  font-weight: 800;
+  color: $color-primary;
+  line-height: 1;
+}
+
+.ringSub {
+  font-size: $text-xs;
+  color: $color-muted;
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// RECOMMENDATION TAB (signal + reasons)
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.recHeader {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s4;
+  margin-bottom: $s5;
+}
+
+.recVerdict {
+  display: inline-flex;
+  align-items: center;
+  gap: $s3;
+  padding: $s3 $s5;
+  border-radius: $r-full;
+  font-size: $text-lg;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+
+  &BUY  { background: $color-accent-light;   color: darken(#16A34A, 10%); border: 1px solid #BBF7D0; }
+  &SELL { background: $color-danger-light;   color: $color-danger;        border: 1px solid #FECACA; }
+  &HOLD { background: #F1F5F9;               color: $color-muted;         border: 1px solid $color-border; }
+}
+
+.confBlock {
+  text-align: right;
+
+  &Pct  { font-size: 2rem; font-weight: 800; color: $color-primary; line-height: 1; }
+  &Label { font-size: $text-xs; color: $color-muted; margin-top: $s1; }
+}
+
+.confBarWide {
+  height: 8px;
+  background: $color-border;
+  border-radius: $r-full;
+  overflow: hidden;
+  margin: $s4 0;
+
+  &Fill {
+    height: 100%;
+    border-radius: $r-full;
+    transition: width 0.7s ease;
+
+    &High   { background: linear-gradient(90deg, $color-accent, #22C55E); }
+    &Medium { background: linear-gradient(90deg, $color-warning, #F59E0B); }
+    &Low    { background: linear-gradient(90deg, $color-danger, #F87171); }
+  }
+}
+
+.levels {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $s3;
+  margin: $s5 0;
+
+  @include md { grid-template-columns: repeat(4, 1fr); }
+}
+
+.levelBox {
+  background: $color-bg;
+  border-radius: $r-md;
+  padding: $s4;
+  text-align: center;
+  border: 1px solid $color-border;
+
+  &Label { font-size: $text-xs; color: $color-muted; font-weight: 600; margin-bottom: $s2; text-transform: uppercase; letter-spacing: 0.5px; }
+  &Value { font-size: $text-lg; font-weight: 800; }
+
+  &--entry  .levelBoxValue { color: $color-primary; }
+  &--sl     .levelBoxValue { color: $color-danger; }
+  &--t1     .levelBoxValue { color: $color-accent; }
+  &--t2     .levelBoxValue { color: darken(#16A34A, 8%); }
+}
+
+.reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.reasonRow {
+  @include flex-start;
+  gap: $s3;
+  padding: $s3 0;
+  border-bottom: 1px solid $color-border;
+
+  &:last-child { border-bottom: none; }
+}
+
+.reasonDot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+
+  &Pos { background: $color-accent; }
+  &Neg { background: $color-danger; }
+  &Neu { background: $color-disabled; }
+}
+
+.reasonText { font-size: $text-sm; color: $color-text-2; line-height: 1.5; flex: 1; }
+.reasonKey  { font-size: $text-xs; color: $color-muted; flex-shrink: 0; font-family: $font-mono; }
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// PRICE MOVEMENT TAB (chart)
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.chartToolbar {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s3;
+  margin-bottom: $s4;
+}
+
+.intervalGroup {
+  @include flex-start;
+  gap: $s1;
+}
+
+.intervalBtn {
+  padding: $s1 $s3;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-muted;
+  cursor: pointer;
+  border: 1px solid $color-border;
+  background: $color-surface;
+  transition: all $t-fast;
+  font-family: inherit;
+
+  &:hover     { border-color: $color-primary-hover; color: $color-primary; }
+  &Active     { background: $color-primary; color: #fff; border-color: $color-primary; }
+}
+
+.chartWrap {
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  padding: $s4;
+  overflow: hidden;
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// RETURNS TAB
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.returnsGrid {
+  display: grid;
+  gap: $s3;
+  grid-template-columns: repeat(2, 1fr);
+
+  @include md { grid-template-columns: repeat(3, 1fr); }
+}
+
+.returnCard {
+  @include card;
+  padding: $s4;
+  text-align: center;
+
+  &Period {
+    font-size: $text-xs;
+    color: $color-muted;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: $s2;
+  }
+
+  &Value {
+    font-size: $text-xl;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// SCORE / QUALITY / VALUATION / TECHNICALS / FINANCIAL TREND
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.scoreGrid {
+  display: grid;
+  gap: $s4;
+  grid-template-columns: 1fr;
+
+  @include lg { grid-template-columns: repeat(2, 1fr); }
+}
+
+.pillarCard {
+  @include card;
+  padding: $s5;
+
+  &Head {
+    @include flex-between;
+    margin-bottom: $s4;
+  }
+
+  &Title {
+    font-size: $text-md;
+    font-weight: 700;
+    color: $color-text;
+  }
+
+  &Score {
+    font-size: $text-2xl;
+    font-weight: 800;
+    color: $color-primary;
+  }
+}
+
+.pillarBar {
+  @include flex-between;
+  align-items: center;
+  gap: $s3;
+  padding: $s2 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+
+  &Label { color: $color-text-2; flex: 1; }
+
+  &Track {
+    width: 120px;
+    height: 6px;
+    background: $color-border;
+    border-radius: $r-full;
+    overflow: hidden;
+    flex-shrink: 0;
+
+    &Fill {
+      height: 100%;
+      border-radius: $r-full;
+      transition: width 0.6s ease;
+    }
+  }
+
+  &Val { font-weight: 700; color: $color-text; font-size: $text-xs; min-width: 32px; text-align: right; }
+}
+
+// Meter gauge (overall score)
+.meter {
+  @include flex-center;
+  padding: $s6;
+}
+
+.meterLabel {
+  font-size: $text-xs;
+  color: $color-muted;
+  text-align: center;
+  margin-top: $s3;
+}
+
+.meterValue {
+  font-size: $text-2xl;
+  font-weight: 800;
+  text-align: center;
+  margin-top: $s1;
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// NEWS TAB
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.newsItem {
+  @include flex-start;
+  gap: $s4;
+  padding: $s4 0;
+  border-bottom: 1px solid $color-border;
+  cursor: pointer;
+  transition: background $t-fast;
+
+  &:last-child { border-bottom: none; }
+  &:hover { background: $color-primary-subtle; margin: 0 #{-$s5}; padding-left: $s5; padding-right: $s5; border-radius: $r-md; }
+}
+
+.newsThumb {
+  width: 56px; height: 56px;
+  border-radius: $r-md;
+  background: $color-bg;
+  flex-shrink: 0;
+  overflow: hidden;
+  @include flex-center;
+  color: $color-muted;
+  font-size: 22px;
+}
+
+.newsBody { flex: 1; min-width: 0; }
+
+.newsTitle {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  line-height: 1.4;
+  margin-bottom: $s1;
+  @include truncate;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.newsMeta {
+  font-size: $text-xs;
+  color: $color-muted;
+  @include flex-start;
+  gap: $s2;
+}
+
+.newsSentiment {
+  font-size: $text-xs;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: $r-full;
+
+  &Positive { background: $color-accent-light;  color: darken(#16A34A, 8%); }
+  &Negative { background: $color-danger-light;  color: $color-danger; }
+  &Neutral  { background: #F1F5F9;              color: $color-muted; }
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// FINANCIALS TAB
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.finTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: $text-sm;
+
+  thead th {
+    padding: $s3 $s4;
+    text-align: right;
+    font-size: $text-xs;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: $color-muted;
+    border-bottom: 2px solid $color-border;
+    background: $color-bg;
+
+    &:first-child { text-align: left; }
+  }
+
+  tbody td {
+    padding: $s3 $s4;
+    text-align: right;
+    border-bottom: 1px solid $color-border;
+    color: $color-text-2;
+    font-variant-numeric: tabular-nums;
+
+    &:first-child { text-align: left; font-weight: 500; color: $color-text; }
+  }
+
+  tbody tr:hover { background: $color-primary-subtle; }
+  tbody tr:last-child td { border-bottom: none; }
+}
+
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+// TECHNICALS TAB
+// ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
+
+.techGrid {
+  display: grid;
+  gap: $s4;
+  grid-template-columns: 1fr;
+
+  @include lg { grid-template-columns: 1fr 1fr; }
+}
+
+.techIndicator {
+  @include flex-between;
+  padding: $s3 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+
+  &Name  { color: $color-text-2; }
+  &Value { font-weight: 700; color: $color-text; font-variant-numeric: tabular-nums; }
+}
+
+.techSignal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: $text-xs;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: $r-full;
+
+  &Buy    { background: $color-accent-light;  color: darken(#16A34A, 8%); }
+  &Sell   { background: $color-danger-light;  color: $color-danger; }
+  &Hold   { background: #F1F5F9;              color: $color-muted; }
+}
+
+// ── Disclaimer ────────────────────────────────────────────────────
+.disclaimer {
+  font-size: $text-xs;
+  color: $color-muted;
+  background: $color-warning-light;
+  border: 1px solid #FDE68A;
+  border-radius: $r-md;
+  padding: $s3 $s4;
+  margin-top: $s5;
+  line-height: 1.5;
+}

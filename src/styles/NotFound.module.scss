@@ -1,0 +1,29 @@
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  text-align: center;
+  padding: 0 24px;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 24px;
+}
+
+.title {
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  margin-bottom: 20px;
+  max-width: 480px;
+}
+
+.text {
+  max-width: 360px;
+  margin-bottom: 40px;
+}

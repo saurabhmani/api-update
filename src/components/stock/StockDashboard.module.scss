@@ -1,0 +1,1165 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+// ═══════════════════════════════════════════════════════════════════
+//  Quantorus365 — Stock Dashboard  (Flat, Professional, Institutional)
+//  No gradients. Strong type. Compact data. Clear hierarchy.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Page scaffold ────────────────────────────────────────────────
+
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.body {
+  display: flex;
+  gap: $s5;
+  align-items: flex-start;
+  margin-top: $s5;
+
+  @include below-lg { flex-direction: column; }
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $s5;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  HERO BAR — solid bg, no gradients
+// ═══════════════════════════════════════════════════════════════════
+
+.hero {
+  background: $color-primary;
+  border-radius: $r-lg;
+  padding: $s5 $s6;
+  color: #fff;
+}
+
+.heroRow {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s4;
+}
+
+.heroIdentity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.heroSymbolLine {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  flex-wrap: wrap;
+}
+
+.heroSymbol {
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+
+.heroPill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: $r-full;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+
+  &--exchange {
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.75);
+  }
+
+  &--buy {
+    background: rgba(22,163,74,0.3);
+    color: #86EFAC;
+  }
+  &--sell {
+    background: rgba(220,38,38,0.3);
+    color: #FCA5A5;
+  }
+  &--hold {
+    background: rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.6);
+  }
+
+  &--regime {
+    background: rgba(99,102,241,0.25);
+    color: #C7D2FE;
+  }
+}
+
+.heroCompany {
+  font-size: $text-sm;
+  color: rgba(255,255,255,0.5);
+  font-weight: 400;
+}
+
+.heroPrice {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.heroLTP {
+  font-size: 2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+
+.heroChange {
+  font-size: $text-sm;
+  font-weight: 700;
+  margin-top: 4px;
+
+  &--up   { color: #86EFAC; }
+  &--down { color: #FCA5A5; }
+}
+
+.heroStatus {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.4);
+  margin-top: 4px;
+}
+
+.statusDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+
+  &--open   { background: #4ADE80; }
+  &--closed { background: #64748B; }
+}
+
+// Hero stats row
+.heroStats {
+  display: flex;
+  gap: $s2;
+  flex-wrap: wrap;
+  margin-top: $s4;
+  padding-top: $s4;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
+
+.heroStat {
+  flex: 1;
+  min-width: 72px;
+}
+
+.heroStatLabel {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.35);
+  margin-bottom: 2px;
+}
+
+.heroStatValue {
+  font-size: $text-sm;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+// Hero actions
+.heroActions {
+  display: flex;
+  gap: $s2;
+  margin-top: $s4;
+}
+
+.heroActionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: rgba(255,255,255,0.65);
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  transition: background $t-fast, color $t-fast;
+  font-family: inherit;
+
+  &:hover {
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+  }
+
+  &--active {
+    background: rgba(0,201,255,0.18);
+    color: #7DD3FC;
+    border-color: rgba(0,201,255,0.15);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TAB BAR
+// ═══════════════════════════════════════════════════════════════════
+
+.tabBar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid $color-border;
+  margin-top: $s5;
+  overflow-x: auto;
+  @include thin-scroll;
+}
+
+.tab {
+  padding: $s3 $s4;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-muted;
+  cursor: pointer;
+  white-space: nowrap;
+  border: none;
+  background: none;
+  border-bottom: 2px solid transparent;
+  transition: color $t-fast, border-color $t-fast;
+  font-family: inherit;
+  @include focus-ring;
+
+  &:hover { color: $color-text; }
+
+  &--active {
+    color: $color-primary;
+    border-bottom-color: $color-primary;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  CHART SECTION
+// ═══════════════════════════════════════════════════════════════════
+
+.chartSection {
+  @include card;
+  padding: $s4 $s5;
+}
+
+.chartToolbar {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s3;
+  margin-bottom: $s3;
+}
+
+.chartTitle {
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+}
+
+.intervalGroup {
+  display: flex;
+  gap: 2px;
+  background: $color-bg;
+  border-radius: $r-md;
+  padding: 2px;
+}
+
+.intervalBtn {
+  padding: 4px 10px;
+  border-radius: $r-sm;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-muted;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  transition: all $t-fast;
+  font-family: inherit;
+
+  &:hover { color: $color-text; }
+
+  &--active {
+    background: $color-primary;
+    color: #fff;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DECISION PANEL  (right sidebar)
+// ═══════════════════════════════════════════════════════════════════
+
+.decisionPanel {
+  width: 300px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 100px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  @include thin-scroll;
+  display: flex;
+  flex-direction: column;
+  gap: $s4;
+
+  @include below-lg {
+    width: 100%;
+    position: static;
+    max-height: none;
+  }
+}
+
+.dpCard {
+  @include card;
+  padding: $s4;
+}
+
+.dpCardAccent {
+  @include card;
+  padding: $s4;
+  border-top: 3px solid $color-primary;
+}
+
+.dpLabel {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: $color-muted;
+  margin-bottom: $s3;
+}
+
+// Signal verdict
+.dpVerdict {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: $s2;
+  padding: $s3 $s4;
+  border-radius: $r-md;
+  font-size: $text-md;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+
+  &--BUY  { background: #F0FDF4; color: #15803D; border: 1px solid #BBF7D0; }
+  &--SELL { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+  &--HOLD { background: $color-bg; color: $color-muted; border: 1px solid $color-border; }
+}
+
+// Score rows
+.dpRow {
+  @include flex-between;
+  padding: 7px 0;
+  font-size: $text-sm;
+
+  & + & { border-top: 1px solid $color-border; }
+}
+
+.dpRowLabel {
+  color: $color-muted;
+  font-weight: 500;
+}
+
+.dpRowValue {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: $color-text;
+  display: flex;
+  align-items: center;
+  gap: $s2;
+}
+
+// Trade levels
+.dpLevels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $s2;
+}
+
+.dpLevel {
+  background: $color-bg;
+  border-radius: $r-md;
+  padding: $s3;
+  text-align: center;
+}
+
+.dpLevelLabel {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: $color-muted;
+  margin-bottom: 2px;
+}
+
+.dpLevelValue {
+  font-size: $text-sm;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+
+  &--entry  { color: $color-primary; }
+  &--stop   { color: $color-danger; }
+  &--target { color: #15803D; }
+}
+
+// RR
+.dpRR {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: $s2;
+  padding: $s2 $s3;
+  background: $color-bg;
+  border-radius: $r-md;
+  margin-top: $s2;
+  font-size: $text-sm;
+}
+
+.dpRRLabel { color: $color-muted; font-weight: 500; }
+.dpRRValue { font-weight: 800; color: $color-primary; }
+
+// Readiness
+.dpReadiness {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: $s2;
+  padding: $s3;
+  border-radius: $r-md;
+  font-size: $text-sm;
+  font-weight: 700;
+
+  &--go     { background: #F0FDF4; color: #15803D; border: 1px solid #BBF7D0; }
+  &--watch  { background: $color-warning-light; color: #92400E; border: 1px solid #FDE68A; }
+  &--block  { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+}
+
+// Event risk
+.dpEvent {
+  display: flex;
+  align-items: flex-start;
+  gap: $s2;
+  padding: $s3;
+  background: $color-bg;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  color: $color-text-2;
+  line-height: 1.5;
+}
+
+// Copy button
+.dpCopy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: $s3;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-primary;
+  background: $color-primary-subtle;
+  border: 1px solid $color-primary-pale;
+  cursor: pointer;
+  transition: background $t-fast;
+  font-family: inherit;
+
+  &:hover { background: $color-primary-pale; }
+
+  &--done {
+    background: #F0FDF4;
+    color: #15803D;
+    border-color: #BBF7D0;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SCORE BAR (reusable)
+// ═══════════════════════════════════════════════════════════════════
+
+.scoreBar {
+  display: inline-block;
+  width: 72px;
+  height: 4px;
+  background: #E8ECF1;
+  border-radius: $r-full;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.scoreBarFill {
+  display: block;
+  height: 100%;
+  border-radius: $r-full;
+  transition: width 0.5s ease;
+
+  &--success { background: #16A34A; }
+  &--warning { background: #D97706; }
+  &--danger  { background: #DC2626; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TAB PANEL WRAPPER
+// ═══════════════════════════════════════════════════════════════════
+
+.panel {
+  animation: fade-up 0.15s ease;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  OVERVIEW TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.grid2 {
+  display: grid;
+  gap: $s4;
+  grid-template-columns: 1fr;
+  @include lg { grid-template-columns: 1fr 1fr; }
+}
+
+.perfRow {
+  display: flex;
+  gap: $s2;
+  flex-wrap: wrap;
+}
+
+.perfItem {
+  flex: 1;
+  min-width: 72px;
+  background: $color-bg;
+  border-radius: $r-md;
+  padding: $s3;
+  text-align: center;
+}
+
+.perfItemLabel {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: $color-muted;
+  margin-bottom: 2px;
+}
+
+.perfItemValue {
+  font-size: $text-md;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.kv {
+  @include flex-between;
+  padding: 8px 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+}
+
+.kvLabel { color: $color-muted; font-weight: 500; }
+.kvValue { font-weight: 600; color: $color-text; font-variant-numeric: tabular-nums; }
+
+// 52W range
+.rangeLabels {
+  @include flex-between;
+  font-size: $text-xs;
+  color: $color-muted;
+  margin-bottom: 6px;
+}
+
+.rangeTrack {
+  height: 4px;
+  background: #E8ECF1;
+  border-radius: $r-full;
+  position: relative;
+}
+
+.rangeFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: $color-primary;
+  border-radius: $r-full;
+  transition: width 0.5s ease;
+}
+
+.rangeDot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  background: $color-primary;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(11,31,58,0.15);
+}
+
+// Score ring
+.scoreRingWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: $s2;
+  padding: $s5;
+}
+
+.scoreRingInner {
+  position: relative;
+}
+
+.scoreRingLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  font-size: $text-xl;
+  font-weight: 800;
+  color: $color-primary;
+  line-height: 1;
+}
+
+.scoreRingSub {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 400;
+}
+
+.scoreRingCaption {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 500;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SIGNALS TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.signalCard {
+  @include card;
+  padding: $s5;
+
+  &--live {
+    border-left: 3px solid $color-primary;
+  }
+}
+
+.signalHeader {
+  @include flex-between;
+  flex-wrap: wrap;
+  gap: $s3;
+  margin-bottom: $s4;
+}
+
+.signalVerdict {
+  display: inline-flex;
+  align-items: center;
+  gap: $s2;
+  padding: 6px 16px;
+  border-radius: $r-full;
+  font-size: $text-md;
+  font-weight: 800;
+
+  &--BUY  { background: #F0FDF4; color: #15803D; }
+  &--SELL { background: #FEF2F2; color: #B91C1C; }
+  &--HOLD { background: $color-bg; color: $color-muted; }
+}
+
+.signalConf {
+  text-align: right;
+}
+
+.signalConfValue {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: $color-primary;
+  line-height: 1;
+}
+
+.signalConfCaption {
+  font-size: $text-xs;
+  color: $color-muted;
+  margin-top: 2px;
+}
+
+// Conf bar
+.confBar {
+  height: 6px;
+  background: #E8ECF1;
+  border-radius: $r-full;
+  overflow: hidden;
+  margin: $s4 0;
+}
+
+.confBarFill {
+  height: 100%;
+  border-radius: $r-full;
+  transition: width 0.6s ease;
+
+  &--high   { background: #16A34A; }
+  &--medium { background: #D97706; }
+  &--low    { background: #DC2626; }
+}
+
+// Levels
+.levelsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $s2;
+  margin: $s4 0;
+
+  @include md { grid-template-columns: repeat(4, 1fr); }
+}
+
+.levelBox {
+  background: $color-bg;
+  border-radius: $r-md;
+  padding: $s3;
+  text-align: center;
+  border: 1px solid $color-border;
+}
+
+.levelBoxLabel {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: $color-muted;
+  margin-bottom: 2px;
+}
+
+.levelBoxValue {
+  font-size: $text-sm;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+
+  &--entry  { color: $color-primary; }
+  &--stop   { color: $color-danger; }
+  &--target { color: #15803D; }
+}
+
+// Reasons
+.reasons {
+  display: flex;
+  flex-direction: column;
+}
+
+.reasonRow {
+  display: flex;
+  align-items: flex-start;
+  gap: $s3;
+  padding: 8px 0;
+  border-bottom: 1px solid $color-border;
+
+  &:last-child { border-bottom: none; }
+}
+
+.reasonDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 6px;
+
+  &--positive { background: #16A34A; }
+  &--negative { background: #DC2626; }
+  &--neutral  { background: #94A3B8; }
+}
+
+.reasonText {
+  font-size: $text-sm;
+  color: $color-text-2;
+  line-height: 1.55;
+  flex: 1;
+}
+
+.reasonKey {
+  font-size: 10px;
+  color: $color-subtle;
+  font-family: $font-mono;
+  flex-shrink: 0;
+}
+
+.freshness {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  font-size: $text-xs;
+  color: $color-muted;
+  margin-top: $s4;
+  padding-top: $s3;
+  border-top: 1px solid $color-border;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TECHNICALS TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.techRow {
+  @include flex-between;
+  padding: 8px 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+}
+
+.techName { color: $color-text-2; font-weight: 500; }
+.techValue { font-weight: 700; font-variant-numeric: tabular-nums; color: $color-text; }
+
+.techChip {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: $r-full;
+  font-size: 10px;
+  font-weight: 700;
+
+  &--bullish { background: #F0FDF4; color: #15803D; }
+  &--bearish { background: #FEF2F2; color: #B91C1C; }
+  &--neutral { background: $color-bg; color: $color-muted; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  FINANCIALS TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.finTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: $text-sm;
+
+  thead th {
+    padding: $s3 $s4;
+    text-align: right;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: $color-muted;
+    border-bottom: 2px solid $color-border;
+    background: $color-bg;
+
+    &:first-child { text-align: left; }
+  }
+
+  tbody td {
+    padding: $s3 $s4;
+    text-align: right;
+    border-bottom: 1px solid $color-border;
+    color: $color-text-2;
+    font-variant-numeric: tabular-nums;
+
+    &:first-child { text-align: left; font-weight: 500; color: $color-text; }
+  }
+
+  tbody tr:hover { background: $color-primary-subtle; }
+  tbody tr:last-child td { border-bottom: none; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  NEWS TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.newsItem {
+  display: flex;
+  align-items: flex-start;
+  gap: $s3;
+  padding: $s4 0;
+  border-bottom: 1px solid $color-border;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  transition: background $t-fast;
+
+  &:last-child { border-bottom: none; }
+  &:hover { background: $color-primary-subtle; margin: 0 #{-$s4}; padding-left: $s4; padding-right: $s4; border-radius: $r-md; }
+}
+
+.newsIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: $r-md;
+  background: $color-bg;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: $color-subtle;
+  flex-shrink: 0;
+}
+
+.newsBody { flex: 1; min-width: 0; }
+
+.newsTitle {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+
+.newsMeta {
+  font-size: $text-xs;
+  color: $color-muted;
+  display: flex;
+  align-items: center;
+  gap: $s2;
+}
+
+.sentimentChip {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: $r-full;
+
+  &--positive { background: #F0FDF4; color: #15803D; }
+  &--negative { background: #FEF2F2; color: #B91C1C; }
+  &--neutral  { background: $color-bg; color: $color-muted; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  PORTFOLIO FIT TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.fitCenter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: $s2;
+  padding: $s6;
+}
+
+.fitRingWrap {
+  position: relative;
+}
+
+.fitRingValue {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: $color-primary;
+  line-height: 1;
+}
+
+.fitRingSub {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 400;
+}
+
+.fitRingCaption {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 500;
+}
+
+.fitFactor {
+  @include flex-between;
+  padding: 8px 0;
+  border-bottom: 1px solid $color-border;
+  font-size: $text-sm;
+
+  &:last-child { border-bottom: none; }
+}
+
+.fitFactorName { color: $color-text-2; font-weight: 500; flex: 1; }
+
+.fitFactorBar {
+  width: 80px;
+  height: 4px;
+  background: #E8ECF1;
+  border-radius: $r-full;
+  overflow: hidden;
+  margin: 0 $s3;
+}
+
+.fitFactorBarFill {
+  height: 100%;
+  border-radius: $r-full;
+  transition: width 0.5s ease;
+}
+
+.fitFactorVal {
+  font-weight: 700;
+  font-size: $text-xs;
+  min-width: 28px;
+  text-align: right;
+  color: $color-text;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  AI EXPLANATION TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.aiBlock {
+  @include card;
+  padding: $s5;
+  margin-bottom: $s4;
+
+  &:last-child { margin-bottom: 0; }
+}
+
+.aiBlockTitle {
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-primary;
+  margin-bottom: $s3;
+  display: flex;
+  align-items: center;
+  gap: $s2;
+}
+
+.aiText {
+  font-size: $text-sm;
+  color: $color-text-2;
+  line-height: 1.7;
+}
+
+.aiCallout {
+  background: $color-bg;
+  border-left: 3px solid $color-primary;
+  padding: $s3 $s4;
+  border-radius: 0 $r-md $r-md 0;
+  margin: $s3 0;
+  font-size: $text-sm;
+  color: $color-text-2;
+  line-height: 1.65;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  HISTORY TAB
+// ═══════════════════════════════════════════════════════════════════
+
+.timeline {
+  position: relative;
+  padding-left: 28px;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: $color-border;
+  }
+}
+
+.tlItem {
+  position: relative;
+  padding-bottom: $s5;
+
+  &:last-child { padding-bottom: 0; }
+}
+
+.tlDot {
+  position: absolute;
+  left: -24px;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px $color-border;
+
+  &--signal  { background: $color-primary; }
+  &--entry   { background: #16A34A; }
+  &--exit    { background: #D97706; }
+  &--reject  { background: #DC2626; }
+  &--default { background: #94A3B8; }
+}
+
+.tlDate {
+  font-size: $text-xs;
+  color: $color-muted;
+  margin-bottom: 2px;
+}
+
+.tlTitle {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  margin-bottom: 2px;
+}
+
+.tlDesc {
+  font-size: $text-xs;
+  color: $color-text-2;
+  line-height: 1.5;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  EMPTY STATE
+// ═══════════════════════════════════════════════════════════════════
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: $s3;
+  padding: $s8;
+  text-align: center;
+}
+
+.emptyIcon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: $color-bg;
+  border-radius: $r-lg;
+  color: $color-subtle;
+}
+
+.emptyTitle {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+}
+
+.emptyDesc {
+  font-size: $text-xs;
+  color: $color-muted;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DISCLAIMER
+// ═══════════════════════════════════════════════════════════════════
+
+.disclaimer {
+  font-size: $text-xs;
+  color: $color-muted;
+  background: $color-bg;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+  padding: $s3 $s4;
+  margin-top: $s4;
+  line-height: 1.5;
+}

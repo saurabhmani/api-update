@@ -1,0 +1,904 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins' as *;
+
+// ═══════════════════════════════════════════════════════════════════
+//  Quantorus365 — Login (Full-screen enterprise auth)
+//  Stripe / Linear / TradingView-style full-bleed split layout.
+//  Flat, top-level CSS-Module structure.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Page wrapper (full viewport) ────────────────────────────────
+.page {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  background: #0B1F3A;
+  overflow: hidden;
+}
+
+// ─── Modal shell → now full-bleed split layout ──────────────────
+.modal {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  width: 100%;
+  min-height: 100vh;
+  background: #FFFFFF;
+  overflow: hidden;
+  animation: modalIn 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 1;
+}
+
+@media (max-width: 1199px) {
+  .modal { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 899px) {
+  .modal {
+    grid-template-columns: 1fr;
+    min-height: 100vh;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  LEFT BRAND PANEL — full-height hero
+// ═══════════════════════════════════════════════════════════════════
+.brandPanel {
+  position: relative;
+  padding: 4rem clamp(2rem, 5vw, 5rem) 3.5rem;
+  background:
+    radial-gradient(circle at 80% 10%, rgba(0, 201, 255, 0.18), transparent 50%),
+    radial-gradient(circle at 20% 90%, rgba(37, 99, 235, 0.26), transparent 55%),
+    linear-gradient(160deg, #07172E 0%, #0B1F3A 50%, #102E5A 100%);
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 3rem;
+  overflow: hidden;
+  isolation: isolate;
+  min-height: 100vh;
+}
+
+.brandPanel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  pointer-events: none;
+  opacity: 0.6;
+  z-index: 0;
+}
+
+.brandPanel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 60% 40%, rgba(0, 201, 255, 0.06), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+@media (max-width: 899px) {
+  .brandPanel {
+    padding: 3rem 1.5rem 2.5rem;
+    gap: 1.75rem;
+    min-height: auto;
+  }
+}
+
+// ─── Glow orbs (decorative) ──────────────────────────────────────
+.glowOrb {
+  position: absolute;
+  bottom: -180px;
+  left: -120px;
+  width: 480px;
+  height: 480px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 201, 255, 0.22) 0%, transparent 70%);
+  filter: blur(30px);
+  pointer-events: none;
+  z-index: 0;
+  animation: orbDrift 14s ease-in-out infinite;
+}
+
+.glowOrbTop {
+  position: absolute;
+  top: -160px;
+  right: -100px;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.28) 0%, transparent 70%);
+  filter: blur(28px);
+  pointer-events: none;
+  z-index: 0;
+  animation: orbDrift 18s ease-in-out infinite reverse;
+}
+
+// ─── Brand header (dot + wordmark) ───────────────────────────────
+.brandHeader {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+// ─── Premium glowing blue dot ────────────────────────────────────
+// Minimal, institutional, modeled on the uploaded reference.
+// Solid mid-blue dot with subtle inner specular highlight + soft glow halo.
+.brandDot {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 30%,
+      #7CC3FF 0%,
+      #2D8DEE 38%,
+      #1A6FD0 78%,
+      #0F4F9E 100%);
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.06),
+    0 2px 6px rgba(15, 79, 158, 0.45),
+    0 0 18px rgba(45, 141, 238, 0.55),
+    inset 0 1px 1px rgba(255, 255, 255, 0.25);
+  flex-shrink: 0;
+  animation: dotBreathe 3.4s ease-in-out infinite;
+}
+
+.brandDot::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(45, 141, 238, 0.45) 0%,
+    rgba(45, 141, 238, 0.12) 45%,
+    transparent 75%);
+  filter: blur(8px);
+  z-index: -1;
+  pointer-events: none;
+  animation: dotHalo 3.4s ease-in-out infinite;
+}
+
+// ─── Brand wordmark typography ───────────────────────────────────
+// Lowercase, bold, tight — matches the reference's institutional feel.
+.brandName {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  color: #FFFFFF;
+  text-transform: lowercase;
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+.brandNameAccent {
+  margin-left: 2px;
+  font-size: 0.55em;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.45);
+  align-self: flex-start;
+  margin-top: 0.15em;
+  font-feature-settings: 'tnum';
+}
+
+@media (max-width: 899px) {
+  .brandName { font-size: 1.375rem; }
+  .brandDot  { width: 13px; height: 13px; }
+}
+
+// ─── Hero body ───────────────────────────────────────────────────
+.brandBody {
+  position: relative;
+  z-index: 2;
+  max-width: 560px;
+}
+
+.brandTitle {
+  font-size: clamp(2.25rem, 4vw, 3.25rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  color: #FFFFFF;
+  margin: 0 0 1.25rem 0;
+}
+
+.brandTitle span {
+  display: block;
+  margin-top: 6px;
+  background: linear-gradient(120deg, #FFFFFF 0%, #00C9FF 80%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.accentBar {
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #00C9FF, #2563EB);
+  box-shadow: 0 0 18px rgba(0, 201, 255, 0.65);
+  margin-bottom: 1.5rem;
+}
+
+.brandSubtitle {
+  font-size: clamp(0.9375rem, 1.1vw, 1.0625rem);
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.75);
+  max-width: 460px;
+  margin: 0;
+}
+
+// ─── Footer checklist ────────────────────────────────────────────
+.brandFooter {
+  position: relative;
+  z-index: 2;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0;
+  margin: 0;
+}
+
+.brandFooterItem {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.brandFooterItem svg {
+  color: #00C9FF;
+  flex-shrink: 0;
+}
+
+// ─── Decorative chart line ───────────────────────────────────────
+.brandChart {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 38%;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.55;
+  mask-image: linear-gradient(to top, #000 30%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent 100%);
+  animation: chartFloat 8s ease-in-out infinite;
+}
+
+@media (max-width: 899px) {
+  .brandChart { height: 50%; opacity: 0.35; }
+}
+
+// ─── Floating ticker chips ───────────────────────────────────────
+.tickerChip {
+  position: absolute;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: rgba(11, 31, 58, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: #FFFFFF;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.25),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+  animation: chipFloat 6s ease-in-out infinite;
+}
+
+.tickerChip1 {
+  top: 22%;
+  right: 8%;
+  animation-delay: 0s;
+}
+
+.tickerChip2 {
+  top: 46%;
+  right: 14%;
+  animation-delay: 1.4s;
+}
+
+.tickerChip3 {
+  top: 64%;
+  right: 6%;
+  animation-delay: 2.8s;
+}
+
+.tickerName {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 600;
+}
+
+.tickerUp {
+  color: #34D399;
+  font-weight: 700;
+}
+
+.tickerDown {
+  color: #F87171;
+  font-weight: 700;
+}
+
+@media (max-width: 1199px) {
+  .tickerChip2 { display: none; }
+}
+
+@media (max-width: 899px) {
+  .tickerChip { display: none; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RIGHT FORM PANEL — full-height
+// ═══════════════════════════════════════════════════════════════════
+.formPanel {
+  position: relative;
+  background: #FFFFFF;
+  padding: 4rem clamp(2rem, 5vw, 5rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+@media (max-width: 899px) {
+  .formPanel {
+    padding: 2.5rem 1.5rem 3rem;
+    min-height: auto;
+  }
+}
+
+.formInner {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+}
+
+.formHeader {
+  margin-bottom: 1.75rem;
+}
+
+.title {
+  font-size: clamp(1.75rem, 2vw, 2rem);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.5px;
+  color: #0B1120;
+  margin: 0 0 6px 0;
+}
+
+.sub {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: #5A6A7E;
+  margin: 0;
+}
+
+// ─── Social buttons ──────────────────────────────────────────────
+.socialRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.socialBtn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 50px;
+  padding: 0 1rem 0 2.75rem;
+  background: #FFFFFF;
+  color: #0B1120;
+  border: 1px solid #E1E8F0;
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  cursor: pointer;
+  transition: border-color 220ms ease, background 220ms ease, transform 220ms ease, box-shadow 220ms ease;
+}
+
+.socialBtn:hover {
+  border-color: #06B6D4;
+  background: #FAFCFE;
+  transform: translateY(-1px);
+  box-shadow: 0 1px 3px rgba(11, 31, 58, 0.08), 0 1px 2px rgba(11, 31, 58, 0.05);
+}
+
+.socialBtn:active { transform: translateY(0); }
+
+.socialBtn:focus-visible {
+  outline: 2px solid #00C9FF;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(0, 201, 255, 0.18);
+}
+
+.socialIcon {
+  position: absolute;
+  left: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// ─── Divider ─────────────────────────────────────────────────────
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-bottom: 1.5rem;
+  color: #8B9DB0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #E1E8F0;
+}
+
+// ─── Error banner ────────────────────────────────────────────────
+.error {
+  padding: 0.875rem 1rem;
+  margin-bottom: 1.125rem;
+  background: rgba(220, 38, 38, 0.06);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  border-radius: 10px;
+  color: #DC2626;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.45;
+  animation: shake 0.32s ease;
+}
+
+// ─── Form ────────────────────────────────────────────────────────
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.125rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.field label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #2D3748;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+.inputWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.inputWrap input {
+  width: 100%;
+  height: 52px;
+  padding: 0 46px 0 46px;
+  background: #F8FAFC;
+  border: 1px solid #E1E8F0;
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  color: #0B1120;
+  outline: none;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.inputWrap input::placeholder { color: #8B9DB0; }
+.inputWrap input:hover        { border-color: #CFD8E3; }
+
+.inputWrap input:focus {
+  background: #FFFFFF;
+  border-color: #06B6D4;
+  box-shadow: 0 0 0 4px rgba(0, 201, 255, 0.14);
+}
+
+.leadingIcon {
+  position: absolute;
+  left: 16px;
+  color: #8B9DB0;
+  pointer-events: none;
+  transition: color 150ms ease;
+  z-index: 1;
+}
+
+.inputWrap:focus-within .leadingIcon { color: #06B6D4; }
+
+.eyeBtn {
+  position: absolute;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #8B9DB0;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+  z-index: 1;
+}
+
+.eyeBtn:hover {
+  color: #2D3748;
+  background: rgba(11, 31, 58, 0.05);
+}
+
+.eyeBtn:focus-visible {
+  outline: 2px solid #2563EB;
+  outline-offset: 2px;
+}
+
+// ─── Row: remember + forgot ──────────────────────────────────────
+.formRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: -0.25rem;
+}
+
+.remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: #2D3748;
+  font-weight: 500;
+  user-select: none;
+  cursor: pointer;
+}
+
+.remember input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #E1E8F0;
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: background 150ms ease, border-color 150ms ease;
+  background: #FFFFFF;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.remember input[type='checkbox']:hover { border-color: #06B6D4; }
+
+.remember input[type='checkbox']:checked {
+  background: #2563EB;
+  border-color: #2563EB;
+}
+
+.remember input[type='checkbox']:checked::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  width: 4px;
+  height: 9px;
+  border: solid #FFFFFF;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.remember input[type='checkbox']:focus-visible {
+  outline: 2px solid #00C9FF;
+  outline-offset: 2px;
+}
+
+.forgot {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #2563EB;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.forgot:hover {
+  color: #1D4ED8;
+  text-decoration: underline;
+}
+
+// ─── Submit ──────────────────────────────────────────────────────
+.submitBtn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 54px;
+  padding: 0 1.25rem;
+  margin-top: 0.5rem;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563EB 0%, #00C9FF 100%);
+  color: #FFFFFF;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 220ms ease, box-shadow 220ms ease, opacity 150ms ease;
+  box-shadow:
+    0 8px 24px rgba(37, 99, 235, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.submitBtn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, #00C9FF 0%, #2563EB 100%);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.submitBtn > * {
+  position: relative;
+  z-index: 1;
+}
+
+.submitBtn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 14px 32px rgba(0, 201, 255, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.submitBtn:hover:not(:disabled)::before { opacity: 1; }
+
+.submitBtn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+
+.submitBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.submitBtn:focus-visible {
+  outline: 2px solid #00C9FF;
+  outline-offset: 2px;
+}
+
+// ─── Signup row ──────────────────────────────────────────────────
+.signupRow {
+  text-align: center;
+  margin: 1.5rem 0 0 0;
+  font-size: 0.8125rem;
+  color: #5A6A7E;
+}
+
+.signupRow a {
+  color: #2563EB;
+  font-weight: 700;
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.signupRow a:hover { text-decoration: underline; }
+
+// ═══════════════════════════════════════════════════════════════════
+//  2FA STATE
+// ═══════════════════════════════════════════════════════════════════
+.twoFa {
+  text-align: center;
+  align-items: center;
+}
+
+.twoFa .formHeader { text-align: center; width: 100%; }
+.twoFa .form       { width: 100%; }
+
+.shieldIcon {
+  width: 76px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  margin: 0 auto 1.5rem;
+  background: linear-gradient(135deg, rgba(0, 201, 255, 0.14), rgba(37, 99, 235, 0.14));
+  color: #2563EB;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 201, 255, 0.22),
+    0 0 0 12px rgba(0, 201, 255, 0.04);
+  animation: shieldPulse 2.4s ease-in-out infinite;
+}
+
+.otpInput {
+  width: 100%;
+  height: 68px;
+  padding: 0 1rem;
+  text-align: center;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 14px;
+  text-indent: 14px;
+  color: #0B1120;
+  background: #F8FAFC;
+  border: 1px solid #E1E8F0;
+  border-radius: 12px;
+  outline: none;
+  transition: background 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+}
+
+.otpInput::placeholder {
+  color: #C5D0DC;
+  font-weight: 600;
+}
+
+.otpInput:focus {
+  background: #FFFFFF;
+  border-color: #06B6D4;
+  box-shadow: 0 0 0 4px rgba(0, 201, 255, 0.14);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem auto 0;
+  padding: 0.5rem 0.875rem;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #5A6A7E;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.back:hover {
+  color: #2563EB;
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.back:focus-visible {
+  outline: 2px solid #2563EB;
+  outline-offset: 2px;
+}
+
+// ─── Utility ─────────────────────────────────────────────────────
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  ANIMATIONS
+// ═══════════════════════════════════════════════════════════════════
+@keyframes modalIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-4px); }
+  75%      { transform: translateX(4px); }
+}
+
+@keyframes shieldPulse {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1px rgba(0, 201, 255, 0.22),
+      0 0 0 12px rgba(0, 201, 255, 0.04);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 1px rgba(0, 201, 255, 0.34),
+      0 0 0 18px rgba(0, 201, 255, 0.06);
+  }
+}
+
+@keyframes orbDrift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(30px, -20px) scale(1.05); }
+}
+
+@keyframes chartFloat {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+@keyframes chipFloat {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-10px); }
+}
+
+@keyframes dotBreathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0.5px rgba(255, 255, 255, 0.06),
+      0 2px 6px rgba(15, 79, 158, 0.45),
+      0 0 18px rgba(45, 141, 238, 0.55),
+      inset 0 1px 1px rgba(255, 255, 255, 0.25);
+  }
+  50% {
+    box-shadow:
+      0 0 0 0.5px rgba(255, 255, 255, 0.08),
+      0 2px 8px rgba(15, 79, 158, 0.55),
+      0 0 26px rgba(45, 141, 238, 0.85),
+      inset 0 1px 1px rgba(255, 255, 255, 0.3);
+  }
+}
+
+@keyframes dotHalo {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 0.95; transform: scale(1.18); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal,
+  .error,
+  .shieldIcon,
+  .submitBtn,
+  .socialBtn,
+  .glowOrb,
+  .glowOrbTop,
+  .brandChart,
+  .tickerChip,
+  .brandDot {
+    animation: none !important;
+    transition: none !important;
+  }
+  .brandDot::before {
+    animation: none !important;
+  }
+}

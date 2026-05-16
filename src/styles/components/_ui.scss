@@ -1,0 +1,200 @@
+@use '../variables' as *;
+@use '../mixins'    as *;
+
+// ── Card ──────────────────────────────────────────────────────────
+.card {
+  @include card;
+  padding: $s5;
+
+  &__header {
+    @include flex-between;
+    margin-bottom: $s4;
+    h3 { font-size:$text-md; font-weight:600; color:$color-text; }
+  }
+
+  &--compact { padding:$s3; }
+  &--flush   { padding:0; overflow:hidden; }
+
+  &--hover {
+    transition: box-shadow $t-base, border-color $t-base;
+    &:hover { box-shadow:$shadow-glow; border-color:$color-glow-mid; }
+  }
+
+  &--glow { @include card-glow; }
+}
+
+// ── Stat card ─────────────────────────────────────────────────────
+.stat-card {
+  @include card;
+  padding: $s5;
+  transition: box-shadow $t-fast, border-color $t-fast;
+  &:hover { box-shadow:$shadow-md; border-color:rgba(0,201,255,0.3); }
+
+  &__icon {
+    @include flex-center;
+    width:38px; height:38px;
+    border-radius:$r-md;
+    margin-bottom:$s3;
+    svg { width:18px; height:18px; }
+
+    &--blue   { background:$color-primary-pale;  color:$color-primary-hover; }
+    &--green  { background:$color-accent-light;  color:$color-accent; }
+    &--orange { background:$color-warning-light; color:$color-warning; }
+    &--red    { background:$color-danger-light;  color:$color-danger; }
+    &--cyan   { background:$color-glow-light;    color:$color-glow-dark; }
+  }
+
+  &__label  { font-size:$text-sm; color:$color-muted; font-weight:500; margin-bottom:$s1; }
+  &__value  { font-size:$text-2xl; font-weight:700; color:$color-text; letter-spacing:-0.5px; }
+  &__change {
+    @include flex-start;
+    gap:2px; font-size:$text-xs; font-weight:600; margin-top:$s1;
+    &.up   { color:$color-accent; }
+    &.down { color:$color-danger; }
+  }
+}
+
+// ── Button ────────────────────────────────────────────────────────
+.btn {
+  @include flex-center;
+  gap:$s2; padding:$s2 $s4;
+  border-radius:$r-md; font-size:$text-sm; font-weight:600;
+  transition:all $t-fast; cursor:pointer;
+  border:1px solid transparent; white-space:nowrap;
+  @include focus-ring-glow;
+  svg { width:14px; height:14px; flex-shrink:0; }
+
+  &--primary  { background:$color-primary-mid; color:#fff; &:hover { background:$color-primary-hover; box-shadow:$shadow-glow; } }
+  &--secondary { background:$color-bg; color:$color-text-2; border-color:$color-border; &:hover { background:$color-border; } }
+  &--success  { background:$color-accent; color:#fff; &:hover { box-shadow:$shadow-glow-green; filter:brightness(0.95); } }
+  &--danger   { background:$color-danger; color:#fff; &:hover { filter:brightness(0.9); } }
+  &--ghost    { color:$color-glow-dark; &:hover { background:$color-glow-light; } }
+  &--outline  { border-color:$color-border; color:$color-text-2; &:hover { border-color:$color-glow-mid; color:$color-glow-dark; } }
+
+  &--sm  { padding:$s1 $s3; font-size:$text-xs; }
+  &--lg  { padding:$s3 $s6; font-size:$text-md; }
+  &--xl  { padding:$s4 $s8; font-size:$text-lg; }
+  &--block { width:100%; justify-content:center; }
+  &:disabled { opacity:0.5; cursor:not-allowed; pointer-events:none; }
+}
+
+// ── Badge ─────────────────────────────────────────────────────────
+.badge {
+  display:inline-flex; align-items:center; gap:3px;
+  padding:2px 7px; border-radius:$r-full;
+  font-size:$text-xs; font-weight:600;
+  background:$color-primary-pale; color:$color-primary-hover;
+
+  &--green  { background:$color-accent-light;  color:darken(#059669,5%); }
+  &--red    { background:$color-danger-light;  color:$color-danger; }
+  &--orange { background:$color-warning-light; color:$color-warning; }
+  &--gray   { background:#F0F4F8;              color:$color-muted; }
+  &--dark   { background:$color-text;          color:#fff; }
+  &--cyan   { background:$color-glow-light;    color:$color-glow-dark; }
+}
+
+// ── Input ─────────────────────────────────────────────────────────
+.input {
+  width:100%; padding:$s2 $s3;
+  border:1px solid $color-border; border-radius:$r-md;
+  font-size:$text-sm; color:$color-text; background:$color-surface;
+  outline:none; transition:border-color $t-fast, box-shadow $t-fast;
+
+  &:focus        { border-color:$color-glow-mid; box-shadow:0 0 0 3px rgba(0,201,255,0.15); }
+  &::placeholder { color:$color-subtle; }
+  &:disabled     { background:$color-bg; cursor:not-allowed; }
+  &--error       { border-color:$color-danger; }
+}
+
+// ── Table ─────────────────────────────────────────────────────────
+.table {
+  width:100%; border-collapse:collapse;
+
+  thead {
+    background:$color-bg;
+    th {
+      padding:$s3 $s4; text-align:left;
+      font-size:$text-xs; font-weight:700; text-transform:uppercase;
+      letter-spacing:0.5px; color:$color-muted;
+      border-bottom:1px solid $color-border; white-space:nowrap;
+    }
+  }
+
+  tbody {
+    tr {
+      border-bottom:1px solid $color-border; transition:background $t-fast;
+      &:hover      { background:rgba(0,201,255,0.04); }
+      &:last-child { border-bottom:none; }
+    }
+    td { padding:$s3 $s4; font-size:$text-sm; color:$color-text-2; vertical-align:middle; }
+  }
+
+  &--compact tbody td { padding:$s2 $s3; }
+}
+
+// ── Empty ─────────────────────────────────────────────────────────
+.empty {
+  @include flex-center;
+  flex-direction:column; gap:$s3; padding:$s12 $s8;
+  text-align:center; color:$color-muted;
+  &__icon { color:$color-subtle; svg { width:44px; height:44px; } }
+  h3 { font-size:$text-md; font-weight:600; color:$color-text; }
+  p  { font-size:$text-sm; color:$color-muted; max-width:260px; }
+}
+
+// ── Loading ───────────────────────────────────────────────────────
+.loading { @include flex-center; gap:$s3; padding:$s10; color:$color-muted; font-size:$text-sm; }
+
+// ── Alert banner ──────────────────────────────────────────────────
+.alert-banner {
+  padding:$s3 $s4; border-radius:$r-md;
+  font-size:$text-sm; font-weight:500; margin-bottom:$s4;
+  @include flex-start; gap:$s2;
+  svg { width:15px; height:15px; flex-shrink:0; }
+  &--success { background:$color-accent-light;  color:darken(#059669,8%); }
+  &--error   { background:$color-danger-light;  color:$color-danger; }
+  &--warning { background:$color-warning-light; color:$color-warning; }
+  &--info    { background:$color-primary-pale;  color:$color-primary-hover; }
+}
+
+// ── Modal ─────────────────────────────────────────────────────────
+.modal-backdrop {
+  position:fixed; inset:0; background:rgba(7,20,40,0.65);
+  z-index:500; @include flex-center; padding:$s4; animation:fade-up 0.18s ease;
+}
+
+.modal {
+  background:$color-surface; border-radius:$r-xl;
+  box-shadow:$shadow-xl; border:1px solid $color-border;
+  width:100%; max-width:480px; max-height:90vh; overflow-y:auto;
+  @include thin-scroll;
+  &__header {
+    @include flex-between; padding:$s5 $s5 $s4; border-bottom:1px solid $color-border;
+    h3 { font-size:$text-lg; font-weight:700; }
+    button { color:$color-muted; &:hover { color:$color-text; } svg { width:18px; height:18px; } }
+  }
+  &__body   { padding:$s5; }
+  &__footer { padding:$s4 $s5; border-top:1px solid $color-border; @include flex-between; gap:$s3; }
+}
+
+// ── Form field ────────────────────────────────────────────────────
+.field {
+  margin-bottom:$s4;
+  label { display:block; font-size:$text-sm; font-weight:500; color:$color-text-2; margin-bottom:$s2; }
+  .hint { font-size:$text-xs; color:$color-muted; margin-top:$s1; }
+}
+
+// ── Suggestions ───────────────────────────────────────────────────
+.suggestions {
+  position:absolute; left:0; right:0; top:calc(100% + 4px);
+  background:$color-surface; border:1px solid $color-border;
+  border-radius:$r-lg; box-shadow:$shadow-lg;
+  z-index:200; max-height:300px; overflow-y:auto; overflow:hidden;
+  @include thin-scroll;
+  &__item {
+    @include flex-between; padding:$s3 $s4; font-size:$text-sm; cursor:pointer;
+    border-bottom:1px solid $color-border; transition:background $t-fast;
+    &:hover      { background:rgba(0,201,255,0.06); }
+    &:last-child { border-bottom:none; }
+  }
+}

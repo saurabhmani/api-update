@@ -1,0 +1,16 @@
+{"level":"warn","ts":"2026-04-29T03:23:43.047Z","msg":"Candle skip — no bars","component":"candleIngest","symbol":"NAZARA","reason":"neg_cache:yahoo_recently_failed"}
+{"level":"warn","ts":"2026-04-29T03:23:43.088Z","msg":"Candle skip — no bars","component":"candleIngest","symbol":"NBCC","reason":"neg_cache:yahoo_recently_failed"}
+{"level":"warn","ts":"2026-04-29T03:23:43.110Z","msg":"Candle skip — no bars","component":"candleIngest","symbol":"NBIFIN","reason":"neg_cache:yahoo_recently_failed"}
+{"level":"warn","ts":"2026-04-29T03:23:43.116Z","msg":"Candle skip — no bars","component":"candleIngest","symbol":"NCC","reason":"neg_cache:yahoo_recently_failed"}
+{"level":"warn","ts":"2026-04-29T03:23:43.141Z","msg":"Candle skip — no bars","component":"candleIngest","symbol":"NCLIND","reason":"neg_cache:yahoo_recently_failed"}
+
+
+
+
+│ Full-market regen (find NEW  │ every 10 min, OPT-IN only               │ OFF by default — this is why your     │
+  │ signals)                     │ (Q365_INPROC_REGEN=1)                   │ batch is 25h old  
+
+
+
+
+  yahoo is update the stock data in 15 menitues so you can make are in 15 metus update the stock data find the what need to update and make are update the values

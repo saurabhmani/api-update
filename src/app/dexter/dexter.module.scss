@@ -1,0 +1,77 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+.grid { display:grid; gap:$s4; grid-template-columns:1fr; @include xl { grid-template-columns:repeat(2,1fr); } }
+.grid3 { display:grid; gap:$s4; grid-template-columns:1fr; @include md { grid-template-columns:repeat(3,1fr); } }
+
+.statsRow { display:grid; gap:$s4; grid-template-columns:repeat(2,1fr); margin-bottom:$s6; @include xl { grid-template-columns:repeat(4,1fr); } }
+.statBox { @include card; padding:$s4; text-align:center; transition:box-shadow $t-fast; &:hover { box-shadow:$shadow-glow; } }
+.statLabel { font-size:$text-xs; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; color:$color-glow-dark; margin-bottom:$s2; }
+.statValue { font-size:1.5rem; font-weight:800; }
+
+.signalCard {
+  @include card; padding:$s5; transition:all $t-fast;
+  border-left:4px solid transparent;
+  &:hover { box-shadow:$shadow-glow; transform:translateY(-2px); }
+  &.high    { border-left-color:$color-accent; }
+  &.moderate { border-left-color:$color-primary-hover; }
+  &.low     { border-left-color:$color-warning; }
+  &.avoid   { border-left-color:$color-danger; }
+}
+
+.cardHeader { @include flex-between; margin-bottom:$s3; }
+.symbol { font-size:$text-lg; font-weight:800; @include gradient-text; }
+.convictionBadge {
+  display:inline-flex; align-items:center; gap:4px; padding:3px 12px; border-radius:$r-full;
+  font-size:$text-xs; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+}
+.high    .convictionBadge { background:#D1FAE5; color:#065F46; }
+.moderate .convictionBadge { background:$color-primary-pale; color:#1E40AF; }
+.low     .convictionBadge { background:$color-warning-light; color:#92400E; }
+.avoid   .convictionBadge { background:$color-danger-light; color:#991B1B; }
+
+.verdict { font-size:$text-sm; font-weight:600; color:$color-text; margin-bottom:$s3; line-height:1.5; }
+
+.section { margin-bottom:$s3; }
+.sectionTitle { font-size:$text-xs; font-weight:700; color:$color-glow-dark; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:$s2; }
+
+.newsImpact { font-size:$text-sm; color:$color-text-2; line-height:1.5; padding:$s3; background:rgba($color-glow-light,0.3); border-radius:$r-md; border-left:3px solid $color-glow-mid; }
+.cautionBox { font-size:$text-sm; color:$color-warning; line-height:1.5; padding:$s3; background:$color-warning-light; border-radius:$r-md; border-left:3px solid $color-warning; }
+
+.riskList, .guidanceList { list-style:none; padding:0; margin:0; }
+.riskList li, .guidanceList li {
+  font-size:$text-sm; color:$color-text-2; padding:$s1 0; padding-left:$s4;
+  position:relative; line-height:1.5;
+  &::before { content:''; position:absolute; left:0; top:10px; width:8px; height:8px; border-radius:50%; }
+}
+.riskList li::before { background:$color-danger; }
+.guidanceList li::before { background:$color-accent; }
+
+.modGrid { display:grid; grid-template-columns:repeat(2,1fr); gap:$s2; margin-top:$s2; }
+.modItem { @include flex-between; font-size:$text-xs; padding:$s1 $s2; border-radius:$r-sm; background:rgba($color-border,0.3); }
+.modLabel { color:$color-muted; }
+.modValue { font-weight:700; font-family:$font-mono; }
+
+.calibNote { font-size:$text-xs; color:$color-muted; font-style:italic; margin-top:$s2; line-height:1.5; }
+
+.filterBar { @include flex-start; gap:$s3; margin-bottom:$s6; flex-wrap:wrap; }
+.filterBtn {
+  padding:$s2 $s4; border-radius:$r-full; font-size:$text-xs; font-weight:700;
+  border:1px solid $color-border; background:$color-surface; color:$color-muted; cursor:pointer;
+  transition:all $t-fast; text-transform:uppercase; letter-spacing:0.5px;
+  &:hover { border-color:$color-glow-mid; color:$color-glow-dark; }
+  &.active { background:$color-primary; color:white; border-color:$color-primary; }
+}
+
+.pageHeader { @include flex-between; margin-bottom:$s6; }
+.pageTitle { font-size:$text-2xl; font-weight:800; @include gradient-text; }
+.refreshBtn {
+  @include flex-center; gap:$s2; padding:$s2 $s4; border-radius:$r-md;
+  font-size:$text-sm; font-weight:600; background:$color-primary; color:white; cursor:pointer;
+  transition:all $t-fast; border:none;
+  &:hover { background:$color-primary-hover; box-shadow:$shadow-glow; }
+}
+.spin { animation:spin 0.9s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.empty { @include flex-center; flex-direction:column; gap:$s4; padding:$s16 0; color:$color-muted; }

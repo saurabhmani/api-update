@@ -1,0 +1,77 @@
+-- ════════════════════════════════════════════════════════════════
+--  PHASE_2_DUE_DILIGENCE_2026-05 — recommended (NOT YET APPLIED).
+--
+--  Persistence sketch for daily / EOD due-diligence snapshots so the
+--  Phase 3 Daily Report can read historical due-diligence outcomes
+--  instead of recomputing on every request.
+--
+--  STATUS: PROPOSAL ONLY
+--  - This file deliberately uses the `.proposal` suffix so the
+--    migrator (`npm run db:migrate:pg`) does NOT pick it up. To
+--    apply it, rename to `010_q365_signal_due_diligence_reviews.sql`
+--    and review the schema against the live signal-engine columns.
+--  - The runtime due-diligence layer works WITHOUT this table; the
+--    API response carries the dueDiligence + performanceReview
+--    objects per request. Persisting them is a Phase 3 optimisation.
+--
+--  TODO (Phase 3):
+--   1. Confirm Postgres schema (`q365`) is the right home, vs MySQL
+--      where most signal tables currently live.
+--   2. Wire a writer in /api/signals/route.ts that upserts one row per
+--      (signal_id, trade_date) when a response is shipped.
+--   3. Build the daily aggregator reader that powers the daily report.
+-- ════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS q365_signal_due_diligence_reviews (
+  id                          BIGSERIAL PRIMARY KEY,
+  signal_id                   BIGINT,
+  symbol                      VARCHAR(64) NOT NULL,
+  trade_date                  DATE        NOT NULL,
+  signal_tier                 VARCHAR(32) NOT NULL,           -- approved / high_potential / watchlist / developing / scanner_candidate / risk_restricted / rejected / nearest
+  direction                   VARCHAR(8),                     -- BUY / SELL / HOLD / null
+  final_score                 NUMERIC(10, 4),
+  confidence_score            NUMERIC(10, 4),
+  risk_reward                 NUMERIC(10, 4),
+  review_status               VARCHAR(24) NOT NULL,           -- PASSED / FAILED / PENDING / NOT_AVAILABLE
+  outcome                     VARCHAR(24),                    -- SUCCESS / FAILED / NEUTRAL / PENDING / UNKNOWN
+  severity                    VARCHAR(16),                    -- LOW / MEDIUM / HIGH / CRITICAL
+  explainability_score        SMALLINT,                       -- 0-100 coverage of due-diligence buckets
+  primary_reason              TEXT,
+  secondary_reasons_json      JSONB,                          -- string[]
+  confirmation_passed_json    JSONB,                          -- string[]
+  confirmation_failed_json    JSONB,                          -- string[]
+  risk_findings_json          JSONB,                          -- string[]
+  data_findings_json          JSONB,                          -- string[]
+  market_findings_json        JSONB,                          -- string[]
+  indicator_findings_json     JSONB,                          -- string[]
+  performance_review_json     JSONB,                          -- PerformanceReview object
+  learning_notes_json         JSONB,                          -- string[]
+  next_action                 TEXT,
+  approval_gap                NUMERIC(10, 4),                 -- from Phase 1 nearest-signal logic
+  approval_gap_percent        NUMERIC(10, 4),
+  is_stale                    BOOLEAN     NOT NULL DEFAULT FALSE,
+  is_bootstrap                BOOLEAN     NOT NULL DEFAULT FALSE,
+  market_open                 BOOLEAN,
+  freshness_mode              VARCHAR(48),
+  candle_age_minutes          INTEGER,
+  request_id                  VARCHAR(64),
+  created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- One row per (signal, day) per tier observation.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_q365_dd_reviews_signal_day_tier
+  ON q365_signal_due_diligence_reviews (signal_id, trade_date, signal_tier);
+
+CREATE INDEX IF NOT EXISTS idx_q365_dd_reviews_symbol_date
+  ON q365_signal_due_diligence_reviews (symbol, trade_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_q365_dd_reviews_date_tier
+  ON q365_signal_due_diligence_reviews (trade_date DESC, signal_tier);
+
+CREATE INDEX IF NOT EXISTS idx_q365_dd_reviews_outcome
+  ON q365_signal_due_diligence_reviews (outcome) WHERE outcome IS NOT NULL;
+
+COMMIT;

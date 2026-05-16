@@ -1,0 +1,80 @@
+// SCSS module for QuoteCard. No Tailwind — plain CSS modules with
+// variables scoped to the component. Consuming `styles.card` is the
+// only way to apply these rules; global leakage is impossible.
+
+$c-bg: #0f141b;
+$c-fg: #e8edf3;
+$c-muted: #6b7785;
+$c-up: #3ec98a;
+$c-down: #e45c5c;
+$radius: 10px;
+
+.card {
+  background: $c-bg;
+  color: $c-fg;
+  border-radius: $radius;
+  padding: 16px 18px;
+  min-width: 260px;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  position: relative;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.symbol {
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.4px;
+}
+
+.badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid transparent;
+
+  &.quality_live              { color: $c-up;   border-color: rgba($c-up, 0.4); }
+  &.quality_cached-fresh      { color: #9abfff; border-color: rgba(#9abfff, 0.4); }
+  &.quality_fallback-delayed  { color: #f0c040; border-color: rgba(#f0c040, 0.4); }
+  &.quality_stale             { color: $c-down; border-color: rgba($c-down, 0.4); }
+}
+
+.price {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ltp {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.up   { color: $c-up;   font-variant-numeric: tabular-nums; }
+.down { color: $c-down; font-variant-numeric: tabular-nums; }
+
+.footer {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: $c-muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.time {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 10px;
+  color: $c-muted;
+}

@@ -1,0 +1,115 @@
+@use '../variables' as *;
+@use '../mixins' as *;
+
+// ── Onboarding modal ──────────────────────────────────────────────
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: $s4;
+  animation: fade-up 0.2s ease;
+}
+
+.onboarding-card {
+  background: $color-surface;
+  border-radius: $r-2xl;
+  padding: $s10 $s8;
+  width: 100%;
+  max-width: 500px;
+  box-shadow: $shadow-xl;
+}
+
+.onboarding-progress {
+  display: flex;
+  gap: $s2;
+  margin-bottom: $s8;
+
+  &__step {
+    flex: 1;
+    height: 4px;
+    border-radius: $r-full;
+    background: $color-border;
+    transition: background $t-base;
+
+    &.active { background: $color-primary; }
+    &.done   { background: $color-primary-hover; }
+  }
+}
+
+.onboarding-title {
+  font-size: $text-2xl;
+  font-weight: 800;
+  color: $color-primary;
+  letter-spacing: -0.3px;
+  margin-bottom: $s1;
+}
+
+.onboarding-sub {
+  font-size: $text-sm;
+  color: $color-muted;
+  margin-bottom: $s5;
+}
+
+.onboarding-option {
+  border: 2px solid $color-border;
+  border-radius: $r-lg;
+  padding: $s4 $s5;
+  cursor: pointer;
+  transition: all $t-fast;
+  margin-bottom: $s3;
+  display: flex;
+  align-items: flex-start;
+  gap: $s3;
+
+  &:hover {
+    border-color: $color-primary-hover;
+    background: $color-primary-subtle;
+  }
+
+  &.selected {
+    border-color: $color-primary;
+    background: $color-primary-subtle;
+  }
+
+  &__emoji { font-size: 22px; flex-shrink: 0; }
+  &__title { font-weight: 700; color: $color-primary; }
+  &__desc  { font-size: $text-xs; color: $color-muted; margin-top: 2px; }
+}
+
+.onboarding-actions {
+  display: flex;
+  gap: $s3;
+  margin-top: $s5;
+}
+
+// ── Plan / upgrade surfaces ───────────────────────────────────────
+.plan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: $s1;
+  padding: 3px 10px;
+  border-radius: $r-full;
+  font-size: $text-xs;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+
+  &--free  { background: #F1F5F9; color: $color-muted; }
+  &--pro   { background: $color-primary-pale; color: $color-primary; }
+  &--elite { background: #1E293B; color: #F8FAFC; }
+}
+
+.upgrade-prompt {
+  @include card;
+  padding: $s5;
+  background: linear-gradient(135deg, #EEF4FB, #F0FDF4);
+  border: 1px solid $color-primary-pale;
+  text-align: center;
+
+  &__icon { font-size: 28px; margin-bottom: $s2; }
+  &__title { font-weight: 700; color: $color-primary; margin-bottom: $s1; }
+  &__desc  { font-size: $text-sm; color: $color-muted; margin-bottom: $s4; }
+}

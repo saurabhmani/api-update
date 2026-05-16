@@ -1,0 +1,98 @@
+// ════════════════════════════════════════════════════════════════
+//  dailyBacktestJob — PROPOSAL (NOT YET WIRED).
+//
+//  Phase 4B — scheduled job that runs after NSE market close,
+//  invokes /api/signals/backtest?window=1D for the day, and
+//  persists the result into `q365_backtest_runs` plus
+//  `q365_backtest_signal_outcomes` (see migration proposal 012).
+//
+//  STATUS: NOT WIRED INTO src/lib/workers/scheduler.ts.
+//  - The `.proposal` extension keeps this file out of the runtime
+//    bundle. Move to `.ts` and register the cron entry in
+//    scheduler.ts once the migration is applied and the writer path
+//    is reviewed.
+//  - The runtime backtest system works without this job; the
+//    /signals/backtesting page computes on demand.
+//
+//  Recommended cadence:
+//    16:30 IST — primary daily backtest after market close + buffer.
+//    Saturday 02:00 IST — weekly 7D rolling backtest.
+//    1st of month 02:00 IST — monthly 30D rolling backtest.
+//
+//  TODO before activation:
+//   1. Apply migration 012_q365_backtest_runs.sql.proposal.
+//   2. Confirm cron entry placement in src/lib/workers/scheduler.ts
+//      (existing nightly backtest already runs at 19:00 IST via
+//      `runOrchestrator` — slot this AFTER 16:30 so it runs first
+//      and feeds the larger backtest pipeline).
+//   3. Add an idempotent writer keyed on (run_date, window).
+//   4. Wire historical-price provider into historicalMarketData.ts
+//      adapters when a per-symbol candle pipeline lands.
+//
+//  This file is a sketch; do not import it in production code.
+// ════════════════════════════════════════════════════════════════
+
+// Pseudo-code outline (intentionally not executable):
+//
+// import { db } from '@/lib/db';
+//
+// export async function runDailyBacktestJob(): Promise<void> {
+//   const internalUrl = `${process.env.INTERNAL_BASE_URL}/api/signals/backtest?window=1D`;
+//   const res = await fetch(internalUrl, { cache: 'no-store' });
+//   if (!res.ok) {
+//     console.warn('[DAILY-BACKTEST-JOB] /api/signals/backtest returned', res.status);
+//     return;
+//   }
+//   const payload = await res.json();
+//   const bt = payload?.backtest;
+//   if (!bt) return;
+//
+//   // Idempotent upsert keyed on (run_date, window).
+//   const row = await db.query(
+//     `INSERT INTO q365_backtest_runs (
+//        run_date, window, start_date, end_date, status, source,
+//        summary_json, performance_json, universe_json,
+//        tier_performance_json, indicator_performance_json,
+//        indicator_combinations_json, threshold_simulation_json,
+//        market_regime_json, missed_opportunity_json,
+//        warnings_json, recommendations_json, generated_at
+//      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+//      ON CONFLICT (run_date, window) DO UPDATE SET
+//        status                     = EXCLUDED.status,
+//        source                     = EXCLUDED.source,
+//        summary_json               = EXCLUDED.summary_json,
+//        performance_json           = EXCLUDED.performance_json,
+//        universe_json              = EXCLUDED.universe_json,
+//        tier_performance_json      = EXCLUDED.tier_performance_json,
+//        indicator_performance_json = EXCLUDED.indicator_performance_json,
+//        indicator_combinations_json= EXCLUDED.indicator_combinations_json,
+//        threshold_simulation_json  = EXCLUDED.threshold_simulation_json,
+//        market_regime_json         = EXCLUDED.market_regime_json,
+//        missed_opportunity_json    = EXCLUDED.missed_opportunity_json,
+//        warnings_json              = EXCLUDED.warnings_json,
+//        recommendations_json       = EXCLUDED.recommendations_json,
+//        updated_at                 = NOW()
+//      RETURNING id`,
+//     [bt.runDate, bt.window, bt.startDate, bt.endDate, bt.status, payload.source ?? 'computed',
+//      JSON.stringify(buildBacktestPreview(bt)),
+//      JSON.stringify(bt.performance), JSON.stringify(bt.universe),
+//      JSON.stringify(bt.tierPerformance), JSON.stringify(bt.indicatorPerformance),
+//      JSON.stringify(bt.indicatorCombinations), JSON.stringify(bt.thresholdSimulation),
+//      JSON.stringify(bt.marketRegimePerformance), JSON.stringify(bt.missedOpportunityBacktest),
+//      JSON.stringify(bt.warnings), JSON.stringify(bt.recommendations)],
+//   );
+//
+//   // Optionally persist per-signal outcomes into
+//   // q365_backtest_signal_outcomes for drill-down queries.
+// }
+//
+// Register in scheduler.ts (after market close):
+//   import cron from 'node-cron';
+//   cron.schedule('30 16 * * 1-5', () => runDailyBacktestJob(), {
+//     timezone: 'Asia/Kolkata',
+//   });
+//
+// TODO Phase 4B/Phase 5:
+//   - 7D rolling on Saturday 02:00 IST
+//   - 30D rolling on the 1st of each month at 02:00 IST
+//   - 90D rolling on a quarterly cadence

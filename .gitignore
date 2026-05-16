@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+
+# next.js build files
+.next/
+out/
+build/
+
+# env files (IMPORTANT)
+.env*
+!.env.example
+.env.local
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# system files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+
+# typescript
+*.tsbuildinfo
+*stockUpdate.txt
+stockUpdate.txt
+
+# pm2 logs
+*.log
+
+# misc
+coverage/
+dist/
+
+# cookies / session captures (must never enter the repo)
+cookies.txt
+*.cookie
+*.cookies

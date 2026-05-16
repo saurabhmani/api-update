@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["src/*"],
+      "@contracts/*": ["packages/contracts/src/*"],
+      "@eventbus/*": ["packages/eventbus/src/*"],
+      "@rpc/*": ["packages/rpc/src/*"]
+    },
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "module": "commonjs",
+    "target": "es2020"
+  },
+  "include": ["src/**/*.ts"]
+}

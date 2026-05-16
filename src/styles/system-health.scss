@@ -1,0 +1,814 @@
+// ════════════════════════════════════════════════════════════════
+//  System Health Dashboard — single stylesheet
+//
+//  Dark trading-terminal theme. Class names are prefixed `sh-` so
+//  they don't collide with anything else in the app's global CSS.
+// ════════════════════════════════════════════════════════════════
+
+// ── Theme tokens ──────────────────────────────────────────────────
+$sh-bg:         #0B0F14;
+$sh-surface:    rgba(255, 255, 255, 0.03);
+$sh-surface-2:  rgba(255, 255, 255, 0.05);
+$sh-border:     rgba(255, 255, 255, 0.08);
+$sh-border-hi:  rgba(255, 255, 255, 0.14);
+$sh-text:       #E6EDF3;
+$sh-text-dim:   #8B949E;
+$sh-text-mute:  #6E7681;
+
+$sh-green:  #00FFB2;
+$sh-yellow: #FFC857;
+$sh-red:    #FF4D4F;
+$sh-cyan:   #58A6FF;
+
+$sh-radius: 12px;
+$sh-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+            0 8px 24px rgba(0, 0, 0, 0.35);
+
+// ── Page shell ────────────────────────────────────────────────────
+.sh-page {
+  background: $sh-bg;
+  background-image:
+    radial-gradient(1200px 600px at 10% -10%, rgba(0, 255, 178, 0.04), transparent 50%),
+    radial-gradient(900px  500px at 110% 10%, rgba(88, 166, 255, 0.04), transparent 55%);
+  color: $sh-text;
+  min-height: 100vh;
+  padding: 28px 36px 64px;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sh-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.sh-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  margin: 0;
+}
+
+.sh-subtitle {
+  font-size: 12px;
+  color: $sh-text-dim;
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+// ── Status pill ──────────────────────────────────────────────────
+.sh-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.sh-pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.sh-color-green  { color: $sh-green;  }
+.sh-color-yellow { color: $sh-yellow; }
+.sh-color-red    { color: $sh-red;    }
+.sh-color-cyan   { color: $sh-cyan;   }
+.sh-color-dim    { color: $sh-text-dim; }
+
+// ── Card grid ─────────────────────────────────────────────────────
+.sh-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(12, 1fr);
+
+  & > .sh-col-3  { grid-column: span 3; }
+  & > .sh-col-4  { grid-column: span 4; }
+  & > .sh-col-6  { grid-column: span 6; }
+  & > .sh-col-8  { grid-column: span 8; }
+  & > .sh-col-12 { grid-column: span 12; }
+
+  @media (max-width: 1100px) {
+    & > .sh-col-3,
+    & > .sh-col-4 { grid-column: span 6; }
+    & > .sh-col-8 { grid-column: span 12; }
+  }
+  @media (max-width: 720px) {
+    & > * { grid-column: span 12 !important; }
+  }
+}
+
+// ── Card primitive ────────────────────────────────────────────────
+.sh-card {
+  position: relative;
+  background: $sh-surface;
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  border: 1px solid $sh-border;
+  border-radius: $sh-radius;
+  padding: 18px;
+  box-shadow: $sh-shadow;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+
+  &:hover {
+    border-color: $sh-border-hi;
+    transform: translateY(-1px);
+    background: $sh-surface-2;
+  }
+}
+
+.sh-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.sh-card-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: $sh-text-dim;
+  font-weight: 600;
+}
+
+.sh-metric {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  font-feature-settings: 'tnum' 1;
+}
+
+.sh-metric-sub {
+  font-size: 11px;
+  color: $sh-text-dim;
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+// ── KPI row inside card ───────────────────────────────────────────
+.sh-kpi-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.sh-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sh-kpi-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: $sh-text-mute;
+}
+
+.sh-kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-feature-settings: 'tnum' 1;
+}
+
+// ── Safety banner (huge) ──────────────────────────────────────────
+.sh-safety {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 24px;
+  padding: 22px 26px;
+  border-radius: $sh-radius;
+  border: 1px solid $sh-border;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  margin-bottom: 18px;
+  position: relative;
+  overflow: hidden;
+}
+
+.sh-safety-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: $sh-text-dim;
+  margin-bottom: 6px;
+}
+
+.sh-safety-state {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+
+  &::before {
+    content: '';
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 16px currentColor;
+  }
+}
+
+.sh-safety-detail {
+  margin-top: 6px;
+  color: $sh-text-dim;
+  font-size: 12px;
+}
+
+.sh-safety-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.sh-safety.sh-danger {
+  border-color: rgba($sh-red, 0.5);
+  animation: sh-blink 1.2s ease-in-out infinite;
+  background:
+    linear-gradient(135deg, rgba($sh-red, 0.10), rgba($sh-red, 0.02));
+}
+
+@keyframes sh-blink {
+  0%, 100% { box-shadow: 0 0 0 rgba($sh-red, 0); }
+  50%      { box-shadow: 0 0 28px rgba($sh-red, 0.45); }
+}
+
+// ── Buttons ───────────────────────────────────────────────────────
+.sh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid $sh-border;
+  border-radius: 8px;
+  color: $sh-text;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease, color 140ms ease,
+              box-shadow 140ms ease, background 140ms ease;
+
+  &:hover {
+    border-color: $sh-cyan;
+    color: $sh-cyan;
+    box-shadow: 0 0 14px rgba($sh-cyan, 0.25);
+    transform: translateY(-1px);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+
+  &.sh-btn-danger:hover  { color: $sh-red;    border-color: $sh-red;    box-shadow: 0 0 14px rgba($sh-red, 0.25); }
+  &.sh-btn-success:hover { color: $sh-green;  border-color: $sh-green;  box-shadow: 0 0 14px rgba($sh-green, 0.25); }
+}
+
+// ── Logs panel ────────────────────────────────────────────────────
+.sh-logs {
+  max-height: 320px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  border: 1px solid $sh-border;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+
+  &::-webkit-scrollbar { width: 8px; }
+  &::-webkit-scrollbar-thumb { background: $sh-border-hi; border-radius: 4px; }
+}
+
+.sh-log-row {
+  display: grid;
+  grid-template-columns: 84px 56px 1fr;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+
+  &:last-child { border-bottom: none; }
+}
+
+.sh-log-ts    { color: $sh-text-mute; }
+.sh-log-level {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sh-log-msg   { color: $sh-text; word-break: break-word; }
+
+.sh-log-error   .sh-log-level { color: $sh-red;    }
+.sh-log-error   .sh-log-msg   { color: lighten($sh-red, 8%); }
+.sh-log-warn    .sh-log-level { color: $sh-yellow; }
+.sh-log-info    .sh-log-level { color: $sh-cyan;   }
+
+.sh-log-error { background: rgba($sh-red, 0.04); }
+
+// ── Loading skeleton ──────────────────────────────────────────────
+.sh-skel {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.08),
+      transparent
+    );
+    animation: sh-shimmer 1.4s linear infinite;
+  }
+}
+
+@keyframes sh-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%);  }
+}
+
+.sh-skel-line {
+  height: 12px;
+  margin: 8px 0;
+  width: 100%;
+}
+.sh-skel-line.sh-w-60 { width: 60%; }
+.sh-skel-line.sh-w-40 { width: 40%; }
+
+// ── Misc ──────────────────────────────────────────────────────────
+.sh-row { display: flex; justify-content: space-between; align-items: center; }
+.sh-row + .sh-row { margin-top: 6px; }
+.sh-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sh-toast {
+  position: fixed; right: 24px; bottom: 24px;
+  background: $sh-surface-2;
+  border: 1px solid $sh-border-hi;
+  padding: 10px 14px; border-radius: 8px;
+  color: $sh-text; font-size: 12px;
+  box-shadow: $sh-shadow;
+  animation: sh-toast-in 200ms ease-out;
+}
+
+@keyframes sh-toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+// ── Provider table ────────────────────────────────────────────────
+.sh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  th {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: $sh-text-mute;
+    font-weight: 600;
+  }
+  tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+  td.sh-num { font-feature-settings: 'tnum' 1; }
+}
+
+// ── Provider usage bar chart ─────────────────────────────────────
+.sh-bars { display: flex; flex-direction: column; gap: 10px; }
+
+.sh-bar-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 80px;
+  align-items: center;
+  gap: 12px;
+}
+
+.sh-bar-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: $sh-text-dim;
+  font-weight: 600;
+}
+
+.sh-bar-track {
+  position: relative;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sh-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 6px;
+  transition: width 400ms ease;
+  box-shadow: 0 0 12px currentColor;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.sh-bar-value {
+  text-align: right;
+  font-feature-settings: 'tnum' 1;
+  font-size: 12px;
+  color: $sh-text;
+}
+
+// ── Performance alert pills ──────────────────────────────────────
+.sh-alerts { display: flex; flex-direction: column; gap: 8px; }
+
+.sh-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+  font-weight: 600;
+
+  .sh-alert-msg { color: $sh-text; font-weight: 500; }
+  .sh-alert-tag { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+}
+
+.sh-alert.sh-alert-ok {
+  color: $sh-green;
+  background: rgba($sh-green, 0.04);
+}
+.sh-alert.sh-alert-warn {
+  color: $sh-yellow;
+  background: rgba($sh-yellow, 0.05);
+}
+.sh-alert.sh-alert-bad {
+  color: $sh-red;
+  background: rgba($sh-red, 0.06);
+  animation: sh-blink 1.5s ease-in-out infinite;
+}
+
+// ── Trace viewer (timeline) ──────────────────────────────────────
+.sh-traces { display: flex; flex-direction: column; gap: 8px; }
+
+.sh-trace {
+  border: 1px solid $sh-border;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.sh-trace-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 140ms ease;
+
+  &:hover { background: rgba(255, 255, 255, 0.03); }
+
+  .sh-trace-route {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: $sh-cyan;
+  }
+  .sh-trace-summary {
+    font-size: 12px;
+    color: $sh-text-dim;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sh-trace-total {
+    font-size: 12px;
+    font-weight: 700;
+    font-feature-settings: 'tnum' 1;
+  }
+  .sh-trace-toggle {
+    font-size: 10px;
+    color: $sh-text-mute;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+}
+
+.sh-trace-body {
+  padding: 14px 18px 16px 18px;
+  border-top: 1px dashed $sh-border;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.sh-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 130px 1fr 90px;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 0 6px 22px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 14px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: $sh-cyan;
+    box-shadow: 0 0 8px $sh-cyan;
+  }
+  &:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 22px;
+    bottom: -6px;
+    width: 1px;
+    background: rgba($sh-cyan, 0.25);
+  }
+  .sh-step-label  { color: $sh-text; font-weight: 600; }
+  .sh-step-detail { color: $sh-text-dim; }
+  .sh-step-dur    { color: $sh-yellow; text-align: right; font-feature-settings: 'tnum' 1; }
+}
+
+.sh-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: $sh-text-dim;
+  text-align: center;
+}
+
+// ── Vertical stack (single-page scroll) ─────────────────────────
+.sh-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sh-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+
+  .sh-section-num {
+    font-size: 10px;
+    font-weight: 700;
+    color: $sh-text-mute;
+    border: 1px solid $sh-border;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .sh-section-name {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: $sh-text;
+  }
+  .sh-section-meta {
+    margin-left: auto;
+    font-size: 11px;
+    color: $sh-text-dim;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+}
+
+.sh-subgrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr 1fr;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sh-section-pad-top { margin-top: 14px; }
+
+// ── Tab navigation (kept for future use; unused on the vertical layout) ─
+.sh-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 6px 0 18px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid $sh-border;
+  border-radius: 10px;
+  overflow-x: auto;
+
+  &::-webkit-scrollbar { height: 4px; }
+  &::-webkit-scrollbar-thumb { background: $sh-border-hi; border-radius: 4px; }
+}
+
+.sh-tab {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: $sh-text-dim;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease,
+              box-shadow 140ms ease, transform 140ms ease;
+
+  &:hover {
+    color: $sh-text;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  &.sh-tab-active {
+    color: $sh-cyan;
+    background: rgba($sh-cyan, 0.1);
+    box-shadow: 0 0 14px rgba($sh-cyan, 0.18) inset;
+  }
+
+  .sh-tab-count {
+    margin-left: 6px;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    color: $sh-text-dim;
+    font-weight: 700;
+  }
+
+  &.sh-tab-active .sh-tab-count { background: rgba($sh-cyan, 0.2); color: $sh-cyan; }
+}
+
+.sh-tab-content {
+  animation: sh-fade-in 180ms ease-out;
+}
+
+@keyframes sh-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+// Compact status strip (always visible, above tabs)
+.sh-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid $sh-border;
+  background: rgba(255, 255, 255, 0.02);
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: $sh-text-dim;
+
+  strong { color: $sh-text; font-weight: 600; }
+
+  .sh-strip-divider {
+    width: 1px;
+    height: 14px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+}
+
+// Header action row (compact buttons in top-right)
+.sh-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+// ── Quota meters ─────────────────────────────────────────────────
+.sh-quota { display: flex; flex-direction: column; gap: 14px; }
+
+.sh-quota-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.sh-quota-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.sh-quota-name {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: $sh-text-dim;
+  font-weight: 600;
+}
+
+.sh-quota-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-feature-settings: 'tnum' 1;
+  font-size: 13px;
+  font-weight: 700;
+  color: $sh-text;
+}
+
+.sh-quota-meter {
+  position: relative;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.sh-quota-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 6px;
+  background: currentColor;
+  box-shadow: 0 0 12px currentColor;
+  transition: width 400ms ease;
+  opacity: 0.85;
+}
+
+// Marker line at the safe-cap level, drawn over the monthly meter.
+.sh-quota-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.4);
+}
+
+.sh-quota-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: $sh-text-mute;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+// ── LIMIT NEAR banner ────────────────────────────────────────────
+.sh-quota-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  background: rgba($sh-yellow, 0.06);
+  color: $sh-yellow;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  animation: sh-blink 1.6s ease-in-out infinite;
+
+  &.sh-quota-banner-critical {
+    color: $sh-red;
+    background: rgba($sh-red, 0.08);
+  }
+
+  .sh-quota-banner-msg { color: inherit; }
+  .sh-quota-banner-detail { color: $sh-text-dim; font-weight: 500; }
+}

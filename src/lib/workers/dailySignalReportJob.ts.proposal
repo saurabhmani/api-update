@@ -1,0 +1,79 @@
+// ════════════════════════════════════════════════════════════════
+//  dailySignalReportJob — PROPOSAL (NOT YET WIRED).
+//
+//  Phase 3B / Phase 4 — scheduled job that runs after the NSE
+//  market close, fetches the current daily report from
+//  /api/signals/daily-report, and persists it to the proposed table
+//  `q365_daily_signal_reports` (see migration proposal 011).
+//
+//  STATUS: NOT WIRED INTO src/lib/workers/scheduler.ts.
+//  - The `.proposal` extension keeps this file out of the runtime
+//    bundle. Move to `.ts` and register the cron entry in scheduler.ts
+//    once the migration is applied and the writer path is reviewed.
+//  - The runtime daily-report system works without this job; the
+//    /signals/daily-report page computes the report on demand.
+//
+//  Recommended cadence (per Phase 3 spec):
+//    16:00 IST — primary daily report run (post-close buffer)
+//    16:30 IST — retry if the 16:00 run was INSUFFICIENT_DATA
+//
+//  TODO before activation:
+//   1. Apply migration 011_q365_daily_signal_reports.sql.proposal.
+//   2. Confirm cron entry in src/lib/workers/scheduler.ts (existing
+//      jobs run at 18:30 IST signal generation, 19:00 IST nightly
+//      backtest — slot the report run BEFORE 18:30 so the report
+//      reflects the end-of-day state, not the next-day prep run).
+//   3. Add a writer helper next to the migration that upserts on
+//      (report_date) so manual re-runs are idempotent.
+//   4. Surface a "View persisted report" date selector on the
+//      /signals/daily-report page once historical reports exist.
+//
+//  This file is a sketch; do not import from it in production code.
+// ════════════════════════════════════════════════════════════════
+
+// Pseudo-code outline (intentionally not executable):
+//
+// import { db } from '@/lib/db';
+// import { buildDailySignalReport, type DailyReportInput } from '@/lib/signals/dailySignalReport';
+//
+// export async function runDailySignalReportJob(): Promise<void> {
+//   const internalUrl = `${process.env.INTERNAL_BASE_URL}/api/signals?action=all&limit=20`;
+//   const res = await fetch(internalUrl, { cache: 'no-store' });
+//   if (!res.ok) {
+//     console.warn('[DAILY-REPORT-JOB] /api/signals returned', res.status);
+//     return;
+//   }
+//   const payload = await res.json();
+//   const input: DailyReportInput = mapPayloadToReportInput(payload);
+//   const report = buildDailySignalReport(input);
+//
+//   // Idempotent upsert keyed on report_date.
+//   await db.query(
+//     `INSERT INTO q365_daily_signal_reports (
+//        report_date, report_status, data_status, market_status,
+//        report_json, data_quality_json, generated_at
+//      )
+//      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+//      ON CONFLICT (report_date) DO UPDATE SET
+//        report_status     = EXCLUDED.report_status,
+//        data_status       = EXCLUDED.data_status,
+//        market_status     = EXCLUDED.market_status,
+//        report_json       = EXCLUDED.report_json,
+//        data_quality_json = EXCLUDED.data_quality_json,
+//        updated_at        = NOW()`,
+//     [
+//       report.reportDate,
+//       report.reportStatus,
+//       report.dataStatus,
+//       report.marketStatus,
+//       JSON.stringify(report),
+//       JSON.stringify(report.dataQuality),
+//     ],
+//   );
+// }
+//
+// Register in scheduler.ts (after market close):
+//   import cron from 'node-cron';
+//   cron.schedule('0 16 * * 1-5', () => runDailySignalReportJob(), {
+//     timezone: 'Asia/Kolkata',
+//   });

@@ -1,0 +1,72 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins'    as *;
+
+.pageHeader { @include flex-between; margin-bottom:$s6; }
+.pageTitle { font-size:$text-2xl; font-weight:800; @include gradient-text; }
+.refreshBtn {
+  @include flex-center; gap:$s2; padding:$s2 $s4; border-radius:$r-md;
+  font-size:$text-sm; font-weight:600; background:$color-primary; color:white; cursor:pointer;
+  transition:all $t-fast; border:none;
+  &:hover { background:$color-primary-hover; box-shadow:$shadow-glow; }
+}
+.spin { animation:spin 0.9s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.section { margin-bottom:$s8; }
+.sectionHead { @include flex-start; gap:$s2; margin-bottom:$s4; padding-bottom:$s3; border-bottom:2px solid $color-glow-light; }
+.sectionHead span { font-size:$text-md; font-weight:700; @include gradient-text; }
+.sectionHead svg { color:$color-glow-dark; flex-shrink:0; }
+
+.grid4 { display:grid; gap:$s4; grid-template-columns:repeat(2,1fr); @include xl { grid-template-columns:repeat(4,1fr); } }
+.grid3 { display:grid; gap:$s4; grid-template-columns:1fr; @include md { grid-template-columns:repeat(3,1fr); } }
+
+.statBox { @include card; padding:$s4; text-align:center; transition:box-shadow $t-fast; &:hover { box-shadow:$shadow-glow; } }
+.statLabel { font-size:$text-xs; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; color:$color-glow-dark; margin-bottom:$s2; }
+.statValue { font-size:1.3rem; font-weight:800; }
+
+.table { width:100%; border-collapse:collapse; }
+.table th {
+  padding:$s2 $s3; text-align:left; font-size:$text-xs; color:$color-muted; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid $color-border;
+}
+.table td { padding:$s2 $s3; font-size:$text-sm; border-bottom:1px solid rgba($color-border,0.5); }
+.table tr:hover td { background:rgba($color-glow-light,0.15); }
+
+.calibBadge {
+  display:inline-block; padding:2px 8px; border-radius:$r-full; font-size:10px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.3px;
+  &.well { background:#D1FAE5; color:#065F46; }
+  &.over { background:$color-danger-light; color:#991B1B; }
+  &.under { background:$color-primary-pale; color:#1E40AF; }
+  &.insuf { background:rgba($color-border,0.5); color:$color-muted; }
+}
+
+.envBadge {
+  display:inline-block; padding:2px 8px; border-radius:$r-full; font-size:10px; font-weight:700;
+  &.excellent { background:#D1FAE5; color:#065F46; }
+  &.good { background:$color-primary-pale; color:#1E40AF; }
+  &.moderate { background:$color-warning-light; color:#92400E; }
+  &.poor { background:$color-danger-light; color:#991B1B; }
+  &.insufficient_data { background:rgba($color-border,0.5); color:$color-muted; }
+}
+
+.recCard {
+  @include card; padding:$s4; transition:all $t-fast;
+  &:hover { box-shadow:$shadow-glow; }
+}
+.recHeader { @include flex-between; margin-bottom:$s2; }
+.recStrategy { font-weight:800; font-size:$text-sm; }
+.recMod { font-weight:700; font-family:$font-mono; font-size:$text-sm; padding:2px 8px; border-radius:$r-sm; }
+.recReason { font-size:$text-xs; color:$color-text-2; line-height:1.5; }
+.recEvidence { font-size:10px; color:$color-muted; margin-top:$s2; font-style:italic; }
+
+.jobRow {
+  @include flex-between; padding:$s2 $s3; border-bottom:1px solid rgba($color-border,0.4); font-size:$text-sm;
+  &:last-child { border-bottom:none; }
+}
+.jobName { font-weight:700; width:250px; }
+.jobStatus { font-weight:700; font-size:$text-xs; text-transform:uppercase; }
+.success { color:$color-accent; }
+.failed { color:$color-danger; }
+
+.empty { @include flex-center; flex-direction:column; gap:$s4; padding:$s12 0; color:$color-muted; }

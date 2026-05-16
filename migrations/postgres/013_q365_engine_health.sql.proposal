@@ -1,0 +1,63 @@
+-- ════════════════════════════════════════════════════════════════
+--  PHASE_5_HEALTH_OBSERVABILITY_2026-05 — recommended (NOT APPLIED).
+--
+--  Persistence sketch for engine-health snapshots + event log.
+--
+--  Today /api/signals/engine-health computes everything live. These
+--  tables enable historical timelines (which engine was broken
+--  yesterday at 14:30 IST?) and let an ops dashboard subscribe to
+--  status transitions.
+--
+--  STATUS: PROPOSAL ONLY. The `.proposal` suffix keeps the file out
+--  of `npm run db:migrate:pg`. Move to `.sql` and review schema
+--  before applying.
+-- ════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS q365_engine_health_snapshots (
+  id                       BIGSERIAL PRIMARY KEY,
+  snapshot_time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  overall_status           VARCHAR(16) NOT NULL,            -- HEALTHY / WARNING / DEGRADED / BROKEN / UNKNOWN
+  healthy_count            SMALLINT    NOT NULL DEFAULT 0,
+  warning_count            SMALLINT    NOT NULL DEFAULT 0,
+  degraded_count           SMALLINT    NOT NULL DEFAULT 0,
+  broken_count             SMALLINT    NOT NULL DEFAULT 0,
+  stale_count              SMALLINT    NOT NULL DEFAULT 0,
+  not_configured_count     SMALLINT    NOT NULL DEFAULT 0,
+  health_json              JSONB       NOT NULL,            -- full EngineHealthMap
+  critical_issues_json     JSONB,
+  warning_issues_json      JSONB,
+  pipeline_readiness_json  JSONB,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_q365_engine_health_snapshot_time
+  ON q365_engine_health_snapshots (snapshot_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_q365_engine_health_overall
+  ON q365_engine_health_snapshots (overall_status, snapshot_time DESC);
+
+-- ── Per-engine event log ─────────────────────────────────────────
+-- One row each time an engine transitions status, with the previous
+-- state, the new state, and a short message. Lets ops timeline a
+-- specific engine's day.
+CREATE TABLE IF NOT EXISTS q365_engine_health_events (
+  id              BIGSERIAL PRIMARY KEY,
+  engine_id       VARCHAR(48) NOT NULL,                    -- data_feed / scanner / scoring / ...
+  event_type      VARCHAR(48) NOT NULL,                    -- STATUS_TRANSITION / WARNING / ERROR / RECOVERY
+  severity        VARCHAR(16) NOT NULL,                    -- LOW / MEDIUM / HIGH / CRITICAL
+  previous_status VARCHAR(24),
+  new_status      VARCHAR(24),
+  message         TEXT,
+  metadata_json   JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_q365_engine_health_events_engine
+  ON q365_engine_health_events (engine_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_q365_engine_health_events_severity
+  ON q365_engine_health_events (severity, created_at DESC);
+
+COMMIT;

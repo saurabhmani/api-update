@@ -1,0 +1,85 @@
+-- ════════════════════════════════════════════════════════════════
+--  PHASE_4_BACKTESTING_2026-05 — recommended (NOT APPLIED).
+--
+--  Persistence sketch for backtest run snapshots and per-signal
+--  outcomes. Phase 4 currently computes backtests dynamically on
+--  every GET /api/signals/backtest call. These tables enable
+--  historical lookups, daily scheduled runs, and trend analysis
+--  across weeks/months.
+--
+--  STATUS: PROPOSAL ONLY (`.proposal` suffix keeps it out of the
+--  migrator). Move to `.sql` and run `npm run db:migrate:pg` after
+--  schema review.
+-- ════════════════════════════════════════════════════════════════
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS q365_backtest_runs (
+  id                          BIGSERIAL PRIMARY KEY,
+  run_date                    DATE        NOT NULL,
+  window                      VARCHAR(16) NOT NULL,         -- INTRADAY / 1D / 7D / 30D / 90D / CUSTOM
+  start_date                  DATE        NOT NULL,
+  end_date                    DATE        NOT NULL,
+  status                      VARCHAR(24) NOT NULL,         -- COMPLETE / PARTIAL / INSUFFICIENT_DATA / FAILED
+  source                      VARCHAR(24) NOT NULL DEFAULT 'computed',  -- computed / stored / partial
+  summary_json                JSONB,                        -- BacktestPreview slice for quick lookups
+  performance_json            JSONB,                        -- BacktestPerformance
+  universe_json               JSONB,                        -- BacktestUniverse
+  tier_performance_json       JSONB,                        -- per-tier BacktestTierPerformance
+  indicator_performance_json  JSONB,                        -- BacktestIndicatorPerformance[]
+  indicator_combinations_json JSONB,                        -- BacktestIndicatorCombination[]
+  threshold_simulation_json   JSONB,                        -- ThresholdSimulationResult[]
+  market_regime_json          JSONB,                        -- MarketRegimeBacktestResult[]
+  missed_opportunity_json     JSONB,                        -- MissedOpportunityBacktestItem[]
+  warnings_json               JSONB,                        -- string[]
+  recommendations_json        JSONB,                        -- BacktestRecommendation[]
+  generated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- One run per (run_date, window) — re-running for the same date+window
+-- upserts the row.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_q365_backtest_runs_date_window
+  ON q365_backtest_runs (run_date, window);
+
+CREATE INDEX IF NOT EXISTS idx_q365_backtest_runs_status
+  ON q365_backtest_runs (status, run_date DESC);
+
+-- ── Per-signal outcome detail table ─────────────────────────────
+-- One row per (backtest_run_id, signal_id) for drill-downs.
+CREATE TABLE IF NOT EXISTS q365_backtest_signal_outcomes (
+  id                          BIGSERIAL PRIMARY KEY,
+  backtest_run_id             BIGINT      NOT NULL REFERENCES q365_backtest_runs(id) ON DELETE CASCADE,
+  signal_id                   BIGINT,
+  symbol                      VARCHAR(64) NOT NULL,
+  tier                        VARCHAR(24) NOT NULL,                                 -- APPROVED / HIGH_POTENTIAL / WATCHLIST / REJECTED
+  direction                   VARCHAR(8),
+  generated_at                TIMESTAMPTZ,
+  entry_price                 NUMERIC(18, 4),
+  target_price                NUMERIC(18, 4),
+  stop_loss                   NUMERIC(18, 4),
+  exit_price                  NUMERIC(18, 4),
+  review_window               VARCHAR(16),
+  return_percent              NUMERIC(10, 4),
+  max_favorable_move_percent  NUMERIC(10, 4),
+  max_adverse_move_percent    NUMERIC(10, 4),
+  target_hit                  BOOLEAN,
+  stop_hit                    BOOLEAN,
+  time_to_target_minutes      INTEGER,
+  time_to_stop_minutes        INTEGER,
+  outcome                     VARCHAR(24) NOT NULL,                                 -- WIN / LOSS / NEUTRAL / PENDING / PARTIAL_WIN / PARTIAL_LOSS / INSUFFICIENT_DATA
+  explanation                 TEXT,
+  created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_q365_backtest_outcomes_run
+  ON q365_backtest_signal_outcomes (backtest_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_q365_backtest_outcomes_symbol
+  ON q365_backtest_signal_outcomes (symbol, generated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_q365_backtest_outcomes_tier
+  ON q365_backtest_signal_outcomes (tier, outcome);
+
+COMMIT;
