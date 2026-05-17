@@ -9,8 +9,15 @@
 //  in src/lib/signals/engineHealthMap.ts.
 //
 //  Safety:
-//   - Returns ok=true even when downstream calls fail; the affected
-//     engine is marked NOT_CONFIGURED / INSUFFICIENT_DATA / BROKEN
+//   - Every internal call is wrapped in `internalFetch` with a strict
+//     timeout, so a slow upstream never hangs this route and the UI
+//     never sees a raw "fetch failed" message.
+//   - When the signals envelope is unavailable, we still probe the
+//     `candles` warehouse directly so the Data Feed Engine card
+//     reflects the real state of the system instead of defaulting to
+//     "No provider activity recorded."
+//   - Returns ok=true even when downstream calls fail; affected
+//     engines are marked NOT_CONFIGURED / INSUFFICIENT_DATA / STALE
 //     with explicit warnings, never fabricated as HEALTHY.
 //   - No threshold changes, no scoring writes.
 //
@@ -22,6 +29,8 @@
 import { NextRequest, NextResponse }   from 'next/server';
 import { requireSession }              from '@/lib/session';
 import { getMarketStatus }             from '@/lib/marketData/marketHours';
+import { db }                          from '@/lib/db';
+import { internalFetch }               from '@/lib/api/internalFetch';
 import {
   buildEngineHealthMap,
   type EngineHealthContext,
@@ -33,31 +42,133 @@ export const revalidate = 0;
 
 const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
 
+// ── Per-upstream timeout budgets ──────────────────────────────
+//
+// Tuned to the worst-case latency of each route under realistic load.
+// Keeping them tight ensures the health map itself never appears to
+// hang from the operator's perspective.
+const TIMEOUT = {
+  signals:      10_000,
+  dailyReport:   6_000,
+  backtest:      6_000,
+  candleProbe:   3_000,
+} as const;
+
+/** Direct DB probe — used as a fallback when /api/signals is unavailable
+ *  so the Data Feed Engine card can show the real warehouse state.
+ *  Pure read, single aggregate query, time-budget enforced by the
+ *  caller via Promise.race. */
+async function probeCandleWarehouse(): Promise<{
+  latestCandleDate: string | null;
+  candleCount:      number;
+  distinctSymbols:  number;
+}> {
+  try {
+    const { rows } = await db.query<{
+      cnt:     number | string;
+      latest:  string | Date | null;
+      symbols: number | string;
+    }>(
+      `SELECT COUNT(*)                    AS cnt,
+              MAX(ts)                     AS latest,
+              COUNT(DISTINCT instrument_key) AS symbols
+         FROM candles
+        WHERE candle_type='eod' AND interval_unit='1day'`,
+    );
+    const r = rows?.[0];
+    if (!r) return { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
+    const rawLatest = r.latest ?? null;
+    const latestCandleDate = rawLatest == null
+      ? null
+      : typeof rawLatest === 'string'
+        ? rawLatest.split('T')[0]
+        : new Date(rawLatest).toISOString().split('T')[0];
+    return {
+      latestCandleDate,
+      candleCount:     Number(r.cnt ?? 0),
+      distinctSymbols: Number(r.symbols ?? 0),
+    };
+  } catch {
+    // Fresh DB without the candles table — soft-fail.
+    return { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
+  }
+}
+
 export async function GET(req: NextRequest) {
   await requireSession();
 
   const url     = new URL(req.url);
   const verbose = url.searchParams.get('verbose') === 'true';
   const warnings: string[] = [];
+  const cookieHeader = req.headers.get('cookie') ?? '';
 
-  // Pull /api/signals so the health map evaluates the EXACT state
-  // the operator's dashboard is reading.
-  let payload: any = null;
-  try {
-    const origin = `${url.protocol}//${url.host}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const res = await fetch(
-      `${origin}/api/signals?action=all&limit=20&request_id=health-${Date.now()}`,
-      { cache: 'no-store', headers: cookieHeader ? { cookie: cookieHeader } : {} },
+  // Fan-out — every upstream is independent so we run them in parallel
+  // and tolerate individual failures via Promise.allSettled.
+  const [signalsRes, dailyRes, backtestRes, candleProbeSettled] = await Promise.allSettled([
+    internalFetch<any>(req, `/api/signals?action=all&limit=20&request_id=health-${Date.now()}`, {
+      cookieHeader, timeoutMs: TIMEOUT.signals,
+    }),
+    internalFetch<any>(req, `/api/signals/daily-report`, {
+      cookieHeader, timeoutMs: TIMEOUT.dailyReport,
+    }),
+    internalFetch<any>(req, `/api/signals/backtest?window=1D`, {
+      cookieHeader, timeoutMs: TIMEOUT.backtest,
+    }),
+    // The candle probe never throws (it returns a zero-shape on
+    // failure) but we still budget it via Promise.race so a hung DB
+    // can't pin the health route.
+    Promise.race([
+      probeCandleWarehouse(),
+      new Promise<{ latestCandleDate: null; candleCount: 0; distinctSymbols: 0 }>(
+        (resolve) => setTimeout(
+          () => resolve({ latestCandleDate: null, candleCount: 0, distinctSymbols: 0 }),
+          TIMEOUT.candleProbe,
+        ),
+      ),
+    ]),
+  ]);
+
+  const signals = signalsRes.status === 'fulfilled' ? signalsRes.value
+    : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.signals, url: '' };
+  const daily   = dailyRes.status === 'fulfilled' ? dailyRes.value
+    : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.dailyReport, url: '' };
+  const backtest = backtestRes.status === 'fulfilled' ? backtestRes.value
+    : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.backtest, url: '' };
+  const candleCoverage = candleProbeSettled.status === 'fulfilled'
+    ? candleProbeSettled.value
+    : { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
+
+  // Operator-facing warnings — these become the "Open Issues" + the
+  // banner under the overall summary card. We deliberately convert
+  // raw transport errors ("fetch failed") into structured language.
+  if (!signals.ok) {
+    warnings.push(
+      signals.timedOut
+        ? `Signal Engine summary did not respond within ${Math.round(signals.timeoutMs / 1000)}s — health map is using fallback candle warehouse readings.`
+        : `Signal Engine summary unavailable (status ${signals.status || 'network'}). Health map will fall back to direct database probes.`,
     );
-    if (res.ok) payload = await res.json();
-    else warnings.push(`Internal /api/signals returned ${res.status}.`);
-  } catch (e) {
-    warnings.push(`Failed to read /api/signals internally: ${(e as Error).message ?? 'unknown error'}.`);
+  }
+  if (!daily.ok) {
+    warnings.push(
+      daily.timedOut
+        ? `Daily Report summary did not respond within ${Math.round(daily.timeoutMs / 1000)}s.`
+        : `Daily Report summary unavailable (status ${daily.status || 'network'}).`,
+    );
+  }
+  if (!backtest.ok) {
+    warnings.push(
+      backtest.timedOut
+        ? `Backtest preview did not respond within ${Math.round(backtest.timeoutMs / 1000)}s.`
+        : `Backtest preview unavailable (status ${backtest.status || 'network'}).`,
+    );
   }
 
-  // When the signal payload is missing we still emit a structured
-  // health map so the operator sees WHY everything is unknown.
+  const payload = signals.data ?? null;
+
+  // Build the context the pure engineHealthMap builder needs. When the
+  // signals envelope is missing, the fields below resolve to null and
+  // the builder uses the `transport` + `candleCoverage` hints to
+  // distinguish "delayed" from "never configured".
   const marketDefault = getMarketStatus();
   const ctx: EngineHealthContext = {
     generatedAt: new Date().toISOString(),
@@ -78,6 +189,14 @@ export async function GET(req: NextRequest) {
       symbolsRequested:   payload?.freshness?.latest_batch_symbols ?? null,
       symbolsReturned:    typeof payload?.main_signals_count === 'number' ? payload.main_signals_count : null,
       candleAgeHours:     payload?.freshness?.candle_age_hours ?? null,
+      candleCoverage,
+    },
+    transport: {
+      signalsAvailable:     signals.ok,
+      signalsTimedOut:      signals.timedOut,
+      signalsErrorMessage:  signals.ok ? null : (signals.error ?? null),
+      dailyReportAvailable: daily.ok,
+      backtestAvailable:    backtest.ok,
     },
     pipeline: {
       lastPipelineRunAt:     payload?.lastPipelineRunAt        ?? payload?.freshness?.last_pipeline_run ?? null,
@@ -107,59 +226,33 @@ export async function GET(req: NextRequest) {
     dueDiligenceSummary: payload?.dueDiligenceSummary ?? null,
   };
 
-  // Daily-report + backtest are best-effort: pull from their own
-  // routes so the health map can mark them accurately, but never
-  // fail the health response if they error.
-  try {
-    const origin = `${url.protocol}//${url.host}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const drRes = await fetch(`${origin}/api/signals/daily-report`, {
-      cache: 'no-store', headers: cookieHeader ? { cookie: cookieHeader } : {},
-    });
-    if (drRes.ok) {
-      const drJson = await drRes.json();
-      ctx.dailyReport = {
-        available:     true,
-        reportStatus:  drJson?.report?.reportStatus,
-        generatedAt:   drJson?.report?.generatedAt ?? drJson?.generatedAt ?? null,
-        warnings:      Array.isArray(drJson?.warnings) ? drJson.warnings : [],
-      };
-    } else {
-      ctx.dailyReport = { available: false };
-      warnings.push(`Daily report fetch returned ${drRes.status}.`);
-    }
-  } catch (e) {
+  if (daily.ok && daily.data) {
+    const drJson = daily.data;
+    ctx.dailyReport = {
+      available:    true,
+      reportStatus: drJson?.report?.reportStatus,
+      generatedAt:  drJson?.report?.generatedAt ?? drJson?.generatedAt ?? null,
+      warnings:     Array.isArray(drJson?.warnings) ? drJson.warnings : [],
+    };
+  } else {
     ctx.dailyReport = { available: false };
-    warnings.push(`Daily report fetch failed: ${(e as Error).message ?? 'unknown error'}.`);
   }
 
-  try {
-    const origin = `${url.protocol}//${url.host}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const btRes = await fetch(`${origin}/api/signals/backtest?window=1D`, {
-      cache: 'no-store', headers: cookieHeader ? { cookie: cookieHeader } : {},
-    });
-    if (btRes.ok) {
-      const btJson = await btRes.json();
-      const bt = btJson?.backtest;
-      ctx.backtest = bt
-        ? {
-            available:        true,
-            status:           bt.status,
-            window:           bt.window,
-            generatedAt:      bt.generatedAt,
-            symbolsWithData:  bt.universe?.symbolsTested ?? null,
-            totalSymbols:     bt.universe?.symbolsTested ?? null,
-            warnings:         Array.isArray(bt.warnings) ? bt.warnings : [],
-          }
-        : { available: false };
-    } else {
-      ctx.backtest = { available: false };
-      warnings.push(`Backtest fetch returned ${btRes.status}.`);
-    }
-  } catch (e) {
+  if (backtest.ok && backtest.data) {
+    const bt = backtest.data?.backtest;
+    ctx.backtest = bt
+      ? {
+          available:        true,
+          status:           bt.status,
+          window:           bt.window,
+          generatedAt:      bt.generatedAt,
+          symbolsWithData:  bt.universe?.symbolsTested ?? null,
+          totalSymbols:     bt.universe?.symbolsTested ?? null,
+          warnings:         Array.isArray(bt.warnings) ? bt.warnings : [],
+        }
+      : { available: false };
+  } else {
     ctx.backtest = { available: false };
-    warnings.push(`Backtest fetch failed: ${(e as Error).message ?? 'unknown error'}.`);
   }
 
   const health: EngineHealthMap = buildEngineHealthMap(ctx);
@@ -170,6 +263,12 @@ export async function GET(req: NextRequest) {
       generatedAt:  health.generatedAt,
       health,
       warnings,
+      sourceStatus: {
+        signals:     { ok: signals.ok,  status: signals.status,  timedOut: signals.timedOut,  elapsedMs: signals.elapsedMs,  timeoutMs: signals.timeoutMs },
+        dailyReport: { ok: daily.ok,    status: daily.status,    timedOut: daily.timedOut,    elapsedMs: daily.elapsedMs,    timeoutMs: daily.timeoutMs },
+        backtest:    { ok: backtest.ok, status: backtest.status, timedOut: backtest.timedOut, elapsedMs: backtest.elapsedMs, timeoutMs: backtest.timeoutMs },
+        candleProbe: candleCoverage,
+      },
       verbose:      verbose ? { signalPayload: payload } : undefined,
     },
     { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },

@@ -134,7 +134,10 @@ export interface EngineHealthContext {
     state?:  string | null;
   };
 
-  /** Provider + freshness state copied from the /api/signals payload. */
+  /** Provider + freshness state copied from the /api/signals payload.
+   *  When the /api/signals envelope is unavailable, the route layer
+   *  fills these from a direct DB probe so the Data Feed Engine card
+   *  doesn't false-fail with "No provider activity recorded." */
   feed: {
     provider:           string | null;
     lastSuccessAt:      string | null;
@@ -147,6 +150,24 @@ export interface EngineHealthContext {
     symbolsRequested:   number | null;
     symbolsReturned:    number | null;
     candleAgeHours:     number | null;
+    /** Direct DB fallback — populated when the route layer queries
+     *  the `candles` warehouse independently of the signals envelope. */
+    candleCoverage?: {
+      latestCandleDate:  string | null;
+      candleCount:       number;
+      distinctSymbols:   number;
+    };
+  };
+
+  /** Transport-level health of the routes the aggregator called.
+   *  Lets the builder mark a node DEGRADED ("signal envelope delayed")
+   *  vs NOT_CONFIGURED ("provider never wired"). */
+  transport?: {
+    signalsAvailable:     boolean;
+    signalsTimedOut?:     boolean;
+    signalsErrorMessage?: string | null;
+    dailyReportAvailable: boolean;
+    backtestAvailable:    boolean;
   };
 
   /** Pipeline run info. */
@@ -252,12 +273,48 @@ const populated = (pool: readonly RankableSignal[], key: keyof RankableSignal): 
 export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const stale = ctx.feed.staleMinutes;
+
+  // Candle-warehouse fallback — if the signals envelope was unavailable
+  // but the candle warehouse has rows, the data feed is functional but
+  // delayed, not "not configured".
+  const cov = ctx.feed.candleCoverage ?? null;
+  const candleCount      = cov?.candleCount      ?? 0;
+  const distinctSymbols  = cov?.distinctSymbols  ?? 0;
+  const latestCandleDate = cov?.latestCandleDate ?? null;
+  const candleAgeMs = latestCandleDate
+    ? Math.max(0, Date.now() - new Date(`${latestCandleDate}T00:00:00Z`).getTime())
+    : null;
+  const candleAgeHours = candleAgeMs != null ? Math.round(candleAgeMs / 3_600_000) : null;
+
+  const signalsTimedOut    = ctx.transport?.signalsTimedOut === true;
+  const signalsUnavailable = ctx.transport?.signalsAvailable === false;
+
   let status: EngineStatus = 'UNKNOWN';
   if (ctx.feed.provider == null && ctx.feed.lastSuccessAt == null) {
-    status = 'NOT_CONFIGURED';
-    diag.primaryIssue = 'No provider activity recorded.';
-    diag.warnings.push('Provider health data unavailable.');
-    diag.recommendedActions.push('Verify market data adapter wiring (IndianAPI / Yahoo fallback).');
+    // Differentiate "envelope delayed but warehouse healthy" from
+    // "nothing ever ran". Warehouse rows mean the data feed is
+    // operational; the read path just hasn't surfaced yet.
+    if (candleCount > 0 && candleAgeHours != null && candleAgeHours <= 36) {
+      status = signalsUnavailable ? 'WARNING' : 'HEALTHY';
+      diag.findings.push(`Candle warehouse healthy — ${candleCount} rows across ${distinctSymbols} symbols, latest ${latestCandleDate}.`);
+      if (signalsUnavailable) {
+        diag.primaryIssue = signalsTimedOut
+          ? 'Signal envelope delayed — using direct candle warehouse readings.'
+          : 'Signal envelope unavailable — using direct candle warehouse readings.';
+        diag.warnings.push('Run market data refresh to bring the read path back online.');
+        diag.recommendedActions.push('Run market data refresh');
+      }
+    } else if (candleCount > 0) {
+      status = 'STALE';
+      diag.primaryIssue = `Candle warehouse is ${candleAgeHours ?? '?'}h stale (latest ${latestCandleDate ?? 'unknown'}).`;
+      diag.warnings.push('No fresh EOD ingestion within the freshness window.');
+      diag.recommendedActions.push('Run EOD ingestion (POST /api/manipulation/eod-ingest).');
+    } else {
+      status = 'NOT_CONFIGURED';
+      diag.primaryIssue = 'No provider activity and no candle warehouse rows.';
+      diag.warnings.push('Provider health data unavailable.');
+      diag.recommendedActions.push('Run market data refresh');
+    }
   } else if (ctx.feed.isBootstrap) {
     status = 'WARNING';
     diag.primaryIssue = 'Operating on bootstrap-seeded data.';
@@ -374,12 +431,26 @@ export function buildScannerHealthNode(ctx: EngineHealthContext): EngineHealthNo
     ctx.signals.developing.length +
     ctx.signals.scannerCandidates.length;
 
+  // Distinguish "signal envelope delayed → no pipeline read" from
+  // "scanner never ran on this deployment". When the candle warehouse
+  // has rows but the envelope was unavailable, the scanner status is
+  // unknown rather than not-configured.
+  const signalsUnavailable = ctx.transport?.signalsAvailable === false;
+  const candleCount        = ctx.feed.candleCoverage?.candleCount ?? 0;
+
   let status: EngineStatus = 'UNKNOWN';
   if (p.lastPipelineRunAt == null) {
-    status = 'NOT_CONFIGURED';
-    diag.primaryIssue = 'No pipeline run recorded.';
-    diag.warnings.push('Scanner has not run since last process boot.');
-    diag.recommendedActions.push('Run pipeline manually or wait for scheduled trigger (18:30 IST).');
+    if (signalsUnavailable && candleCount > 0) {
+      status = 'WARNING';
+      diag.primaryIssue = 'Signal envelope unavailable — scanner status cannot be read.';
+      diag.warnings.push('Run market data refresh, then re-trigger the scanner pipeline.');
+      diag.recommendedActions.push('Run scanner pipeline');
+    } else {
+      status = 'NOT_CONFIGURED';
+      diag.primaryIssue = 'No pipeline run recorded.';
+      diag.warnings.push('Scanner has not run since last process boot.');
+      diag.recommendedActions.push('Run scanner pipeline');
+    }
   } else if (minsSinceRun != null && minsSinceRun > 180 && ctx.marketStatus.isOpen) {
     status = 'STALE';
     diag.primaryIssue = `Scanner has not run for ${minsSinceRun}m during market hours.`;
@@ -462,6 +533,7 @@ export function buildIndicatorHealthNode(ctx: EngineHealthContext): EngineHealth
   if (total === 0) {
     status = 'INSUFFICIENT_DATA';
     diag.warnings.push('No signals or candidates available to inspect indicator coverage.');
+    diag.recommendedActions.push('Waiting for scanner candidates');
   } else if (coverage != null && coverage >= 80) {
     status = 'HEALTHY';
     diag.findings.push(`Factor scores populated on ${coverage}% of rows.`);
@@ -513,6 +585,7 @@ export function buildScoringHealthNode(ctx: EngineHealthContext): EngineHealthNo
   if (total === 0) {
     status = 'INSUFFICIENT_DATA';
     diag.warnings.push('No signal pool to evaluate scoring.');
+    diag.recommendedActions.push('Waiting for indicator output');
   } else if (withFinal === total && withConfidence === total) {
     status = 'HEALTHY';
     diag.findings.push('Every reviewed row has final_score + confidence_score populated.');
@@ -563,6 +636,7 @@ export function buildRiskHealthNode(ctx: EngineHealthContext): EngineHealthNode 
   if (total === 0) {
     status = 'INSUFFICIENT_DATA';
     diag.warnings.push('No signal pool to evaluate risk fields.');
+    diag.recommendedActions.push('Waiting for scored signals');
   } else if (withRR === total && withStop === total && withTarget === total) {
     status = 'HEALTHY';
   } else if (withRR / total >= 0.7 && withStop / total >= 0.7) {
@@ -605,6 +679,7 @@ export function buildConfirmationHealthNode(ctx: EngineHealthContext): EngineHea
   if (approvedTotal === 0 && candidates === 0) {
     status = 'INSUFFICIENT_DATA';
     diag.warnings.push('No approved signals or candidates to evaluate confirmation engine.');
+    diag.recommendedActions.push('Waiting for candidates from scanner');
   } else if (approvedTotal === 0 && candidates > 0 && !ctx.marketStatus.isOpen) {
     status = 'WARNING';
     diag.primaryIssue = 'Market is closed — confirmation gate withholds new approvals by design.';
@@ -658,9 +733,11 @@ export function buildDueDiligenceHealthNode(ctx: EngineHealthContext): EngineHea
   if (!summary) {
     status = 'NOT_CONFIGURED';
     diag.warnings.push('Due Diligence summary not present on the response.');
+    diag.recommendedActions.push('Waiting for confirmed or approved candidates');
   } else if (summary.totalReviewed === 0) {
     status = 'INSUFFICIENT_DATA';
     diag.warnings.push('Due diligence ran but no rows were reviewed.');
+    diag.recommendedActions.push('Waiting for confirmed or approved candidates');
   } else {
     status = 'HEALTHY';
     diag.findings.push(`Reviewed ${summary.totalReviewed} signal${summary.totalReviewed === 1 ? '' : 's'} across tiers.`);
@@ -703,6 +780,7 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
   if (!dr || !dr.available) {
     status = 'NOT_CONFIGURED';
     diag.warnings.push('Daily report not available on this request.');
+    diag.recommendedActions.push('Run report after signal validation');
   } else if (dr.reportStatus === 'COMPLETE') {
     status = 'HEALTHY';
   } else if (dr.reportStatus === 'PARTIAL') {
@@ -746,6 +824,7 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
   if (!bt || !bt.available) {
     status = 'NOT_CONFIGURED';
     diag.warnings.push('Backtest preview not provided on this request.');
+    diag.recommendedActions.push('Import historical candle data');
   } else if (bt.status === 'COMPLETE') {
     status = 'HEALTHY';
   } else if (bt.status === 'PARTIAL') {
@@ -754,7 +833,7 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
   } else if (bt.status === 'INSUFFICIENT_DATA') {
     status = 'INSUFFICIENT_DATA';
     diag.primaryIssue = 'Historical price data not available for any symbol.';
-    diag.recommendedActions.push('Wire candle provider into historicalMarketData.ts adapter.');
+    diag.recommendedActions.push('Import historical candle data');
   } else if (bt.status === 'FAILED') {
     status = 'BROKEN';
     diag.errors.push('Backtest run failed.');
@@ -992,19 +1071,36 @@ export function buildPipelineReadiness(nodes: EngineHealthNode[]): PipelineReadi
   };
 }
 
-export function deriveOverallStatus(nodes: EngineHealthNode[]): EngineHealthMap['overallStatus'] {
-  let healthy = 0, warning = 0, degraded = 0, broken = 0;
+export function deriveOverallStatus(
+  nodes: EngineHealthNode[],
+  pipeline?: PipelineReadiness,
+): EngineHealthMap['overallStatus'] {
+  let healthy = 0, warning = 0, degraded = 0, broken = 0, notConfigured = 0;
   for (const n of nodes) {
     if (n.status === 'HEALTHY')       healthy++;
     else if (n.status === 'WARNING')   warning++;
     else if (n.status === 'DEGRADED' || n.status === 'STALE') degraded++;
     else if (n.status === 'BROKEN')    broken++;
+    else if (n.status === 'NOT_CONFIGURED' || n.status === 'INSUFFICIENT_DATA') notConfigured++;
   }
-  if (broken > 0)                          return 'BROKEN';
+  if (broken > 0) return 'BROKEN';
+
+  // Readiness gate — the contradiction we're fixing: it's not honest
+  // to call the pipeline HEALTHY when the operator-facing readiness
+  // chips ("Can generate candidates", "Can generate approved signals")
+  // are red. Demote to WARNING/DEGRADED in that case.
+  if (pipeline) {
+    if (!pipeline.canGenerateCandidates) return 'DEGRADED';
+    if (!pipeline.canGenerateApprovedSignals) return 'WARNING';
+  }
+
   if (degraded >= 2)                       return 'DEGRADED';
   if (degraded === 1 || warning >= 2)      return 'WARNING';
   if (healthy === 0)                       return 'UNKNOWN';
-  if (warning === 0 && degraded === 0)     return 'HEALTHY';
+  if (warning === 0 && degraded === 0 && notConfigured === 0) return 'HEALTHY';
+  // Some optional engines unconfigured but core gates pass — surface
+  // as WARNING rather than HEALTHY so the badge matches the chips.
+  if (warning === 0 && degraded === 0)     return 'WARNING';
   return 'WARNING';
 }
 
@@ -1108,7 +1204,7 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
 
   const edges     = buildEdges(nodes);
   const pipeline  = buildPipelineReadiness(nodes);
-  const overall   = deriveOverallStatus(nodes);
+  const overall   = deriveOverallStatus(nodes, pipeline);
 
   // Issue collection.
   const criticalIssues: string[] = [];
@@ -1130,10 +1226,25 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
   }
 
   const overallSummary = (() => {
-    if (overall === 'HEALTHY') return 'All engines operating within institutional health limits.';
-    if (overall === 'WARNING') return 'Pipeline operational; one or more engines reporting warnings.';
-    if (overall === 'DEGRADED') return 'Pipeline degraded — some engines need attention before approvals can resume.';
-    if (overall === 'BROKEN') return 'Pipeline broken — approval generation blocked.';
+    if (overall === 'HEALTHY') {
+      return 'All engines operating within institutional health limits.';
+    }
+    if (overall === 'BROKEN') {
+      return 'Pipeline not ready — approval generation is blocked. Inspect the engine cards below.';
+    }
+    // WARNING / DEGRADED — be specific about which gate is open.
+    if (!pipeline.canGenerateCandidates) {
+      return 'Pipeline partially ready. Signal approval is restricted until data feed, scanner, and validation stages complete.';
+    }
+    if (!pipeline.canGenerateApprovedSignals) {
+      return 'Pipeline partially ready. Candidates flowing, but approval gate is awaiting clean confirmation conditions.';
+    }
+    if (overall === 'DEGRADED') {
+      return 'Pipeline degraded — some engines need attention before approvals can resume.';
+    }
+    if (overall === 'WARNING') {
+      return 'Pipeline operational; one or more engines reporting warnings.';
+    }
     return 'Pipeline status undetermined.';
   })();
 
