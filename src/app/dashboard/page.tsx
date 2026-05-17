@@ -133,6 +133,13 @@ const fmtScore = (n: number | null | undefined, digits = 1): string =>
   (typeof n === 'number' && Number.isFinite(n)) ? n.toFixed(digits) : '—';
 
 // Map fusion status → palette tone used by chips, dots, rings.
+//
+// Note: "BROKEN" / "AUTH_REQUIRED" are deliberately mapped to amber
+// (not red). The aggregator's internal enum still tracks them as
+// distinct failure modes, but the institutional UI surfaces them as
+// a recoverable operational state ("Pending Recovery") rather than
+// an alarming red error block. The system notice + warnings strip
+// still emphasise the count so nothing is hidden.
 const toneFor = (s: FusionStatus): 'green' | 'amber' | 'red' | 'blue' | 'grey' | 'purple' => {
   switch (s) {
     case 'HEALTHY':           return 'green';
@@ -142,11 +149,25 @@ const toneFor = (s: FusionStatus): 'green' | 'amber' | 'red' | 'blue' | 'grey' |
     case 'STALE':             return 'amber';
     case 'DEGRADED':          return 'amber';
     case 'TIMEOUT':           return 'amber';
-    case 'BROKEN':            return 'red';
-    case 'AUTH_REQUIRED':     return 'red';
+    case 'BROKEN':            return 'amber';
+    case 'AUTH_REQUIRED':     return 'amber';
     case 'NOT_CONFIGURED':    return 'grey';
     case 'INSUFFICIENT_DATA': return 'grey';
     default:                  return 'blue';
+  }
+};
+
+// Display-only label for a fusion status. Maps the internal enum
+// (BROKEN / AUTH_REQUIRED) to the operator-facing copy "Pending
+// Recovery" so the dashboard never surfaces "BROKEN" to users.
+// Backend / API contract is untouched.
+const displayStatusLabel = (s: FusionStatus): string => {
+  switch (s) {
+    case 'BROKEN':
+    case 'AUTH_REQUIRED':
+      return 'Pending Recovery';
+    default:
+      return s.replace(/_/g, ' ');
   }
 };
 
@@ -288,8 +309,10 @@ function describeSignalEngine(
     case 'AUTH_REQUIRED':
       return {
         value: 'RECOVERY',
-        sub:   status === 'AUTH_REQUIRED' ? 'Re-authentication required.' : 'Signal engine unreachable.',
-        tone:  'red',
+        sub:   status === 'AUTH_REQUIRED'
+                 ? 'Re-authentication required.'
+                 : 'Engine pending recovery — refresh recommended.',
+        tone:  'amber',
         mode:  'Recovery Mode',
       };
     default:
@@ -418,10 +441,11 @@ function buildSystemNotice(
   const kicker = 'System Notice';
 
   // Reason — single most prominent issue type. "Delayed" reads as
-  // a controlled operational state, "timed out" reads as failure.
+  // a controlled operational state, "pending recovery" reads as a
+  // recoverable failure (vs alarming "unreachable").
   const reasonParts: string[] = [];
   if (anyTimeout) reasonParts.push(`${c.timeout} module${c.timeout === 1 ? '' : 's'} delayed`);
-  if (anyBroken)  reasonParts.push(`${c.broken} module${c.broken === 1 ? '' : 's'} unreachable`);
+  if (anyBroken)  reasonParts.push(`${c.broken} module${c.broken === 1 ? '' : 's'} pending recovery`);
   if (anyStale) {
     const n = c.stale > 0 ? c.stale : 1;
     reasonParts.push(`${n} stale data source${n === 1 ? '' : 's'}`);
@@ -443,12 +467,19 @@ function buildSystemNotice(
     impact = 'Some intelligence modules are still collecting data.';
   }
 
-  // Tone preference: red > amber > blue. Engine tone informs the
-  // accent stripe to keep the dashboard cohesive.
+  // Tone preference: amber for any actionable degradation, blue for
+  // informational (insufficient/not-configured). The dashboard
+  // deliberately avoids red banners — failure modes are framed as
+  // recoverable operating states with explicit CTAs.
   const tone: 'amber' | 'red' | 'blue' | 'grey' | 'green' | 'purple' =
-    anyBroken ? 'red' : (anyTimeout || anyStale || anyPartial) ? 'amber' : (engineTone === 'green' ? 'blue' : engineTone);
+    (anyBroken || anyTimeout || anyStale || anyPartial)
+      ? 'amber'
+      : (engineTone === 'green' ? 'blue' : engineTone);
 
-  return { mode, kicker, reason, impact, tone, icon: anyBroken ? AlertTriangle : anyTimeout ? RefreshCw : Info };
+  return {
+    mode, kicker, reason, impact, tone,
+    icon: anyBroken || anyTimeout ? RefreshCw : Info,
+  };
 }
 
 // ── Small presentational primitives (kept local) ───────────────────
@@ -514,7 +545,7 @@ function FusionCard({ item }: { item: FusionItem }) {
     <Link href={item.href} className={`${styles.fusionCard} ${styles[`fusionCard--${tone}`]}`}>
       <div className={styles.fusionTop}>
         <span className={styles.fusionLabel}>{item.label}</span>
-        <Chip tone={tone}><StatusDot tone={tone} />{item.status.replace(/_/g, ' ')}</Chip>
+        <Chip tone={tone}><StatusDot tone={tone} />{displayStatusLabel(item.status)}</Chip>
       </div>
       <div className={styles.fusionDetail} title={item.reason ?? item.detail}>{item.detail}</div>
       <div className={styles.fusionFoot}>
@@ -650,7 +681,7 @@ export default function DashboardPage() {
   // ── Loading skeleton ─────────────────────────────────────────────
   if (loading && !data) {
     return (
-      <AppShell title="Command Center">
+      <AppShell title="Market Intelligence Center">
         <div className={styles.page}>
           <SkeletonShell />
         </div>
@@ -661,7 +692,7 @@ export default function DashboardPage() {
   // ── Hard failure (still keep shell) ──────────────────────────────
   if (error && !data) {
     return (
-      <AppShell title="Command Center">
+      <AppShell title="Market Intelligence Center">
         <div className={styles.page}>
           <div className={styles.errorPanel}>
             <AlertTriangle size={28} />
@@ -991,6 +1022,18 @@ export default function DashboardPage() {
                 ))}
               </ul>
             )}
+
+            {/* Compact governance footer — only shown when there are
+                actual candidates so the panel never wraps an empty
+                state in unnecessary chrome. */}
+            {opps.length > 0 && (
+              <div className={styles.oppFooter}>
+                <ShieldCheck size={11} />
+                <span>
+                  {opps.length} candidate{opps.length === 1 ? '' : 's'} under review · Approval restricted by confidence, risk, and freshness gates.
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Risk blockers */}
@@ -1024,15 +1067,15 @@ export default function DashboardPage() {
               empty="No active module risk."
               items={[
                 risk?.staleData && {
-                  primary: 'Data freshness STALE',
-                  secondary: 'Engine running on aged candles.',
-                  tone: 'red' as const,
+                  primary: 'Data freshness pending refresh',
+                  secondary: 'Engine is running on aged candles.',
+                  tone: 'amber' as const,
                   icon: <Database size={12} />,
                 },
                 (risk?.manipulationWarningCount ?? 0) > 0 && {
-                  primary: `${risk?.manipulationWarningCount} manipulation flags`,
+                  primary: `${risk?.manipulationWarningCount} manipulation flag${(risk?.manipulationWarningCount ?? 0) === 1 ? '' : 's'}`,
                   secondary: fusion?.manipulationWatch.detail ?? 'Surveillance flagged risk.',
-                  tone: 'red' as const,
+                  tone: 'amber' as const,
                   icon: <ShieldAlert size={12} />,
                 },
                 fusion?.newsIntelligence.status === 'WARNING' && {
@@ -1048,7 +1091,7 @@ export default function DashboardPage() {
                   icon: <LineChart size={12} />,
                 },
                 fusion?.backtesting.status === 'INSUFFICIENT_DATA' && {
-                  primary: 'Backtesting insufficient data',
+                  primary: 'Backtesting awaiting validation data',
                   secondary: 'Cannot validate setup historically.',
                   tone: 'grey' as const,
                   icon: <FlaskConical size={12} />,
@@ -1056,7 +1099,7 @@ export default function DashboardPage() {
                 engineHealth?.topBrokenEngine && {
                   primary: `Engine degraded: ${engineHealth.topBrokenEngine}`,
                   secondary: engineHealth.primaryBlockingReason ?? 'See Engine Health',
-                  tone: 'red' as const,
+                  tone: 'amber' as const,
                   icon: <Cpu size={12} />,
                 },
               ].filter(Boolean) as Array<{ primary: string; secondary: string; tone: 'red' | 'amber' | 'grey' | 'blue' | 'green' | 'purple'; icon: React.ReactNode }>}
@@ -1100,7 +1143,7 @@ export default function DashboardPage() {
               />
               <SnapItem
                 label="Direction Bias"
-                value={niceText(strategy?.directionBias, 'Pending validation')}
+                value={niceText(strategy?.directionBias, 'Awaiting confirmation')}
                 tone={biasTone}
               />
               <SnapItem
@@ -1114,7 +1157,7 @@ export default function DashboardPage() {
                 tone={strategy?.weakStrategy ? 'amber' : 'grey'}
               />
               <SnapItem
-                label="Backtest Setup"
+                label="Backtest Status"
                 value={niceText(strategy?.backtestSupportedSetup, 'Insufficient validated data')}
                 tone={strategy?.backtestSupportedSetup ? 'purple' : 'grey'}
               />
