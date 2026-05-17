@@ -64,6 +64,15 @@ const ACTION_MAP: Record<StrategyName, SignalAction> = {
   // maps enter_short → direction='SELL'. No new action enum needed.
   overbought_reversal:    'enter_short',
   weak_trend_breakdown:   'enter_short',
+  // Phase 4:
+  failed_breakout_reversal:    'enter_short',
+  bearish_pullback_rejection:  'enter_short',
+  volatility_squeeze_breakout: 'enter_on_breakout',
+  multi_timeframe_alignment:   'enter_on_confirmation',
+  vwap_reclaim_long:           'enter_on_intraday_break',
+  vwap_rejection_short:        'enter_short',
+  opening_range_breakout:      'enter_on_intraday_break',
+  opening_range_breakdown:     'enter_short',
 };
 
 const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
@@ -80,24 +89,21 @@ const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
   oversold_bounce:        'oversold_reversal',
   overbought_reversal:    'overbought_reversal_entry',
   weak_trend_breakdown:   'weak_trend_entry',
+  // Phase 4:
+  failed_breakout_reversal:    'failed_breakout',
+  bearish_pullback_rejection:  'bearish_pullback',
+  volatility_squeeze_breakout: 'volatility_squeeze',
+  multi_timeframe_alignment:   'multi_timeframe_align',
+  vwap_reclaim_long:           'vwap_reclaim',
+  vwap_rejection_short:        'vwap_rejection',
+  opening_range_breakout:      'opening_range_break',
+  opening_range_breakdown:     'opening_range_breakdown_sub',
 };
 
-type Phase3EntryType = 'breakout_confirmation' | 'pullback_retest' | 'momentum_followthrough' | 'mean_reversion_confirmation';
-const ENTRY_TYPE_MAP: Record<StrategyName, Phase3EntryType> = {
-  bullish_breakout:       'breakout_confirmation',
-  bullish_pullback:       'pullback_retest',
-  bearish_breakdown:      'momentum_followthrough',
-  mean_reversion_bounce:  'mean_reversion_confirmation',
-  momentum_continuation:  'momentum_followthrough',
-  bullish_divergence:     'mean_reversion_confirmation',
-  volume_climax_reversal: 'mean_reversion_confirmation',
-  gap_continuation:       'breakout_confirmation',
-  range_breakout:         'breakout_confirmation',
-  ema_crossover:          'momentum_followthrough',
-  oversold_bounce:        'mean_reversion_confirmation',
-  overbought_reversal:    'mean_reversion_confirmation',
-  weak_trend_breakdown:   'momentum_followthrough',
-};
+// Phase-1 stabilization — the strategy → EntryType map now lives in
+// strategyRegistry.ts and is read via getStrategyEntryType() inside
+// buildPhase3TradePlanForStrategy. The previously-duplicated map
+// here was dead code that drifted out of sync. Removed.
 
 function contextTag(regime: string): MarketContextTag {
   if (regime === 'Strong Bullish' || regime === 'Bullish') return 'Bullish';

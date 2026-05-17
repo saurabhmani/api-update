@@ -87,6 +87,16 @@ export const STRATEGY_CATEGORY_MAP: Record<StrategyName, StrategyCategory> = {
   overbought_reversal:    'mean_reversion',
   bullish_divergence:     'mean_reversion',
   volume_climax_reversal: 'mean_reversion',
+
+  // Phase 4 additions — categorised so existing weight presets apply.
+  failed_breakout_reversal:    'mean_reversion',     // contrarian reversal — same DNA as the others
+  bearish_pullback_rejection:  'breakout',           // continuation-short, breakdown family
+  volatility_squeeze_breakout: 'breakout',
+  multi_timeframe_alignment:   'momentum',           // confirmation only — momentum weights are the safer default
+  vwap_reclaim_long:           'momentum',
+  vwap_rejection_short:        'mean_reversion',
+  opening_range_breakout:      'breakout',
+  opening_range_breakdown:     'breakout',
 };
 
 // ── Per-category weight presets ─────────────────────────────────

@@ -56,6 +56,16 @@ const STRATEGY_META: Record<StrategyName, {
   oversold_bounce:        { signalType: 'oversold_bounce',        signalSubtype: 'oversold_reversal',        action: 'enter_on_oversold' },
   overbought_reversal:    { signalType: 'overbought_reversal',    signalSubtype: 'overbought_reversal_entry', action: 'enter_short' },
   weak_trend_breakdown:   { signalType: 'weak_trend_breakdown',   signalSubtype: 'weak_trend_entry',          action: 'enter_short' },
+  // Phase 4A:
+  failed_breakout_reversal:   { signalType: 'failed_breakout_reversal',   signalSubtype: 'failed_breakout',     action: 'enter_short' },
+  bearish_pullback_rejection: { signalType: 'bearish_pullback_rejection', signalSubtype: 'bearish_pullback',    action: 'enter_short' },
+  volatility_squeeze_breakout:{ signalType: 'volatility_squeeze_breakout',signalSubtype: 'volatility_squeeze',  action: 'enter_on_breakout' },
+  // Phase 4B (data-gated — detectors return INSUFFICIENT_DATA):
+  multi_timeframe_alignment:  { signalType: 'multi_timeframe_alignment',  signalSubtype: 'multi_timeframe_align', action: 'enter_on_confirmation' },
+  vwap_reclaim_long:          { signalType: 'vwap_reclaim_long',          signalSubtype: 'vwap_reclaim',          action: 'enter_on_intraday_break' },
+  vwap_rejection_short:       { signalType: 'vwap_rejection_short',       signalSubtype: 'vwap_rejection',        action: 'enter_short' },
+  opening_range_breakout:     { signalType: 'opening_range_breakout',     signalSubtype: 'opening_range_break',   action: 'enter_on_intraday_break' },
+  opening_range_breakdown:    { signalType: 'opening_range_breakdown',    signalSubtype: 'opening_range_breakdown_sub', action: 'enter_short' },
 };
 
 function computeContextScore(regime: MarketRegime): number {

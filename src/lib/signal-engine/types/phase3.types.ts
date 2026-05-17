@@ -3,8 +3,40 @@
 // ════════════════════════════════════════════════════════════════
 
 // ── Entry Types ─────────────────────────────────────────────
+//
+// Phase-1 stabilization: aligned with the strategy-specific entry
+// types declared on `EntryType` in signalEngine.types.ts. The legacy
+// short list (breakout_confirmation / pullback_retest /
+// momentum_followthrough / mean_reversion_confirmation) is kept as
+// an alias so existing rows persisted under those names still type-
+// check; new persistence uses the strategy-specific value.
 export type Phase3EntryType =
+  // Strategy-specific (Phase 1 stabilized)
   | 'breakout_confirmation'
+  | 'range_breakout_confirmation'
+  | 'trend_crossover_entry'
+  | 'momentum_continuation_entry'
+  | 'gap_continuation_entry'
+  | 'pullback_entry'
+  | 'mean_reversion_entry'
+  | 'oversold_recovery_entry'
+  | 'divergence_confirmation_entry'
+  | 'volume_climax_reversal_entry'
+  | 'breakdown_confirmation'
+  | 'overbought_reversal_entry'
+  | 'weak_trend_breakdown_entry'
+  | 'strategy_confirmation_entry'
+  // Phase 4A:
+  | 'failed_breakout_reversal_entry'
+  | 'bearish_pullback_rejection_entry'
+  | 'volatility_squeeze_breakout_entry'
+  // Phase 4B (intraday):
+  | 'multi_timeframe_confirmation_entry'
+  | 'vwap_reclaim_entry'
+  | 'vwap_rejection_entry'
+  | 'opening_range_breakout_entry'
+  | 'opening_range_breakdown_entry'
+  // Legacy aliases — still valid for already-persisted rows.
   | 'pullback_retest'
   | 'momentum_followthrough'
   | 'mean_reversion_confirmation';

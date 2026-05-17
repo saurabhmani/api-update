@@ -93,6 +93,15 @@ const STRATEGY_TO_SCENARIO: Record<StrategyName, string> = {
   oversold_bounce:        'MEAN_REVERSION',
   overbought_reversal:    'MEAN_REVERSION',        // mirror of oversold_bounce
   weak_trend_breakdown:   'BREAKOUT_CONTINUATION', // breakdown family (mirror of bearish_breakdown)
+  // Phase 4:
+  failed_breakout_reversal:    'MEAN_REVERSION',
+  bearish_pullback_rejection:  'BREAKOUT_CONTINUATION',
+  volatility_squeeze_breakout: 'BREAKOUT_CONTINUATION',
+  multi_timeframe_alignment:   'TREND_CONTINUATION',
+  vwap_reclaim_long:           'MOMENTUM_EXPANSION',
+  vwap_rejection_short:        'MEAN_REVERSION',
+  opening_range_breakout:      'BREAKOUT_CONTINUATION',
+  opening_range_breakdown:     'BREAKOUT_CONTINUATION',
 };
 
 function deriveMarketStance(regime: string): string {

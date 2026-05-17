@@ -50,6 +50,14 @@ import { evaluateEmaCrossover } from '../strategies/emaCrossover';
 import { evaluateOversoldBounce } from '../strategies/oversoldBounce';
 import { evaluateOverboughtReversal } from '../strategies/overboughtReversal';
 import { evaluateWeakTrendBreakdown } from '../strategies/weakTrendBreakdown';
+// Phase 4 additions:
+import { evaluateFailedBreakoutReversal }   from '../strategies/failedBreakoutReversal';
+import { evaluateBearishPullbackRejection } from '../strategies/bearishPullbackRejection';
+import { evaluateVolatilitySqueezeBreakout } from '../strategies/volatilitySqueezeBreakout';
+import {
+  evaluateMultiTimeframeAlignment, evaluateVwapReclaimLong, evaluateVwapRejectionShort,
+  evaluateOpeningRangeBreakout, evaluateOpeningRangeBreakdown,
+} from '../strategies/intradayStubs';
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
 
 const STRATEGY_EVALUATORS: Record<StrategyName, (f: SignalFeatures) => StrategyMatchResult> = {
@@ -66,6 +74,16 @@ const STRATEGY_EVALUATORS: Record<StrategyName, (f: SignalFeatures) => StrategyM
   oversold_bounce:        evaluateOversoldBounce,
   overbought_reversal:    evaluateOverboughtReversal,
   weak_trend_breakdown:   evaluateWeakTrendBreakdown,
+  // Phase 4A:
+  failed_breakout_reversal:   evaluateFailedBreakoutReversal,
+  bearish_pullback_rejection: evaluateBearishPullbackRejection,
+  volatility_squeeze_breakout: evaluateVolatilitySqueezeBreakout,
+  // Phase 4B (intraday — stub returns INSUFFICIENT_DATA):
+  multi_timeframe_alignment: evaluateMultiTimeframeAlignment,
+  vwap_reclaim_long:         evaluateVwapReclaimLong,
+  vwap_rejection_short:      evaluateVwapRejectionShort,
+  opening_range_breakout:    evaluateOpeningRangeBreakout,
+  opening_range_breakdown:   evaluateOpeningRangeBreakdown,
 };
 
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
@@ -82,6 +100,15 @@ const ACTION_MAP: Record<StrategyName, SignalAction> = {
   oversold_bounce:        'enter_on_oversold',
   overbought_reversal:    'enter_short',
   weak_trend_breakdown:   'enter_short',
+  // Phase 4:
+  failed_breakout_reversal:    'enter_short',
+  bearish_pullback_rejection:  'enter_short',
+  volatility_squeeze_breakout: 'enter_on_breakout',
+  multi_timeframe_alignment:   'enter_on_confirmation',
+  vwap_reclaim_long:           'enter_on_intraday_break',
+  vwap_rejection_short:        'enter_short',
+  opening_range_breakout:      'enter_on_intraday_break',
+  opening_range_breakdown:     'enter_short',
 };
 
 const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
@@ -98,6 +125,15 @@ const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
   oversold_bounce:        'oversold_reversal',
   overbought_reversal:    'overbought_reversal_entry',
   weak_trend_breakdown:   'weak_trend_entry',
+  // Phase 4:
+  failed_breakout_reversal:    'failed_breakout',
+  bearish_pullback_rejection:  'bearish_pullback',
+  volatility_squeeze_breakout: 'volatility_squeeze',
+  multi_timeframe_alignment:   'multi_timeframe_align',
+  vwap_reclaim_long:           'vwap_reclaim',
+  vwap_rejection_short:        'vwap_rejection',
+  opening_range_breakout:      'opening_range_break',
+  opening_range_breakdown:     'opening_range_breakdown_sub',
 };
 
 function contextTag(regime: string): MarketContextTag {

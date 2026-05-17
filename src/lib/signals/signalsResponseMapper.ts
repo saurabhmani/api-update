@@ -22,6 +22,9 @@
 //  No side effects, no DB calls, no Yahoo. Pure functions only.
 // ════════════════════════════════════════════════════════════════
 
+import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import type { EntryType, StrategyCategory } from '@/lib/signal-engine/types/signalEngine.types';
+
 /**
  * Subset of the confirmed-snapshot row shape that the response
  * mapper actually reads. Kept deliberately wide so existing callers
@@ -129,6 +132,18 @@ export interface ConfirmedSignalRow {
   // partial, or unknown freshness can never produce a recommendedAction
   // stronger than WARNING_ONLY — see recommendedActionFor() for the rule.
   manipulationRisk?:                import('@/lib/manipulation-engine/manipulationSignalRisk').ManipulationRisk;
+
+  // ── Phase-1 stabilization — strategy metadata ────────────────────
+  // q365_signals stores the strategy in `signal_type`, while the
+  // confirmed-snapshot reader exposes the same value under `strategy`.
+  // The wire mapper reads either name and enriches via strategyRegistry
+  // so the API surfaces a typed display name + category + entry type
+  // without each consumer having to do its own lookup.
+  signal_type?:                     string | null;
+  strategy?:                        string | null;
+  /** Entry type persisted in q365_phase3_signals.entry_type, when
+   *  available. Falls back to the registry mapping if absent. */
+  entry_type?:                      string | null;
 }
 
 /**
@@ -198,6 +213,19 @@ export interface CompactConfirmedSignal {
   // recommendedAction at WARNING_ONLY; canAffectApproval is true only
   // when freshness is FRESH and band ∈ {ELEVATED, HIGH, SEVERE}.
   manipulationRisk:                import('@/lib/manipulation-engine/manipulationSignalRisk').ManipulationRisk | null;
+
+  // ── Phase-1 stabilization — strategy metadata ────────────────────
+  // Resolved once by the wire mapper via strategyRegistry so wire
+  // consumers don't have to repeat the lookup. `strategyId` is the
+  // raw signal_type from the DB; the other three are enriched.
+  /** Raw strategy ID (snake_case) — e.g. "bullish_pullback". Never null. */
+  strategyId:                      string;
+  /** Title-case display name — e.g. "Bullish Pullback". Never null. */
+  strategyName:                    string;
+  /** Strategy category — e.g. "pullback", "mean_reversion", "breakdown". */
+  strategyCategory:                StrategyCategory;
+  /** Strategy-specific entry type — e.g. "pullback_entry". Never null. */
+  entryType:                       EntryType;
 
   source:                          'stored';
 }
@@ -314,6 +342,15 @@ export function compactConfirmedSignal(r: ConfirmedSignalRow): CompactConfirmedS
         : r.execution_allowed === false ? 'INVALID'
         : null);
 
+  // Phase-1 stabilization — enrich strategy metadata from the registry.
+  // q365_signals → `signal_type`; q365_confirmed_signal_snapshots → `strategy`.
+  const rawStrategy = r.signal_type ?? r.strategy ?? null;
+  const strategyMeta = getStrategyMeta(rawStrategy);
+  // entry_type can come from q365_phase3_signals (preferred) or the
+  // registry mapping (fallback). Never raw null on the wire.
+  const entryType: EntryType = (r.entry_type as EntryType | null | undefined)
+    ?? strategyMeta.entryType;
+
   return {
     id:                              r.id,
     symbol:                          r.symbol ?? r.tradingsymbol ?? null,
@@ -356,6 +393,14 @@ export function compactConfirmedSignal(r: ConfirmedSignalRow): CompactConfirmedS
     rotation_score:                  r.rotation_score ?? null,
     fatigue_state:                   r.fatigue_state ?? null,
     manipulationRisk:                r.manipulationRisk ?? null,
+    // Phase-1 standardized strategy metadata — always populated, never
+    // raw null, no "Unknown" leakage. Display name + category + entry
+    // type are derived from strategyRegistry so the API contract is the
+    // single source of truth for the dashboard / opportunity cards.
+    strategyId:                      strategyMeta.strategyId,
+    strategyName:                    strategyMeta.strategyName,
+    strategyCategory:                strategyMeta.strategyCategory,
+    entryType,
     source:                          'stored',
   };
 }

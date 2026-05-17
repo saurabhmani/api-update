@@ -1,12 +1,24 @@
 // ════════════════════════════════════════════════════════════════
 //  Trade Plan Builder — Phase 1 + Phase 2 + Phase 3
+//
+//  Phase-1 stabilization:
+//   - Every TradePlan.entry.type now matches the strategy mechanic
+//     (pullback_entry, mean_reversion_entry, breakdown_confirmation
+//     …) instead of the legacy universal 'breakout_confirmation'.
+//     The strategy-specific mapping lives in strategyRegistry.ts;
+//     each plan builder below reads it via `entryFor(strategy)`.
+//
+//   - Phase3TradePlan.entryType is also derived from the registry,
+//     keeping the persisted `q365_phase3_signals.entry_type` column
+//     consistent with the wire/UI value.
 // ════════════════════════════════════════════════════════════════
 
-import type { SignalFeatures, TradePlan, StrategyName } from '../types/signalEngine.types';
+import type { SignalFeatures, TradePlan, StrategyName, EntryType } from '../types/signalEngine.types';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
-import type { Phase3TradePlan, Phase3EntryType } from '../types/phase3.types';
+import type { Phase3TradePlan } from '../types/phase3.types';
 import { round, safeDivide } from '../utils/math';
 import { STOP_ATR_MULTIPLIER, TARGET1_R_MULTIPLE, TARGET2_R_MULTIPLE } from '../constants/signalEngine.constants';
+import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
 // ── Strategy-specific target3 R multiples ──────────────────
 const TARGET3_R_MAP: Record<StrategyName, number> = {
@@ -23,24 +35,23 @@ const TARGET3_R_MAP: Record<StrategyName, number> = {
   oversold_bounce:        2.5,  // reversal — conservative targets
   overbought_reversal:    2.5,  // mirror of oversold_bounce — conservative mean reversion
   weak_trend_breakdown:   3.0,  // trend continuation (downward) — moderate
+  // Phase 4:
+  failed_breakout_reversal:    2.5,  // contrarian trap-fade — keep targets tight
+  bearish_pullback_rejection:  3.0,  // continuation-short — moderate target
+  volatility_squeeze_breakout: 3.5,  // squeeze expansion — standard
+  multi_timeframe_alignment:   3.0,  // confirmation only; not used standalone
+  vwap_reclaim_long:           2.5,  // intraday — tight
+  vwap_rejection_short:        2.5,  // intraday — tight
+  opening_range_breakout:      3.0,
+  opening_range_breakdown:     3.0,
 };
 
-// ── Phase 3 entry type mapping ─────────────────────────────
-const ENTRY_TYPE_MAP: Record<StrategyName, Phase3EntryType> = {
-  bullish_breakout:       'breakout_confirmation',
-  bullish_pullback:       'pullback_retest',
-  bearish_breakdown:      'momentum_followthrough',
-  mean_reversion_bounce:  'mean_reversion_confirmation',
-  momentum_continuation:  'momentum_followthrough',
-  bullish_divergence:     'mean_reversion_confirmation',
-  volume_climax_reversal: 'mean_reversion_confirmation',
-  gap_continuation:       'breakout_confirmation',
-  range_breakout:         'breakout_confirmation',
-  ema_crossover:          'momentum_followthrough',
-  oversold_bounce:        'mean_reversion_confirmation',
-  overbought_reversal:    'mean_reversion_confirmation',
-  weak_trend_breakdown:   'momentum_followthrough',
-};
+// Strategy → EntryType is now sourced from the registry so we don't
+// keep two competing maps in sync. This helper exists so a builder
+// can be written with no awareness of where the value comes from.
+function entryFor(strategy: StrategyName): EntryType {
+  return getStrategyEntryType(strategy);
+}
 
 /**
  * Build a full Phase 3 trade plan with strategy-aware target3.
@@ -64,7 +75,7 @@ export function buildPhase3TradePlanForStrategy(
     : round(entryRef + t3Multiple * riskPerUnit);
 
   return {
-    entryType: ENTRY_TYPE_MAP[strategy] ?? 'breakout_confirmation',
+    entryType: entryFor(strategy),
     entryZoneLow: basePlan.entry.zoneLow,
     entryZoneHigh: basePlan.entry.zoneHigh,
     stopLoss: basePlan.stopLoss,
@@ -83,33 +94,52 @@ export function buildPhase3TradePlanForStrategy(
 }
 
 export function buildTradePlanForStrategy(features: SignalFeatures, strategy: StrategyName): TradePlan {
+  // Each sub-builder still writes its own geometry (entry zone /
+  // stop / targets). The entry-type slot is overwritten from the
+  // registry so a bearish/mean-reversion plan can never leak the
+  // legacy "breakout_confirmation" label into the wire/UI.
+  let plan: TradePlan;
   switch (strategy) {
     case 'bullish_pullback':
-      return buildPullbackPlan(features);
+      plan = buildPullbackPlan(features); break;
     case 'bearish_breakdown':
-      return buildBreakdownPlan(features);
+      plan = buildBreakdownPlan(features); break;
     case 'mean_reversion_bounce':
     case 'volume_climax_reversal':
-      return buildBouncePlan(features);
+      plan = buildBouncePlan(features); break;
     case 'momentum_continuation':
-      return buildMomentumPlan(features);
+      plan = buildMomentumPlan(features); break;
     case 'bullish_divergence':
-      return buildDivergencePlan(features);
+      plan = buildDivergencePlan(features); break;
     case 'gap_continuation':
-      return buildGapPlan(features);
+      plan = buildGapPlan(features); break;
     case 'range_breakout':
-      return buildRangeBreakoutPlan(features);
+      plan = buildRangeBreakoutPlan(features); break;
     case 'ema_crossover':
-      return buildEmaCrossoverPlan(features);
+      plan = buildEmaCrossoverPlan(features); break;
     case 'oversold_bounce':
-      return buildOversoldBouncePlan(features);
+      plan = buildOversoldBouncePlan(features); break;
     case 'overbought_reversal':
-      return buildOverboughtReversalPlan(features);
+      plan = buildOverboughtReversalPlan(features); break;
     case 'weak_trend_breakdown':
-      return buildWeakTrendBreakdownPlan(features);
+      plan = buildWeakTrendBreakdownPlan(features); break;
+    // Phase 4A — strategy-specific geometry. SELL plans reuse the
+    // breakdown geometry; volatility squeeze reuses range-breakout
+    // geometry (both expect an expansion above the prior structure).
+    case 'failed_breakout_reversal':
+      plan = buildFailedBreakoutReversalPlan(features); break;
+    case 'bearish_pullback_rejection':
+      plan = buildBearishPullbackRejectionPlan(features); break;
+    case 'volatility_squeeze_breakout':
+      plan = buildVolatilitySqueezePlan(features); break;
+    // Phase 4B — intraday detectors return INSUFFICIENT_DATA so we
+    // never actually reach trade-plan generation for them. We still
+    // fall back to the generic builder defensively, with the entry-
+    // type overwrite below stamping the correct intraday label.
     default:
-      return buildTradePlan(features);
+      plan = buildTradePlan(features); break;
   }
+  return { ...plan, entry: { ...plan.entry, type: entryFor(strategy) } };
 }
 
 function buildPullbackPlan(f: SignalFeatures): TradePlan {
@@ -310,6 +340,72 @@ function buildWeakTrendBreakdownPlan(f: SignalFeatures): TradePlan {
     targets: {
       target1: round(close - TARGET1_R_MULTIPLE * risk),
       target2: round(close - TARGET2_R_MULTIPLE * risk),
+    },
+    rewardRiskApprox: round(safeDivide(TARGET1_R_MULTIPLE * risk, risk), 1),
+  };
+}
+
+// ── Phase 4A trade-plan helpers ───────────────────────────────
+
+// Failed Breakout Reversal — SELL. Entry near current close, stop
+// above the failed breakout level (recentHigh20) plus ATR cushion.
+function buildFailedBreakoutReversalPlan(f: SignalFeatures): TradePlan {
+  const close = f.trend.close;
+  const atr   = f.volatility.atr14;
+  const entryZoneLow  = round(close - atr * 0.3);
+  const entryZoneHigh = round(close);
+  // Stop above the rejected high — trap reversals fail when the
+  // breakout level holds on a second attempt.
+  const stopLoss = round(Math.max(f.structure.recentHigh20 + 0.5 * atr, close + STOP_ATR_MULTIPLIER * atr));
+  const risk = Math.max(stopLoss - close, atr * 0.5);
+  return {
+    entry: { type: 'breakout_confirmation', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
+    stopLoss,
+    targets: {
+      target1: round(close - TARGET1_R_MULTIPLE * risk),
+      target2: round(close - TARGET2_R_MULTIPLE * risk),
+    },
+    rewardRiskApprox: round(safeDivide(TARGET1_R_MULTIPLE * risk, risk), 1),
+  };
+}
+
+// Bearish Pullback Rejection — SELL into a rallied resistance.
+function buildBearishPullbackRejectionPlan(f: SignalFeatures): TradePlan {
+  const close = f.trend.close;
+  const atr   = f.volatility.atr14;
+  const entryZoneLow  = round(close - atr * 0.2);
+  const entryZoneHigh = round(close);
+  const stopLoss = round(Math.max(f.structure.recentHigh20 + 0.4 * atr, f.trend.ema20 + 0.3 * atr));
+  const risk = Math.max(stopLoss - close, atr * 0.5);
+  return {
+    entry: { type: 'breakout_confirmation', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
+    stopLoss,
+    targets: {
+      target1: round(close - TARGET1_R_MULTIPLE * risk),
+      target2: round(close - TARGET2_R_MULTIPLE * risk),
+    },
+    rewardRiskApprox: round(safeDivide(TARGET1_R_MULTIPLE * risk, risk), 1),
+  };
+}
+
+// Volatility Squeeze Breakout — LONG. Entry near close after the
+// expansion, stop below the lower Bollinger band (or ATR floor).
+function buildVolatilitySqueezePlan(f: SignalFeatures): TradePlan {
+  const close = f.trend.close;
+  const atr   = f.volatility.atr14;
+  const entryZoneLow  = round(f.volatility.bollingerUpper);
+  const entryZoneHigh = round(close + atr * 0.2);
+  const stopLoss = round(Math.min(
+    f.volatility.bollingerLower,
+    close - STOP_ATR_MULTIPLIER * atr,
+  ));
+  const risk = Math.max(close - stopLoss, atr * 0.5);
+  return {
+    entry: { type: 'breakout_confirmation', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
+    stopLoss,
+    targets: {
+      target1: round(close + TARGET1_R_MULTIPLE * risk),
+      target2: round(close + TARGET2_R_MULTIPLE * risk),
     },
     rewardRiskApprox: round(safeDivide(TARGET1_R_MULTIPLE * risk, risk), 1),
   };

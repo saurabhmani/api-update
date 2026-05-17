@@ -161,8 +161,43 @@ export interface RiskBreakdown {
 }
 
 // ── Trade Plan ───────────────────────────────────────────────
-
-export type EntryType = 'breakout_confirmation';
+//
+// Phase-1 strategy-specific entry types. Every strategy must pick the
+// `EntryType` that matches its mechanic so the trade plan card surfaces
+// honest copy ("pullback_entry" / "mean_reversion_entry" / etc.)
+// instead of stamping "breakout_confirmation" on every plan.
+//
+// `strategy_confirmation_entry` is the explicit fallback for any new
+// strategy that hasn't yet had its entry mechanic mapped — callers
+// should log a warning when they emit it. The full strategy → entry
+// map lives in src/lib/signal-engine/strategies/strategyRegistry.ts
+// so wire consumers can read a single authority.
+export type EntryType =
+  // Phase 1:
+  | 'breakout_confirmation'
+  | 'range_breakout_confirmation'
+  | 'trend_crossover_entry'
+  | 'momentum_continuation_entry'
+  | 'gap_continuation_entry'
+  | 'pullback_entry'
+  | 'mean_reversion_entry'
+  | 'oversold_recovery_entry'
+  | 'divergence_confirmation_entry'
+  | 'volume_climax_reversal_entry'
+  | 'breakdown_confirmation'
+  | 'overbought_reversal_entry'
+  | 'weak_trend_breakdown_entry'
+  | 'strategy_confirmation_entry'
+  // Phase 4A:
+  | 'failed_breakout_reversal_entry'
+  | 'bearish_pullback_rejection_entry'
+  | 'volatility_squeeze_breakout_entry'
+  // Phase 4B (intraday — registered for completeness):
+  | 'multi_timeframe_confirmation_entry'
+  | 'vwap_reclaim_entry'
+  | 'vwap_rejection_entry'
+  | 'opening_range_breakout_entry'
+  | 'opening_range_breakdown_entry';
 
 export interface TradePlan {
   entry: {
@@ -207,6 +242,7 @@ export interface EnhancedMarketRegime extends MarketRegime {
 // ── Strategy System ─────────────────────────────────────────
 
 export type StrategyName =
+  // ── Phase 1: original 13 ─────────────────────────────────
   | 'bullish_breakout'
   | 'bullish_pullback'
   | 'bearish_breakdown'
@@ -219,7 +255,22 @@ export type StrategyName =
   | 'ema_crossover'
   | 'oversold_bounce'
   | 'overbought_reversal'
-  | 'weak_trend_breakdown';
+  | 'weak_trend_breakdown'
+  // ── Phase 4A: swing strategies (EOD-data based) ──────────
+  | 'failed_breakout_reversal'
+  | 'bearish_pullback_rejection'
+  | 'volatility_squeeze_breakout'
+  // ── Phase 4B: confirmation / intraday-aware strategies ──
+  // These require intraday candles or weekly/intraday alignment
+  // that the current EOD warehouse cannot provide. They are
+  // registered with `requiresIntradayData: true` so the detector
+  // returns INSUFFICIENT_DATA cleanly instead of fabricating
+  // signals.
+  | 'multi_timeframe_alignment'
+  | 'vwap_reclaim_long'
+  | 'vwap_rejection_short'
+  | 'opening_range_breakout'
+  | 'opening_range_breakdown';
 
 // Canonical list of strategies that produce SHORT/SELL trades. The
 // saveSignals direction-mapper keys off `action === 'enter_short'`,
@@ -232,6 +283,12 @@ export const BEARISH_STRATEGIES: ReadonlySet<StrategyName> = new Set<StrategyNam
   'bearish_breakdown',
   'overbought_reversal',
   'weak_trend_breakdown',
+  // Phase 4A:
+  'failed_breakout_reversal',
+  'bearish_pullback_rejection',
+  // Phase 4B:
+  'vwap_rejection_short',
+  'opening_range_breakdown',
 ]);
 
 export interface StrategyMatchResult {
@@ -252,14 +309,39 @@ export interface StrategyCandidate {
 
 // ── Signal Classification ───────────────────────────────────
 
-export type SignalType = 'bullish_breakout' | 'bullish_pullback' | 'bearish_breakdown' | 'mean_reversion_bounce' | 'momentum_continuation' | 'bullish_divergence' | 'volume_climax_reversal' | 'gap_continuation' | 'range_breakout' | 'ema_crossover' | 'oversold_bounce' | 'overbought_reversal' | 'weak_trend_breakdown';
-export type SignalSubtype = 'fresh_breakout' | 'continuation' | 'pullback_entry' | 'reversal_bounce' | 'breakdown' | 'momentum_ride' | 'divergence_reversal' | 'climax_reversal' | 'gap_and_go' | 'range_expansion' | 'ema_cross' | 'oversold_reversal' | 'overbought_reversal_entry' | 'weak_trend_entry';
+export type SignalType =
+  // Phase 1:
+  | 'bullish_breakout' | 'bullish_pullback' | 'bearish_breakdown' | 'mean_reversion_bounce'
+  | 'momentum_continuation' | 'bullish_divergence' | 'volume_climax_reversal' | 'gap_continuation'
+  | 'range_breakout' | 'ema_crossover' | 'oversold_bounce' | 'overbought_reversal'
+  | 'weak_trend_breakdown'
+  // Phase 4:
+  | 'failed_breakout_reversal' | 'bearish_pullback_rejection' | 'volatility_squeeze_breakout'
+  | 'multi_timeframe_alignment' | 'vwap_reclaim_long' | 'vwap_rejection_short'
+  | 'opening_range_breakout' | 'opening_range_breakdown';
+
+export type SignalSubtype =
+  // Phase 1:
+  | 'fresh_breakout' | 'continuation' | 'pullback_entry' | 'reversal_bounce' | 'breakdown'
+  | 'momentum_ride' | 'divergence_reversal' | 'climax_reversal' | 'gap_and_go'
+  | 'range_expansion' | 'ema_cross' | 'oversold_reversal' | 'overbought_reversal_entry'
+  | 'weak_trend_entry'
+  // Phase 4:
+  | 'failed_breakout' | 'bearish_pullback' | 'volatility_squeeze'
+  | 'multi_timeframe_align' | 'vwap_reclaim' | 'vwap_rejection'
+  | 'opening_range_break' | 'opening_range_breakdown_sub';
 // Both new bearish strategies reuse 'enter_short' — saveSignals.ts
 // keys the BUY/SELL direction ONLY off enter_short (line 166). So we
 // don't introduce new action values: any row with enter_short is
 // classified as SELL direction, cleanly handling all three bearish
 // strategies with no saveSignals change.
-export type SignalAction = 'enter_on_strength' | 'enter_on_pullback' | 'enter_short' | 'enter_on_bounce' | 'enter_on_momentum' | 'enter_on_divergence' | 'enter_on_climax' | 'enter_on_gap' | 'enter_on_breakout' | 'enter_on_crossover' | 'enter_on_oversold';
+export type SignalAction =
+  // Phase 1:
+  | 'enter_on_strength' | 'enter_on_pullback' | 'enter_short' | 'enter_on_bounce'
+  | 'enter_on_momentum' | 'enter_on_divergence' | 'enter_on_climax' | 'enter_on_gap'
+  | 'enter_on_breakout' | 'enter_on_crossover' | 'enter_on_oversold'
+  // Phase 4:
+  | 'enter_on_confirmation' | 'enter_on_intraday_break' | 'avoid_long';
 export type SignalStatus = 'active' | 'watchlist' | 'expired' | 'invalidated';
 export type MarketContextTag = 'Bullish' | 'Neutral' | 'Weak';
 export type StrengthTag = 'High Conviction' | 'Actionable' | 'Watchlist' | 'Avoid';
@@ -373,6 +455,29 @@ export interface Phase1Config {
 // ── Strategy Registry ──────────────────────────────────────
 export type StrategyDirection = 'long' | 'short' | 'neutral';
 
+// Phase-1 stabilization spec — every strategy is mapped to one of
+// these categories so the API/UI can group setups cleanly without
+// hardcoding strategy names downstream.
+export type StrategyCategory =
+  | 'breakout'
+  | 'trend_following'
+  | 'momentum'
+  | 'pullback'
+  | 'mean_reversion'
+  | 'reversal'
+  | 'breakdown'
+  | 'risk_defense'
+  // Phase 4 additions:
+  | 'confirmation'
+  | 'intraday_confirmation'
+  | 'intraday_breakout'
+  | 'intraday_breakdown';
+
+// Risk profile is the operator-facing "how aggressive is this setup"
+// dial. Used in trade plan + opportunity cards. Internal scoring still
+// reads from confidence/risk breakdowns — this is a display hint only.
+export type StrategyRiskProfile = 'conservative' | 'moderate' | 'moderate_high' | 'high';
+
 export interface StrategyRegistryEntry {
   strategyId: StrategyName;
   displayName: string;
@@ -383,6 +488,31 @@ export interface StrategyRegistryEntry {
   idealRsiRange: [number, number];
   minVolumeExpansion?: number;
   defaultConfidenceWeight: number;
+
+  // ── Phase-1 standardized metadata ─────────────────────────
+  // These are all required so a new strategy can't ship without
+  // declaring its category, entry type, and operator-facing copy.
+  // The trade-plan builder and the API response reader BOTH source
+  // from these fields — single authority, no drift.
+  category:           StrategyCategory;
+  entryType:          EntryType;
+  riskProfile:        StrategyRiskProfile;
+  timeframe:          'intraday' | 'swing' | 'positional' | 'daily';
+  signalType:         StrategyName;            // mirror of strategyId for wire-facing readers
+  /** Operator-facing one-liner shown on opportunity cards / signal
+   *  details. Keep institutional — no raw RSI/ADX numbers. */
+  explanationTemplate: string;
+  /** Plain-language invalidation rule. Mirrors stop / structure logic. */
+  invalidationLogic:   string;
+  /** Convenience array of regimes where this strategy works best. */
+  idealMarketRegime:   MarketRegimeLabel[];
+  /** Phase 4 — true for strategies that need data we don't have on the
+   *  EOD warehouse (intraday candles, weekly aggregates, VWAP, etc.).
+   *  Detection MUST return INSUFFICIENT_DATA on these — never fake. */
+  requiresIntradayData?: boolean;
+  /** Phase 4 — confirmation-only strategies that boost / contradict
+   *  other signals rather than emitting standalone trades. */
+  isConfirmationOnly?:   boolean;
 }
 
 // ── Sector Context ─────────────────────────────────────────
