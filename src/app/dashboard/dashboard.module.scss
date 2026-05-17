@@ -1,309 +1,1155 @@
+// ═══════════════════════════════════════════════════════════════════
+//  Quantorus365 — Command Center
+//  Premium institutional / BFSI dashboard. Compact, decision-focused,
+//  no long scrolling, white surface, navy + cyan + semantic accents.
+// ═══════════════════════════════════════════════════════════════════
 @use '@/styles/variables' as *;
 @use '@/styles/mixins'    as *;
 
-// ── Spin ──────────────────────────────────────────────────────────
+// ── Tonal map shared by chips, cards, dots ─────────────────────────
+// Local to this module because the dashboard's tone palette is broader
+// than the generic Badge palette in components/ui (it adds purple for
+// analytics/backtesting per spec colour language).
+$tones: (
+  green : (bg: #E8F8F0, border: #BCEBD0, fg: #047857, dot: #10B981),
+  red   : (bg: #FEECEC, border: #F5C2C2, fg: #B91C1C, dot: #DC2626),
+  amber : (bg: #FEF4E1, border: #F8DDA1, fg: #92400E, dot: #D97706),
+  blue  : (bg: #E7F0FF, border: #C1D5F5, fg: #1D4ED8, dot: #2563EB),
+  grey  : (bg: #F1F4F8, border: #D8DFE8, fg: #475569, dot: #94A3B8),
+  purple: (bg: #F1ECFE, border: #D8C9FB, fg: #6D28D9, dot: #8B5CF6),
+);
+
+@mixin tone-bg($name)     { background: map-get(map-get($tones, $name), bg); }
+@mixin tone-border($name) { border-color: map-get(map-get($tones, $name), border); }
+@mixin tone-fg($name)     { color: map-get(map-get($tones, $name), fg); }
+@mixin tone-dot($name)    { background: map-get(map-get($tones, $name), dot); }
+
+// ── Spin (refresh button) ──────────────────────────────────────────
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-// ── Section ───────────────────────────────────────────────────────
-// Every dashboard section gets its own stacking context + paint
-// containment so that any absolutely-positioned descendant (Recharts
-// tooltip wrappers, lucide drop-shadow filters, hover state SVGs)
-// CANNOT escape into a sibling section. Without this the chart
-// tooltip used to render numeric labels and dashed reference lines
-// over the Top Rankings / Risk / Manipulation Detection headers
-// (the "ghost numeric labels over section headers" symptom).
-.section {
-  margin-bottom: $s8;
-  position:      relative;
-  isolation:     isolate;
-  // `contain: layout paint` is intentionally NOT used here — too
-  // aggressive (it stops sticky positioning and would clip the
-  // sticky header on long tables). Per-section isolation is enough
-  // because every chart inside is itself contained.
+// ── Skeleton shimmer mixin (declared before any use site — SCSS
+//    mixins are NOT hoisted within a file, unlike rules) ───────────
+@mixin skel-shimmer {
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(0, 201, 255, 0.08) 50%,
+      transparent 100%
+    );
+    animation: skelShimmer 1.4s linear infinite;
+  }
+}
+
+@keyframes skelShimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+// ── Page shell ─────────────────────────────────────────────────────
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: $s4;
+  padding: $s5;
+  background: $color-bg;
+  min-height: calc(100vh - #{$topbar-h});
+}
+
+// ── Header ─────────────────────────────────────────────────────────
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $s4;
+  padding: $s4 $s5;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow: $shadow-sm;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  font-size: $text-xl;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.3px;
+  margin: 0;
+}
+
+.titleSpark { color: $color-glow-mid; }
+
+.subtitle {
+  font-size: $text-sm;
+  color: $color-muted;
+  margin: 2px 0 0 26px;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: $s3;
+}
+
+// Status cluster sitting between the title and the refresh button.
+// Shows two compact pills: current market session + engine mode.
+.headerStatusCluster {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  padding-right: $s3;
+  border-right: 1px solid $color-border;
+
+  @media (max-width: $bp-md) { display: none; }
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: $r-full;
+  background: $color-bg;
+  border: 1px solid $color-border;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-text-2;
+  letter-spacing: -0.1px;
+
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      @include tone-bg($name);
+      @include tone-fg($name);
+      border-color: map-get(map-get($tones, $name), border);
+    }
+  }
+}
+
+.statusPillLabel {
+  color: $color-subtle;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.updatedAt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.1;
+}
+
+.updatedAtLabel {
+  font-size: $text-xs;
+  color: $color-subtle;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.updatedAtValue {
+  font-family: $font-mono;
+  font-size: $text-sm;
+  color: $color-text-2;
+  font-weight: 600;
+}
+
+.btnPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: $s2;
+  padding: $s2 $s4;
+  background: $color-primary-mid;
+  color: #fff;
+  border: 1px solid $color-primary-mid;
+  border-radius: $r-md;
+  font-size: $text-sm;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background $t-fast, box-shadow $t-fast;
+
+  &:hover:not(:disabled) {
+    background: $color-primary-hover;
+    box-shadow: $shadow-glow;
+  }
+  &:disabled { opacity: 0.6; cursor: not-allowed; }
+}
+
+// ── Warnings strip (legacy, kept for backwards compat) ────────────
+.warningStrip {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  padding: $s2 $s4;
+  background: #FFF8E6;
+  border: 1px solid #F4D58A;
+  border-radius: $r-md;
+  color: #7C4A03;
+  font-size: $text-sm;
+  font-weight: 500;
+
+  svg { flex-shrink: 0; }
+}
+
+.warningList {
+  color: #92400E;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+// ── System Notice ─────────────────────────────────────────────────
+//
+// Premium, structured replacement for the warning strip. Surfaces
+// four facets — status / reason / impact / action — without the
+// alarming full-amber backdrop. Left accent stripe carries the tone;
+// the card body stays white so the dashboard never feels broken.
+.systemNotice {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  align-items: stretch;
+  gap: $s4;
+  padding: $s3 $s4;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-left-width: 3px;
+  border-radius: $r-md;
+  box-shadow: $shadow-xs;
+
+  @each $name, $_ in $tones {
+    &--#{$name} { border-left-color: map-get(map-get($tones, $name), dot); }
+  }
+
+  @media (max-width: $bp-lg) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.systemNoticeLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.systemNoticeMode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.1px;
+  line-height: 1.2;
+
+  svg { flex-shrink: 0; }
+}
+
+.systemNoticeKicker {
+  font-size: 0.625rem;
+  color: $color-subtle;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+}
+
+.systemNoticeBody {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $s3;
+  min-width: 0;
+
+  @media (max-width: $bp-md) { grid-template-columns: 1fr; }
+}
+
+.systemNoticeField {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.systemNoticeFieldLabel {
+  font-size: 0.625rem;
+  color: $color-subtle;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+}
+
+.systemNoticeFieldValue {
+  font-size: $text-xs;
+  color: $color-text-2;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.systemNoticeCtas {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  flex-wrap: wrap;
+}
+
+.systemNoticeCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: $r-md;
+  border: 1px solid $color-border;
+  background: $color-bg;
+  color: $color-text-2;
+  font-size: $text-xs;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background $t-fast, border-color $t-fast, color $t-fast;
+
+  &:hover {
+    background: $color-primary-subtle;
+    border-color: $color-glow-mid;
+    color: $color-primary-hover;
+  }
+
+  &:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  &--primary {
+    background: $color-primary-mid;
+    border-color: $color-primary-mid;
+    color: #fff;
+    &:hover {
+      background: $color-primary-hover;
+      border-color: $color-primary-hover;
+      color: #fff;
+    }
+  }
+}
+
+// ── Section heading (used inside sub-sections) ─────────────────────
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  margin-bottom: $s3;
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.1px;
+
+  svg { color: $color-primary-hover; }
+}
+
+.sectionHeadDim {
+  margin-left: auto;
+  color: $color-subtle;
+  font-size: $text-xs;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Command Status Bar (Section B)
+// ═══════════════════════════════════════════════════════════════════
+.cmdBar {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: $s3;
+
+  @media (max-width: $bp-xl) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  @media (max-width: $bp-md) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.cmdTileLink { text-decoration: none; color: inherit; }
+
+.cmdTile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: $s3 $s4;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow: $shadow-xs;
+  transition: box-shadow $t-fast, border-color $t-fast, transform $t-fast;
+
+  .cmdTileLink:hover & {
+    box-shadow: $shadow-md;
+    border-color: $color-glow-mid;
+    transform: translateY(-1px);
+  }
+}
+
+.cmdTileTop {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+}
+
+.cmdTileIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: $r-sm;
+  flex-shrink: 0;
+
+  @each $name, $_ in $tones {
+    &--#{$name} { @include tone-bg($name); @include tone-fg($name); }
+  }
+}
+
+.cmdTileLabel {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.cmdTileChevron {
+  margin-left: auto;
+  color: $color-subtle;
+}
+
+.cmdTileValue {
+  font-size: $text-xl;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+}
+
+.cmdTileSub {
+  font-size: $text-xs;
+  color: $color-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Signal Summary Grid (Section C)
+// ═══════════════════════════════════════════════════════════════════
+.signalGrid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: $s3;
+
+  @media (max-width: $bp-xl) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  @media (max-width: $bp-md) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.sumCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: $s3 $s4;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-left: 3px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow: $shadow-xs;
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow $t-fast, transform $t-fast, border-color $t-fast;
+  min-height: 92px;
+
+  &:hover { box-shadow: $shadow-md; transform: translateY(-1px); }
+
+  @each $name, $_ in $tones {
+    &--#{$name} { border-left-color: map-get(map-get($tones, $name), dot); }
+  }
+}
+
+.sumCardTop {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+}
+
+.sumCardIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: $r-sm;
+
+  @each $name, $_ in $tones {
+    &--#{$name} { @include tone-bg($name); @include tone-fg($name); }
+  }
+}
+
+.sumCardLabel {
+  font-size: $text-xs;
+  color: $color-muted;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.sumCardValue {
+  font-size: $text-2xl;
+  font-weight: 700;
+  color: $color-text;
+  line-height: 1.1;
+  letter-spacing: -0.5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.blockerTxt {
+  font-size: $text-base;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+
+.sumCardSub {
+  font-size: $text-xs;
+  color: $color-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Intelligence Fusion strip (Section D)
+// ═══════════════════════════════════════════════════════════════════
+.fusionStrip {
+  display: flex;
+  flex-direction: column;
+  padding: $s4 $s5;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow: $shadow-xs;
+}
+
+.fusionGrid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: $s3;
+
+  @media (max-width: $bp-xl) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  @media (max-width: $bp-md) {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.fusionCard {
+  display: flex;
+  flex-direction: column;
+  gap: $s2;
+  padding: $s3;
+  border: 1px solid $color-border;
+  border-top-width: 3px;
+  border-top-color: $color-border;
+  border-radius: $r-md;
+  background: $color-surface;
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow $t-fast, transform $t-fast, border-color $t-fast;
+
+  &:hover {
+    box-shadow: $shadow-sm;
+    transform: translateY(-1px);
+    border-color: $color-glow-mid;
+  }
+
+  // Tone-specific: only the top accent stripe carries the colour.
+  // The card body stays neutral so a single timeout doesn't drown
+  // the dashboard in amber.
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      border-top-color: map-get(map-get($tones, $name), dot);
+    }
+  }
+}
+
+.fusionAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $color-primary-hover;
+}
+
+.fusionTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $s2;
+}
+
+.fusionLabel {
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.1px;
+}
+
+.fusionDetail {
+  font-size: $text-xs;
+  color: $color-text-2;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.5em;
+}
+
+.fusionFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  color: $color-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Two-column splits (Opportunity↔Risk, Strategy↔Actions)
+// ═══════════════════════════════════════════════════════════════════
+.split {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: $s3;
+
+  @media (max-width: $bp-xl) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  padding: $s4 $s5;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  box-shadow: $shadow-xs;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $s3;
+  padding-bottom: $s3;
+  border-bottom: 1px solid $color-border;
+}
+
+.panelTitle {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.1px;
+
+  svg { color: $color-primary-hover; }
+}
+
+.panelLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: $text-xs;
+  font-weight: 600;
+  color: $color-primary-hover;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+
+  &:hover { color: $color-primary-mid; }
+}
+
+.panelEmpty {
+  padding: $s5 $s4;
+  text-align: center;
+  font-size: $text-sm;
+  color: $color-muted;
+  background: $color-bg;
+  border: 1px dashed $color-border;
+  border-radius: $r-md;
+}
+
+// Lightweight helper line that sits directly under a panel title.
+// Used to describe what a panel shows without adding visual weight.
+.panelHelper {
+  margin-top: -#{$s2};
+  margin-bottom: $s3;
+  font-size: $text-xs;
+  color: $color-muted;
+  line-height: 1.4;
+}
+
+// "Approval Gate Explanation" subsection inside Risk & Blockers.
+// One-line explainer that reframes blocked trades as protective.
+.approvalNote {
+  display: flex;
+  align-items: flex-start;
+  gap: $s2;
+  padding: $s2 $s3;
+  background: $color-bg;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+  font-size: $text-xs;
+  color: $color-text-2;
+  line-height: 1.45;
+
+  svg { color: $color-primary-hover; flex-shrink: 0; margin-top: 1px; }
+
+  strong { color: $color-text; font-weight: 700; }
+}
+
+// ── Opportunities list ────────────────────────────────────────────
+.oppList {
+  display: flex;
+  flex-direction: column;
+  gap: $s2;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.oppRow {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  grid-template-areas:
+    "sym  metrics"
+    "sym  reason"
+    "tags tags";
+  gap: 4px $s3;
+  padding: $s2 $s3;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+  background: $color-surface;
+  transition: background $t-fast, border-color $t-fast;
+
+  &:hover { background: $color-primary-subtle; border-color: $color-glow-mid; }
+}
+
+.oppSym {
+  grid-area: sym;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
+.oppSymTxt {
+  font-family: $font-mono;
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: 0;
+}
+
+.oppMetrics {
+  grid-area: metrics;
+  display: flex;
+  align-items: center;
+  gap: $s4;
+  flex-wrap: wrap;
+}
+
+.metric {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.metricLabel {
+  font-size: 0.625rem;
+  color: $color-subtle;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.metricValue {
+  font-family: $font-mono;
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text-2;
+}
+
+.oppReason {
+  grid-area: reason;
+  font-size: $text-xs;
+  color: $color-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oppTags {
+  grid-area: tags;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+// ── Risk lists ────────────────────────────────────────────────────
+.riskGroup {
+  display: flex;
+  flex-direction: column;
+  gap: $s2;
+  margin-bottom: $s3;
+
   &:last-child { margin-bottom: 0; }
 }
 
-// ── Section heading ───────────────────────────────────────────────
-.sectionHead {
-  @include flex-start;
-  gap:           $s2;
-  margin-bottom: $s4;
-  padding-bottom: $s3;
-  // Updated: cyan underline instead of grey border
-  border-bottom: 2px solid $color-glow-light;
-
-  // Title styling applies ONLY to the first <span> directly inside
-  // .sectionHead — that's the actual section title (e.g. "Recent
-  // Decisions", "Top Rankings"). Subsequent badge/metadata spans
-  // (status pills, "As of: <date>" subtitles, "Sorted by..."
-  // captions) must NOT inherit the gradient-text mixin or they get
-  // -webkit-text-fill-color: transparent applied and their inline
-  // colors stop rendering — which is exactly the symptom that broke
-  // the closed-market pills earlier.
-  //
-  // `> span:first-of-type` matches the first <span> direct child;
-  // svg/icon siblings before it don't count toward "first of type".
-  > span:first-of-type {
-    font-size:   $text-md;
-    font-weight: 700;
-    @include gradient-text;
-  }
-
-  // Belt-and-suspenders: any subsequent span gets explicit non-
-  // gradient text so even an accidental ancestor rule cannot make it
-  // transparent. Inline `color` styles win against this baseline
-  // (specificity equal, source-order wins).
-  > span:not(:first-of-type) {
-    -webkit-text-fill-color: currentColor;
-    background-clip:         border-box;
-    -webkit-background-clip: border-box;
-  }
-
-  svg { color: $color-glow-dark; flex-shrink: 0; }
-}
-
-// ── 4-box intel row ───────────────────────────────────────────────
-.intelRow {
-  display: grid;
-  gap:     $s4;
-  grid-template-columns: 1fr;
-  margin-bottom: $s4;
-
-  @include md { grid-template-columns: repeat(2, 1fr); }
-  @include xl { grid-template-columns: repeat(4, 1fr); }
-}
-
-// ── Intel box ─────────────────────────────────────────────────────
-.intelBox {
-  @include card;
-  padding:    $s4;
-  min-height: 94px;
-  transition: box-shadow $t-fast, border-color $t-fast;
-
-  &:hover {
-    box-shadow:   $shadow-glow;
-    border-color: $color-glow-mid;
-  }
-}
-
-// ── Box label ─────────────────────────────────────────────────────
-.boxLabel {
-  font-size:      $text-xs;
-  font-weight:    700;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color:          $color-glow-dark;   // cyan instead of grey for labels
-}
-
-// ── Sector grid ───────────────────────────────────────────────────
-.sectorGrid {
-  display: grid;
-  gap:     $s3;
-  grid-template-columns: repeat(2, 1fr);
-  margin-bottom: $s4;
-
-  @include md { grid-template-columns: repeat(4, 1fr); }
-  @include xl { grid-template-columns: repeat(8, 1fr); }
-}
-
-.sectorChip {
-  border:        1px solid $color-border;
-  border-radius: $r-md;
-  padding:       $s3;
-  display:       flex;
-  flex-direction: column;
-  gap:           $s1;
-  transition:    all $t-fast;
-
-  &:hover {
-    box-shadow:   $shadow-sm;
-    border-color: $color-glow-mid;
-    transform:    translateY(-1px);
-  }
-}
-
-// ── Backtesting grid ─────────────────────────────────────────────
-.btGrid {
-  display: grid;
-  gap:     $s4;
-  grid-template-columns: 1fr;
-  margin-bottom: $s4;
-
-  @include md { grid-template-columns: repeat(2, 1fr); }
-  @include xl { grid-template-columns: repeat(4, 1fr); }
-}
-
-.btStatBox {
-  @include card;
-  padding:    $s4;
-  text-align: center;
-  transition: box-shadow $t-fast, border-color $t-fast;
-
-  &:hover {
-    box-shadow:   $shadow-glow;
-    border-color: $color-glow-mid;
-  }
-}
-
-.btStatLabel {
-  font-size:      $text-xs;
-  font-weight:    700;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color:          $color-glow-dark;
-  margin-bottom:  $s2;
-}
-
-.btStatValue {
-  font-size:   1.5rem;
-  font-weight: 800;
-}
-
-.btStatSub {
-  font-size:  $text-xs;
-  color:      #64748B;
-  margin-top: $s1;
-}
-
-.btRunRow {
-  display:       flex;
-  align-items:   center;
-  gap:           $s3;
-  padding:       $s3 $s4;
-  border-bottom: 1px solid $color-border;
-  cursor:        pointer;
-  transition:    background $t-fast;
-
-  &:hover { background: rgba($color-glow-light, 0.2); }
-  &:last-child { border-bottom: none; }
-}
-
-.btRunName {
-  flex:        1;
-  font-weight: 700;
-  font-size:   $text-sm;
-}
-
-.btRunMeta {
+.riskGroupLabel {
   font-size: $text-xs;
-  color:     #64748B;
+  font-weight: 700;
+  color: $color-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
 }
 
-.btGrid3 {
-  display: grid;
-  gap:     $s4;
-  grid-template-columns: 1fr;
-  margin-bottom: $s4;
-
-  @include md { grid-template-columns: repeat(3, 1fr); }
+.riskList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.btTradeTable {
-  width:           100%;
-  border-collapse: collapse;
-
-  th {
-    padding:        $s2 $s3;
-    text-align:     right;
-    font-size:      $text-xs;
-    color:          #94A3B8;
-    font-weight:    700;
-    background:     #F8FAFC;
-
-    &:first-child, &:nth-child(2) { text-align: left; }
-  }
-
-  td {
-    padding:   $s2 $s3;
-    font-size: $text-sm;
-    text-align: right;
-    border-top: 1px solid #F8FAFC;
-
-    &:first-child, &:nth-child(2) { text-align: left; }
-  }
-}
-
-// ── Opportunity card ──────────────────────────────────────────────
-.oppCard {
-  background:    $color-surface;
-  border:        1px solid $color-border;
-  border-left:   3px solid $color-primary-mid;
-  border-radius: $r-lg;
-  padding:       $s5;
-  box-shadow:    $shadow-sm;
-  transition:    all $t-fast;
-
-  &:hover {
-    box-shadow:   $shadow-glow;
-    border-color: $color-glow-mid;
-    transform:    translateY(-2px);
-  }
-}
-
-// ── Compact opportunity row (dashboard preview only) ──────────
-// The dashboard used to render the SAME big oppCard for every
-// signal it received from /api/signals?action=top — a 6-card stack
-// roughly half a screen tall each, identical to the cards on the
-// /signals page. Operators correctly complained the dashboard
-// became "extremely long because of signals." On the dashboard we
-// now show a tight horizontal row per signal with just the fields
-// that drive a glance decision (symbol / signal / conf / E / SL /
-// T / R:R / Last-Close badge), capped at top-3 with a "View all"
-// link to the dedicated /signals page.
-.oppRowCompact {
-  display:       grid;
-  grid-template-columns: 80px 64px 90px 1fr 1fr 1fr 56px auto;
-  align-items:   center;
-  gap:           $s3;
-  padding:       $s3 $s4;
-  border:        1px solid $color-border;
-  border-left:   3px solid $color-primary-mid;
+.riskItem {
+  display: flex;
+  align-items: flex-start;
+  gap: $s2;
+  padding: $s2 $s3;
+  border: 1px solid $color-border;
   border-radius: $r-md;
-  background:    $color-surface;
-  font-size:     12px;
-  transition:    background $t-fast, border-color $t-fast;
+  background: $color-surface;
+
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      @include tone-border($name);
+      background: map-get(map-get($tones, $name), bg);
+    }
+  }
+}
+
+.riskIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: $r-sm;
+  flex-shrink: 0;
+  margin-top: 1px;
+
+  @each $name, $_ in $tones {
+    &--#{$name} { @include tone-fg($name); }
+  }
+}
+
+.riskBody {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.riskPrimary {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.riskSecondary {
+  font-size: $text-xs;
+  color: $color-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.riskEmpty {
+  padding: $s3;
+  font-size: $text-xs;
+  color: $color-subtle;
+  font-style: italic;
+}
+
+// ── Strategy snapshot grid ─────────────────────────────────────────
+.snapshotGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: $s2;
+
+  @media (max-width: $bp-md) { grid-template-columns: 1fr 1fr; }
+}
+
+.snapItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: $s3;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+  background: $color-bg;
+  min-height: 64px;
+
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      @include tone-border($name);
+      background: map-get(map-get($tones, $name), bg);
+    }
+  }
+}
+
+.snapLabel {
+  font-size: 0.625rem;
+  color: $color-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+}
+
+.snapValue {
+  font-size: $text-sm;
+  font-weight: 700;
+  color: $color-text;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// ── Recommended actions ────────────────────────────────────────────
+.actionList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $s2;
+}
+
+.actionItem {
+  display: flex;
+  align-items: center;
+  gap: $s3;
+  padding: $s2 $s3;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+  background: $color-surface;
+  text-decoration: none;
+  color: inherit;
+  transition: background $t-fast, border-color $t-fast, transform $t-fast;
 
   &:hover {
-    background:   #F8FAFC;
-    border-color: $color-glow-mid;
+    transform: translateX(2px);
   }
 
-  // On narrow screens the 8-column row collapses to a stacked
-  // mini-card (still much more compact than oppCard).
-  @media (max-width: 920px) {
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: $s2;
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      &:hover {
+        @include tone-border($name);
+        background: map-get(map-get($tones, $name), bg);
+      }
+    }
   }
 }
 
-// ── 3-column grid for dashboard signal preview ────────────────
-// `styles.grid3` was referenced in dashboard/page.tsx but not
-// defined here — the className silently resolved to `undefined`
-// and the signal cards fell back to no-layout, which is partly
-// why the section visually exploded on narrow screens. This
-// class also caps the dashboard signal preview to a single
-// column on desktop so the row reads horizontally (compact).
-.grid3 {
-  display:       grid;
-  grid-template-columns: 1fr;
-  gap:           $s3;
-  margin-bottom: $s4;
+.actionPrio {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 2px 6px;
+  border-radius: $r-sm;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      @include tone-bg($name);
+      @include tone-fg($name);
+    }
+  }
 }
 
-// "View all signals" footer link below the compact preview.
-.viewAllLink {
-  display:        inline-flex;
-  align-items:    center;
-  gap:            $s2;
-  margin-top:     $s3;
-  padding:        $s2 $s3;
-  color:          #1D4ED8;
-  font-size:      12px;
-  font-weight:    600;
-  text-decoration:none;
-  border-radius:  $r-md;
-  transition:     background $t-fast;
+.actionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
 
-  &:hover { background: #EFF6FF; }
+.actionTitle {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  letter-spacing: -0.1px;
+}
+
+.actionReason {
+  font-size: $text-xs;
+  color: $color-muted;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actionChev {
+  color: $color-subtle;
+  flex-shrink: 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Chips & status dot (shared)
+// ═══════════════════════════════════════════════════════════════════
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: $r-full;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1.6;
+
+  @each $name, $_ in $tones {
+    &--#{$name} {
+      @include tone-bg($name);
+      @include tone-fg($name);
+    }
+  }
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+
+  @each $name, $_ in $tones {
+    &--#{$name} { @include tone-dot($name); }
+  }
+}
+
+// ── Misc ───────────────────────────────────────────────────────────
+.muted {
+  font-size: $text-sm;
+  color: $color-muted;
+  padding: $s4;
+  text-align: center;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Error & loading
+// ═══════════════════════════════════════════════════════════════════
+.errorPanel {
+  display: flex;
+  align-items: center;
+  gap: $s4;
+  padding: $s5 $s6;
+  background: #FEECEC;
+  border: 1px solid #F5C2C2;
+  border-radius: $r-lg;
+  color: #7F1D1D;
+
+  svg { color: #B91C1C; flex-shrink: 0; }
+}
+
+.errorTitle {
+  font-size: $text-md;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.errorBody {
+  font-size: $text-sm;
+  color: #991B1B;
+}
+
+.skelHeader {
+  height: 64px;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  position: relative;
+  overflow: hidden;
+  @include skel-shimmer;
+}
+
+.skelRow {
+  display: grid;
+  gap: $s3;
+}
+
+.skelBlock {
+  height: 92px;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  position: relative;
+  overflow: hidden;
+  @include skel-shimmer;
+}
+
+.skelBlockTall {
+  height: 280px;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $r-lg;
+  position: relative;
+  overflow: hidden;
+  @include skel-shimmer;
 }

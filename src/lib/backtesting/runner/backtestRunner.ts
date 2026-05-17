@@ -179,6 +179,50 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
       return createFailedRun(runId, config, startedAt, 'No trading dates found in date range', audit.getEntries(), lastSuccessfulStep);
     }
 
+    // ── Fail-fast: insufficient historical candles ──────────
+    //
+    // The queue used to leave runs stuck at "Loading market data — 10%"
+    // when the `candles` warehouse was empty or only had a handful of
+    // symbols. Detect that here and fail with a JSON-friendly message
+    // so the UI surfaces the cause instead of a spinning progress bar.
+    //
+    // "Backtestable" = symbol has at least `warmupBars` bars after
+    // validation/repair. The benchmark symbol is excluded from the
+    // ratio because losing the benchmark alone shouldn't kill the run.
+    const universeSet = new Set(config.universe);
+    let backtestableUniverse = 0;
+    for (const [symbol, candles] of Array.from(cleaned.entries())) {
+      if (!universeSet.has(symbol)) continue;
+      if (candles.length >= config.warmupBars) backtestableUniverse++;
+    }
+    const universeSize = Math.max(1, config.universe.length);
+    const coverageRatio = backtestableUniverse / universeSize;
+    // 20% coverage is the floor — below this the day-by-day signal
+    // generator will produce essentially nothing. The threshold is
+    // deliberately low; the goal is to catch "warehouse empty" rather
+    // than to enforce a quality bar.
+    const minCoverageRatio = 0.20;
+    if (backtestableUniverse === 0 || coverageRatio < minCoverageRatio) {
+      const msg =
+        `Insufficient historical candles for backtest universe. ` +
+        `Only ${backtestableUniverse}/${config.universe.length} symbols have ≥${config.warmupBars} ` +
+        `EOD candles in the warehouse. Run the NSE EOD ingestion pipeline ` +
+        `(POST /api/manipulation/eod-ingest) to populate the candles table before retrying.`;
+      audit.log(0, 'run_failed', msg, null, {
+        backtestableUniverse,
+        universeSize: config.universe.length,
+        warmupBars: config.warmupBars,
+        lastSuccessfulStep,
+      });
+      console.error(`[Backtest] ${msg}`);
+      return createFailedRun(runId, config, startedAt, msg, audit.getEntries(), lastSuccessfulStep);
+    }
+    audit.log(0, 'data_coverage_ok',
+      `Universe coverage: ${backtestableUniverse}/${config.universe.length} symbols with ≥${config.warmupBars} candles`,
+      null,
+      { backtestableUniverse, universeSize: config.universe.length, coverageRatio });
+    lastSuccessfulStep = 'data_coverage_ok';
+
     let equity = config.initialCapital;
     let cash = config.initialCapital;
     const openPositions: OpenPosition[] = [];

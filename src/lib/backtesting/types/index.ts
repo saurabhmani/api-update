@@ -469,7 +469,8 @@ export type AuditAction = 'run_started' | 'run_completed' | 'run_failed'
   | 'metrics_computed' | 'calibration_computed' | 'persistence_completed'
   | 'simulation_completed' | 'outcomes_computed'
   | 'data_repair_applied' | 'data_rejected' | 'symbol_timeout'
-  | 'signal_gen_error';
+  | 'signal_gen_error'
+  | 'data_coverage_ok';
 
 export interface RunStatusInfo {
   status: BacktestStatus;

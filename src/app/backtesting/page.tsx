@@ -146,10 +146,16 @@ export default function BacktestingPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Data seeding
+  // Data seeding / EOD candle availability
   const [dataReady, setDataReady] = useState<number | null>(null);
   const [dataTotal, setDataTotal] = useState<number>(0);
+  const [latestCandleDate, setLatestCandleDate] = useState<string | null>(null);
+  const [totalCandles, setTotalCandles] = useState<number>(0);
   const [seeding, setSeeding] = useState(false);
+  // Sticky info banner shown after the deprecated /api/backtests/seed-data
+  // route is invoked. Distinct from `toast` (queue lifecycle) and `error`
+  // (true failures) so we don't bury the message under a spinner.
+  const [seedDeprecationNotice, setSeedDeprecationNotice] = useState<string | null>(null);
 
   // ── Queue / polling state ────────────────────────────────────────
   // The selected run's queue lifecycle. Set when POST /api/backtests
@@ -162,6 +168,11 @@ export default function BacktestingPage() {
   // Tracks how many consecutive polls have observed status=QUEUED so the
   // UI can warn the user when the worker doesn't appear to be running.
   const [queuedPolls,     setQueuedPolls]     = useState<number>(0);
+  // Tracks how many consecutive polls have seen the run stuck on the
+  // "Loading market data" step (progress ≤ 10). When the candles
+  // warehouse is empty the runner can sit there forever; we surface a
+  // hint so the user knows to run EOD ingestion.
+  const [stuckLoadingPolls, setStuckLoadingPolls] = useState<number>(0);
   // Toast / banner shown after a successful queue.
   const [toast,           setToast]           = useState<string | null>(null);
 
@@ -189,6 +200,8 @@ export default function BacktestingPage() {
       const data = await readJsonOrThrow(res, '/api/backtests/seed-data');
       setDataReady(data.readySymbols ?? 0);
       setDataTotal(data.totalSymbols ?? 0);
+      setTotalCandles(Number(data.totalCandles ?? 0));
+      setLatestCandleDate(data.latestCandleDate ?? null);
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
         console.error('[Backtesting UI] loadDataAvailability failed', err);
@@ -303,6 +316,7 @@ export default function BacktestingPage() {
       setRunCurrentStep(status === 'COMPLETED' ? 'Completed' : 'Queued');
       setRunErrorMessage(null);
       setQueuedPolls(0);
+      setStuckLoadingPolls(0);
       setToast(data.mode === 'sync'
         ? 'Backtest completed (sync mode).'
         : 'Backtest queued successfully — waiting for worker.');
@@ -329,14 +343,26 @@ export default function BacktestingPage() {
   const seedData = async () => {
     setSeeding(true);
     setError(null);
+    setSeedDeprecationNotice(null);
     try {
       const res = await fetch('/api/backtests/seed-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ range: '2y' }),
+        body: JSON.stringify({}),
       });
       const data = await readJsonOrThrow(res, '/api/backtests/seed-data');
-      if (!res.ok) setError(data.error ?? `Seed failed (HTTP ${res.status})`);
+      // The route now responds 410 with { deprecated: true } and a
+      // pointer to the NSE EOD ingestion pipeline. Surface that as
+      // an informational notice — not a red error banner — so the
+      // user sees the migration path clearly.
+      if (data?.deprecated) {
+        setSeedDeprecationNotice(
+          'Seed Data now uses NSE EOD ingestion. Run EOD ingestion to update candles ' +
+          '(POST /api/manipulation/eod-ingest).',
+        );
+      } else if (!res.ok) {
+        setError(data?.error ?? `Seed failed (HTTP ${res.status})`);
+      }
       await loadDataAvailability();
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
@@ -395,6 +421,16 @@ export default function BacktestingPage() {
         if (next === 'QUEUED') setQueuedPolls((n) => n + 1);
         else                   setQueuedPolls(0);
 
+        // Stuck-loading detection: when the queue stamps progress=10 /
+        // "Loading market data" and the run sits there for many polls,
+        // the most common cause is an empty/sparse candles warehouse.
+        const stuckOnLoad =
+          next === 'RUNNING' &&
+          Number(run.progressPercent ?? 0) <= 10 &&
+          String(run.currentStep ?? '').toLowerCase().includes('loading market data');
+        if (stuckOnLoad) setStuckLoadingPolls((n) => n + 1);
+        else             setStuckLoadingPolls(0);
+
         if (next === 'COMPLETED') {
           await loadDetail(selectedId);
         }
@@ -438,25 +474,56 @@ export default function BacktestingPage() {
           </div>
         </div>
 
-        {/* Data availability banner */}
-        {dataReady !== null && dataReady < dataTotal && (
-          <div style={{
-            background: '#FEF3C7', borderRadius: 8, padding: '10px 16px', marginBottom: 16,
-            border: '1px solid #F59E0B33', display: 'flex', alignItems: 'center', gap: 12,
-          }}>
-            <Database size={16} color="#D97706" />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#92400E' }}>
-                Historical data: {dataReady}/{dataTotal} symbols ready
+        {/* Data availability banner. Two flavours:
+            – red ("missing") when the warehouse has zero ready symbols,
+              which means the backtest cannot possibly succeed yet;
+            – yellow ("partial") when some symbols are ready but not all. */}
+        {dataReady !== null && dataReady < dataTotal && (() => {
+          const missingAll = dataReady === 0;
+          const palette = missingAll
+            ? { bg: '#FEE2E2', border: '#FCA5A5', text: '#7F1D1D', icon: '#B91C1C' }
+            : { bg: '#FEF3C7', border: '#F59E0B33', text: '#92400E', icon: '#D97706' };
+          return (
+            <div style={{
+              background: palette.bg, borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+              border: `1px solid ${palette.border}`, display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <Database size={16} color={palette.icon} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: palette.text }}>
+                  {missingAll
+                    ? 'Historical EOD candles are missing. Run EOD ingestion first.'
+                    : `Historical data: ${dataReady}/${dataTotal} symbols ready`}
+                </div>
+                <div style={{ fontSize: 11, color: palette.text, marginTop: 2 }}>
+                  {missingAll
+                    ? `The candles table has ${totalCandles} EOD rows. Trigger POST /api/manipulation/eod-ingest (or run it on a schedule) to populate the warehouse.`
+                    : `Latest candle: ${latestCandleDate ?? '—'}. Run EOD ingestion to backfill the remaining ${dataTotal - dataReady} symbols.`}
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: '#92400E' }}>
-                Seed historical EOD candles to enable backtesting.
-              </div>
+              <button className="btn btn--secondary btn--sm" onClick={seedData} disabled={seeding}>
+                {seeding ? <RefreshCw size={12} className="spin" /> : <Download size={12} />}
+                {seeding ? ' Checking...' : ' Seed Data'}
+              </button>
             </div>
-            <button className="btn btn--secondary btn--sm" onClick={seedData} disabled={seeding}>
-              {seeding ? <RefreshCw size={12} className="spin" /> : <Download size={12} />}
-              {seeding ? ' Seeding...' : ' Seed Data'}
-            </button>
+          );
+        })()}
+
+        {/* Seed-data deprecation notice — surfaced when the user clicks
+            the legacy "Seed Data" button. The route now responds 410
+            instead of fetching from Yahoo; show the migration path. */}
+        {seedDeprecationNotice && (
+          <div style={{
+            background: '#EFF6FF', borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+            border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', gap: 12,
+            fontSize: 12, color: '#1E40AF',
+          }}>
+            <Database size={16} color="#1D4ED8" />
+            <div style={{ flex: 1, fontWeight: 600 }}>{seedDeprecationNotice}</div>
+            <button
+              className="btn btn--secondary btn--sm"
+              onClick={() => setSeedDeprecationNotice(null)}
+            >Dismiss</button>
           </div>
         )}
 
@@ -504,6 +571,7 @@ export default function BacktestingPage() {
                     setRunCurrentStep(r.current_step ?? null);
                     setRunErrorMessage(r.error ?? null);
                     setQueuedPolls(0);
+                    setStuckLoadingPolls(0);
                     // Clear any stale detail-panel state from a previous selection.
                     setSummary(null);
                     setTrades([]);
@@ -608,6 +676,16 @@ export default function BacktestingPage() {
                   {runStatus === 'QUEUED' && queuedPolls >= 8 && (
                     <div style={{ marginTop: 10, fontSize: 11, color: '#92400E' }}>
                       Backtest is still queued. Worker may not be running — try POST <code>/api/backtests/process-queue</code> or restart the scheduler.
+                    </div>
+                  )}
+                  {runStatus === 'RUNNING' && stuckLoadingPolls >= 10 && (
+                    <div style={{
+                      marginTop: 10, padding: '8px 12px', background: '#FEF2F2',
+                      border: '1px solid #FECACA', borderRadius: 6,
+                      fontSize: 11, color: '#7F1D1D',
+                    }}>
+                      <strong>Backtest appears stuck while loading market data.</strong> Historical candles may be missing or unavailable.
+                      Run the NSE EOD ingestion pipeline (POST <code>/api/manipulation/eod-ingest</code>) to populate the candles warehouse, then retry.
                     </div>
                   )}
                   {runStatus === 'FAILED' && runErrorMessage && (
