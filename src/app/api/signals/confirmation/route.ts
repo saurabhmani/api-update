@@ -23,6 +23,7 @@ import { requireSession }            from '@/lib/session';
 import { db }                        from '@/lib/db';
 import { getSector }                 from '@/lib/signal-engine/constants/phase3.constants';
 import { getStrategyMeta }           from '@/lib/signal-engine/strategies/strategyRegistry';
+import { analyzeOptionChain }        from '@/services/optionIntelligence';
 import {
   aggregateConfirmation,
   buildSectorConfirmation,
@@ -31,6 +32,15 @@ import {
   buildManipulationConfirmation,
   buildExecutionConfirmation,
 } from '@/lib/confirmation/confirmationAggregator';
+
+/** Symbols we attempt the real options-chain probe for. The platform's
+ *  `analyzeOptionChain()` returns `null` for symbols without a chain,
+ *  but probing every NSE_EQ ticker is wasteful — keep an explicit
+ *  whitelist for indices + the F&O majors. */
+const FNO_PROBE_WHITELIST: ReadonlySet<string> = new Set([
+  'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX',
+  // Add F&O equity symbols here as the provider widens coverage.
+]);
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -144,10 +154,44 @@ export async function GET(req: NextRequest) {
     sectorScore = 50;
   }
 
-  // Options — the platform's /api/options/intelligence already
-  // probes the provider; we don't have the symbol's option chain
-  // surfaced into a generic table, so default to UNAVAILABLE.
-  const optionsAvailable = false;
+  // ── Options — probe the real provider for F&O symbols only. ──
+  // Probing every NSE_EQ ticker is wasteful; the provider only
+  // returns useful chains for indices + the F&O majors. For any
+  // other symbol we honestly return UNAVAILABLE. When the chain
+  // probe succeeds we derive a directional bias from PCR — never
+  // a synthetic one.
+  let optionsAvailable = false;
+  let optionsBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | null = null;
+  let optionsPcr: number | null = null;
+  let optionsIvState: 'LOW' | 'NORMAL' | 'ELEVATED' | 'EXTREME' | null = null;
+  let optionsKeySupport: number | null = null;
+  let optionsKeyResistance: number | null = null;
+  let optionsSource: 'live' | 'estimated' | 'unavailable' = 'unavailable';
+  if (FNO_PROBE_WHITELIST.has(symbol)) {
+    try {
+      const intel = await analyzeOptionChain(symbol).catch(() => null);
+      if (intel) {
+        optionsAvailable = true;
+        optionsSource = 'live';
+        optionsPcr = typeof intel.pcr === 'number' ? intel.pcr : null;
+        // PCR-driven bias — matches the analyzer's own threshold language.
+        optionsBias =
+          optionsPcr != null && optionsPcr > 1.3 ? 'BULLISH'
+          : optionsPcr != null && optionsPcr < 0.7 ? 'BEARISH'
+          :                                          'NEUTRAL';
+        const ivCtx = String((intel as any).ivContext ?? '').toLowerCase();
+        optionsIvState = ivCtx.includes('extreme')  ? 'EXTREME'
+                       : ivCtx.includes('elevated') ? 'ELEVATED'
+                       : ivCtx.includes('low')      ? 'LOW'
+                       :                              'NORMAL';
+        optionsKeySupport    = intel.strongSupport?.[0]?.strike    ?? null;
+        optionsKeyResistance = intel.strongResistance?.[0]?.strike ?? null;
+      }
+    } catch {
+      // Provider call failed — stay honest, no synthetic bias.
+      optionsAvailable = false;
+    }
+  }
 
   // News — query the latest scored event for the symbol if the
   // scoring table exists. Soft-fail to neutral.
@@ -186,8 +230,14 @@ export async function GET(req: NextRequest) {
     sector: sectorName, sectorScore, sectorTrend, relativeStrength: null, direction,
   });
   const options = buildOptionsConfirmation({
-    available: optionsAvailable, source: 'unavailable',
-    optionsBias: null, pcr: null, ivState: null, keySupport: null, keyResistance: null, direction,
+    available:     optionsAvailable,
+    source:        optionsSource,
+    optionsBias,
+    pcr:           optionsPcr,
+    ivState:       optionsIvState,
+    keySupport:    optionsKeySupport,
+    keyResistance: optionsKeyResistance,
+    direction,
   });
   const news = buildNewsConfirmation({
     available: newsAvailable, sentiment: newsSentiment, catalystType: newsCatalyst,

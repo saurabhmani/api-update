@@ -2485,7 +2485,7 @@ export async function GET(req: NextRequest) {
         manipulationRiskMap = undefined;
       }
 
-      let responsePayloadBase = buildSignalsResponsePayload({
+      let responsePayloadBase = await buildSignalsResponsePayload({
         finalRows,
         belowFloorDemoted,
         inProgressEnriched,

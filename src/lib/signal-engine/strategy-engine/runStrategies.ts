@@ -22,6 +22,15 @@ import { evaluateEmaCrossover } from '../strategies/emaCrossover';
 import { evaluateOversoldBounce } from '../strategies/oversoldBounce';
 import { evaluateOverboughtReversal } from '../strategies/overboughtReversal';
 import { evaluateWeakTrendBreakdown } from '../strategies/weakTrendBreakdown';
+// Phase 4A — swing strategies activated in the main runner.
+// Phase 4B (intraday) is registered via strategyRegistry + STRATEGY_EVALUATORS
+// but deliberately NOT iterated here: its evaluators only return
+// INSUFFICIENT_DATA against the EOD warehouse, and adding them would
+// drown the rejection log without producing any candidates. They will
+// be activated automatically the day an intraday-candle provider is wired.
+import { evaluateFailedBreakoutReversal   } from '../strategies/failedBreakoutReversal';
+import { evaluateBearishPullbackRejection } from '../strategies/bearishPullbackRejection';
+import { evaluateVolatilitySqueezeBreakout } from '../strategies/volatilitySqueezeBreakout';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 import { scoreConfidenceForStrategy } from '../scoring/confidenceScorer';
 import { scoreRisk } from '../scoring/riskScorer';
@@ -49,6 +58,10 @@ const STRATEGIES: StrategyEntry[] = [
   { name: 'range_breakout',         evaluate: evaluateRangeBreakout },
   { name: 'ema_crossover',          evaluate: evaluateEmaCrossover },
   { name: 'oversold_bounce',        evaluate: evaluateOversoldBounce },
+  // ── Phase 4A — swing strategies (EOD-data based) ──────────
+  { name: 'failed_breakout_reversal',   evaluate: evaluateFailedBreakoutReversal   }, // SELL
+  { name: 'bearish_pullback_rejection', evaluate: evaluateBearishPullbackRejection }, // SELL
+  { name: 'volatility_squeeze_breakout',evaluate: evaluateVolatilitySqueezeBreakout }, // BUY
 ];
 
 export interface StrategyResult {

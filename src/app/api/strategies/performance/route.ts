@@ -27,6 +27,8 @@ import {
   VALID_WINDOWS,
   loadBacktestOutcomes,
   loadObservedOutcomes,
+  loadDirectSignalOutcomes,
+  loadStrategyPerformanceSnapshots,
   buildPerformanceReport,
   buildSectorBuckets,
   buildRegimeBuckets,
@@ -47,6 +49,16 @@ interface PerformanceApiEnvelope extends StrategyPerformanceReport {
    *  the `include` query param requests one of those facets. */
   detail?: Record<string, StrategyDetailBlock>;
   selectedStrategy?: StrategyPerformance | null;
+  /** Audit hint — exposes how many rows each priority source
+   *  contributed. Operators can read this to spot stale snapshots
+   *  or backtest contamination. */
+  sourceStatus?: {
+    directOutcomeRows:    number;
+    observedSnapshotRows: number;
+    backtestTradeRows:    number;
+    strategySnapshots:    number;
+    priorityChain:        string[];
+  };
 }
 
 interface StrategyDetailBlock {
@@ -86,16 +98,35 @@ export async function GET(req: NextRequest) {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
   })();
 
-  // ── Load both data sources in parallel and merge. Either side
-  //    failing returns an empty list (not throwing) so the route
-  //    still produces a structured INSUFFICIENT response. ──
-  const [observed, backtests] = await Promise.all([
+  // ── Source priority chain (Phase 2 spec) ──
+  //   1. q365_signal_outcomes              → loadDirectSignalOutcomes
+  //   2. q365_strategy_performance_snapshots → loadStrategyPerformanceSnapshots
+  //   3. q365_confirmed_signal_snapshots   → loadObservedOutcomes
+  //   4. backtest_trades (COMPLETED runs)  → loadBacktestOutcomes
+  //   5. insufficient_data                  → empty
+  //
+  // We load 1, 3, 4 in parallel and merge. Source 2 (pre-aggregated
+  // snapshots) is loaded separately and surfaced under `sourceStatus`
+  // — it's an audit hint that an upstream writer has already computed
+  // numbers for this window, not a replacement for the raw outcome
+  // metrics computed here.
+  const [direct, observed, backtests, snapshotsByStrategy] = await Promise.all([
+    loadDirectSignalOutcomes(window).catch(() => []),
     loadObservedOutcomes(window).catch(() => []),
     loadBacktestOutcomes(window).catch(() => []),
+    loadStrategyPerformanceSnapshots(window).catch(() => new Map()),
   ]);
-  const outcomes = [...observed, ...backtests];
+  // De-dup: prefer direct outcomes over snapshot-derived ones for the
+  // same (symbol, strategy, evaluatedAt) tuple. Direct rows already
+  // carry source='observed', so we just stack them ahead.
+  const outcomes = [...direct, ...observed, ...backtests];
 
-  const { report } = buildPerformanceReport(outcomes, window);
+  // Priority-2 snapshot override is applied inside buildPerformanceReport:
+  // when a strategy has fewer live evaluated signals than the snapshot
+  // (and the snapshot is < 26h old), the snapshot's metrics replace the
+  // live ones and performanceSource flips to 'strategy_snapshot' /
+  // 'mixed'. Honest disclosure — operator sees the source flip.
+  const { report } = buildPerformanceReport(outcomes, window, snapshotsByStrategy);
 
   // Optional per-strategy floor (display only — never alters the
   // health score or recommendations).
@@ -178,6 +209,18 @@ export async function GET(req: NextRequest) {
   const envelope: PerformanceApiEnvelope = {
     ...report,
     minimumRequiredSignals: MIN_FOR_RANK,
+    sourceStatus: {
+      directOutcomeRows:    direct.length,
+      observedSnapshotRows: observed.length,
+      backtestTradeRows:    backtests.length,
+      strategySnapshots:    snapshotsByStrategy.size,
+      priorityChain: [
+        'q365_signal_outcomes',
+        'q365_strategy_performance_snapshots',
+        'q365_confirmed_signal_snapshots',
+        'backtest_trades (completed runs only)',
+      ],
+    },
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
     ...(selectedStrategy !== undefined ? { selectedStrategy } : {}),
   };

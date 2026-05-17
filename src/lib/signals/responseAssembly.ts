@@ -23,6 +23,15 @@ import {
   type CompactConfirmedSignal,
   type ConfirmedSignalRow,
 } from '@/lib/signals/signalsResponseMapper';
+// Phase 3 + 5 + 6 bulk integration — adds currentRegime, routing,
+// confirmation, conflict, and normalized reasons to every tier shipped
+// from this response builder.
+import {
+  loadIntelligenceContext,
+  enrichSignalRows,
+  buildSiblingCandidateMap,
+  buildSectorTrendMap,
+} from '@/lib/signals/enrichSignalIntelligence';
 import {
   type FreshnessEnvelope,
 } from '@/lib/signals/freshnessService';
@@ -465,9 +474,9 @@ export interface ClosestToApprovalRow {
  * + `is_demoted: true` from confirmedSignalsService — this builder
  * does NOT re-tag them.
  */
-export function buildSignalsResponsePayload(
+export async function buildSignalsResponsePayload(
   input: BuildSignalsResponseInput,
-): SignalsResponsePayload {
+): Promise<SignalsResponsePayload> {
   const {
     belowFloorDemoted, inProgressEnriched,
     buyCount: rawBuy, sellCount: rawSell, freshness, syntheticBatchId,
@@ -1115,12 +1124,68 @@ export function buildSignalsResponsePayload(
     });
   };
 
-  const enrichedApproved        = enrichRowsWithDiligence(rankedApproved as any[], 'approved');
-  const enrichedHighPotential   = enrichRowsWithDiligence(liteHighPotential as any[], 'high_potential');
-  const enrichedWatchlist       = enrichRowsWithDiligence(liteWatchlist as any[], 'watchlist');
-  const enrichedDeveloping      = enrichRowsWithDiligence(liteDeveloping as any[], 'developing');
-  const enrichedScannerCandidates = enrichRowsWithDiligence(liteScannerCandidates as any[], 'scanner_candidate');
-  const enrichedRiskRestricted  = enrichRowsWithDiligence(liteRiskRestricted as any[], 'risk_restricted');
+  let enrichedApproved          = enrichRowsWithDiligence(rankedApproved as any[], 'approved');
+  let enrichedHighPotential     = enrichRowsWithDiligence(liteHighPotential as any[], 'high_potential');
+  let enrichedWatchlist         = enrichRowsWithDiligence(liteWatchlist as any[], 'watchlist');
+  let enrichedDeveloping        = enrichRowsWithDiligence(liteDeveloping as any[], 'developing');
+  let enrichedScannerCandidates = enrichRowsWithDiligence(liteScannerCandidates as any[], 'scanner_candidate');
+  let enrichedRiskRestricted    = enrichRowsWithDiligence(liteRiskRestricted as any[], 'risk_restricted');
+
+  // ── Phase 3 + 5 + 6 intelligence enrichment ─────────────────────
+  //
+  // Loads regime + per-strategy routing + batched manipulation
+  // snapshots ONCE per request, then layers the per-signal
+  // intelligence fields (currentRegime, strategyRoutingDecision,
+  // confirmationScore, confirmationBlockers, conflictStatus,
+  // normalized reasons …) onto every tier. Additive only — every
+  // existing field on the row is preserved.
+  //
+  // Defensive: failure to load context falls back to a stale-data
+  // routing matrix (every strategy → WATCHLIST_ONLY) and per-row
+  // confirmation modules that mark themselves UNAVAILABLE — never
+  // fabricates data.
+  const allEnrichedSymbols = Array.from(new Set([
+    ...enrichedApproved.map((r: any) => r.symbol).filter(Boolean),
+    ...enrichedHighPotential.map((r: any) => r.symbol).filter(Boolean),
+    ...enrichedWatchlist.map((r: any) => r.symbol).filter(Boolean),
+    ...enrichedDeveloping.map((r: any) => r.symbol).filter(Boolean),
+    ...enrichedScannerCandidates.map((r: any) => r.symbol).filter(Boolean),
+    ...enrichedRiskRestricted.map((r: any) => r.symbol).filter(Boolean),
+  ])) as string[];
+
+  const intelContext = await loadIntelligenceContext(allEnrichedSymbols).catch((err) => {
+    // Never let an intelligence-load failure break the signals API.
+    console.warn('[responseAssembly] intelligence context load failed:', err);
+    return null;
+  });
+
+  if (intelContext) {
+    // Build a single sibling-candidate map across every tier in this
+    // response so the institutional conflict resolver sees BUY-vs-SELL
+    // collisions on the same symbol even when the two strategies sit
+    // in different tiers (e.g. bullish_breakout in approved + bearish_
+    // breakdown in watchlist).
+    const allRowsForSiblings = [
+      ...enrichedApproved, ...enrichedHighPotential, ...enrichedWatchlist,
+      ...enrichedDeveloping, ...enrichedScannerCandidates, ...enrichedRiskRestricted,
+    ] as any[];
+    const siblings = buildSiblingCandidateMap(allRowsForSiblings);
+
+    // Phase-5 hardening: build cross-sectional sector trend from the
+    // same pool. Sectors with ≥ 3 rows get a real Strong/Positive/
+    // Weak/Declining label; thinner sectors stay at the neutral
+    // baseline so a single row can't fake "Strong" sentiment.
+    const sectorTrend = buildSectorTrendMap(allRowsForSiblings);
+    intelContext.sectorTrendBySector = sectorTrend;
+    intelContext.diagnostics.sectorsWithTrend = sectorTrend.size;
+
+    enrichedApproved          = enrichSignalRows(enrichedApproved          as any[], intelContext, siblings) as typeof enrichedApproved;
+    enrichedHighPotential     = enrichSignalRows(enrichedHighPotential     as any[], intelContext, siblings) as typeof enrichedHighPotential;
+    enrichedWatchlist         = enrichSignalRows(enrichedWatchlist         as any[], intelContext, siblings) as typeof enrichedWatchlist;
+    enrichedDeveloping        = enrichSignalRows(enrichedDeveloping        as any[], intelContext, siblings) as typeof enrichedDeveloping;
+    enrichedScannerCandidates = enrichSignalRows(enrichedScannerCandidates as any[], intelContext, siblings) as typeof enrichedScannerCandidates;
+    enrichedRiskRestricted    = enrichSignalRows(enrichedRiskRestricted    as any[], intelContext, siblings) as typeof enrichedRiskRestricted;
+  }
 
   // The rejected display rows already passed through `toDisplayRow`,
   // which trims the original signal fields. Enrich from the source

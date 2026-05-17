@@ -115,13 +115,25 @@ export async function GET(req: NextRequest) {
   const { report: perfReport } = buildPerformanceReport([...observed, ...backtests], window);
 
   // ── 4. Compose the regime router report.
+  //
+  // staleDataFlag is derived from the same benchmark candle age the
+  // detector sees: if the latest NIFTY 50 EOD candle is more than 36
+  // hours old, OR the detector itself failed, OR we couldn't load
+  // any candles, the router treats every strategy as WATCHLIST-only.
+  // Never hardcoded false — that was the bug.
+  const STALE_THRESHOLD_MIN = 36 * 60;
+  const staleDataFlag =
+    candles.length === 0 ||
+    detectedLabel === null ||
+    (typeof benchmarkAgeMinutes === 'number' && benchmarkAgeMinutes > STALE_THRESHOLD_MIN);
+
   const router: RegimeRouterReport = buildRegimeRouter({
     detectedRegime:        detectedLabel,
     regimeStrength,
     benchmarkAgeMinutes,
     performances:          perfReport.strategies,
     performanceWindow:     window,
-    staleDataFlag:         false,
+    staleDataFlag,
   });
 
   // ── 5. Optional strategyId filter.

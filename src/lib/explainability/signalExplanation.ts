@@ -19,7 +19,9 @@ import {
 } from '@/lib/signal-engine/strategies/strategyRegistry';
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import type { ConfirmationAggregate } from '@/lib/confirmation/confirmationAggregator';
-import type { StrategyRoutingDecision } from '@/lib/strategies/regimeRouter';
+import type { StrategyRoutingDecision, RoutedRegime } from '@/lib/strategies/regimeRouter';
+import type { StrategyPerformance } from '@/lib/strategies/strategyPerformance';
+import type { ConflictResolution } from '@/lib/strategies/conflictResolver';
 
 export interface SignalExplanationInput {
   signalId:         string | null;
@@ -31,8 +33,16 @@ export interface SignalExplanationInput {
   riskReward:       number | null;
   marketRegime:     string | null;
   freshnessState:   string | null;
+  /** Phase 3 — regime routing decision for this strategy. */
   routing?:         StrategyRoutingDecision | null;
+  /** Phase 3 — current detected regime (snake_case wire form). */
+  currentRegime?:   RoutedRegime | null;
+  /** Phase 5 — confirmation aggregate envelope. */
   confirmation?:    ConfirmationAggregate   | null;
+  /** Phase 6 — multi-strategy conflict resolution for this symbol. */
+  conflict?:        ConflictResolution      | null;
+  /** Phase 2 — strategy performance over the configured window. */
+  performance?:     StrategyPerformance     | null;
   rejectionReasons?: string[];
   missingFactors?:  string[];
 }
@@ -47,6 +57,10 @@ export interface SignalExplanation {
   strategyRationale:           string;
   approvalDecisionExplanation: string;
   confirmationSummary:         string;
+  /** Phase 6 spec — operator-readable regime context line. */
+  regimeSummary:               string;
+  /** Phase 6 spec — operator-readable performance context line. */
+  performanceSummary:          string;
   riskSummary:                 string;
   invalidationSummary:         string;
   nextWatchItems:              string[];
@@ -66,6 +80,8 @@ export function explainSignal(input: SignalExplanationInput): SignalExplanation 
   const whyNow = composeWhyNow(input);
   const approvalDecisionExplanation = composeApprovalDecision(input);
   const confirmationSummary = composeConfirmationSummary(input.confirmation);
+  const regimeSummary       = composeRegimeSummary(input);
+  const performanceSummary  = composePerformanceSummary(meta.strategyName, input.performance);
   const riskSummary = composeRiskSummary(input);
   const invalidationSummary = `Invalidation: ${getStrategyInvalidation(input.strategyId)}`;
   const nextWatchItems = composeNextWatchItems(input);
@@ -78,6 +94,9 @@ export function explainSignal(input: SignalExplanationInput): SignalExplanation 
   if (input.routing && (input.routing.routingDecision === 'BLOCK' || input.routing.routingDecision === 'WATCHLIST_ONLY')) {
     warnings.push(input.routing.reason);
   }
+  if (input.conflict && input.conflict.conflictStatus === 'HIGH') {
+    warnings.push(`Multi-strategy conflict (HIGH) — ${input.conflict.decisionImpact}`);
+  }
 
   return {
     signalId:     input.signalId,
@@ -89,12 +108,42 @@ export function explainSignal(input: SignalExplanationInput): SignalExplanation 
     strategyRationale,
     approvalDecisionExplanation,
     confirmationSummary,
+    regimeSummary,
+    performanceSummary,
     riskSummary,
     invalidationSummary,
     nextWatchItems,
     operatorActions,
     warnings,
   };
+}
+
+function composeRegimeSummary(i: SignalExplanationInput): string {
+  if (!i.routing && !i.currentRegime) {
+    return 'Regime routing context unavailable for this signal.';
+  }
+  const regime = i.currentRegime ?? 'unknown';
+  if (!i.routing) {
+    return `Current market regime: ${regime.replace(/_/g, ' ')}. Routing decision not loaded for this strategy.`;
+  }
+  const decision = i.routing.routingDecision;
+  const detail = i.routing.reason;
+  const tilt = i.routing.confidenceAdjustment > 0
+    ? `+${i.routing.confidenceAdjustment} confidence boost`
+    : i.routing.confidenceAdjustment < 0
+      ? `${i.routing.confidenceAdjustment} confidence haircut`
+      : 'no confidence tilt';
+  return `Regime: ${regime.replace(/_/g, ' ')} · routing decision ${decision} (${tilt}). ${detail}`;
+}
+
+function composePerformanceSummary(strategyName: string, p: StrategyPerformance | null | undefined): string {
+  if (!p || p.performanceStatus === 'INSUFFICIENT_DATA') {
+    return `Performance context for ${strategyName} is not yet reliable — fewer than the minimum evaluated signals on the selected window.`;
+  }
+  const window = `${p.evaluatedSignals} evaluated`;
+  return `${strategyName} performance (${p.performanceStatus.toLowerCase()}, ${window}): ` +
+    `win rate ${p.winRate.toFixed(1)}%, expectancy ${p.expectancy.toFixed(2)}R, health ${p.healthLabel} (${p.strategyHealthScore}). ` +
+    `Recommendation: ${p.recommendation}.`;
 }
 
 function composeWhyNow(i: SignalExplanationInput): string {
@@ -129,7 +178,11 @@ function composeApprovalDecision(i: SignalExplanationInput): string {
 }
 
 function composeConfirmationSummary(c: ConfirmationAggregate | null | undefined): string {
-  if (!c) return 'No confirmation envelope available for this signal.';
+  if (!c) {
+    // Spec: don't say "no envelope" — explain WHY the explanation can
+    // still be trusted on the remaining fields.
+    return 'Confirmation context is unavailable for this signal; explanation is based on strategy, risk, and data-quality fields only.';
+  }
   if (c.approvalRecommendation === 'INSUFFICIENT_DATA') {
     return 'Confirmation modules are largely unavailable — recommendation is not reliable.';
   }

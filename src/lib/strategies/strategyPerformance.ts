@@ -56,6 +56,7 @@ export function windowCutoffIso(window: PerformanceWindow): string | null {
 
 export type PerformanceSource =
   | 'observed'
+  | 'strategy_snapshot'
   | 'backtest'
   | 'mixed'
   | 'derived_from_candles'
@@ -240,6 +241,143 @@ export interface LeaderboardEntry {
 // ── DB loaders ────────────────────────────────────────────────
 
 /**
+ * Phase 2 spec — source priority chain.
+ *
+ *   Priority 1: q365_signal_outcomes              (real per-signal outcomes)
+ *   Priority 2: q365_strategy_performance_snapshots (operator-blessed snapshots)
+ *   Priority 3: q365_confirmed_signal_snapshots   (observed terminal state)
+ *   Priority 4: backtest_trades                   (completed backtest runs)
+ *   Priority 5: insufficient data
+ *
+ * Loaders below probe each table. If the table doesn't exist on this
+ * deployment (common — these are forward-compatibility writes), the
+ * loader returns []  and the caller falls through to the next priority.
+ * Source attribution is preserved on every row via `source`.
+ */
+
+/**
+ * Priority 1 — direct per-signal outcomes from `q365_signal_outcomes`.
+ * The table is expected (per spec) to carry one row per matured signal
+ * with strategy / direction / outcome / return columns. The loader is
+ * tolerant of varied column casing and missing optional columns.
+ */
+export async function loadDirectSignalOutcomes(
+  window: PerformanceWindow,
+): Promise<PerformanceOutcomeRow[]> {
+  const cutoff = windowCutoffIso(window);
+  const where  = cutoff ? `WHERE evaluated_at >= ?` : '';
+  const params = cutoff ? [cutoff] : [];
+  try {
+    const { rows } = await db.query<any>(
+      `SELECT symbol, strategy, direction, sector, regime,
+              confidence_score, outcome, return_pct, return_r,
+              target_hit, stop_hit, invalidated,
+              mfe_pct, mae_pct, holding_period_bars,
+              approval_status, evaluated_at
+         FROM q365_signal_outcomes
+         ${where}
+         ORDER BY evaluated_at DESC
+         LIMIT 20000`,
+      params,
+    );
+    return (rows ?? []).map(directOutcomeToRow);
+  } catch {
+    // Table not present — fall through. Caller decides next source.
+    return [];
+  }
+}
+
+function directOutcomeToRow(r: any): PerformanceOutcomeRow {
+  const outcomeRaw = String(r.outcome ?? '').toLowerCase();
+  const outcome: OutcomeStatus =
+    outcomeRaw === 'win'         ? 'WIN'
+    : outcomeRaw === 'loss'      ? 'LOSS'
+    : outcomeRaw === 'open'      ? 'OPEN'
+    : outcomeRaw === 'expired'   ? 'EXPIRED'
+    : outcomeRaw === 'invalidated' ? 'INVALIDATED'
+    :                              'INSUFFICIENT_DATA';
+  const approval = String(r.approval_status ?? '').toUpperCase();
+  const approvalStatus: PerformanceOutcomeRow['approvalStatus'] =
+    approval === 'APPROVED'   ? 'APPROVED'
+    : approval === 'WATCHLIST' ? 'WATCHLIST'
+    : approval === 'REJECTED'  ? 'REJECTED'
+    :                            'UNKNOWN';
+  return {
+    strategyId:        String(r.strategy ?? 'unclassified'),
+    symbol:            String(r.symbol ?? ''),
+    direction:         String(r.direction ?? 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+    sector:            r.sector ? String(r.sector) : safeSector(r.symbol),
+    regime:            r.regime ? String(r.regime) : null,
+    confidenceScore:   num(r.confidence_score),
+    outcome,
+    returnPct:         num(r.return_pct),
+    returnR:           num(r.return_r),
+    targetHit:         !!r.target_hit,
+    stopHit:           !!r.stop_hit,
+    invalidated:       !!r.invalidated,
+    mfePct:            num(r.mfe_pct),
+    maePct:            num(r.mae_pct),
+    holdingPeriodBars: num(r.holding_period_bars),
+    approvalStatus,
+    evaluatedAt:       toIso(r.evaluated_at),
+    source:            'observed',
+  };
+}
+
+/**
+ * Priority 2 — pre-aggregated performance snapshots from
+ * `q365_strategy_performance_snapshots`. When present and fresh
+ * (<= 26 h old per snapshot row), the caller may surface these as
+ * primary metrics with `performanceSource: 'strategy_snapshot'`.
+ *
+ * This loader returns a Map keyed by strategyId so callers can quickly
+ * merge snapshot metrics on top of raw outcome rows.
+ */
+export interface StrategyPerformanceSnapshot {
+  strategyId:       string;
+  windowLabel:      string;            // e.g. "90D"
+  evaluatedSignals: number;
+  winRate:          number;
+  expectancy:       number;
+  profitFactor:     number;
+  maxDrawdownPct:   number;
+  snapshotAt:       string;
+}
+
+export async function loadStrategyPerformanceSnapshots(
+  window: PerformanceWindow,
+): Promise<Map<string, StrategyPerformanceSnapshot>> {
+  const out = new Map<string, StrategyPerformanceSnapshot>();
+  try {
+    const { rows } = await db.query<any>(
+      `SELECT strategy_id, window_label, evaluated_signals, win_rate, expectancy,
+              profit_factor, max_drawdown_pct, snapshot_at
+         FROM q365_strategy_performance_snapshots
+        WHERE window_label = ?
+        ORDER BY snapshot_at DESC`,
+      [window],
+    );
+    for (const r of rows ?? []) {
+      const id = String(r.strategy_id ?? '');
+      if (!id || out.has(id)) continue; // keep latest only
+      out.set(id, {
+        strategyId:       id,
+        windowLabel:      String(r.window_label ?? window),
+        evaluatedSignals: Number(r.evaluated_signals ?? 0),
+        winRate:          Number(r.win_rate ?? 0),
+        expectancy:       Number(r.expectancy ?? 0),
+        profitFactor:     Number(r.profit_factor ?? 0),
+        maxDrawdownPct:   Number(r.max_drawdown_pct ?? 0),
+        snapshotAt:       toIso(r.snapshot_at) ?? new Date().toISOString(),
+      });
+    }
+  } catch {
+    // Table not present — empty map.
+  }
+  return out;
+}
+
+/**
  * Load observed outcomes from `q365_confirmed_signal_snapshots`.
  * Only rows in a terminal status (TARGET_HIT / STOP_LOSS_HIT /
  * EXPIRED / INVALIDATED) contribute. Active rows are loaded but
@@ -252,19 +390,45 @@ export async function loadObservedOutcomes(
   const where  = cutoff ? `WHERE confirmed_at >= ?` : '';
   const params = cutoff ? [cutoff] : [];
   try {
-    const { rows } = await db.query<any>(
-      `SELECT symbol, strategy, direction, exchange,
-              entry_price, stop_loss, target1, target2,
-              confidence_score, status,
-              confirmed_at, valid_until, status_changed_at,
-              invalidation_reason
-         FROM q365_confirmed_signal_snapshots
-         ${where}
-         ORDER BY confirmed_at DESC
-         LIMIT 5000`,
-      params,
-    );
-    return (rows ?? []).map(observedRowToOutcome);
+    // Spec hardening: surface classification, execution_allowed, and
+    // rejection_codes_json so observedRowToOutcome can recover a real
+    // approvalStatus instead of defaulting every row to APPROVED.
+    // We use `SELECT ...` with a defensive try/catch wrapper so older
+    // schemas without these columns still load (catch falls through
+    // to a minimal-column second attempt).
+    let rows: any[] = [];
+    try {
+      const res = await db.query<any>(
+        `SELECT symbol, strategy, direction, exchange,
+                entry_price, stop_loss, target1, target2,
+                confidence_score, status, classification,
+                confirmed_at, valid_until, status_changed_at,
+                invalidation_reason, execution_allowed,
+                rejection_codes_json
+           FROM q365_confirmed_signal_snapshots
+           ${where}
+           ORDER BY confirmed_at DESC
+           LIMIT 5000`,
+        params,
+      );
+      rows = res.rows ?? [];
+    } catch {
+      // Older schema — fall back to the minimal column set.
+      const res = await db.query<any>(
+        `SELECT symbol, strategy, direction, exchange,
+                entry_price, stop_loss, target1, target2,
+                confidence_score, status,
+                confirmed_at, valid_until, status_changed_at,
+                invalidation_reason
+           FROM q365_confirmed_signal_snapshots
+           ${where}
+           ORDER BY confirmed_at DESC
+           LIMIT 5000`,
+        params,
+      );
+      rows = res.rows ?? [];
+    }
+    return rows.map(observedRowToOutcome);
   } catch {
     // Fresh DB without the snapshot table — soft-fail, the caller
     // will fall through to backtest data.
@@ -315,8 +479,35 @@ function observedRowToOutcome(r: any): PerformanceOutcomeRow {
     outcome = 'INSUFFICIENT_DATA';
   }
 
-  // Confirmed snapshots always represent APPROVED signals — they
-  // promoted past the strict gate.
+  // Spec: recover approvalStatus from richer signals rather than
+  // hardcoding APPROVED. Priority order:
+  //   1. execution_allowed = false      → REJECTED (gate vetoed)
+  //   2. invalidation_reason present    → REJECTED (live-engine drift)
+  //   3. classification in DEVELOPING / LOW_CONVICTION / WATCHLIST → WATCHLIST
+  //   4. rejection_codes_json non-empty → WATCHLIST (passed approval
+  //      historically but downstream gates flagged issues)
+  //   5. default                        → APPROVED (snapshot rows are
+  //      promoted past the strict gate by construction)
+  // We label UNKNOWN only when we can't even read the row.
+  let approvalStatus: PerformanceOutcomeRow['approvalStatus'] = 'APPROVED';
+  const executionAllowed = r.execution_allowed === false || String(r.execution_allowed) === '0';
+  const classification = String(r.classification ?? '').toUpperCase();
+  const rejectionCodes = (() => {
+    const raw = r.rejection_codes_json;
+    if (!raw) return [];
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch { return []; }
+  })();
+  if (executionAllowed)                          approvalStatus = 'REJECTED';
+  else if (r.invalidation_reason)                approvalStatus = 'REJECTED';
+  else if (classification === 'DEVELOPING' ||
+           classification === 'LOW_CONVICTION' ||
+           classification === 'WATCHLIST' ||
+           classification === 'WATCHLIST_ONLY')   approvalStatus = 'WATCHLIST';
+  else if (rejectionCodes.length > 0)            approvalStatus = 'WATCHLIST';
+
   return {
     strategyId:        String(r.strategy ?? 'unclassified'),
     symbol:            String(r.symbol ?? ''),
@@ -333,7 +524,7 @@ function observedRowToOutcome(r: any): PerformanceOutcomeRow {
     mfePct:            null,
     maePct:            null,
     holdingPeriodBars: null,
-    approvalStatus:    'APPROVED',
+    approvalStatus,
     evaluatedAt:       toIso(r.status_changed_at ?? r.confirmed_at),
     source:            'observed',
   };
@@ -350,18 +541,25 @@ export async function loadBacktestOutcomes(
   window: PerformanceWindow,
 ): Promise<PerformanceOutcomeRow[]> {
   const cutoff = windowCutoffIso(window);
-  const dateCol = 'COALESCE(exit_date, entry_date, signal_date)';
-  const where  = cutoff ? `WHERE ${dateCol} >= ?` : '';
+  const dateCol = 'COALESCE(t.exit_date, t.entry_date, t.signal_date)';
+  // Spec hardening: JOIN backtest_runs and accept only COMPLETED runs.
+  // Cancelled / failed / running / partial / stale runs are excluded so
+  // a half-finished backtest never poisons the per-strategy metrics.
+  const where = cutoff
+    ? `WHERE r.status = 'completed' AND ${dateCol} >= ?`
+    : `WHERE r.status = 'completed'`;
   const params = cutoff ? [cutoff] : [];
   try {
     const { rows } = await db.query<any>(
-      `SELECT symbol, sector, strategy, direction, regime,
-              confidence_score, signal_date, entry_date, exit_date,
-              entry_price, exit_price, stop_loss, target1, target2,
-              return_pct, return_r, outcome, exit_reason,
-              mfe_pct, mae_pct, bars_in_trade,
-              target1_hit, target2_hit, stop_hit
-         FROM backtest_trades
+      `SELECT t.symbol, t.sector, t.strategy, t.direction, t.regime,
+              t.confidence_score, t.signal_date, t.entry_date, t.exit_date,
+              t.entry_price, t.exit_price, t.stop_loss, t.target1, t.target2,
+              t.return_pct, t.return_r, t.outcome, t.exit_reason,
+              t.mfe_pct, t.mae_pct, t.bars_in_trade,
+              t.target1_hit, t.target2_hit, t.stop_hit,
+              r.completed_at
+         FROM backtest_trades t
+         JOIN backtest_runs   r ON r.run_id = t.run_id
          ${where}
          ORDER BY ${dateCol} DESC
          LIMIT 20000`,
@@ -419,25 +617,128 @@ function backtestRowToOutcome(r: any): PerformanceOutcomeRow {
  */
 export function buildStrategyPerformance(
   outcomes: PerformanceOutcomeRow[],
+  /** Optional Priority-2 snapshots, keyed by strategyId. When a
+   *  strategy's live evaluated count is below MIN_FOR_RANK and a
+   *  snapshot exists with more evaluated signals, the snapshot's
+   *  pre-aggregated metrics replace the live ones and
+   *  `performanceSource` is set to 'strategy_snapshot'. */
+  snapshotsByStrategy?: Map<string, StrategyPerformanceSnapshot>,
 ): StrategyPerformance[] {
   const grouped = groupBy(outcomes, (o) => o.strategyId);
   const out: StrategyPerformance[] = [];
+  const snapshots = snapshotsByStrategy ?? new Map<string, StrategyPerformanceSnapshot>();
 
   // Walk the registry first so every known strategy ships, even
   // when its bucket is empty.
   for (const strategyId of Object.keys(STRATEGY_REGISTRY)) {
     const rows = grouped.get(strategyId) ?? [];
-    out.push(computeMetricsForStrategy(strategyId, rows));
+    out.push(maybeOverrideWithSnapshot(
+      computeMetricsForStrategy(strategyId, rows),
+      snapshots.get(strategyId),
+    ));
   }
   // Append any orphan strategy IDs we saw in the data but that
   // aren't in the registry (e.g. retired strategies whose rows are
   // still in backtest_trades). They get the humanised display name.
   for (const [strategyId, rows] of grouped.entries()) {
     if ((STRATEGY_REGISTRY as Record<string, unknown>)[strategyId]) continue;
-    out.push(computeMetricsForStrategy(strategyId, rows));
+    out.push(maybeOverrideWithSnapshot(
+      computeMetricsForStrategy(strategyId, rows),
+      snapshots.get(strategyId),
+    ));
   }
   return out;
 }
+
+/**
+ * Priority-2 logic. Snapshots only override when:
+ *   1. The live evaluated count is below the SUFFICIENT floor.
+ *   2. The snapshot evaluated count exceeds the live count.
+ *   3. The snapshot is at most 26 hours old.
+ *
+ * When override fires, metrics are replaced and the performanceSource
+ * flips to 'strategy_snapshot' (or 'mixed' if live data also exists).
+ */
+function maybeOverrideWithSnapshot(
+  live: StrategyPerformance,
+  snap: StrategyPerformanceSnapshot | undefined,
+): StrategyPerformance {
+  if (!snap) return live;
+  const snapAgeMs = Date.now() - new Date(snap.snapshotAt).getTime();
+  if (!Number.isFinite(snapAgeMs) || snapAgeMs > 26 * 60 * 60 * 1000) return live;
+  if (snap.evaluatedSignals <= live.evaluatedSignals) return live;
+  if (snap.evaluatedSignals < MIN_FOR_LIMITED) return live;
+
+  const evaluatedSignals = snap.evaluatedSignals;
+  // Re-derive classification + recommendation from the snapshot's
+  // evidence count so the operator sees the same gates apply.
+  const dq = classifyDataQuality(evaluatedSignals);
+  const performanceStatus: PerformanceStatus =
+    dq === 'SUFFICIENT' ? 'SUFFICIENT' : dq === 'LIMITED' ? 'LIMITED' : 'INSUFFICIENT_DATA';
+  // Health score uses the same five-component rule so promotion is
+  // explainable from snapshot inputs alone.
+  const health = (() => {
+    if (evaluatedSignals < MIN_FOR_LIMITED) {
+      return { score: 0, label: 'INSUFFICIENT_DATA' as HealthLabel,
+               explanation: 'Insufficient evaluated signals to rank this strategy reliably.', warnings: [] as string[] };
+    }
+    const winComp        = clamp((snap.winRate     - 30) * 0.5,           0, 25);
+    const expectancyComp = clamp((snap.expectancy  /  1.5) * 25,          0, 25);
+    const profitFComp    = clamp((snap.profitFactor - 1) * 20,            0, 20);
+    const drawdownComp   = clamp(20 + (snap.maxDrawdownPct / 2),          0, 20);
+    const dataComp       = clamp((evaluatedSignals / MIN_FOR_RANK) * 10,  0, 10);
+    const raw = winComp + expectancyComp + profitFComp + drawdownComp + dataComp;
+    const score = Math.round(clamp(raw, 0, 100));
+    const label: HealthLabel =
+      score >= 85 ? 'EXCELLENT'
+      : score >= 70 ? 'STRONG'
+      : score >= 55 ? 'STABLE'
+      :               'WEAK';
+    const warnings: string[] = [];
+    if (snap.expectancy <= 0)       warnings.push('Snapshot expectancy is non-positive.');
+    if (snap.profitFactor < 1)      warnings.push('Snapshot profit factor below 1.');
+    if (snap.maxDrawdownPct <= -25) warnings.push('Snapshot drawdown is large.');
+    const explanation =
+      label === 'EXCELLENT' ? 'Excellent strategy health (pre-aggregated snapshot).'
+      : label === 'STRONG'  ? 'Strong strategy health based on pre-aggregated snapshot.'
+      : label === 'STABLE'  ? 'Stable performance — pre-aggregated snapshot.'
+      :                       'Weak strategy health — review the warnings.';
+    return { score, label, explanation, warnings };
+  })();
+  const recommendation: Recommendation =
+    performanceStatus === 'INSUFFICIENT_DATA' ? 'Insufficient Data'
+    : health.score >= 85 && snap.expectancy >= 1.0 ? 'Promote'
+    : health.score >= 70                            ? 'Keep Active'
+    : health.score >= 55                            ? 'Watch Carefully'
+                                                    : 'Reduce Approval Weight';
+
+  // The snapshot source is 'strategy_snapshot'. If we also had any
+  // live outcome rows, we honestly call it 'mixed' so the operator
+  // sees both sources contributed.
+  const performanceSource: PerformanceSource =
+    live.evaluatedSignals > 0 ? 'mixed' : 'strategy_snapshot';
+
+  return {
+    ...live,
+    evaluatedSignals,
+    winRate:                round(snap.winRate, 1),
+    expectancy:             round(snap.expectancy, 2),
+    profitFactor:           round(snap.profitFactor, 2),
+    maxDrawdownPct:         round(snap.maxDrawdownPct, 2),
+    strategyHealthScore:    health.score,
+    healthLabel:            health.label,
+    healthExplanation:      health.explanation,
+    warnings:               [
+      ...health.warnings,
+      `Metrics sourced from pre-aggregated snapshot (snapshotAt ${snap.snapshotAt}).`,
+    ],
+    performanceStatus,
+    performanceSource,
+    recommendation,
+  };
+}
+
+// `clamp` is already declared below at file scope — no second copy needed.
 
 function computeMetricsForStrategy(
   strategyId: string,
@@ -507,6 +808,7 @@ function computeMetricsForStrategy(
   let performanceSource: PerformanceSource = 'insufficient_data';
   if (rows.length === 0)                       performanceSource = 'insufficient_data';
   else if (sources.size > 1)                   performanceSource = 'mixed';
+  else if (sources.has('strategy_snapshot'))   performanceSource = 'strategy_snapshot';
   else if (sources.has('observed'))            performanceSource = 'observed';
   else if (sources.has('backtest'))            performanceSource = 'backtest';
 
@@ -789,8 +1091,11 @@ export interface BuildReportResult {
 export function buildPerformanceReport(
   outcomes: PerformanceOutcomeRow[],
   window: PerformanceWindow = '90D',
+  /** Optional pre-aggregated Priority-2 snapshots — applied per
+   *  strategy as an override when live data is below MIN_FOR_RANK. */
+  snapshotsByStrategy?: Map<string, StrategyPerformanceSnapshot>,
 ): BuildReportResult {
-  const strategies = buildStrategyPerformance(outcomes);
+  const strategies = buildStrategyPerformance(outcomes, snapshotsByStrategy);
   const leaderboard = buildLeaderboard(strategies);
 
   const totalEvaluated = strategies.reduce((s, x) => s + x.evaluatedSignals, 0);
@@ -798,11 +1103,12 @@ export function buildPerformanceReport(
 
   const sources = new Set(outcomes.map((o) => o.source));
   const reportSource: PerformanceSource =
-    sources.size === 0                       ? 'insufficient_data'
-    : sources.size > 1                       ? 'mixed'
-    : sources.has('observed')                ? 'observed'
-    : sources.has('backtest')                ? 'backtest'
-    :                                          'estimated';
+    sources.size === 0                         ? 'insufficient_data'
+    : sources.size > 1                         ? 'mixed'
+    : sources.has('strategy_snapshot')         ? 'strategy_snapshot'
+    : sources.has('observed')                  ? 'observed'
+    : sources.has('backtest')                  ? 'backtest'
+    :                                            'estimated';
 
   const warnings: string[] = [];
   if (dq !== 'SUFFICIENT') {

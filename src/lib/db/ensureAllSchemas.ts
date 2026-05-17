@@ -609,6 +609,85 @@ const ALL_TABLES: string[] = [
     PRIMARY KEY (symbol),
     INDEX idx_session (snapshot_session)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // ── PHASE 1–6 CLOSURE TABLES ──────────────────────────────────
+  //
+  // These are the upstream writer targets for the loaders that
+  // already exist in src/lib/strategies/strategyPerformance.ts and
+  // src/lib/signals/enrichSignalIntelligence.ts. Until a writer ran
+  // here, those loaders fell back to backtest + observed-snapshot
+  // sources. With these tables present the writers below populate
+  // them and the loaders pick up Priority-1 / Priority-2 / bulk
+  // options enrichment automatically.
+
+  // Phase 2 Priority 1 — per-matured-signal outcome rows. Backfilled
+  // from q365_confirmed_signal_snapshots terminal states by
+  // src/lib/strategies/writers/signalOutcomesWriter.ts.
+  `CREATE TABLE IF NOT EXISTS q365_signal_outcomes (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_snapshot_id  BIGINT       DEFAULT NULL,
+    symbol              VARCHAR(40)  NOT NULL,
+    strategy            VARCHAR(80)  NOT NULL,
+    direction           VARCHAR(8)   NOT NULL,
+    sector              VARCHAR(80)  DEFAULT NULL,
+    regime              VARCHAR(40)  DEFAULT NULL,
+    confidence_score    DECIMAL(6,2) DEFAULT NULL,
+    outcome             VARCHAR(20)  NOT NULL,
+    return_pct          DECIMAL(10,4) DEFAULT NULL,
+    return_r            DECIMAL(8,3)  DEFAULT NULL,
+    target_hit          TINYINT(1)   NOT NULL DEFAULT 0,
+    stop_hit            TINYINT(1)   NOT NULL DEFAULT 0,
+    invalidated         TINYINT(1)   NOT NULL DEFAULT 0,
+    mfe_pct             DECIMAL(10,4) DEFAULT NULL,
+    mae_pct             DECIMAL(10,4) DEFAULT NULL,
+    holding_period_bars INT           DEFAULT NULL,
+    approval_status     VARCHAR(20)   DEFAULT NULL,
+    evaluated_at        DATETIME      NOT NULL,
+    created_at          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_snapshot (source_snapshot_id),
+    INDEX idx_outcomes_strategy_time (strategy, evaluated_at),
+    INDEX idx_outcomes_symbol (symbol),
+    INDEX idx_outcomes_evaluated_at (evaluated_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Phase 2 Priority 2 — pre-aggregated per-strategy/per-window
+  // performance snapshots. One row per (strategy_id, window_label).
+  // Backfilled by src/lib/strategies/writers/strategySnapshotWriter.ts.
+  `CREATE TABLE IF NOT EXISTS q365_strategy_performance_snapshots (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    strategy_id       VARCHAR(80) NOT NULL,
+    window_label      VARCHAR(8)  NOT NULL,
+    evaluated_signals INT NOT NULL,
+    win_rate          DECIMAL(6,2) NOT NULL,
+    expectancy        DECIMAL(8,3) NOT NULL,
+    profit_factor     DECIMAL(8,3) NOT NULL,
+    max_drawdown_pct  DECIMAL(8,3) NOT NULL,
+    health_score      INT NOT NULL DEFAULT 0,
+    health_label      VARCHAR(24) NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+    performance_source VARCHAR(24) NOT NULL,
+    snapshot_at       DATETIME NOT NULL,
+    UNIQUE KEY uniq_strategy_window (strategy_id, window_label),
+    INDEX idx_snapshot_at (snapshot_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Phase 5 bulk options — per-symbol option-chain snapshot used by
+  // the bulk /api/signals enricher. One row per F&O symbol, updated
+  // by src/lib/strategies/writers/optionsSnapshotWriter.ts. Older
+  // rows are retained for audit; the loader reads the latest per
+  // symbol via MAX(snapshot_at).
+  `CREATE TABLE IF NOT EXISTS q365_options_snapshots (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    symbol          VARCHAR(40) NOT NULL,
+    pcr             DECIMAL(8,3) DEFAULT NULL,
+    bias            VARCHAR(16) DEFAULT NULL,
+    iv_state        VARCHAR(16) DEFAULT NULL,
+    key_support     DECIMAL(12,2) DEFAULT NULL,
+    key_resistance  DECIMAL(12,2) DEFAULT NULL,
+    source          VARCHAR(16) NOT NULL DEFAULT 'live',
+    snapshot_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_symbol_snapshot (symbol, snapshot_at),
+    INDEX idx_options_symbol_time (symbol, snapshot_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 // Idempotent column additions for tables that pre-existed before a
