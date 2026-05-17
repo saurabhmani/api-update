@@ -542,12 +542,14 @@ export async function loadBacktestOutcomes(
 ): Promise<PerformanceOutcomeRow[]> {
   const cutoff = windowCutoffIso(window);
   const dateCol = 'COALESCE(t.exit_date, t.entry_date, t.signal_date)';
-  // Spec hardening: JOIN backtest_runs and accept only COMPLETED runs.
-  // Cancelled / failed / running / partial / stale runs are excluded so
-  // a half-finished backtest never poisons the per-strategy metrics.
+  // Spec hardening: JOIN backtest_runs and accept only terminal-success
+  // runs, case-insensitively. Some deployments persist status as
+  // 'COMPLETED', others as 'completed' or the alias 'success' /
+  // 'SUCCESS'. We accept the union but still exclude cancelled /
+  // failed / running / partial / stale runs.
   const where = cutoff
-    ? `WHERE r.status = 'completed' AND ${dateCol} >= ?`
-    : `WHERE r.status = 'completed'`;
+    ? `WHERE UPPER(r.status) IN ('COMPLETED','SUCCESS') AND ${dateCol} >= ?`
+    : `WHERE UPPER(r.status) IN ('COMPLETED','SUCCESS')`;
   const params = cutoff ? [cutoff] : [];
   try {
     const { rows } = await db.query<any>(

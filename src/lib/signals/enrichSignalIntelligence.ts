@@ -62,6 +62,11 @@ import {
   loadOptionsSnapshotsByBatch,
   type PersistedOptionsSnapshot,
 } from '@/lib/strategies/writers/optionsSnapshotWriter';
+import {
+  applyInstitutionalDecisionGate,
+  type FinalDecision,
+  type RawAction,
+} from '@/lib/signals/finalDecisionGate';
 
 // ── Public types ──────────────────────────────────────────────
 
@@ -132,6 +137,20 @@ export interface IntelligenceEnrichment {
 
   // ── Phase 1 — normalized reason buckets ────────────────────
   normalizedReasons:                NormalizedSignalReasons;
+
+  // ── Phase 3 + 5 + 6 — institutional final decision gate ───
+  // Raw vs effective approval so the operator sees both the
+  // upstream DB classification AND the post-intelligence verdict
+  // without losing either. Demotion-only — never promotes.
+  rawApprovalStatus:                RawAction;
+  effectiveApprovalStatus:          RawAction;
+  rawAction:                        RawAction;
+  effectiveAction:                  RawAction;
+  decisionChanged:                  boolean;
+  demotionReason:                   string | null;
+  institutionalBlockers:            string[];
+  institutionalWarnings:            string[];
+  decisionTrace:                    FinalDecision['decisionTrace'];
 }
 
 /** Minimal row shape this enricher reads from. Compact OR full rows
@@ -541,6 +560,38 @@ export function enrichSignalRow(
     reason:                 row.rejection_reason,
   });
 
+  // ── Institutional final decision gate (Phase 3 + 5 + 6) ──
+  // Layers regime + confirmation + conflict + manipulation +
+  // execution over the row's raw status. Demotion-only — never
+  // promotes through hard blockers. The raw status is preserved
+  // intact; the gate emits parallel effective fields.
+  const rawAction: RawAction =
+    currentAction === 'APPROVED'  ? 'APPROVED'
+    : currentAction === 'WATCHLIST' ? 'WATCHLIST'
+    : currentAction === 'REJECTED'  ? 'REJECTED'
+    :                                  'WATCHLIST';
+  const freshnessState = String(
+    (row as { freshness_state?: unknown; decay_state?: unknown }).freshness_state ??
+    (row as { decay_state?: unknown }).decay_state ?? '',
+  );
+  const isStaleData = /stale|expired/i.test(freshnessState);
+  const stopDistanceInvalid = entry > 0 && stop > 0 ? false
+    : (currentAction === 'APPROVED' && entry > 0 && stop <= 0);
+
+  const decision = applyInstitutionalDecisionGate({
+    rawAction,
+    freshnessState: freshnessState || null,
+    isStaleData,
+    routing,
+    currentRegime:       ctx.currentRegime,
+    confirmation,
+    executionStatus:     confirmation.modules.execution.status,
+    manipulationStatus:  confirmation.modules.manipulation.status,
+    manipulationBand:    confirmation.modules.manipulation.riskBand ?? null,
+    conflict,
+    riskRewardInvalid:   stopDistanceInvalid,
+  });
+
   return {
     currentRegime:                       ctx.currentRegime,
     regimeStatus:                        ctx.regimeStatus,
@@ -569,6 +620,16 @@ export function enrichSignalRow(
     conflictExplanation:                 conflict.explanation,
     conflictRecommendation:              conflict.recommendation,
     normalizedReasons,
+    // Final decision gate — Phase 3 + 5 + 6.
+    rawApprovalStatus:                   decision.rawApprovalStatus,
+    effectiveApprovalStatus:             decision.effectiveApprovalStatus,
+    rawAction:                           decision.rawAction,
+    effectiveAction:                     decision.effectiveAction,
+    decisionChanged:                     decision.decisionChanged,
+    demotionReason:                      decision.demotionReason,
+    institutionalBlockers:               decision.institutionalBlockers,
+    institutionalWarnings:               decision.institutionalWarnings,
+    decisionTrace:                       decision.decisionTrace,
   };
 }
 

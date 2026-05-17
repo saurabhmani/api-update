@@ -41,6 +41,11 @@ import { eventBus } from '@/lib/eventBus';
 import type { CandleProvider } from './generatePhase1Signals';
 import type { StrategyName } from '../types/signalEngine.types';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
+// Phase 1 / Phase 4 closure: persisted entry type MUST match the
+// strategy mechanic (pullback / mean-reversion / breakdown / …) —
+// the legacy literal 'breakout_confirmation' here was overwriting
+// the correct entry type and would re-introduce the Phase 1 leak.
+import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
 export interface Phase4Result {
   signals: Phase4SignalEnvelope[];
@@ -547,7 +552,17 @@ export async function generatePhase4Signals(
       confidenceBand: sig.confidenceBand,
       riskScore: sig.riskScore,
       riskBand: sig.riskScore <= 30 ? 'Low' : sig.riskScore <= 60 ? 'Medium' : 'High',
-      entry: { type: 'breakout_confirmation' as const, zoneLow: sig.tradePlan.entryZoneLow, zoneHigh: sig.tradePlan.entryZoneHigh },
+      entry: {
+        // Prefer the strategy-specific entry type that the trade-plan
+        // builder already produced. Fall back to the registry lookup
+        // (which knows the correct mapping for every registered
+        // strategy) so mean-reversion / pullback / breakdown / Phase 4
+        // strategies never persist as 'breakout_confirmation'.
+        type: (sig.tradePlan as { entryType?: unknown }).entryType as ReturnType<typeof getStrategyEntryType>
+              ?? getStrategyEntryType(sig.signalType as StrategyName),
+        zoneLow:  sig.tradePlan.entryZoneLow,
+        zoneHigh: sig.tradePlan.entryZoneHigh,
+      },
       stopLoss: sig.tradePlan.stopLoss,
       targets: { target1: sig.tradePlan.target1, target2: sig.tradePlan.target2 },
       rewardRiskApprox: sig.tradePlan.rrTarget1,
