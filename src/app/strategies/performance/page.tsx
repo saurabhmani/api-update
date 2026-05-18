@@ -36,7 +36,8 @@ type Recommendation =
   | 'Reduce Approval Weight' | 'Insufficient Data';
 type PerformanceStatus = 'SUFFICIENT' | 'LIMITED' | 'INSUFFICIENT_DATA';
 type PerformanceSource =
-  | 'observed' | 'backtest' | 'mixed'
+  | 'direct' | 'observed' | 'strategy_snapshot'
+  | 'backtest' | 'mixed'
   | 'derived_from_candles' | 'estimated' | 'insufficient_data';
 
 interface LeaderboardEntry {

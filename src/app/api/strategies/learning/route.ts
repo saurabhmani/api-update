@@ -23,6 +23,8 @@ import {
   loadDirectSignalOutcomes,
   loadObservedOutcomes,
   loadBacktestOutcomes,
+  dedupeOutcomesBySignal,
+  SOURCE_PRIORITY,
   VALID_WINDOWS,
   type PerformanceWindow,
   type PerformanceOutcomeRow,
@@ -58,17 +60,20 @@ export async function GET(req: NextRequest) {
     loadBacktestOutcomes(window).catch(() => []),
   ]);
 
-  // De-dup: when the same (strategy, symbol, evaluatedAt) tuple appears
-  // in multiple sources, keep the highest-priority one. Direct wins
-  // over observed; observed wins over backtest. Other rows pass
-  // through untouched (different evaluatedAt = different evaluation).
-  const sourcePriority = { observed: 3, strategy_snapshot: 3, mixed: 2, backtest: 1, derived_from_candles: 0, estimated: 0, insufficient_data: -1 };
+  // De-dup pass 1 — collapse rows that share a signalRef so the same
+  // matured snapshot isn't double-counted as both `direct` and
+  // `observed`. The direct row always wins (see SOURCE_PRIORITY).
+  const byRef = dedupeOutcomesBySignal([...direct, ...observed, ...backtests]);
+
+  // De-dup pass 2 — safety net for rows whose signalRef is null (legacy
+  // backtest trades) but which still collide on (strategy, symbol,
+  // evaluatedAt). Keep the highest-priority source per tuple.
   const seen = new Map<string, PerformanceOutcomeRow>();
-  for (const row of [...direct, ...observed, ...backtests]) {
+  for (const row of byRef) {
     const key = `${row.strategyId}::${row.symbol}::${row.evaluatedAt ?? 'none'}`;
     const existing = seen.get(key);
     if (!existing
-        || (sourcePriority[row.source] ?? -1) > (sourcePriority[existing.source] ?? -1)) {
+        || (SOURCE_PRIORITY[row.source] ?? -1) > (SOURCE_PRIORITY[existing.source] ?? -1)) {
       seen.set(key, row);
     }
   }

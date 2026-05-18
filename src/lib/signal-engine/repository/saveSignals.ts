@@ -19,6 +19,7 @@ import { computeFreshnessReport } from '../freshness/freshnessEngine';
 import { validatePostSignal } from '../validation/postSignalValidator';
 import { computeFinalScore } from '../ranking/dynamicRanker';
 import { upsertTrackerOnDetection } from './maturityTracker';
+import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
 // Maximum acceptable gap between the strategy-derived entry price
 // (built from daily candles, possibly hours stale) and the live
@@ -771,7 +772,13 @@ export async function getLatestSignals(limit = 20): Promise<any[]> {
     riskBand: row.risk_band,
     marketRegime: row.market_regime,
     entry: {
-      type: 'breakout_confirmation' as const,
+      // Phase-1 stabilization: previously hardcoded 'breakout_confirmation'
+      // for every reconstructed row, which leaked the wrong entry type when
+      // non-breakout strategies were loaded back from the DB. Resolve via
+      // the registry so each strategy gets its own canonical entry type
+      // (e.g. pullback → pullback_entry, mean_reversion → mean_reversion_entry).
+      // Unknown strategy IDs fall back to 'strategy_confirmation_entry'.
+      type: getStrategyEntryType(row.signal_type),
       zoneLow: row.entry_zone_low,
       zoneHigh: row.entry_zone_high,
     },

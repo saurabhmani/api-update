@@ -145,8 +145,23 @@ export function buildSectorConfirmation(input: SectorInput): SectorConfirmation 
       reason: 'Sector mapping unavailable for this symbol.',
     };
   }
+  // Phase-5 hardening: a sector mapping alone isn't sector confirmation.
+  // When the caller has a sector but no trend data (sectorTrend === null),
+  // we honestly report UNAVAILABLE instead of fabricating a Neutral/50
+  // reading. The standalone /api/signals/confirmation route now follows
+  // this contract — it only passes a non-null sectorTrend when it has
+  // real evidence (live signal pool cross-section or candle proxy).
+  if (input.sectorTrend == null) {
+    return {
+      status: 'UNAVAILABLE',
+      sector: input.sector, sectorTrend: null, sectorScore: input.sectorScore ?? null,
+      relativeStrengthRank: input.relativeStrength,
+      confidenceAdjustment: 0,
+      reason: 'Sector mapping is available, but sector trend data is unavailable for this symbol.',
+    };
+  }
   const score = input.sectorScore ?? 50;
-  const trend = input.sectorTrend ?? 'Neutral';
+  const trend = input.sectorTrend;
   const directionAgrees =
     (input.direction === 'BUY'  && (trend === 'Strong' || trend === 'Positive')) ||
     (input.direction === 'SELL' && (trend === 'Weak'   || trend === 'Declining'));

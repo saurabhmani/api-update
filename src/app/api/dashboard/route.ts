@@ -354,15 +354,21 @@ export async function GET(req: NextRequest) {
 
   const nearestOpportunities: NearestOpportunityRow[] = nearestPool.slice(0, 5).map((s) => {
     const sym = str(s.symbol ?? s.tradingsymbol) ?? 'UNKNOWN';
+    // Phase 3 + 5 + 6 institutional decision gate — when the enricher
+    // demoted the row, the user-facing status MUST be the effective
+    // one. Raw fields remain readable for diagnostics but the card no
+    // longer shows APPROVED for a row the gate has restricted.
+    const effectiveStatus = str(s.effectiveApprovalStatus ?? s.effective_approval_status);
+    const effectiveAction = str(s.effectiveAction ?? s.effective_action);
     return {
       symbol:           sym,
-      direction:        str(s.direction ?? s.signal_type),
+      direction:        effectiveAction ?? str(s.direction ?? s.signal_type),
       finalScore:       num(s.final_score ?? s.opportunity_score),
       confidenceScore:  num(s.confidence_score ?? s.confidence),
       riskReward:       num(s.risk_reward),
       approvalGap:      num(s.approvalGap),
-      reason:           str(s.dueDiligence?.gateSummary ?? s.reason ?? (Array.isArray(s.missingApprovalFactors) && s.missingApprovalFactors.length > 0 ? s.missingApprovalFactors.join(', ') : null)),
-      status:           str(s.status ?? s.signal_status ?? s.effective_signal_status),
+      reason:           str(s.demotionReason ?? s.demotion_reason ?? s.dueDiligence?.gateSummary ?? s.reason ?? (Array.isArray(s.missingApprovalFactors) && s.missingApprovalFactors.length > 0 ? s.missingApprovalFactors.join(', ') : null)),
+      status:           effectiveStatus ?? str(s.status ?? s.signal_status ?? s.effective_signal_status),
       manipulationRisk: manipulationRiskMap.get(sym) ?? null,
       newsImpact:       newsImpactMap.get(sym) ?? null,
     };

@@ -142,16 +142,76 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* table may not exist yet */ }
 
-  // Sector confirmation — derive a coarse score / trend from the
-  // sector relative-strength tables if they exist. Otherwise pass
-  // null and let the module return UNAVAILABLE.
+  // ── Sector confirmation ───────────────────────────────────────
+  // Phase-5 hardening: use real sector trend data when it's available.
+  // We probe two independent sources in priority order:
+  //
+  //   1. Cross-sectional buy/sell mix from the active live signal
+  //      pool (matches how the bulk enricher derives sectorTrendMap).
+  //      Requires ≥ 3 active rows in the sector to classify honestly.
+  //
+  //   2. Candle-based sector context derived from the symbol's own
+  //      candles vs the NIFTY benchmark (proxy trend used in the
+  //      signal-engine context loader).
+  //
+  // When neither source has the data, we honestly report UNAVAILABLE
+  // and the buildSectorConfirmation module will surface it as such —
+  // we never fabricate a Neutral/50 reading and pass it off as live
+  // sector intelligence.
   let sectorTrend: 'Strong' | 'Positive' | 'Neutral' | 'Weak' | 'Declining' | null = null;
   let sectorScore: number | null = null;
+  let sectorTrendSource: 'live_signal_pool' | 'candle_proxy' | 'unavailable' = 'unavailable';
+  let sectorSampleSize = 0;
+
   if (sectorName) {
-    // Conservative: derive a Neutral baseline unless we explicitly
-    // know more. A future Phase-5 sector module can override.
-    sectorTrend = 'Neutral';
-    sectorScore = 50;
+    // Source 1 — live signal pool cross-section (last 24h, active rows
+    // in the same sector). Mirrors the thresholds in buildSectorTrendMap.
+    try {
+      const { rows: poolRows } = await db.query<any>(
+        `SELECT direction, COUNT(*) AS cnt
+           FROM q365_signals
+          WHERE sector = ?
+            AND status IN ('active','watchlist')
+            AND generated_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+          GROUP BY direction`,
+        [sectorName],
+      );
+      let buy = 0, sell = 0;
+      for (const r of poolRows ?? []) {
+        const dir = String(r.direction ?? '').toUpperCase();
+        const cnt = Number(r.cnt ?? 0);
+        if (dir === 'BUY') buy += cnt;
+        else if (dir === 'SELL') sell += cnt;
+      }
+      const total = buy + sell;
+      if (total >= 3) {
+        const buyShare = buy / total;
+        sectorTrend =
+          buyShare >= 0.70 ? 'Strong'
+          : buyShare >= 0.55 ? 'Positive'
+          : buyShare <= 0.30 ? 'Declining'
+          : buyShare <= 0.45 ? 'Weak'
+          :                    'Neutral';
+        sectorScore = Math.round(buyShare * 100);
+        sectorTrendSource = 'live_signal_pool';
+        sectorSampleSize = total;
+      }
+    } catch { /* table missing — fall through */ }
+
+    // Source 2 — candle-based proxy (symbol vs benchmark). Only used
+    // when the live signal pool didn't have enough samples.
+    if (sectorTrendSource === 'unavailable') {
+      const proxy = await tryBuildCandleProxySector(symbol);
+      if (proxy) {
+        sectorTrend = proxy.trend;
+        sectorScore = proxy.score;
+        sectorTrendSource = 'candle_proxy';
+        sectorSampleSize = proxy.sampleSize;
+      }
+    }
+    // Neither source had data — keep sectorTrend/sectorScore as null
+    // so buildSectorConfirmation downgrades to UNAVAILABLE with an
+    // honest reason rather than rendering a fake Neutral reading.
   }
 
   // ── Options — probe the real provider for F&O symbols only. ──
@@ -265,7 +325,22 @@ export async function GET(req: NextRequest) {
     modules: { sector, options, news, manipulation, execution },
   });
 
-  return NextResponse.json(aggregate, {
+  // Operator-visible audit hint — surfaces which sector source the
+  // route used (live signal pool / candle proxy / unavailable) and how
+  // many samples backed the classification. Lets downstream consumers
+  // spot when the route fell back to UNAVAILABLE instead of guessing.
+  const envelope = {
+    ...aggregate,
+    sectorContext: {
+      sectorName,
+      source:       sectorTrendSource,
+      sampleSize:   sectorSampleSize,
+      trend:        sectorTrend,
+      score:        sectorScore,
+    },
+  };
+
+  return NextResponse.json(envelope, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });
 }
@@ -275,4 +350,58 @@ function safeSector(symbol: string): string | null {
     const s = getSector(symbol);
     return s && s !== 'Other' ? s : null;
   } catch { return null; }
+}
+
+/**
+ * Candle-based sector proxy used by the standalone confirmation
+ * route when no live signal pool entries exist for the sector. The
+ * proxy uses the symbol's own daily candles vs the NIFTY benchmark
+ * over a 20-bar window — the same approach Phase 2's
+ * `buildSectorContextFromStock` uses inside the signal engine.
+ *
+ * Returns `null` when either the symbol or benchmark candles aren't
+ * available, so the caller can fall through to UNAVAILABLE rather
+ * than fabricating a Neutral reading.
+ */
+async function tryBuildCandleProxySector(symbol: string): Promise<{
+  trend: 'Strong' | 'Positive' | 'Neutral' | 'Weak' | 'Declining';
+  score: number;
+  sampleSize: number;
+} | null> {
+  try {
+    const [{ rows: stockRows }, { rows: benchRows }] = await Promise.all([
+      db.query<any>(
+        `SELECT close FROM candles
+          WHERE instrument_key = ? AND candle_type='eod' AND interval_unit='1day'
+          ORDER BY ts DESC LIMIT 30`,
+        [`NSE_EQ|${symbol}`],
+      ),
+      db.query<any>(
+        `SELECT close FROM candles
+          WHERE instrument_key = 'NSE_INDEX|NIFTY 50' AND candle_type='eod' AND interval_unit='1day'
+          ORDER BY ts DESC LIMIT 30`,
+        [],
+      ),
+    ]);
+    const stockCloses = (stockRows ?? []).map((r) => Number(r.close)).filter(Number.isFinite).reverse();
+    const benchCloses = (benchRows ?? []).map((r) => Number(r.close)).filter(Number.isFinite).reverse();
+    if (stockCloses.length < 21 || benchCloses.length < 21) return null;
+
+    const stockLast = stockCloses[stockCloses.length - 1];
+    const stockRoc5  = ((stockLast - stockCloses[stockCloses.length - 6])  / stockCloses[stockCloses.length - 6])  * 100;
+    const stockRoc20 = ((stockLast - stockCloses[stockCloses.length - 21]) / stockCloses[stockCloses.length - 21]) * 100;
+    const compositeReturn = stockRoc5 * 0.6 + stockRoc20 * 0.4;
+    const score = Math.max(0, Math.min(100, Math.round(50 + compositeReturn * 8)));
+
+    const trend: 'Strong' | 'Positive' | 'Neutral' | 'Weak' | 'Declining' =
+      (score >= 75 && stockRoc5 > 1 && stockRoc20 > 2) ? 'Strong'
+      : (score >= 60 && stockRoc5 > 0)                 ? 'Positive'
+      : (score >= 40)                                  ? 'Neutral'
+      : (score >= 25)                                  ? 'Weak'
+      :                                                  'Declining';
+
+    return { trend, score, sampleSize: stockCloses.length };
+  } catch {
+    return null;
+  }
 }

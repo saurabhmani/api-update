@@ -90,6 +90,68 @@ export default function SignalDetailPage() {
               )}
             </Card>
 
+            {/* Institutional decision panel — only renders when the
+                final-decision gate adjusted the row (Phase 3 + 5 + 6).
+                Demotion-only, so when shown it always communicates a
+                stricter status than the raw classification. */}
+            {signal.decisionChanged === true && (
+              <Card title="Institutional decision">
+                <div style={{ display: 'grid', gap: 10, fontSize: 13, color: '#334155' }}>
+                  <div>
+                    <strong style={{ color: '#0F172A' }}>Decision adjusted by institutional risk gate.</strong>
+                    {signal.demotionReason ? (
+                      <div style={{ marginTop: 4, color: '#64748B' }}>{signal.demotionReason}</div>
+                    ) : null}
+                  </div>
+                  <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>Raw status</div>
+                      <div style={{ fontWeight: 700, color: '#475569' }}>{signal.rawApprovalStatus ?? '—'}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>Effective status</div>
+                      <div style={{ fontWeight: 700, color: '#92400E' }}>{signal.effectiveApprovalStatus ?? '—'}</div>
+                    </div>
+                  </div>
+                  {Array.isArray(signal.institutionalBlockers) && signal.institutionalBlockers.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600, marginBottom: 4 }}>Blockers</div>
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {signal.institutionalBlockers.map((b: string, i: number) => (
+                          <li key={i} style={{ color: '#475569' }}>{b}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {Array.isArray(signal.institutionalWarnings) && signal.institutionalWarnings.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600, marginBottom: 4 }}>Warnings</div>
+                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                        {signal.institutionalWarnings.map((w: string, i: number) => (
+                          <li key={i} style={{ color: '#64748B' }}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {Array.isArray(signal.decisionTrace) && signal.decisionTrace.length > 0 && (
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748B' }}>Decision trace ({signal.decisionTrace.length})</summary>
+                      <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: '#475569' }}>
+                        {signal.decisionTrace.map((t: any, i: number) => (
+                          <li key={i}>
+                            <span style={{ color: '#94A3B8', fontWeight: 600 }}>{t.layer}</span>
+                            {' — '}
+                            <span>{t.reason}</span>
+                            {t.severity ? <span style={{ marginLeft: 6, color: t.severity === 'blocker' ? '#DC2626' : t.severity === 'warning' ? '#D97706' : '#94A3B8', fontSize: 11 }}>({t.severity})</span> : null}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                </div>
+              </Card>
+            )}
+
             {/* Reasons */}
             <Card title="Why this signal?">
               {signal.reasons?.length ? signal.reasons.map((r: any) => (

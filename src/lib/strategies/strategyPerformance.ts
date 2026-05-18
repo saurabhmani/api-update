@@ -55,13 +55,33 @@ export function windowCutoffIso(window: PerformanceWindow): string | null {
 // ── Data sources surfaced on the wire ─────────────────────────
 
 export type PerformanceSource =
-  | 'observed'
-  | 'strategy_snapshot'
-  | 'backtest'
-  | 'mixed'
+  | 'direct'              // q365_signal_outcomes — per-signal authored outcome
+  | 'observed'            // q365_confirmed_signal_snapshots — terminal lifecycle
+  | 'strategy_snapshot'   // q365_strategy_performance_snapshots — pre-aggregated
+  | 'backtest'            // backtest_trades — completed simulation runs
+  | 'mixed'               // two or more of the above contributed
   | 'derived_from_candles'
   | 'estimated'
   | 'insufficient_data';
+
+/**
+ * Source priority — `direct` wins because q365_signal_outcomes carries
+ * per-signal authored outcomes (target/stop/timestamps) instead of the
+ * inference done in observedRowToOutcome / backtestRowToOutcome. When
+ * the same signalId appears in multiple sources, the higher-priority row
+ * is kept and lower-priority duplicates are dropped (see
+ * `dedupeOutcomesBySignal`).
+ */
+export const SOURCE_PRIORITY: Record<PerformanceSource, number> = {
+  direct:               5,
+  observed:             4,
+  strategy_snapshot:    3,
+  backtest:             2,
+  mixed:                2,
+  derived_from_candles: 1,
+  estimated:            0,
+  insufficient_data:    0,
+};
 
 export type OutcomeStatus =
   | 'WIN'
@@ -95,6 +115,17 @@ export interface PerformanceOutcomeRow {
   approvalStatus:    'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'UNKNOWN';
   evaluatedAt:       string | null;
   source:            PerformanceSource;
+  /** Explicit duplicate of `source` so dashboards and the learning
+   *  report can render a stable column name without depending on the
+   *  union the metrics builder uses internally. */
+  outcomeSource:     PerformanceSource;
+  /** Stable per-signal identifier. Used by `dedupeOutcomesBySignal`
+   *  to drop lower-priority duplicates when the same underlying
+   *  snapshot is loaded from multiple sources (e.g. both
+   *  q365_signal_outcomes and q365_confirmed_signal_snapshots).
+   *  Null when the underlying row has no stable id (legacy backtest
+   *  trades). */
+  signalRef:         string | null;
 }
 
 // ── Data-quality contract ─────────────────────────────────────
@@ -268,8 +299,12 @@ export async function loadDirectSignalOutcomes(
   const where  = cutoff ? `WHERE evaluated_at >= ?` : '';
   const params = cutoff ? [cutoff] : [];
   try {
+    // Include `source_snapshot_id` (and `id` as a fallback) so the row
+    // carries a stable `signalRef` for cross-source dedupe. Without
+    // this, the same matured snapshot can be double-counted as both a
+    // direct outcome and an observed terminal row.
     const { rows } = await db.query<any>(
-      `SELECT symbol, strategy, direction, sector, regime,
+      `SELECT id, source_snapshot_id, symbol, strategy, direction, sector, regime,
               confidence_score, outcome, return_pct, return_r,
               target_hit, stop_hit, invalidated,
               mfe_pct, mae_pct, holding_period_bars,
@@ -302,6 +337,14 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     : approval === 'WATCHLIST' ? 'WATCHLIST'
     : approval === 'REJECTED'  ? 'REJECTED'
     :                            'UNKNOWN';
+  // Prefer source_snapshot_id so the ref matches observedRowToOutcome
+  // (the observed loader emits the snapshot's own id). Falls back to
+  // the outcome row id when no snapshot is linked.
+  const snapshotRef = r.source_snapshot_id != null
+    ? `snapshot:${String(r.source_snapshot_id)}`
+    : r.id != null
+      ? `outcome:${String(r.id)}`
+      : null;
   return {
     strategyId:        String(r.strategy ?? 'unclassified'),
     symbol:            String(r.symbol ?? ''),
@@ -320,7 +363,13 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     holdingPeriodBars: num(r.holding_period_bars),
     approvalStatus,
     evaluatedAt:       toIso(r.evaluated_at),
-    source:            'observed',
+    // Phase 2 Priority 1 — these rows come from q365_signal_outcomes,
+    // which carries the per-signal authored outcome. They are the most
+    // trustworthy source and take priority over inferred observed
+    // snapshots in dedupeOutcomesBySignal.
+    source:            'direct',
+    outcomeSource:     'direct',
+    signalRef:         snapshotRef,
   };
 }
 
@@ -399,7 +448,7 @@ export async function loadObservedOutcomes(
     let rows: any[] = [];
     try {
       const res = await db.query<any>(
-        `SELECT symbol, strategy, direction, exchange,
+        `SELECT id, symbol, strategy, direction, exchange,
                 entry_price, stop_loss, target1, target2,
                 confidence_score, status, classification,
                 confirmed_at, valid_until, status_changed_at,
@@ -415,7 +464,7 @@ export async function loadObservedOutcomes(
     } catch {
       // Older schema — fall back to the minimal column set.
       const res = await db.query<any>(
-        `SELECT symbol, strategy, direction, exchange,
+        `SELECT id, symbol, strategy, direction, exchange,
                 entry_price, stop_loss, target1, target2,
                 confidence_score, status,
                 confirmed_at, valid_until, status_changed_at,
@@ -527,6 +576,11 @@ function observedRowToOutcome(r: any): PerformanceOutcomeRow {
     approvalStatus,
     evaluatedAt:       toIso(r.status_changed_at ?? r.confirmed_at),
     source:            'observed',
+    outcomeSource:     'observed',
+    // signalRef matches the `snapshot:<id>` shape used by directOutcomeToRow
+    // when both sources are loaded, so dedupe collapses the pair to the
+    // higher-priority `direct` row.
+    signalRef:         r.id != null ? `snapshot:${String(r.id)}` : null,
   };
 }
 
@@ -606,7 +660,44 @@ function backtestRowToOutcome(r: any): PerformanceOutcomeRow {
     approvalStatus:    'APPROVED',
     evaluatedAt:       toIso(r.exit_date ?? r.entry_date ?? r.signal_date),
     source:            'backtest',
+    outcomeSource:     'backtest',
+    // Backtest rows have no stable cross-source id so signalRef is null
+    // — dedupeOutcomesBySignal will leave them untouched, which is the
+    // correct behaviour (a backtest trade is never the same row as a
+    // live snapshot or direct outcome).
+    signalRef:         null,
   };
+}
+
+// ── Cross-source dedupe ───────────────────────────────────────
+
+/**
+ * Drop lower-priority duplicates when the same underlying signal
+ * appears in multiple sources. The `direct` source always wins; an
+ * `observed` row for the same `signalRef` is dropped if a `direct`
+ * row exists. Rows with `signalRef === null` (typically backtest
+ * trades) are kept verbatim — they cannot collide.
+ *
+ * Stable: the surviving rows are returned in their original order
+ * relative to one another.
+ */
+export function dedupeOutcomesBySignal(
+  rows: PerformanceOutcomeRow[],
+): PerformanceOutcomeRow[] {
+  const bestByRef = new Map<string, number>(); // signalRef → priority
+  for (const r of rows) {
+    if (!r.signalRef) continue;
+    const cur = bestByRef.get(r.signalRef);
+    const prio = SOURCE_PRIORITY[r.source] ?? 0;
+    if (cur == null || prio > cur) bestByRef.set(r.signalRef, prio);
+  }
+  return rows.filter((r) => {
+    if (!r.signalRef) return true;
+    const winning = bestByRef.get(r.signalRef);
+    return winning == null
+      ? true
+      : (SOURCE_PRIORITY[r.source] ?? 0) === winning;
+  });
 }
 
 // ── Metrics builders ──────────────────────────────────────────
@@ -806,10 +897,14 @@ function computeMetricsForStrategy(
   );
 
   // ── Source mix tagging ──
+  // `direct` is the highest-priority single source; when present it
+  // labels the bucket even if observed/backtest rows also contributed
+  // — direct outcomes are authored, the others are inferred.
   const sources = new Set(rows.map((r) => r.source));
   let performanceSource: PerformanceSource = 'insufficient_data';
   if (rows.length === 0)                       performanceSource = 'insufficient_data';
   else if (sources.size > 1)                   performanceSource = 'mixed';
+  else if (sources.has('direct'))              performanceSource = 'direct';
   else if (sources.has('strategy_snapshot'))   performanceSource = 'strategy_snapshot';
   else if (sources.has('observed'))            performanceSource = 'observed';
   else if (sources.has('backtest'))            performanceSource = 'backtest';
@@ -1107,6 +1202,7 @@ export function buildPerformanceReport(
   const reportSource: PerformanceSource =
     sources.size === 0                         ? 'insufficient_data'
     : sources.size > 1                         ? 'mixed'
+    : sources.has('direct')                    ? 'direct'
     : sources.has('strategy_snapshot')         ? 'strategy_snapshot'
     : sources.has('observed')                  ? 'observed'
     : sources.has('backtest')                  ? 'backtest'

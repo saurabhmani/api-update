@@ -34,6 +34,7 @@ import {
   buildRegimeBuckets,
   buildConfidenceBuckets,
   buildStatusBuckets,
+  dedupeOutcomesBySignal,
   MIN_FOR_RANK,
   type PerformanceWindow,
   type StrategyPerformance,
@@ -117,9 +118,12 @@ export async function GET(req: NextRequest) {
     loadStrategyPerformanceSnapshots(window).catch(() => new Map()),
   ]);
   // De-dup: prefer direct outcomes over snapshot-derived ones for the
-  // same (symbol, strategy, evaluatedAt) tuple. Direct rows already
-  // carry source='observed', so we just stack them ahead.
-  const outcomes = [...direct, ...observed, ...backtests];
+  // same underlying snapshot. `direct` rows carry source='direct' and
+  // signalRef='snapshot:<id>'; `observed` rows for the same snapshot
+  // carry the same signalRef, so dedupeOutcomesBySignal collapses the
+  // pair to the higher-priority direct row. Backtest rows have
+  // signalRef=null and pass through untouched.
+  const outcomes = dedupeOutcomesBySignal([...direct, ...observed, ...backtests]);
 
   // Priority-2 snapshot override is applied inside buildPerformanceReport:
   // when a strategy has fewer live evaluated signals than the snapshot

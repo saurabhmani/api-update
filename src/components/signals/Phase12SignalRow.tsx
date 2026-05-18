@@ -117,6 +117,11 @@ export function ClassificationBadge({
   isRelaxed,
   isScannerCandidate,
   executionAllowed,
+  effectiveApprovalStatus,
+  rawApprovalStatus,
+  decisionChanged,
+  demotionReason,
+  institutionalBlockers,
 }: {
   value?: SignalClassification | string | null;
   /** Used to resolve the SPECIFIC RejectionCode when classification is
@@ -138,6 +143,15 @@ export function ClassificationBadge({
   isRelaxed?:           boolean | null;
   isScannerCandidate?:  boolean | null;
   executionAllowed?:    boolean | null;
+  /** Phase 3 + 5 + 6 institutional decision gate — when present, the
+   *  badge uses these to decide the user-facing label rather than the
+   *  raw classification. Demotion-only (APPROVED→WATCHLIST etc.). The
+   *  raw classification is preserved on the tooltip for diagnostics. */
+  effectiveApprovalStatus?: 'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  rawApprovalStatus?:       'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  decisionChanged?:         boolean | null;
+  demotionReason?:          string | null;
+  institutionalBlockers?:   string[] | null;
 }) {
   if (!value) return <span style={{ color: '#CBD5E1', fontSize: 11 }}>—</span>;
 
@@ -154,12 +168,56 @@ export function ClassificationBadge({
     classification:       upper,
   };
 
+  // Phase 3 + 5 + 6 institutional decision gate. When the gate demoted
+  // an APPROVED/HIGH_CONVICTION row to WATCHLIST/REJECTED/AVOID, the
+  // user-facing decision is the EFFECTIVE one. Demotion-only — the
+  // gate never promotes, so we only act when effective is stricter
+  // than the raw classification.
+  const effectiveUpper = String(effectiveApprovalStatus ?? '').toUpperCase();
+  const gateDemoted = decisionChanged === true
+    && (effectiveUpper === 'WATCHLIST' || effectiveUpper === 'REJECTED' || effectiveUpper === 'AVOID');
+  const gateTitle = gateDemoted
+    ? `Adjusted by institutional gate — ${demotionReason ?? 'further confirmation required.'}`
+       + (institutionalBlockers && institutionalBlockers.length > 0
+           ? `\nBlockers: ${institutionalBlockers.join('; ')}`
+           : '')
+       + (rawApprovalStatus ? `\nRaw status: ${rawApprovalStatus}` : '')
+    : null;
+
   // Institutional-grade classifications (HIGH_CONVICTION etc.) render
   // their friendly label by default — but when the row carries the
   // is_relaxed / is_scanner_candidate provenance flags, the
   // professional-label override surfaces "Early Opportunity" / "Emerging
   // Opportunity" so the user sees that this isn't a strict-approved row.
   if (institutional) {
+    // Final-decision gate takes precedence over institutional labels.
+    // When the gate demoted the row, render the appropriate restricted
+    // label instead of the green "Institutional"/"High Conviction" pill.
+    if (gateDemoted) {
+      const demotedStyle = effectiveUpper === 'AVOID' || effectiveUpper === 'REJECTED'
+        ? { color: '#991B1B', bg: '#FEE2E2' }
+        : { color: '#92400E', bg: '#FEF3C7' };
+      const demotedLabel = effectiveUpper === 'AVOID'      ? 'Approval Restricted'
+                         : effectiveUpper === 'REJECTED'   ? 'Approval Restricted'
+                         :                                    'Watchlist Only';
+      return (
+        <span style={{
+          display:    'inline-block',
+          background: demotedStyle.bg,
+          color:      demotedStyle.color,
+          fontSize:   10,
+          fontWeight: 700,
+          padding:    '2px 8px',
+          borderRadius: 99,
+          letterSpacing: 0.4,
+          whiteSpace: 'nowrap',
+        }}
+        title={gateTitle ?? ''}
+        >
+          {demotedLabel}
+        </span>
+      );
+    }
     const overrideLabel = (isRelaxed === true || isScannerCandidate === true)
       ? toProfessionalLabel('APPROVED', labelContext)
       : null;

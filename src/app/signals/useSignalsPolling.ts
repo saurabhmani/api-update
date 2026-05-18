@@ -111,6 +111,22 @@ export interface SignalRow {
   // server-side. Optional so older payloads still type-check.
   dueDiligence?:                     DueDiligenceReview;
   performanceReview?:                PerformanceReview;
+  // ── Phase 3 + 5 + 6 institutional decision gate ─────────────
+  // Populated by enrichSignalIntelligence on the server. The UI
+  // prefers `effectiveApprovalStatus` / `effectiveAction` for the
+  // user-facing decision and surfaces `decisionChanged` /
+  // `demotionReason` / `institutionalBlockers` as supporting
+  // context. Raw fields are kept for diagnostics. Optional so
+  // older payloads / non-enriched tiers still type-check.
+  rawApprovalStatus?:                'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  effectiveApprovalStatus?:          'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  rawAction?:                        'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  effectiveAction?:                  'APPROVED' | 'WATCHLIST' | 'REJECTED' | 'AVOID' | null;
+  decisionChanged?:                  boolean | null;
+  demotionReason?:                   string | null;
+  institutionalBlockers?:            string[] | null;
+  institutionalWarnings?:            string[] | null;
+  decisionTrace?:                    Array<{ layer: string; reason: string; severity: string; meta?: unknown }> | null;
 }
 
 // ── LKG envelope (subset of API response) ────────────────────────

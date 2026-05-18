@@ -3350,6 +3350,11 @@ export default function SignalsPage() {
                           isRelaxed={(s as any).is_relaxed}
                           isScannerCandidate={(s as any).is_scanner_candidate}
                           executionAllowed={(s as any).execution_allowed}
+                          effectiveApprovalStatus={s.effectiveApprovalStatus ?? null}
+                          rawApprovalStatus={s.rawApprovalStatus ?? null}
+                          decisionChanged={s.decisionChanged ?? null}
+                          demotionReason={s.demotionReason ?? null}
+                          institutionalBlockers={s.institutionalBlockers ?? null}
                         />
                       </td>
                       <td style={{ padding: '10px 12px', textAlign: 'right' }}>

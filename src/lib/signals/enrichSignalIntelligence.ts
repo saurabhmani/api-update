@@ -467,16 +467,18 @@ export function enrichSignalRow(
     modules: {
       sector: (() => {
         // Phase-5 hardening: when we have a cross-sectional sector
-        // trend (derived from the live signal pool), use it. Falls
-        // back to a transparent Neutral/50 baseline only when the
-        // sector has fewer than 3 rows in the response.
+        // trend (derived from the live signal pool), use it. When the
+        // sector has fewer than 3 rows in the response we pass null
+        // for trend/score so buildSectorConfirmation honestly reports
+        // UNAVAILABLE — better than fabricating a Neutral/50 reading
+        // and surfacing it as live sector intelligence.
         const live = sectorName && ctx.sectorTrendBySector
           ? ctx.sectorTrendBySector.get(sectorName)
           : undefined;
         return buildSectorConfirmation({
           sector:           sectorName,
-          sectorScore:      live ? live.score : (sectorName ? 50 : null),
-          sectorTrend:      live ? live.trend : (sectorName ? 'Neutral' : null),
+          sectorScore:      live ? live.score : null,
+          sectorTrend:      live ? live.trend : null,
           relativeStrength: null,
           direction,
         });
