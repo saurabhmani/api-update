@@ -747,6 +747,120 @@ export async function getInProgressTrackers(limit = 50): Promise<InProgressTrack
 }
 
 /**
+ * DASHBOARD-PARITY-2026-05 — permissive variant of getInProgressTrackers
+ * used purely as a render fallback when the main reader (above) filtered
+ * everything out but `getTrackerCounts` confirms rows still exist.
+ *
+ * Drops the `s.decay_state NOT IN ('expired', 'stale')` join filter and
+ * widens the recency window so production dashboards never show empty
+ * "Watchlist" / "Awaiting Confirmation" sections when the maturity
+ * tracker has matured-but-not-promoted candidates (the exact
+ * `matured=27, promoted=0, score_below_mature` scenario). Engine /
+ * promotion / scoring logic is NOT touched — these rows still carry
+ * `is_developing_setup=true` / `signal_status='DEVELOPING_SETUP'` /
+ * `approved=false` so they cannot be confused with execution-ready
+ * signals downstream.
+ *
+ * Wider recency cap defaults to 24h (TRACKER_FALLBACK_FRESHNESS_HOURS).
+ * Floor 1h, ceiling 168h — same envelope as the closed-market path.
+ *
+ * NEVER call this in place of getInProgressTrackers. It is a
+ * second-stage fallback when the strict reader returns 0 rows.
+ */
+export async function getInProgressTrackersLenient(limit = 50): Promise<InProgressTrackerRow[]> {
+  const rawHours = Number(process.env.TRACKER_FALLBACK_FRESHNESS_HOURS);
+  const freshHours = Math.max(1, Math.min(168,
+    Math.floor(Number.isFinite(rawHours) && rawHours > 0 ? rawHours : 24),
+  ));
+  try {
+    const result = await db.query<InProgressJoinRow>(
+      `SELECT t.id, t.symbol, t.direction,
+              t.first_detected_at, t.last_seen_at, t.last_evaluated_at,
+              t.validation_cycles_passed, t.maturity_score, t.stage, t.stable, t.conviction_level,
+              t.last_signal_id, t.promoted_snapshot_id, t.stability_history_json,
+              s.id   AS signal_id,
+              s.symbol AS signal_symbol,
+              s.exchange AS signal_exchange,
+              s.entry_price AS signal_entry_price,
+              s.stop_loss   AS signal_stop_loss,
+              s.target1     AS signal_target1,
+              s.target2     AS signal_target2,
+              s.risk_reward AS signal_risk_reward,
+              s.confidence_score AS signal_confidence_score,
+              s.final_score  AS signal_final_score,
+              s.classification AS signal_classification,
+              s.market_regime  AS signal_market_regime,
+              s.decay_state    AS signal_decay_state,
+              s.scenario_tag   AS signal_scenario_tag
+         FROM q365_signal_maturity_tracker t
+         LEFT JOIN q365_signals s ON s.id = t.last_signal_id
+        WHERE t.stage IN ('candidate', 'developing', 'mature')
+          AND t.last_seen_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+        ORDER BY t.stage = 'mature' DESC,
+                 t.stage = 'developing' DESC,
+                 t.maturity_score DESC,
+                 t.last_seen_at DESC
+        LIMIT ?`,
+      [freshHours, Math.max(1, Math.min(limit, 200))],
+    );
+    const now = Date.now();
+    return (result.rows as InProgressJoinRow[])
+      .filter((r) => r.signal_id != null)
+      .map((r): InProgressTrackerRow => {
+        const direction: 'BUY' | 'SELL' = String(r.direction).toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+        const stage = (['candidate', 'developing', 'mature'] as const)
+          .includes(r.stage as 'candidate' | 'developing' | 'mature')
+          ? r.stage as 'candidate' | 'developing' | 'mature'
+          : 'candidate';
+        const conviction = (['MEDIUM', 'HIGH', 'INSTITUTIONAL'] as const)
+          .includes(r.conviction_level as 'MEDIUM' | 'HIGH' | 'INSTITUTIONAL')
+          ? r.conviction_level as 'MEDIUM' | 'HIGH' | 'INSTITUTIONAL'
+          : 'MEDIUM';
+        const detectedMs = dateToEpochMs(r.first_detected_at);
+        const ageMin = detectedMs > 0 ? Math.max(0, Math.round((now - detectedMs) / 60_000)) : 0;
+        const conf = num(r.signal_confidence_score);
+        const rr   = num(r.signal_risk_reward);
+        return {
+          tracker_id:               r.id,
+          symbol:                   r.symbol,
+          tradingsymbol:            r.symbol,
+          exchange:                 r.signal_exchange ?? 'NSE',
+          direction,
+          strategy:                 r.signal_scenario_tag,
+          entry_price:              num(r.signal_entry_price),
+          stop_loss:                num(r.signal_stop_loss),
+          target1:                  num(r.signal_target1),
+          target2:                  r.signal_target2 != null ? num(r.signal_target2) : null,
+          risk_reward:              rr,
+          confidence_score:         conf,
+          confidence:               conf,
+          final_score:              numOrNull(r.signal_final_score),
+          classification:           r.signal_classification,
+          market_regime:            r.signal_market_regime,
+          decay_state:              r.signal_decay_state,
+          maturity_score:           Number(r.maturity_score ?? 0),
+          stage,
+          conviction_level:         conviction,
+          validation_cycles_passed: Number(r.validation_cycles_passed ?? 0),
+          signal_age_minutes:       ageMin,
+          stability_passed:         Number(r.stable ?? 0) === 1,
+          first_detected_at:        dateToIso(r.first_detected_at) ?? new Date().toISOString(),
+          last_seen_at:             dateToIso(r.last_seen_at)      ?? new Date().toISOString(),
+          last_evaluated_at:        dateToIso(r.last_evaluated_at),
+          is_developing_setup:      true,
+          signal_status:            'DEVELOPING_SETUP',
+          approved:                 false,
+          status:                   'DEVELOPING',
+        };
+      });
+  } catch (err: any) {
+    if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return [];
+    console.warn('[maturityTracker] getInProgressTrackersLenient failed:', err?.message);
+    return [];
+  }
+}
+
+/**
  * Counts by stage — quick health-check / freshness-probe input.
  */
 export async function getTrackerCounts(opts: {

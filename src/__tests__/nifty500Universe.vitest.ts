@@ -123,12 +123,46 @@ describe('nifty500Universe — validation', () => {
 });
 
 describe('nifty500Universe — sync safety', () => {
-  it('sync getters throw NIFTY500_UNIVERSE_NOT_INITIALIZED before init', () => {
+  // UNIVERSE-RACE-2026-05 — sync getters now return a safe empty stub
+  // when called before init resolves (production race fallback). The
+  // legacy throw-on-race contract is preserved behind NIFTY500_STRICT_SYNC=1.
+  it('sync getters return safe empty stub before init (lazy-fallback)', async () => {
     _resetNifty500CacheForTests();
-    expect(() => loadNifty500Universe()).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
-    expect(() => getNifty500Symbols()).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
-    expect(() => isInNifty500('RELIANCE')).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
-    expect(() => filterToNifty500(['RELIANCE'])).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
+    // Populate mockRows BEFORE invoking the sync getters so the
+    // background init they trigger succeeds with one DB call (and
+    // doesn't auto-seed against an empty mock, which would leak
+    // hundreds of INSERT calls into the next test's queryFn counter).
+    mockRows = makeRows(490);
+    const prev = process.env.NIFTY500_STRICT_SYNC;
+    delete process.env.NIFTY500_STRICT_SYNC;
+    try {
+      // All four sync getters are synchronous — they observe the
+      // pre-init state and return the safe stub before the background
+      // init's microtask runs.
+      expect(loadNifty500Universe().symbols).toEqual([]);
+      expect(getNifty500Symbols()).toEqual([]);
+      expect(isInNifty500('RELIANCE')).toBe(false);
+      expect(filterToNifty500(['RELIANCE'])).toEqual([]);
+      // Drain the background init so it doesn't leak into the next test.
+      await initOnce();
+    } finally {
+      if (prev !== undefined) process.env.NIFTY500_STRICT_SYNC = prev;
+    }
+  });
+
+  it('sync getters throw NIFTY500_UNIVERSE_NOT_INITIALIZED when strict mode is set', () => {
+    _resetNifty500CacheForTests();
+    const prev = process.env.NIFTY500_STRICT_SYNC;
+    process.env.NIFTY500_STRICT_SYNC = '1';
+    try {
+      expect(() => loadNifty500Universe()).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
+      expect(() => getNifty500Symbols()).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
+      expect(() => isInNifty500('RELIANCE')).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
+      expect(() => filterToNifty500(['RELIANCE'])).toThrow(/NIFTY500_UNIVERSE_NOT_INITIALIZED/);
+    } finally {
+      if (prev === undefined) delete process.env.NIFTY500_STRICT_SYNC;
+      else process.env.NIFTY500_STRICT_SYNC = prev;
+    }
   });
 
   it('sync getters succeed once init has run', async () => {

@@ -32,6 +32,7 @@ import {
 import { getConsecutiveIndianApiFailures } from '@/lib/marketData/resolver/marketDataResolver';
 import { getNseDirectStatus }         from '@/lib/marketData/providers/nseDirectProvider';
 import { db }                         from '@/lib/db';
+import { ensureUniverseReady }        from '@/lib/startup/ensureUniverseReady';
 import type { ConfirmedSignalRow } from '@/lib/signals/signalsResponseMapper';
 
 export const dynamic    = 'force-dynamic';
@@ -86,6 +87,25 @@ function evaluateLiveData(
 export async function GET(): Promise<Response> {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+
+  // UNIVERSE-RACE-2026-05 — same entry-point guard the dashboard's
+  // /api/signals route uses. loadConfirmedSignalsBundle below calls
+  // resolveBatch which dispatches through isInNifty500; without this
+  // guard a boot-race poll on /api/signals/health-report saw
+  // NIFTY500_UNIVERSE_NOT_INITIALIZED and surfaced an empty health card.
+  // ensureUniverseReady is a no-op once the cache is hydrated (cheap to
+  // call from a hot path).
+  const universeReady = await ensureUniverseReady();
+  if (!universeReady.ok) {
+    return NextResponse.json(
+      {
+        ok:    false,
+        error: 'UNIVERSE_NOT_READY',
+        detail: universeReady.error,
+      },
+      { status: 503, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+    );
+  }
 
   const limit = 30;
   const market = getMarketStatus();

@@ -68,6 +68,35 @@ let cached: LoadResult | null = null;
  *  transient error doesn't permanently lock the init path. */
 let initPromise: Promise<LoadResult> | null = null;
 
+/** UNIVERSE-RACE-2026-05 — diagnostic counter for sync-getter races.
+ *  Bumped every time a sync getter (isInNifty500 / getNifty500Symbols
+ *  / filterToNifty500 / loadNifty500Universe) is hit before initOnce
+ *  has resolved. Reset to false once init completes so a fresh race
+ *  in a later cache-clear cycle re-logs the warning. */
+let lazyInitRaceLogged = false;
+
+/** Process-wide counter so an operator can grep the total number of
+ *  race-fallback returns. Surfaced via [UNIVERSE_INIT_LAZY_RACE] logs;
+ *  exported for tests / diagnostics. */
+let lazyInitRaceHits = 0;
+/** Diagnostic — number of sync-getter race hits since process boot. */
+export function _getLazyInitRaceHits(): number { return lazyInitRaceHits; }
+
+/** One-shot gate so the [UNIVERSE_INIT_REUSED] cache-hit message logs
+ *  exactly once per init cycle. Without this every request would emit
+ *  the line and flood the logs after boot. */
+let _initReusedLogged = false;
+
+/** Race-safe empty result used by the lazy-init fallback. Frozen so
+ *  callers cannot accidentally mutate it; structural-typed as
+ *  LoadResult so sync getters keep their shape. */
+const EMPTY_RACE_RESULT: LoadResult = Object.freeze({
+  symbols:  Object.freeze([]) as unknown as string[],
+  set:      new Set<string>(),
+  source:   'race-fallback (init not yet complete)',
+  loadedAt: new Date(0).toISOString(),
+});
+
 /** True once the cache has been hydrated. Sync — safe to call from
  *  hot paths (route handlers, workers) to decide whether init is
  *  needed before they start touching the universe. */
@@ -92,8 +121,33 @@ export function isNifty500Initialized(): boolean {
  *   <restart server>
  */
 export async function initOnce(): Promise<LoadResult> {
-  if (cached) return cached;
-  if (initPromise) return initPromise;
+  // Fast path #1: cache already hydrated. Idempotent reuse — every call
+  // after the first successful init resolves in microseconds.
+  if (cached) {
+    // UNIVERSE-RACE-2026-05 — production-visible reuse marker. Cheap;
+    // emitted as debug only at startup so a healthy steady state stays
+    // log-quiet. Operators tail for [UNIVERSE_INIT_REUSED] to verify
+    // the boot lock is doing its job after first init completes.
+    if (!_initReusedLogged) {
+      _initReusedLogged = true;
+      console.log(
+        `[UNIVERSE_INIT_REUSED] cache_hit count=${cached.symbols.length} source=${cached.source}`,
+      );
+    }
+    return cached;
+  }
+  // Fast path #2: concurrent caller — share the existing promise.
+  if (initPromise) {
+    console.log('[UNIVERSE_INIT_WAIT] joining in-flight initOnce() (shared promise lock)');
+    return initPromise;
+  }
+
+  const initStartMs = Date.now();
+  console.log(
+    `[UNIVERSE_INIT_START] source=q365_universe(is_active=1) ` +
+    `min_size=${NIFTY500_MIN_SIZE} max_size=${NIFTY500_MAX_SIZE} ` +
+    `auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
+  );
 
   initPromise = (async () => {
     try {
@@ -122,12 +176,22 @@ export async function initOnce(): Promise<LoadResult> {
         result = await loadFromDb();
       }
       cached = result;
+      // Reset the race-log gates so a future cache-clear cycle (test
+      // helper / explicit operator reset) can re-warn cleanly.
+      lazyInitRaceLogged = false;
+      _initReusedLogged = false;
       // Spec STEP 5 — operator-visible boot log so a fresh deploy
       // can confirm at a glance "yes, the universe loaded, count=N".
       // Distinct from the structured `TOTAL_NIFTY500_LOADED` line so
       // both the structured-log consumer (Loki/ELK) and a console-
       // tail operator see the event.
       console.log(`[UNIVERSE READY] count=${result.symbols.length}`);
+      console.log(
+        `[UNIVERSE_INIT_READY] count=${result.symbols.length} ` +
+        `source=${result.source} ` +
+        `elapsed_ms=${Date.now() - initStartMs} ` +
+        `race_hits=${lazyInitRaceHits}`,
+      );
       log.info('TOTAL_NIFTY500_LOADED', {
         count: result.symbols.length,
         source: result.source,
@@ -398,18 +462,68 @@ async function loadFromDb(): Promise<LoadResult> {
   };
 }
 
-/** Fast-fail when a sync getter is hit before init has run. The
- *  error code is greppable so operators can pivot from a 500 in the
- *  log straight to this contract. */
+/**
+ * UNIVERSE-RACE-2026-05 — race-safe sync-getter resolver.
+ *
+ * Production was occasionally hitting NIFTY500_UNIVERSE_NOT_INITIALIZED
+ * in the ~500 ms boot window between `instrumentation.ts` firing
+ * `initOnce()` and the first dashboard poll arriving. The error
+ * bubbled through `resolveBatch` / `filterToNifty500` / etc. and
+ * crashed engine-health, option-intelligence, and dashboard renders
+ * even though `[UNIVERSE READY]` logged moments later.
+ *
+ * Fix: instead of throwing, the sync getters now:
+ *   1. Kick `initOnce()` in the background (shared promise lock so we
+ *      never duplicate-fire). Errors are owned by initOnce.
+ *   2. Return a frozen empty result. Callers see
+ *      `isInNifty500(...)=false` / `getNifty500Symbols()=[]` for one
+ *      poll cycle — the same fallback the existing NIFTY-500 lock
+ *      already tolerates for non-member symbols.
+ *   3. Log `[UNIVERSE_INIT_LAZY_RACE]` once so the race is visible.
+ *
+ * The strict-throw contract is preserved for tests and for operators
+ * who want the legacy behaviour: set `NIFTY500_STRICT_SYNC=1` and the
+ * getters throw `NIFTY500_UNIVERSE_NOT_INITIALIZED` as before.
+ */
 function ensureLoaded(): LoadResult {
-  if (!cached) {
+  if (cached) return cached;
+
+  const strict = (process.env.NIFTY500_STRICT_SYNC ?? '').trim() === '1';
+  if (strict) {
     throw new Error(
       'NIFTY500_UNIVERSE_NOT_INITIALIZED — ensure DB load at boot. ' +
       'Call await initOnce() (or initNifty500UniverseFromDb()) before any sync getter. ' +
-      'No silent fallback to CSV is performed.',
+      'No silent fallback to CSV is performed. ' +
+      '(Strict-throw mode active via NIFTY500_STRICT_SYNC=1.)',
     );
   }
-  return cached;
+
+  // Fire init in the background. The shared promise lock inside
+  // initOnce() coalesces concurrent triggers, so this is safe to call
+  // from a hot path — only the first hit during the race actually
+  // starts a DB query; everything else awaits the same Promise.
+  if (!initPromise) {
+    void initOnce().catch((err) => {
+      // initOnce() already resets initPromise=null on throw, so the
+      // next caller can retry. Log here so the swallowed promise
+      // failure is still visible.
+      console.warn(
+        `[UNIVERSE_INIT_LAZY_FAILED] background initOnce() threw: ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
+  }
+
+  lazyInitRaceHits++;
+  if (!lazyInitRaceLogged) {
+    lazyInitRaceLogged = true;
+    console.warn(
+      '[UNIVERSE_INIT_LAZY_RACE] sync getter called before initOnce() resolved — ' +
+      'returning safe empty stub for this call; background init in progress. ' +
+      'Subsequent calls within this boot window also return the stub silently. ' +
+      'Set NIFTY500_STRICT_SYNC=1 to restore throw-on-race behaviour.',
+    );
+  }
+  return EMPTY_RACE_RESULT;
 }
 
 /** Sync accessor returning the cached LoadResult. Throws

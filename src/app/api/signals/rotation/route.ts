@@ -30,6 +30,7 @@ import { isMarketOpen } from '@/lib/marketData/marketHours';
 import { loadClosedMarketSignals } from '@/lib/signals/closedMarketSignals';
 import { loadConfirmedSignalsBundle } from '@/lib/signals/confirmedSignalsService';
 import { recordSnapshot } from '@/lib/signals/signalRotationTracker';
+import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import type { ConfirmedSignalRow } from '@/lib/signals/signalsResponseMapper';
 
 export const dynamic    = 'force-dynamic';
@@ -38,6 +39,18 @@ export const revalidate = 0;
 export async function GET(): Promise<Response> {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+
+  // UNIVERSE-RACE-2026-05 — every loader below dispatches through
+  // resolveBatch → isInNifty500. ensureUniverseReady is a no-op once
+  // the cache is hydrated; on a cold-boot race it shares the same
+  // initOnce() promise lock the other guarded routes use.
+  const universeReady = await ensureUniverseReady();
+  if (!universeReady.ok) {
+    return NextResponse.json(
+      { ok: false, error: 'UNIVERSE_NOT_READY', detail: universeReady.error },
+      { status: 503, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+    );
+  }
 
   const limit = 30;
   let signals: ConfirmedSignalRow[] = [];

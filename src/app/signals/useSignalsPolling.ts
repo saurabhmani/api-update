@@ -1018,8 +1018,28 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
       // envelope; fall back to a frontend-computed nearest set when the
       // backend omitted the field but approved set is empty and other
       // tiers have rows.
+      //
+      // DASHBOARD-PARITY-2026-05 — also fall back to the client compute
+      // when the server SHIPPED an envelope but its `signals` is empty
+      // AND approved=0 AND the dashboard has tier rows available. The
+      // server's closestToApproval is built from confirmed-snapshot tier
+      // pools; when the route-level maturity-tracker fallback fires it
+      // populates `developing[]` AFTER responsePayloadBase was assembled,
+      // so the original envelope can be `{ signals: [] }` while
+      // `developing[]` has 20+ rows. Rebuilding here keeps the
+      // "Closest to Approval" card alive on those runs.
+      const serverApprovedTotal = Number(
+        (data.counters as any)?.approvedTotal
+        ?? (Array.isArray(data.approvedSignals) ? data.approvedSignals.length : 0)
+        ?? (Array.isArray(data.signals) ? data.signals.length : 0)
+      );
+      const serverEnvSignals = Array.isArray((data.closestToApproval as any)?.signals)
+        ? (data.closestToApproval as ClosestToApprovalEnvelope).signals
+        : null;
+      const serverEnvEmpty = serverEnvSignals != null && serverEnvSignals.length === 0;
       if (data.closestToApproval && typeof data.closestToApproval === 'object'
-          && Array.isArray((data.closestToApproval as any).signals)) {
+          && Array.isArray((data.closestToApproval as any).signals)
+          && !(serverEnvEmpty && serverApprovedTotal === 0)) {
         const env = data.closestToApproval as ClosestToApprovalEnvelope;
         setClosestToApproval(env);
         setNearestSignals(env.signals);

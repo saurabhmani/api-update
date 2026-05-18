@@ -61,7 +61,7 @@ import {
   resolveClosedSignalsMaxAgeHours,
   getRelaxedSignalFloors,
 }                                     from '@/lib/signals/closedMarketSignals';
-import { getTrackerCounts }           from '@/lib/signal-engine/repository/maturityTracker';
+import { getTrackerCounts, getInProgressTrackersLenient } from '@/lib/signal-engine/repository/maturityTracker';
 import {
   buildSignalsResponsePayload,
   deriveValidationStatus,
@@ -3635,6 +3635,128 @@ export async function GET(req: NextRequest) {
         ...stamp(invalidatedSignals as TieredRow[], 'RISK_RESTRICTED'),
       ]);
 
+      // ── DASHBOARD-PARITY-2026-05 — per-stage aggregation log ────────
+      // Production parity audit hook. Operators grep `[TIER_AGGREGATION]`
+      // and compare row counts across local vs prod for the same DB
+      // state. Empty tier arrays on production while local renders rows
+      // shows up immediately here. No data is altered.
+      console.log('[TIER_AGGREGATION]', {
+        stage:                  'initial',
+        approved:               tieredApproved.length,
+        developing:             tieredDeveloping.length,
+        scanner_candidates:     tieredScannerCandidates.length,
+        watchlist:              tieredWatchlist.length,
+        risk_restricted:        tieredRiskRestricted.length,
+        sources: {
+          partition_developing:        tierPartition.developing.length,
+          below_floor_demoted:         belowFloorDemoted.length,
+          in_progress_enriched:        inProgressEnriched.length,
+          partition_scanner:           tierPartition.scannerCandidates.length,
+          route_scanner_candidates:    scannerCandidates.length,
+          partition_watchlist:         tierPartition.watchlist.length,
+          partition_risk:              tierPartition.riskRestricted.length,
+          invalidated:                 invalidatedSignals.length,
+        },
+        tracker_counts: {
+          candidate:   trackerCounts.candidate ?? 0,
+          developing:  trackerCounts.developing ?? 0,
+          mature:      trackerCounts.mature ?? 0,
+          promoted:    trackerCounts.promoted ?? 0,
+          terminated:  trackerCounts.terminated ?? 0,
+        },
+      });
+
+      // ── DASHBOARD-PARITY-2026-05 — second-stage maturity-tracker fallback ──
+      //
+      // Production symptom this closes: `matured=27, promoted=0,
+      // score_below_mature` — the maturity worker has 27 in-motion
+      // trackers but the strict 75-score promotion gate keeps them out
+      // of `q365_confirmed_signal_snapshots`. The primary reader
+      // `getInProgressTrackers` filters on `s.decay_state NOT IN
+      // ('expired','stale')` and a 6h `last_seen_at` recency cap; both
+      // can suppress every row even when `getTrackerCounts` confirms the
+      // trackers exist, so production's WATCHLIST / AWAITING tabs go
+      // dark while local (different DB state or different decay tags)
+      // renders fine. Strict-gate / promotion / scoring logic is
+      // untouched; rows surfaced here keep their `is_developing_setup`
+      // / `signal_status='DEVELOPING_SETUP'` / `approved=false` tags so
+      // they cannot be mistaken for execution-ready signals.
+      //
+      // Trigger: APPROVED + every other non-rejected tier is empty AND
+      // the tracker count says rows exist. Bypass by setting
+      // SIGNAL_TIER_FALLBACK_DISABLED=1.
+      const tierFallbackDisabled =
+        (process.env.SIGNAL_TIER_FALLBACK_DISABLED ?? '').trim().toLowerCase() === '1';
+      const nonApprovedTierCount =
+        tieredDeveloping.length
+        + tieredScannerCandidates.length
+        + tieredWatchlist.length;
+      const trackerMatureLike =
+        (trackerCounts.candidate ?? 0)
+        + (trackerCounts.developing ?? 0)
+        + (trackerCounts.mature ?? 0);
+      if (
+        !tierFallbackDisabled
+        && tieredApproved.length === 0
+        && nonApprovedTierCount === 0
+        && trackerMatureLike > 0
+      ) {
+        try {
+          const lenient = await getInProgressTrackersLenient(
+            Math.max(1, Math.min(limit * 2, 100)),
+          );
+          // Drop trackers whose underlying symbol fell out of NIFTY-500
+          // (spec §9 — every emitted row must be in the locked universe).
+          const lenientN500 = filterSignalsToNifty500(
+            lenient as unknown as ConfirmedSignalRow[],
+            'maturityTrackerFallback',
+          );
+          if (lenientN500.length > 0) {
+            // Stamp every fallback row as AWAITING_CONFIRMATION so the
+            // classifier / frontend tier router never confuses them with
+            // execution-ready signals.
+            const stampedLenient = stamp(
+              lenientN500 as unknown as TieredRow[],
+              'AWAITING_CONFIRMATION',
+            );
+            // Merge into developing[] (the maturity-tracker home tier).
+            // Dedupe keys span symbol|id|generated_at so rows that also
+            // appear in another tier never double-render.
+            tieredDeveloping = dedupe([...tieredDeveloping, ...stampedLenient]);
+            console.log('[TIER_FALLBACK_ENGAGED]', {
+              source:        'getInProgressTrackersLenient',
+              raw_rows:      lenient.length,
+              after_nifty500: lenientN500.length,
+              added_to_developing: stampedLenient.length,
+              reason: 'approved=0 AND non-approved tiers all empty AND tracker_count_active>0',
+              tracker_counts: {
+                candidate:   trackerCounts.candidate ?? 0,
+                developing:  trackerCounts.developing ?? 0,
+                mature:      trackerCounts.mature ?? 0,
+              },
+            });
+          } else {
+            console.log('[TIER_FALLBACK_NOROWS]', {
+              source:    'getInProgressTrackersLenient',
+              raw_rows:  lenient.length,
+              filtered_nifty500: 0,
+              reason: 'lenient probe returned 0 NIFTY-500 rows despite tracker_count_active>0',
+            });
+          }
+        } catch (err: any) {
+          console.warn(
+            `[TIER_FALLBACK_FAILED] getInProgressTrackersLenient threw: ${err?.message ?? String(err)}`,
+          );
+        }
+      } else if (!tierFallbackDisabled && tieredApproved.length === 0 && nonApprovedTierCount === 0) {
+        // Diagnostic: trackerCounts also zero. Confirms the engine isn't
+        // producing trackers (different from "trackers exist but readers
+        // hid them"). No fallback can synthesize rows that don't exist.
+        console.log('[TIER_FALLBACK_SKIPPED]', {
+          reason: 'all tiers empty AND tracker_count_active=0 — engine produced no candidates this cycle',
+        });
+      }
+
       // ── CONDITIONAL_FALLBACK_2026-05 — high-potential promotion ──
       // When the strict APPROVED tier is empty, promote up to 3
       // strongest emerging/developing candidates that clear the
@@ -3726,6 +3848,24 @@ export async function GET(req: NextRequest) {
         : tieredWatchlist.length > 0        ? 'MONITOR'
         : tieredRiskRestricted.length > 0   ? 'RISK_RESTRICTED'
                                             : 'REJECTED';
+
+      // DASHBOARD-PARITY-2026-05 — final aggregation stage log. Matches
+      // the [TIER_AGGREGATION] {stage:'initial'} line emitted earlier
+      // so an operator can grep one tag family and trace the per-stage
+      // shape (initial → post-conditional → final) of the response.
+      // `stage=final` reflects what ships on the wire.
+      console.log('[TIER_AGGREGATION]', {
+        stage:                   'final',
+        approved:                tierCounts.execution_ready,
+        high_potential:          tierCounts.high_potential,
+        developing:              tierCounts.awaiting_confirmation,
+        scanner_candidates:      tierCounts.emerging_opportunity,
+        watchlist:               tierCounts.monitor,
+        risk_restricted:         tierCounts.risk_restricted,
+        conditional_mode_active: conditionalModeActive,
+        default_tab:             defaultTab,
+        empty_state_message:     emptyStateMessage,
+      });
 
       const responsePayload = {
         ...responsePayloadBase,
