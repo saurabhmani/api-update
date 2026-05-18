@@ -105,3 +105,82 @@ export class ExternalServiceError extends AppError {
 export function isOperationalError(err: unknown): err is AppError {
   return err instanceof AppError && err.isOperational;
 }
+
+/**
+ * DIGEST-CRASH-FIX-2026-05 — universal unknown-to-Error normaliser.
+ *
+ * Next.js's `app-page.runtime.prod.js` reads `error.digest` on every
+ * thrown value to detect framework-specific errors (redirect, notFound,
+ * authentication). When something throws / rejects with `null`,
+ * `undefined`, a plain object, a `Response`, or a string, the framework
+ * crashes with:
+ *
+ *   TypeError: Cannot read properties of null (reading 'digest')
+ *
+ * This helper converts any unknown rejection / catch value into a real
+ * Error instance with `.message`, `.stack`, and a stable `.digest`
+ * string so the framework's error path never sees a null. It is the
+ * single defensive wrapper for every catch / rethrow / error-boundary
+ * surface that may receive a non-Error.
+ *
+ * Idempotent: passing in a real Error returns it unchanged (preserves
+ * the original stack). Adds `digest` only when missing so existing
+ * framework-specific errors (NEXT_REDIRECT, NEXT_NOT_FOUND, …) keep
+ * their identity.
+ */
+export function normalizeError(raw: unknown): Error & { digest?: string } {
+  // Already a real Error — preserve everything; only stamp a digest if
+  // the framework hasn't already set one.
+  if (raw instanceof Error) {
+    if (!(raw as { digest?: string }).digest) {
+      (raw as { digest?: string }).digest = raw.name || 'Error';
+    }
+    return raw as Error & { digest?: string };
+  }
+  // Response thrown (legacy `requireSession()` pattern). Surface the
+  // status as the error message and tag the digest so the framework's
+  // error path can still classify it.
+  if (raw instanceof Response) {
+    const e = new Error(`Response thrown: HTTP ${raw.status}`) as Error & { digest?: string };
+    e.name   = 'ResponseThrown';
+    e.digest = `RESPONSE_${raw.status}`;
+    return e;
+  }
+  // null / undefined / primitive — the exact case that crashed the
+  // framework. Synthesise a labelled Error so .digest access is safe.
+  if (raw == null) {
+    const e = new Error(`Null or undefined thrown (value=${String(raw)})`) as Error & { digest?: string };
+    e.name   = 'NullThrown';
+    e.digest = 'NULL_THROWN';
+    return e;
+  }
+  // Plain object / string / number / boolean — JSON-stringify so the
+  // original payload is recoverable from logs, and stamp a generic
+  // digest so the framework reader is satisfied.
+  let message: string;
+  try {
+    message = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  } catch {
+    message = String(raw);
+  }
+  const e = new Error(message || 'Unknown non-Error thrown') as Error & { digest?: string };
+  e.name   = 'NonErrorThrown';
+  e.digest = 'NON_ERROR_THROWN';
+  return e;
+}
+
+/**
+ * Safe message extractor for UI error boundaries. Never throws, never
+ * returns null/undefined. Use in error.tsx / global-error.tsx where
+ * the framework may hand us a partially-formed error object.
+ */
+export function extractErrorMessage(raw: unknown, fallback = 'An unexpected error occurred'): string {
+  if (raw == null) return fallback;
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw;
+  if (raw instanceof Error && raw.message) return raw.message;
+  if (typeof raw === 'object') {
+    const m = (raw as { message?: unknown }).message;
+    if (typeof m === 'string' && m.trim().length > 0) return m;
+  }
+  return fallback;
+}

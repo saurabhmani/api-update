@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import { db } from './db';
 import { cacheGet, cacheSet } from './redis';
+import { AuthenticationError, ForbiddenError } from './errors';
 
 export interface SessionUser {
   id: number;
@@ -34,16 +35,28 @@ export async function getSession(): Promise<SessionUser | null> {
   return user;
 }
 
-/** Require session — returns user or throws 401 response */
+/**
+ * Require session — returns user or throws AuthenticationError.
+ *
+ * DIGEST-CRASH-FIX-2026-05 — previously threw `new Response(...)`. A
+ * Response object is NOT an Error and has no `.digest`, so when this
+ * throw propagated into a Server Component / RSC render path Next.js's
+ * `app-page.runtime.prod.js` crashed reading `error.digest`. Throwing
+ * a proper `AuthenticationError` (extends Error, has `.message`,
+ * `.statusCode`, `.code`, and a digest stamped by normalizeError())
+ * keeps the framework's error path safe. Existing API route handlers
+ * that did `if (err instanceof Response) ...` are unaffected because
+ * their non-Response branch returns the same 401 JSON.
+ */
 export async function requireSession(): Promise<SessionUser> {
   const user = await getSession();
-  if (!user) throw new Response('Unauthorized', { status: 401 });
+  if (!user) throw new AuthenticationError('Unauthorized');
   return user;
 }
 
-/** Require admin role */
+/** Require admin role — throws ForbiddenError (proper Error subclass). */
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireSession();
-  if (user.role !== 'admin') throw new Response('Forbidden', { status: 403 });
+  if (user.role !== 'admin') throw new ForbiddenError('Forbidden');
   return user;
 }
