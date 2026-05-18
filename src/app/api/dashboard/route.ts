@@ -306,9 +306,57 @@ export async function GET(req: NextRequest) {
   const counters   = (sigPayload.counters && typeof sigPayload.counters === 'object') ? sigPayload.counters : {};
   const approvedSignals      = arr<any>(sigPayload.approvedSignals      ?? sigPayload.signals);
   const highPotentialSignals = arr<any>(sigPayload.highPotentialSignals ?? sigPayload.high_potential);
-  const watchlistSignals     = arr<any>(sigPayload.watchlistSignals     ?? sigPayload.watchlist);
+  // DASHBOARD-PARITY-2026-05 — read every non-approved tier the signals
+  // route now ships. The legacy `watchlistSignals` alias is just one of
+  // them; without explicitly pulling `developing[]` and
+  // `scanner_candidates[]` the dashboard misses 20+ maturity-tracker
+  // rows that /api/signals correctly emits (production saw 0 Developing
+  // / 0 Watchlist while /signals tabs rendered them — same payload, two
+  // different reader contracts).
+  const watchlistSignalsRaw  = arr<any>(sigPayload.watchlistSignals     ?? sigPayload.watchlist);
+  const developingSignals    = arr<any>(sigPayload.developing);
+  const scannerSignals       = arr<any>(sigPayload.scanner_candidates);
+  // Dedupe by symbol|id|generated_at so a tracker row that appears in
+  // two arrays doesn't get counted twice.
+  const watchlistDedupKey = (s: any): string =>
+    `${s?.symbol ?? s?.tradingsymbol ?? '?'}|${s?.id ?? ''}|${s?.generated_at ?? ''}`;
+  const watchlistSignals: any[] = (() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const s of [...watchlistSignalsRaw, ...developingSignals, ...scannerSignals]) {
+      const k = watchlistDedupKey(s);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+    }
+    return out;
+  })();
   const rejectedSignals      = arr<any>(sigPayload.rejectedSignals      ?? sigPayload.rejected);
   const nearestSignals       = arr<any>(sigPayload.nearestSignals       ?? sigPayload.closestToApproval?.signals);
+
+  console.log('[DASHBOARD_SOURCE]', {
+    route:               '/api/dashboard',
+    upstream_ok:         signals.ok,
+    upstream_status:     signals.status,
+    upstream_url:        ('url' in signals && (signals as { url?: string }).url) || null,
+    raw_inputs: {
+      approvedSignals:      approvedSignals.length,
+      highPotentialSignals: highPotentialSignals.length,
+      watchlistSignalsRaw:  watchlistSignalsRaw.length,
+      developing:           developingSignals.length,
+      scanner_candidates:   scannerSignals.length,
+      watchlistMerged:      watchlistSignals.length,
+      rejectedSignals:      rejectedSignals.length,
+      nearestSignals:       nearestSignals.length,
+    },
+    counters_in_payload: {
+      approvedTotal:       (counters as any).approvedTotal      ?? null,
+      highPotentialTotal:  (counters as any).highPotentialTotal ?? null,
+      watchlistTotal:      (counters as any).watchlistTotal     ?? null,
+      rejectedTotal:       (counters as any).rejectedTotal      ?? null,
+      candidateTotal:      (counters as any).candidateTotal     ?? null,
+    },
+  });
 
   const approvedBuy  = approvedSignals.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'BUY').length;
   const approvedSell = approvedSignals.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'SELL').length;
@@ -329,12 +377,25 @@ export async function GET(req: NextRequest) {
     approvedBuy:          num(counters.approvedBuy)        ?? approvedBuy,
     approvedSell:         num(counters.approvedSell)       ?? approvedSell,
     highPotentialTotal:   num(counters.highPotentialTotal) ?? highPotentialSignals.length,
-    watchlistTotal:       num(counters.watchlistTotal)     ?? watchlistSignals.length,
+    // watchlistTotal: prefer the upstream counter when it's already
+    // non-zero (post-fix /api/signals computes it from the full tier
+    // union). Otherwise fall back to the de-duped local merge so an
+    // unfixed upstream / older deploy still surfaces the rows.
+    watchlistTotal:       (num(counters.watchlistTotal) ?? 0) > 0
+                            ? num(counters.watchlistTotal)!
+                            : watchlistSignals.length,
     rejectedTotal:        num(counters.rejectedTotal)      ?? rejectedSignals.length,
-    candidateTotal:       num(counters.candidateTotal)     ?? (highPotentialSignals.length + watchlistSignals.length + rejectedSignals.length),
+    candidateTotal:       (num(counters.candidateTotal) ?? 0) > 0
+                            ? num(counters.candidateTotal)!
+                            : (highPotentialSignals.length + watchlistSignals.length + rejectedSignals.length),
     topBlockingReason:    topBlockReason,
     latestSignalAt,
   };
+
+  console.log('[DASHBOARD_COUNTS]', {
+    final: signalSummary,
+    source: 'merged-counters-with-local-tier-union-fallback',
+  });
 
   // ── Nearest opportunities (top 5) ─────────────────────────────
   const manipulationRiskMap = new Map<string, string>();
@@ -348,9 +409,24 @@ export async function GET(req: NextRequest) {
     if (ni) newsImpactMap.set(sym, String(ni));
   }
 
+  // DASHBOARD-PARITY-2026-05 — nearest-pool fallback chain. Server's
+  // pre-computed nearestSignals wins; if empty we synthesise from every
+  // non-approved tier including developing/scanner (the maturity
+  // tracker fallback's home). This guarantees the Command Center never
+  // shows an empty "Nearest Opportunities" card when /api/signals has
+  // already surfaced 20+ candidates.
+  const nearestPoolSource: string =
+    nearestSignals.length > 0     ? 'sigPayload.nearestSignals'
+    : highPotentialSignals.length > 0 || watchlistSignals.length > 0
+                                  ? 'local-merge:highPotential+watchlistUnion'
+    :                                'empty';
   const nearestPool: any[] = nearestSignals.length > 0
     ? nearestSignals
     : [...highPotentialSignals, ...watchlistSignals].slice(0, 10);
+  console.log('[DASHBOARD_FALLBACK]', {
+    nearest_pool_source: nearestPoolSource,
+    nearest_pool_size:   nearestPool.length,
+  });
 
   const nearestOpportunities: NearestOpportunityRow[] = nearestPool.slice(0, 5).map((s) => {
     const sym = str(s.symbol ?? s.tradingsymbol) ?? 'UNKNOWN';
@@ -974,6 +1050,25 @@ export async function GET(req: NextRequest) {
   }
 
   const recommendedActions = actions.slice(0, 5);
+
+  // DASHBOARD-PARITY-2026-05 — final aggregation envelope log. Lets an
+  // operator grep `[DASHBOARD_AGG]` and see EXACTLY what the Command
+  // Center shipped on the wire, alongside the per-stage `[DASHBOARD_
+  // SOURCE]` / `[DASHBOARD_COUNTS]` / `[DASHBOARD_FALLBACK]` lines
+  // emitted earlier in this request.
+  console.log('[DASHBOARD_AGG]', {
+    stage:                  'final',
+    signalSummary,
+    nearestOpportunitiesCount: nearestOpportunities.length,
+    moduleStatusCounts,
+    warnings_count:         warnings.length,
+    sources: Object.fromEntries(
+      Object.entries(sourceStatus).map(([k, v]) => [
+        k,
+        { ok: v.ok, status: v.status, timedOut: v.timedOut, elapsedMs: v.elapsedMs },
+      ]),
+    ),
+  });
 
   return NextResponse.json(
     {

@@ -3867,6 +3867,113 @@ export async function GET(req: NextRequest) {
         empty_state_message:     emptyStateMessage,
       });
 
+      // ── DASHBOARD-PARITY-2026-05 — recompute stale aggregates ───────
+      //
+      // responsePayloadBase was assembled by buildSignalsResponsePayload
+      // BEFORE the route-level maturity-tracker fallback (which can pour
+      // 20+ rows into `tieredDeveloping`) and BEFORE the conditional
+      // HIGH_POTENTIAL promotion (which can move rows between tiers).
+      // The fields below mirror those tier arrays — without recomputing
+      // them, the dashboard / Command Center sees `counters.watchlistTotal=0`
+      // and `nearestSignals=[]` even though the live response's
+      // `developing[]` carries 20+ rows. This was the production-only
+      // "dashboard shows 0 / recovery mode active" symptom: /api/signals
+      // returned correct tiered arrays, but the legacy counter aliases
+      // it ALSO ships were frozen at the pre-fallback values. The
+      // dashboard reads the aliases (counter shortcut) → sees zeros.
+      //
+      // Pure rebuild — no engine / scoring / DB logic changed. Same
+      // sources, same comparators (rankSignalsByInstitutionalScore,
+      // buildClosestToApprovalSignals) the original assembly used.
+      const finalBuy  = (tieredApproved as Array<{ direction?: string | null }>)
+        .filter((r) => String(r.direction ?? '').toUpperCase() === 'BUY').length;
+      const finalSell = (tieredApproved as Array<{ direction?: string | null }>)
+        .filter((r) => String(r.direction ?? '').toUpperCase() === 'SELL').length;
+      const finalCounters = {
+        approvedTotal:       tieredApproved.length,
+        approvedBuy:         finalBuy,
+        approvedSell:        finalSell,
+        highPotentialTotal:  tieredHighPotential.length,
+        watchlistTotal:      tieredWatchlist.length + tieredDeveloping.length + tieredScannerCandidates.length,
+        rejectedTotal:       tieredRiskRestricted.length,
+        candidateTotal:      tieredHighPotential.length
+                           + tieredDeveloping.length
+                           + tieredScannerCandidates.length
+                           + tieredWatchlist.length
+                           + tieredRiskRestricted.length,
+      };
+      // Rebuild closest-to-approval / nearestSignals from the POST-fallback
+      // pools so the Command Center always has nearest-opportunity data
+      // when approvedTotal=0 but trackers exist. Same helper the closed-
+      // market path uses (buildClosestToApprovalSignals).
+      let finalNearestSignals: ClosestToApprovalRow[] = [];
+      if (tieredApproved.length === 0) {
+        try {
+          finalNearestSignals = buildClosestToApprovalSignals(
+            {
+              highPotential:    tieredHighPotential    as unknown as RankableSignal[],
+              watchlist:        tieredWatchlist        as unknown as RankableSignal[],
+              developing:       tieredDeveloping       as unknown as RankableSignal[],
+              scannerCandidates: tieredScannerCandidates as unknown as RankableSignal[],
+            },
+            CLOSEST_TO_APPROVAL_MAX,
+          ).map((n: NearestSignal): ClosestToApprovalRow => {
+            const s = n.signal as RankableSignal;
+            const symbol = String(s.symbol ?? s.tradingsymbol ?? '');
+            const tier = n.sourceTier;
+            const status = tier === 'high_potential'    ? 'High Potential'
+                         : tier === 'watchlist'         ? 'Watchlist'
+                         : tier === 'developing'        ? 'Awaiting Confirmation'
+                         : tier === 'scanner_candidate' ? 'Emerging Opportunity'
+                         :                                'Rejected (Soft)';
+            return {
+              symbol,
+              tradingsymbol:          s.tradingsymbol ?? symbol,
+              direction:              s.direction ?? null,
+              final_score:            s.final_score ?? null,
+              confidence_score:       s.confidence_score ?? s.confidence ?? null,
+              risk_reward:            s.risk_reward ?? s.rr_ratio ?? null,
+              approvalGap:            n.approvalGap,
+              approvalGapPercent:     n.approvalGapPercent,
+              missingApprovalFactors: n.missingApprovalFactors,
+              nearestSignalRank:      n.nearestSignalRank,
+              sourceTier:             n.sourceTier,
+              isClosestToApproval:    n.isClosestToApproval,
+              status,
+            };
+          });
+        } catch (err: any) {
+          console.warn(
+            `[DASHBOARD_AGG_NEAREST_FAILED] ${err?.message ?? String(err)}`,
+          );
+        }
+      }
+      const finalClosestToApproval = {
+        total:       finalNearestSignals.length,
+        signals:     finalNearestSignals,
+        generatedAt: new Date().toISOString(),
+        reason:      tieredApproved.length === 0
+          ? 'No approved signal is available right now. Showing nearest candidates by final score and approval gap.'
+          : 'Approved signals available — closest-to-approval surfaced for reference only.',
+      };
+      console.log('[DASHBOARD_AGG]', {
+        source:               'api/signals.post-tier-fallback',
+        recomputed_counters:  finalCounters,
+        recomputed_nearest:   finalNearestSignals.length,
+        tiered_inputs: {
+          approved:           tieredApproved.length,
+          high_potential:     tieredHighPotential.length,
+          developing:         tieredDeveloping.length,
+          scanner_candidates: tieredScannerCandidates.length,
+          watchlist:          tieredWatchlist.length,
+          risk_restricted:    tieredRiskRestricted.length,
+        },
+        stale_pre_fallback_counters: {
+          watchlistTotal:     (responsePayloadBase.counters as { watchlistTotal?: number } | undefined)?.watchlistTotal ?? null,
+          highPotentialTotal: (responsePayloadBase.counters as { highPotentialTotal?: number } | undefined)?.highPotentialTotal ?? null,
+        },
+      });
+
       const responsePayload = {
         ...responsePayloadBase,
         // INSTITUTIONAL_TIER_2026-05 — strict-only signals[]. The lite
@@ -3985,6 +4092,30 @@ export async function GET(req: NextRequest) {
         lastApiRequestAt: new Date().toISOString(),
         lastSuccessAt:    new Date().toISOString(),
         isBootstrap:      bootstrap,
+
+        // ── DASHBOARD-PARITY-2026-05 — overwrite stale aggregate aliases ──
+        // responsePayloadBase carries `counters` / `closestToApproval`
+        // / `nearestSignals` / `approvedSignals` / `highPotentialSignals` /
+        // `watchlistSignals` / `rejectedSignals` built before the
+        // route-level maturity-tracker fallback. The spread above pulls
+        // those stale values in; we override them HERE with values
+        // computed against the FINAL tier arrays so the Command Center
+        // dashboard (which reads counters/nearestSignals aliases instead
+        // of the tier[] arrays) always sees the post-fallback state.
+        counters:            finalCounters,
+        closestToApproval:   finalClosestToApproval,
+        nearestSignals:      finalNearestSignals,
+        approvedSignals:     tieredApproved      as unknown as typeof responsePayloadBase.approvedSignals,
+        highPotentialSignals: tieredHighPotential as unknown as typeof responsePayloadBase.highPotentialSignals,
+        // watchlistSignals legacy alias = developing ∪ scanner ∪ watchlist
+        // matches the counters.watchlistTotal formula and what the
+        // dashboard currently consumes as its "watchlist" pool.
+        watchlistSignals:    [
+          ...(tieredDeveloping        as unknown as Array<Record<string, unknown>>),
+          ...(tieredScannerCandidates as unknown as Array<Record<string, unknown>>),
+          ...(tieredWatchlist         as unknown as Array<Record<string, unknown>>),
+        ] as unknown as typeof responsePayloadBase.watchlistSignals,
+        rejectedSignals:     tieredRiskRestricted as unknown as typeof responsePayloadBase.rejectedSignals,
       };
 
       // Cache for performance only. Correctness does not depend on
