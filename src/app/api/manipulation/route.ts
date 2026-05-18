@@ -495,17 +495,36 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   } catch (err) {
-    // Log the full error before swallowing it into an opaque 500. The
-    // previous version returned 500 without printing the cause, so a
-    // 19s timeout in production showed up as "500 in 19271ms" with no
-    // indication of which query failed.
-    console.error('[API manipulation GET] uncaught:', err);
+    // MODULE-API-RESILIENCE-2026-05 — return 200 with `degraded:true`
+    // instead of 500. The Command Center dashboard's classifyTransport
+    // would treat any non-2xx as BROKEN and render "Manipulation Watch:
+    // fetch failed" on every poll, even though a transient query
+    // failure (table missing on fresh DB, slow SELECT, etc.) is
+    // perfectly recoverable. Structured payload mirrors the shape
+    // every action emits so the UI keeps rendering 0-counts instead
+    // of crashing on undefined.
+    const e = err instanceof Error ? err : new Error(String(err));
+    console.error('[MODULE_API_FAIL]', {
+      route:   '/api/manipulation',
+      stage:   'GET-handler',
+      action:  req.nextUrl.searchParams.get('action') ?? null,
+      symbol:  req.nextUrl.searchParams.get('symbol') ?? null,
+      message: e.message,
+      stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
+    });
     return NextResponse.json(
       {
-        error: 'Failed',
-        details: err instanceof Error ? err.message : String(err),
+        ok:           true,
+        degraded:     true,
+        totalAlerts:  0,
+        byType:       {},
+        bySeverity:   { critical: 0, warning: 0, info: 0 },
+        topAlerts:    [],
+        recentTrend:  'stable',
+        error:        'Manipulation engine degraded',
+        details:      e.message,
       },
-      { status: 500 },
+      { status: 200, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
     );
   }
 }

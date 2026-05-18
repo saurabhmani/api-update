@@ -150,16 +150,31 @@ export async function GET(req: NextRequest) {
         latestPipelineRunAt:   last,
       });
     } catch (err) {
+      // MODULE-API-RESILIENCE-2026-05 — return `ok:true, degraded:true`
+      // instead of `ok:false`. `ok:false` was being interpreted by the
+      // Command Center as a hard transport failure even though the
+      // route itself is responding 200 with a valid envelope shape.
+      // `degraded:true` lets the dashboard render the empty-state card
+      // (status='NO_DATA') without the "News Intelligence: fetch
+      // failed" banner.
+      const e = err instanceof Error ? err : new Error(String(err));
+      console.error('[MODULE_API_FAIL]', {
+        route:   '/api/news-engine',
+        stage:   'summary-build',
+        message: e.message,
+        stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
+      });
       return NextResponse.json({
-        ok: false,
-        status: 'NO_DATA' as const,
+        ok:       true,
+        degraded: true,
+        status:   'NO_DATA' as const,
         configuredCount: sources.filter((s) => s.configured).length,
         totalCount: sources.length,
         activeSources: [],
         notConfiguredSources: sources.filter((s) => !s.configured).map((s) => s.source),
         latestNewsPublishedAt: null,
         latestPipelineRunAt:   null,
-        error: err instanceof Error ? err.message : String(err),
+        error: e.message,
       });
     }
   }
@@ -360,12 +375,21 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     // Catch-all for any unhandled DB/import error — return empty data
     // instead of 500, so the page renders with "no data" state.
-    console.error('[news-engine] GET error:', (err as Error).message);
+    const e = err instanceof Error ? err : new Error(String(err));
+    console.error('[MODULE_API_FAIL]', {
+      route:   '/api/news-engine',
+      stage:   'GET-handler',
+      query:   req.nextUrl.search,
+      message: e.message,
+      stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
+    });
     return NextResponse.json({
-      events: [],
-      count: 0,
-      error: 'News data unavailable',
-      details: err instanceof Error ? err.message : String(err),
+      ok:       true,
+      degraded: true,
+      events:   [],
+      count:    0,
+      error:    'News data unavailable',
+      details:  e.message,
     });
   }
 }

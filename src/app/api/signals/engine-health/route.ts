@@ -94,8 +94,47 @@ async function probeCandleWarehouse(): Promise<{
   }
 }
 
+// MODULE-API-RESILIENCE-2026-05 — common safe-fallback envelope so the
+// dashboard never sees a raw 500 / fetch-failed when this module degrades.
+// The shape mirrors a normal success payload (`ok` + `health` skeleton)
+// so the engine-health-map renderer keeps working with status fields
+// instead of crashing on undefined.
+const FALLBACK_HEALTH_PAYLOAD = {
+  ok:           true,
+  generatedAt:  null as string | null,
+  health:       null,
+  warnings:     [] as string[],
+  sourceStatus: null,
+  degraded:     true,
+};
+function logModuleFail(stage: string, err: unknown, extra: Record<string, unknown> = {}): void {
+  const e = err instanceof Error ? err : new Error(String(err));
+  console.error('[MODULE_API_FAIL]', {
+    route:   '/api/signals/engine-health',
+    stage,
+    message: e.message,
+    stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
+    ...extra,
+  });
+}
+
 export async function GET(req: NextRequest) {
-  await requireSession();
+  // MODULE-API-RESILIENCE-2026-05 — session check must never throw out
+  // of this handler. A failed `requireSession()` (expired cookie, etc.)
+  // would otherwise bubble as an unhandled rejection → 500 → dashboard
+  // shows "Engine Health: fetch failed".
+  try { await requireSession(); }
+  catch (err) {
+    logModuleFail('requireSession', err);
+    return NextResponse.json(
+      { ...FALLBACK_HEALTH_PAYLOAD, generatedAt: new Date().toISOString(),
+        warnings: ['Authentication required for engine health'] },
+      { status: 401, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+    );
+  }
+
+  // Outer try/catch ensures any later throw still ships a safe payload.
+  try {
 
   const url     = new URL(req.url);
   const verbose = url.searchParams.get('verbose') === 'true';
@@ -273,4 +312,23 @@ export async function GET(req: NextRequest) {
     },
     { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
   );
+  } catch (err) {
+    // MODULE-API-RESILIENCE-2026-05 — any unhandled throw in the body
+    // above lands here. Returning a structured 200 with `degraded: true`
+    // keeps the dashboard's engine-health card alive (it renders a
+    // "degraded" badge instead of "fetch failed").
+    logModuleFail('GET-handler', err);
+    return NextResponse.json(
+      {
+        ...FALLBACK_HEALTH_PAYLOAD,
+        generatedAt: new Date().toISOString(),
+        warnings:    [
+          err instanceof Error
+            ? `Engine Health degraded: ${err.message}`
+            : 'Engine Health degraded (internal error)',
+        ],
+      },
+      { status: 200, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+    );
+  }
 }
