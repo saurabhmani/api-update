@@ -1831,6 +1831,23 @@ export default function SignalsPage() {
             <p style={{ color: '#64748B', fontSize: 14, marginTop: 4 }}>
               All signals from centralized pipeline — BUY/SELL with full analysis
             </p>
+            {/* TEMP DEPLOY MARKER — remove after live build is confirmed. */}
+            <div
+              data-build-marker="signal-engine-final-v33"
+              style={{
+                marginTop: 6,
+                fontSize: 11,
+                fontWeight: 700,
+                color: '#0F172A',
+                background: '#FEF3C7',
+                border: '1px solid #FCD34D',
+                borderRadius: 6,
+                padding: '4px 8px',
+                display: 'inline-block',
+              }}
+            >
+              Build Version: signal-engine-final-v33
+            </div>
             {/* Freshness metadata strip — surfaces last_pipeline_run,
                 last_validation_time, latest_batch_id, and universe
                 coverage so the operator can verify data is current

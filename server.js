@@ -40,6 +40,33 @@ const path = require('path');
 require('dotenv').config({
   path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local'),
 });
+// Also load .env.production as a secondary source so the committed
+// production baseline ships keys missing from a VPS .env.local. dotenv
+// does NOT override existing process.env values, so an operator's
+// .env.local entries still win. This closes the silent-drift hole where
+// .env.production looked authoritative but was never actually loaded
+// (PM2's ecosystem.config.js points DOTENV_CONFIG_PATH at .env.local).
+if (process.env.NODE_ENV === 'production') {
+  try {
+    require('dotenv').config({
+      path: path.resolve(process.cwd(), '.env.production'),
+    });
+  } catch { /* missing .env.production is fine — .env.local is the master */ }
+}
+
+// PROD CRON OWNERSHIP — server.js unconditionally spawns the scheduler
+// worker below (registerWorker('scheduler', ...)). That worker registers
+// rescore + regen crons in its own Node process. Without this line the
+// Next.js process ALSO registers the same crons via bootInProcScheduler
+// (gated on Q365_INPROC_REGEN=1, which production sets) — so every
+// rescore + regen tick fires TWICE, doubling IndianAPI burn and racing
+// on q365_signals writes (DB lock saves correctness but leaves wasted
+// quota + non-deterministic ordering). Forcing Q365_INPROC_SCHEDULER=0
+// here makes bootInProc.shouldBoot() return false in the Next process
+// while leaving the worker process untouched. Respects operator overrides.
+if (!process.env.Q365_INPROC_SCHEDULER) {
+  process.env.Q365_INPROC_SCHEDULER = '0';
+}
 
 const http = require('http');
 const next = require('next');

@@ -169,22 +169,66 @@ const VERBOSE_SIGNALS = process.env.LOG_VERBOSE_SIGNALS === '1';
 //  genuine engine state, not a stale "last good" mask.
 // ────────────────────────────────────────────────────────────────
 const FREEZE_TTL_MS = Math.max(60_000, Number(process.env.SIGNALS_FREEZE_TTL_MS) || 5 * 60_000);
-type FreezeEntry = { ts: number; payload: any };
+type FreezeEntry = { ts: number; payload: any; batchMs: number };
 const freezeCache = new Map<string, FreezeEntry>();
 function freezeKey(action: string, limit: number, lite: boolean): string {
   return `${action}|${limit}|${lite ? 1 : 0}`;
 }
-function freezeGetFresh(key: string): FreezeEntry | null {
+
+// PROD-STALE-FIX 2026-05 — generation-aware freeze cache.
+//
+// Symptom this closes: a fresh signal-engine batch landed in q365_signals
+// while the in-memory cache was holding the prior batch's payload. With
+// a flat 5-min TTL the route kept replaying the previous run for up to
+// FREEZE_TTL_MS, masking the new BUY/SELL set. Local rarely sees this
+// because dev TTLs are shorter and traffic is single-user; production
+// 12+ concurrent pollers all sit on the same warm cache entry.
+//
+// Fix: tag every cache entry with MAX(generated_at) at write time, then
+// on every read probe the same scalar and invalidate when the DB has
+// advanced. One indexed scalar query per hit — cheaper than the work
+// the cache is sparing us, and keeps the "stable across rapid polls"
+// guarantee within a single batch generation.
+let _latestBatchMsCache = { ts: 0, value: 0 };
+const LATEST_BATCH_PROBE_TTL_MS = 1_000; // cap the probe to once per sec
+async function getLatestBatchMs(): Promise<number> {
+  const now = Date.now();
+  if (now - _latestBatchMsCache.ts < LATEST_BATCH_PROBE_TTL_MS) {
+    return _latestBatchMsCache.value;
+  }
+  try {
+    const { rows } = await db.query<{ ts: number | string | null }>(
+      `SELECT UNIX_TIMESTAMP(MAX(generated_at)) AS ts FROM q365_signals`,
+    );
+    const raw = (rows[0] as any)?.ts;
+    const v = raw == null ? 0 : Math.round(Number(raw) * 1000);
+    _latestBatchMsCache = { ts: now, value: Number.isFinite(v) ? v : 0 };
+  } catch {
+    // Probe failure — keep the previous value so a transient DB hiccup
+    // doesn't drop every cache entry. Correctness still holds: when the
+    // probe recovers, a newer ts will bust the cache on the next hit.
+  }
+  return _latestBatchMsCache.value;
+}
+
+async function freezeGetFresh(key: string): Promise<FreezeEntry | null> {
   const e = freezeCache.get(key);
   if (!e) return null;
   if (Date.now() - e.ts > FREEZE_TTL_MS) return null;
+  const latestBatchMs = await getLatestBatchMs();
+  // 0 = probe unavailable (transient) — fall back to TTL-only behaviour.
+  if (latestBatchMs > 0 && latestBatchMs > e.batchMs) {
+    freezeCache.delete(key);
+    return null;
+  }
   return e;
 }
 /** Cache a non-empty payload. Empty payloads are deliberately NOT
  *  cached — see the header comment above. The caller MUST check
  *  emptiness before calling this. */
-function freezePut(key: string, payload: any): void {
-  freezeCache.set(key, { ts: Date.now(), payload });
+async function freezePut(key: string, payload: any): Promise<void> {
+  const batchMs = await getLatestBatchMs();
+  freezeCache.set(key, { ts: Date.now(), payload, batchMs });
 }
 /** Drop the cache entry for a key, if present. Used when a cached
  *  payload should no longer be served (e.g. after a successful
@@ -2279,7 +2323,7 @@ export async function GET(req: NextRequest) {
       // newly-populated DB. Also protects against any future code
       // path that bypasses the freezePut emptiness check.
       const cacheKey = freezeKey(action, limit, lite);
-      const fresh = freezeGetFresh(cacheKey);
+      const fresh = await freezeGetFresh(cacheKey);
       const cachedIsEmpty =
         fresh != null &&
         (fresh.payload?.empty_confirmed === true ||
@@ -3816,7 +3860,7 @@ export async function GET(req: NextRequest) {
       // entry for this key so a now-empty answer doesn't lose to a
       // previously-cached non-empty one.
       if (finalRows.length > 0) {
-        freezePut(cacheKey, responsePayload);
+        await freezePut(cacheKey, responsePayload);
       } else {
         freezeDrop(cacheKey);
       }

@@ -49,6 +49,31 @@ export async function register() {
     INDIAN_API_KEY: !!(process.env.INDIAN_API_KEY ?? process.env.INDIANAPI_KEY),
   });
 
+  // PROD-PARITY 2026-05 — single-line stamp of every knob that materially
+  // affects signal/watchlist freshness. Operators compare this line
+  // between local and prod boots to spot drift. Values are non-secret;
+  // anything sensitive (API keys, passwords) is reported as presence
+  // only in the block above.
+  log.info('Freshness-config stamp', {
+    Q365_INPROC_REGEN:            process.env.Q365_INPROC_REGEN ?? '(unset)',
+    Q365_INPROC_SCHEDULER:        process.env.Q365_INPROC_SCHEDULER ?? '(unset)',
+    Q365_REGEN_24X7:              process.env.Q365_REGEN_24X7 ?? '(unset)',
+    CANDLE_MAX_PER_CYCLE:         process.env.CANDLE_MAX_PER_CYCLE ?? '(unset)',
+    CANDLE_INGEST_CONCURRENCY:    process.env.CANDLE_INGEST_CONCURRENCY ?? '(unset)',
+    CANDLE_REFRESH_INTERVAL_MS:   process.env.CANDLE_REFRESH_INTERVAL_MS ?? '(unset)',
+    CACHE_TTL_LIVE_PRICE_MS:      process.env.CACHE_TTL_LIVE_PRICE_MS ?? '(unset)',
+    SIGNALS_FREEZE_TTL_MS:        process.env.SIGNALS_FREEZE_TTL_MS ?? '(unset)',
+    SIGNALS_LIVE_MARKET_TTL_MS:   process.env.SIGNALS_LIVE_MARKET_TTL_MS ?? '(unset)',
+    INDIANAPI_BLOCK_OUTSIDE_MARKET: process.env.INDIANAPI_BLOCK_OUTSIDE_MARKET ?? '(unset)',
+    INDIANAPI_MIN_CALL_GAP_MS:    process.env.INDIANAPI_MIN_CALL_GAP_MS ?? '(unset)',
+    INDIANAPI_EMULATED_BATCH_MAX: process.env.INDIANAPI_EMULATED_BATCH_MAX ?? '(unset)',
+    NSE_DIRECT_FALLBACK_TRIGGER_FAILURES: process.env.NSE_DIRECT_FALLBACK_TRIGGER_FAILURES ?? '(unset)',
+    DATA_FRESHNESS_SLA_MS:        process.env.DATA_FRESHNESS_SLA_MS ?? '(unset)',
+    SIGNAL_STICKY_VISIBILITY_MIN: process.env.SIGNAL_STICKY_VISIBILITY_MIN ?? '(unset)',
+    CLOSED_SIGNALS_MAX_AGE_HOURS: process.env.CLOSED_SIGNALS_MAX_AGE_HOURS ?? '(unset)',
+    FORCE_MARKET_OPEN:            process.env.FORCE_MARKET_OPEN ?? '(unset)',
+  });
+
   // Resolved provider flags. Booleans only — explicit so an operator
   // can confirm at a glance that production is running IndianAPI-first.
   try {
