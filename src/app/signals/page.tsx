@@ -967,6 +967,20 @@ export default function SignalsPage() {
   const watchlistTotal =
     developing.length + scannerCandidates.length + watchlist.length;
   const rejectedTotal = rejected.length + riskRestricted.length;
+
+  // SIGNAL-ENGINE-COPY-2026-05 — Single source of truth for the
+  // provider-fallback state. /api/data-feed/health and /api/signals
+  // each carry an independent fallback flag, and historically the
+  // header showed "Fallback: No" beside "Live Engine (Fallback Mode)"
+  // because the two signals were evaluated separately. Treat either as
+  // authoritative: if the pipeline reports fallback OR the health
+  // endpoint reports a non-NO fallback string, the entire page renders
+  // a coherent "provider in fallback" state.
+  const healthFallbackActive = feedHealth.fallbackUsed != null
+    && feedHealth.fallbackUsed !== ''
+    && feedHealth.fallbackUsed.toUpperCase() !== 'NO'
+    && feedHealth.fallbackUsed.toUpperCase() !== 'NONE';
+  const providerInFallback = isFallback || healthFallbackActive;
   useEffect(() => {
     // TAB-BOUNCE-FIX (2026-05) — Once we have already auto-decided once,
     // the effect is a no-op for the rest of this mount.
@@ -1974,15 +1988,21 @@ export default function SignalsPage() {
                 >
                   {feedHealth.freshness ?? 'Offline'}
                 </span>
-                <span
-                  title={
-                    feedHealth.fallbackUsed === 'No'
-                      ? 'Primary IndianAPI is serving data'
-                      : `Active fallback: ${feedHealth.fallbackUsed ?? '—'}`
-                  }
-                >
-                  <strong>Fallback:</strong> {feedHealth.fallbackUsed ?? '—'}
-                </span>
+                {(() => {
+                  // SIGNAL-ENGINE-COPY-2026-05 — read the unified
+                  // providerInFallback derived above so this badge,
+                  // the Live Engine banner, the DiagnosticHeader and
+                  // the Engine Health Warning can never disagree.
+                  const badge = providerInFallback ? 'Yes' : 'No';
+                  const tip = providerInFallback
+                    ? `Provider operating in fallback mode${feedHealth.fallbackUsed && feedHealth.fallbackUsed.toUpperCase() !== 'NO' ? ` (${feedHealth.fallbackUsed})` : ''}`
+                    : 'Primary provider is serving data';
+                  return (
+                    <span title={tip}>
+                      <strong>Fallback:</strong> {badge}
+                    </span>
+                  );
+                })()}
               </div>
             );
           })()}
@@ -2084,8 +2104,64 @@ export default function SignalsPage() {
             </div>
           </div>
           <div style={{ marginTop: 12, padding: '4px 0', borderTop: '1px solid #F1F5F9', color: '#64748B', fontSize: 12, fontWeight: 500 }}>
-            <span style={{ color: '#1E3A5F', fontWeight: 700 }}>{counters?.candidateTotal ?? 0}</span> candidates found. <span style={{ color: '#16A34A', fontWeight: 700 }}>{counters?.approvedTotal ?? 0}</span> cleared institutional approval gate.
+            {(() => {
+              // SIGNAL-ENGINE-COPY-2026-05 — "0 candidates found" was
+              // contradicting the WATCHLIST/REJECTED tabs (which clearly
+              // had rows). The server-side `candidateTotal` counter has
+              // been stale on this surface; derive from the same tab
+              // counts the strip uses so the summary line and the tab
+              // headers can never disagree.
+              const approvedNow      = counters?.approvedTotal ?? signals.length;
+              const highPotentialNow = Math.max(counters?.highPotentialTotal ?? 0, highPotential.length);
+              const watchlistNow     = Math.max(counters?.watchlistTotal     ?? 0, watchlistTotal);
+              const rejectedNow      = Math.max(counters?.rejectedTotal      ?? 0, rejectedTotal);
+              const totalEvaluated   = approvedNow + highPotentialNow + watchlistNow + rejectedNow;
+              if (totalEvaluated === 0) {
+                return (
+                  <span>No candidates evaluated yet.</span>
+                );
+              }
+              return (
+                <>
+                  <span style={{ color: '#1E3A5F', fontWeight: 700 }}>{totalEvaluated}</span> candidates evaluated ·{' '}
+                  <span style={{ color: '#16A34A', fontWeight: 700 }}>{approvedNow}</span> cleared institutional approval gate
+                  {(watchlistNow > 0 || rejectedNow > 0) && (
+                    <span style={{ color: '#94A3B8', marginLeft: 8 }}>
+                      ({watchlistNow} watchlist · {rejectedNow} rejected
+                      {highPotentialNow > 0 ? ` · ${highPotentialNow} high potential` : ''})
+                    </span>
+                  )}
+                </>
+              );
+            })()}
           </div>
+          {/* Approved zero-state explanation — only shows when
+              approval gate cleared nothing but evidence of watchlist /
+              rejected candidates exists. Keeps the operator informed
+              without changing any approval rule. */}
+          {(() => {
+            const approvedNow = counters?.approvedTotal ?? signals.length;
+            const hasOtherCandidates = (watchlistTotal + rejectedTotal + highPotential.length) > 0;
+            if (approvedNow !== 0 || !hasOtherCandidates) return null;
+            return (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  background: '#FFFBEB',
+                  border: '1px solid #FDE68A',
+                  color: '#92400E',
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                }}
+              >
+                No signal has cleared the institutional approval gate yet.
+                Candidates remain under watchlist / rejection review due to
+                confirmation, freshness, risk, or provider-health constraints.
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Live / delayed-mode banner ─────────────────────────
@@ -2154,9 +2230,12 @@ export default function SignalsPage() {
                     ? 'Showing last-close prices (NSE Bootstrap snapshot)'
                     : 'Market closed — no stored signals to show.';
           } else {
-            headline = isFallback ? 'Live Engine (Fallback Mode)' : 'Live Engine (Normal Operation)';
-            sub = isFallback 
-              ? 'Institutional gates active on potentially stale data.' 
+            // SIGNAL-ENGINE-COPY-2026-05 — use the unified
+            // providerInFallback so the banner can't read "Live Mode"
+            // while the badge above reads Fallback: Yes (or vice versa).
+            headline = providerInFallback ? 'Live Engine (Fallback Mode)' : 'Live Engine (Live Mode)';
+            sub = providerInFallback
+              ? 'Provider operating in fallback mode. Signal approval is restricted until live data health is restored.'
               : 'Primary feed active. All institutional gates clear.';
           }
 
@@ -2370,7 +2449,17 @@ export default function SignalsPage() {
           }}>
             <AlertTriangle size={14} />
             <strong>Engine Health Warning ({healthPreview.overallStatus}):</strong>
-            <span>{healthPreview.primaryBlockingReason ?? 'Pipeline is not at full health — see Engine Health Map.'}</span>
+            {/* SIGNAL-ENGINE-COPY-2026-05 — when the unified
+                providerInFallback flag is true, use the controlled
+                institutional copy so the warning never contradicts the
+                Fallback badge / Live Engine banner. Otherwise fall
+                through to whatever the health preview reported. */}
+            <span>
+              {providerInFallback
+                ? 'Provider operating in fallback mode. Signal approval is restricted until live data health is restored.'
+                : (healthPreview.primaryBlockingReason
+                    ?? 'Pipeline is not at full health — see Engine Health Map.')}
+            </span>
             <Link href="/signals/engine-health" style={{ color: 'inherit', textDecoration: 'underline', fontWeight: 700 }}>
               View Engine Health →
             </Link>
@@ -2732,7 +2821,7 @@ export default function SignalsPage() {
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 700, fontSize: 13.5 }}>Watchlist — early-stage opportunities & setups under monitoring</div>
               <div style={{ fontWeight: 500, color: '#1E3A8A' }}>
-                Not actionable yet. The engine is tracking these symbols toward an institutional setup.
+                Not actionable yet. Approval requires confirmation, clean provider health, and risk-gate clearance.
               </div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 6, fontSize: 11.5, fontWeight: 600 }}>
                 <span style={{ background: '#DBEAFE', color: '#1E3A8A', padding: '2px 8px', borderRadius: 999 }}>
@@ -3341,21 +3430,48 @@ export default function SignalsPage() {
                             internal enums like NO_TRADE / DEVELOPING_SETUP /
                             REJECTED_LOW_CONFIDENCE — the technical code is
                             preserved on the tooltip for operator inspection. */}
-                        <ClassificationBadge
-                          value={s.classification}
-                          rejectionCodes={s.rejection_codes}
-                          rejectionReasons={s.rejection_reasons}
-                          signalStatus={(s as any).signal_status}
-                          scenarioTag={s.scenario_tag}
-                          isRelaxed={(s as any).is_relaxed}
-                          isScannerCandidate={(s as any).is_scanner_candidate}
-                          executionAllowed={(s as any).execution_allowed}
-                          effectiveApprovalStatus={s.effectiveApprovalStatus ?? null}
-                          rawApprovalStatus={s.rawApprovalStatus ?? null}
-                          decisionChanged={s.decisionChanged ?? null}
-                          demotionReason={s.demotionReason ?? null}
-                          institutionalBlockers={s.institutionalBlockers ?? null}
-                        />
+                        <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+                          <ClassificationBadge
+                            value={s.classification}
+                            rejectionCodes={s.rejection_codes}
+                            rejectionReasons={s.rejection_reasons}
+                            signalStatus={(s as any).signal_status}
+                            scenarioTag={s.scenario_tag}
+                            isRelaxed={(s as any).is_relaxed}
+                            isScannerCandidate={(s as any).is_scanner_candidate}
+                            executionAllowed={(s as any).execution_allowed}
+                            effectiveApprovalStatus={s.effectiveApprovalStatus ?? null}
+                            rawApprovalStatus={s.rawApprovalStatus ?? null}
+                            decisionChanged={s.decisionChanged ?? null}
+                            demotionReason={s.demotionReason ?? null}
+                            institutionalBlockers={s.institutionalBlockers ?? null}
+                          />
+                          {/* SIGNAL-ENGINE-COPY-2026-05 — visible
+                              indicator when the institutional decision
+                              gate altered the raw classification. The
+                              badge already swaps the label; this
+                              annotation makes the override explicit so
+                              the operator does not have to hover. */}
+                          {s.decisionChanged === true && (
+                            <span
+                              title={s.demotionReason ?? 'Adjusted by institutional gate'}
+                              style={{
+                                display: 'inline-block',
+                                background: '#F1F5F9',
+                                color: '#475569',
+                                border: '1px solid #CBD5E1',
+                                fontSize: 9,
+                                fontWeight: 700,
+                                letterSpacing: 0.3,
+                                padding: '1px 6px',
+                                borderRadius: 4,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              ⚙ Adjusted by institutional gate
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                         <RiskScorePill value={s.risk_score} />
