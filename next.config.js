@@ -27,31 +27,31 @@ const nextConfig = {
   // NOTE: only enable this when nginx is the sole public entry point
   // (which it is on this VPS — ports 3000/3001 are not publicly exposed).
 
+  // `ws` ships optional native addons (bufferutil, utf-8-validate),
+  // `ioredis` uses Node's `stream` builtin, `mysql2` pulls in
+  // `node:diagnostics_channel` — all break when webpack tries to
+  // bundle them. Listing them here forces Node to resolve them at
+  // runtime from node_modules normally.
+  serverExternalPackages: [
+    'ws',
+    'bufferutil',
+    'utf-8-validate',
+    'ioredis',
+    'mysql2',
+    'mysql2/promise',
+    // `pg` ships an optional native client that requires `pg-native`
+    // (a separate, install-on-demand package). Without this entry,
+    // webpack tries to resolve `pg-native` at build time and emits
+    // a warning on every dev compile + every API route compile. The
+    // pure-JS client `pg` falls back to is what we actually use.
+    'pg',
+    'pg-native',
+  ],
+
   experimental: {
-    // `ws` ships optional native addons (bufferutil, utf-8-validate),
-    // `ioredis` uses Node's `stream` builtin, `mysql2` pulls in
-    // `node:diagnostics_channel` — all break when webpack tries to
-    // bundle them. Listing them here forces Node to resolve them at
-    // runtime from node_modules normally.
-    serverComponentsExternalPackages: [
-      'ws',
-      'bufferutil',
-      'utf-8-validate',
-      'ioredis',
-      'mysql2',
-      'mysql2/promise',
-      // `pg` ships an optional native client that requires `pg-native`
-      // (a separate, install-on-demand package). Without this entry,
-      // webpack tries to resolve `pg-native` at build time and emits
-      // a warning on every dev compile + every API route compile. The
-      // pure-JS client `pg` falls back to is what we actually use.
-      'pg',
-      'pg-native',
-    ],
-    // Enables src/instrumentation.ts which boots the Kite WebSocket
-    // pipeline on server start. Next 14.x still requires this flag.
-    instrumentationHook: true,
   },
+
+  turbopack: {},
 
   // ─── Webpack — exclude Node-only chain from edge bundle ────────
   //
