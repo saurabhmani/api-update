@@ -55,7 +55,7 @@ const TABLES = [
     INDEX idx_q365sig_confidence (confidence_score DESC),
     INDEX idx_q365sig_batch (batch_id),
     INDEX idx_q365sig_opportunity (opportunity_score DESC)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Reasons & Warnings ─────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_reasons (
@@ -70,7 +70,7 @@ const TABLES = [
     INDEX idx_reasons_signal (signal_id),
     CONSTRAINT fk_reasons_signal FOREIGN KEY (signal_id)
       REFERENCES q365_signals(id) ON DELETE CASCADE
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Feature Snapshots (audit / backtest) ───────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_feature_snapshots (
@@ -82,7 +82,7 @@ const TABLES = [
     INDEX idx_snapshots_signal (signal_id),
     CONSTRAINT fk_snapshots_signal FOREIGN KEY (signal_id)
       REFERENCES q365_signals(id) ON DELETE CASCADE
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Phase 3: Trade Plans ──────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_trade_plans (
@@ -102,7 +102,7 @@ const TABLES = [
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_tp_signal (signal_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Phase 3: Position Sizing ──────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_position_sizing (
@@ -120,7 +120,7 @@ const TABLES = [
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_ps_signal (signal_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Phase 3: Portfolio Fit ────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_portfolio_fit (
@@ -137,7 +137,7 @@ const TABLES = [
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_pf_signal (signal_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Phase 3: Execution Readiness ──────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_execution_readiness (
@@ -151,7 +151,7 @@ const TABLES = [
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_er_signal (signal_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Phase 3: Signal Lifecycle ─────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signal_lifecycle (
@@ -164,7 +164,7 @@ const TABLES = [
 
     INDEX idx_lc_signal (signal_id),
     INDEX idx_lc_state (state)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Signal maturity tracker ───────────────────────────────
   // Pre-confirmation staging. Every fresh detection from the live
@@ -218,7 +218,7 @@ const TABLES = [
     INDEX idx_smt_stage (stage),
     INDEX idx_smt_last_evaluated (last_evaluated_at),
     INDEX idx_smt_promoted_snapshot (promoted_snapshot_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── Confirmed intraday signal snapshots (immutable) ───────
   // Two-layer split. q365_signals is the live scanner table —
@@ -294,7 +294,7 @@ const TABLES = [
     INDEX idx_csnap_source_signal (source_signal_id),
     INDEX idx_csnap_confirmed (confirmed_at DESC),
     INDEX idx_csnap_symbol (symbol)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 ];
 
 export async function migrateSignalEngine(): Promise<void> {
@@ -459,7 +459,45 @@ export async function migrateSignalEngine(): Promise<void> {
   await ensureIndex ('q365_signal_maturity_tracker', 'idx_smt_stage',          '(stage)');
   await ensureIndex ('q365_signal_maturity_tracker', 'idx_smt_last_evaluated', '(last_evaluated_at)');
 
+  // ── Collation normalization (idempotent) ─────────────────────
+  // MySQL's server-default collation varies between versions:
+  //   MySQL 5.7 → utf8mb4_general_ci
+  //   MySQL 8.0 → utf8mb4_0900_ai_ci
+  // Tables created without an explicit COLLATE clause inherit the
+  // server default, which causes ER_CANT_AGGREGATE_2COLLATIONS
+  // (errno 1267) on JOINs between old and new tables. We normalise
+  // every q365_* table to utf8mb4_unicode_ci so JOIN comparisons
+  // on symbol / direction / status columns always succeed.
+  await normalizeCollations();
+
   console.log('[SignalEngine] Migration complete — 10 tables (incl. q365_signal_maturity_tracker + q365_confirmed_signal_snapshots) + maturity layer');
+}
+
+/**
+ * Convert every q365_* table that isn't already on utf8mb4_unicode_ci.
+ * CONVERT TO CHARACTER SET rewrites every column's charset + collation
+ * in one DDL statement, which is much faster than ALTER … MODIFY per column.
+ * Safe to call on tables already at the target collation — MySQL is a no-op.
+ */
+async function normalizeCollations(): Promise<void> {
+  const { rows } = await db.query<{ TABLE_NAME: string }>(
+    `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME   LIKE 'q365%'
+        AND TABLE_COLLATION != 'utf8mb4_unicode_ci'`,
+  );
+  for (const { TABLE_NAME } of rows) {
+    try {
+      await db.query(
+        `ALTER TABLE \`${TABLE_NAME}\` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      );
+      console.log(`[SignalEngine] Collation fixed: ${TABLE_NAME} → utf8mb4_unicode_ci`);
+    } catch (err: any) {
+      // Log but don't abort — a single table failing shouldn't block the rest.
+      console.warn(`[SignalEngine] Collation fix skipped for ${TABLE_NAME}:`, err?.message);
+    }
+  }
 }
 
 /** Add an index to a table only if it's missing. Safe to call repeatedly. */

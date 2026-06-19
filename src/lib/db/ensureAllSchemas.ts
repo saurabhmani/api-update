@@ -34,7 +34,7 @@ const ALL_TABLES: string[] = [
     last_login_at DATETIME DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS user_sessions (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -46,7 +46,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_token (token),
     INDEX idx_expires (expires_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Forgot-password flow. The auth service inserts/updates rows here
   // when a reset is requested or consumed (services/auth.ts:153,168).
@@ -59,7 +59,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_pwreset_user (user_id),
     INDEX idx_pwreset_expires (expires_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS instruments (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -73,7 +73,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_symbol (tradingsymbol, exchange),
     INDEX idx_sector (sector)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Note: `market_data_daily` is intentionally NOT created here.
   // `ensureSignalEngineSchemas` (src/lib/signal-engine/repository/ensureSchemas.ts)
@@ -98,7 +98,7 @@ const ALL_TABLES: string[] = [
     capital DECIMAL(14,2) NOT NULL DEFAULT 1000000,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user (user_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS portfolio_positions (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -119,7 +119,7 @@ const ALL_TABLES: string[] = [
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_portfolio (portfolio_id),
     INDEX idx_pp_instrument_id (instrument_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── SIGNAL ENGINE CORE ────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_signals (
@@ -167,7 +167,7 @@ const ALL_TABLES: string[] = [
     message VARCHAR(500) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_signal (signal_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_signal_feature_snapshots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -175,7 +175,7 @@ const ALL_TABLES: string[] = [
     features_json JSON NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_signal (signal_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_signal_lifecycle (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -185,7 +185,7 @@ const ALL_TABLES: string[] = [
     changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_signal (signal_id),
     INDEX idx_state (state)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_strategy_breakdowns (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -202,7 +202,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_signal_strategy (signal_id, strategy_name),
     INDEX idx_signal (signal_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_signal_outcomes (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -223,7 +223,7 @@ const ALL_TABLES: string[] = [
     UNIQUE KEY uq_signal (signal_id),
     INDEX idx_evaluated (evaluated_at),
     INDEX idx_outcome (outcome_label)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_signal_explanations (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -232,7 +232,7 @@ const ALL_TABLES: string[] = [
     context_json JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_signal (signal_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_strategy_performance_snapshots (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -250,7 +250,7 @@ const ALL_TABLES: string[] = [
     computed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_strategy_regime (strategy_name, regime),
     INDEX idx_computed (computed_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_confidence_calibration (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -264,7 +264,7 @@ const ALL_TABLES: string[] = [
     computed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_bucket (bucket),
     INDEX idx_computed (computed_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_adaptive_recommendations (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -280,7 +280,7 @@ const ALL_TABLES: string[] = [
     computed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_strategy_regime (strategy_name, regime),
     INDEX idx_computed (computed_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_learning_job_runs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -292,7 +292,7 @@ const ALL_TABLES: string[] = [
     run_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_run_at (run_at),
     INDEX idx_job_name (job_name, run_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── NEWS INTELLIGENCE ─────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_news_events (
@@ -319,7 +319,7 @@ const ALL_TABLES: string[] = [
     INDEX idx_category (category),
     INDEX idx_published (published_at),
     INDEX idx_sentiment (sentiment)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_news_scores (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -349,7 +349,7 @@ const ALL_TABLES: string[] = [
     INDEX idx_scored (scored_at),
     INDEX idx_impact (symbol_impact_score),
     INDEX idx_manip_boost (manipulation_risk_boost)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_news_ingestion_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -361,7 +361,7 @@ const ALL_TABLES: string[] = [
     duration_ms INT NOT NULL DEFAULT 0,
     ran_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ran (ran_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_news_calibration (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -381,7 +381,7 @@ const ALL_TABLES: string[] = [
     computed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_dim (dimension, dimension_value),
     INDEX idx_computed (computed_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_news_adaptive_recommendations (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -396,7 +396,7 @@ const ALL_TABLES: string[] = [
     computed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_dim (dimension, dimension_value),
     INDEX idx_computed (computed_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── MANIPULATION ENGINE ───────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_manipulation_snapshots (
@@ -411,7 +411,7 @@ const ALL_TABLES: string[] = [
     UNIQUE KEY uq_symbol_date (symbol, snapshot_date),
     INDEX idx_band (suspicion_band),
     INDEX idx_created (created_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_manipulation_events (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -424,7 +424,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_snapshot (snapshot_id),
     INDEX idx_event_type (event_type)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_manipulation_detector_results (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -435,7 +435,7 @@ const ALL_TABLES: string[] = [
     details_json JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_snapshot (snapshot_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_manipulation_penalties (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -448,7 +448,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_signal (signal_id),
     INDEX idx_snapshot (snapshot_id)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── BACKTESTING ───────────────────────────────────────────────
   `CREATE TABLE IF NOT EXISTS q365_backtest_runs (
@@ -468,7 +468,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_status (status),
     INDEX idx_created (created_at)
-  ) ENGINE=InnoDB`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── INSTITUTIONAL ALERTS ──────────────────────────────────────
   // Structured alert store with dedup + suppression built in.
@@ -495,7 +495,7 @@ const ALL_TABLES: string[] = [
     INDEX idx_alerts_severity (severity, created_at),
     INDEX idx_alerts_category (category, last_seen_at),
     INDEX idx_alerts_state (suppression_state)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── TRADEABLE UNIVERSE (NIFTY 500 by default) ─────────────────
   // Replaces the static nseUniverse.json. Loader: scripts/loadNifty500.ts
@@ -512,7 +512,7 @@ const ALL_TABLES: string[] = [
     updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_universe_symbol (symbol),
     INDEX idx_universe_active (is_active)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Override table for IndianAPI symbol mapping. Populate ONLY when
   // the upstream rejects a default-mapped symbol; see symbolMapper.ts.
@@ -522,7 +522,7 @@ const ALL_TABLES: string[] = [
     notes       TEXT DEFAULT NULL,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (nse_symbol)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── MARKET-DATA PIPELINE (Step 6 of the IndianAPI cutover) ────
   // Manual pipeline-run lock. One row per (run_type, run_date) — the
@@ -546,7 +546,7 @@ const ALL_TABLES: string[] = [
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_runtype_date (run_type, run_date),
     INDEX idx_run_date_status (run_date, status)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── DATA FEED HEALTH (Step 7) ─────────────────────────────────
   // Per-request observability. Every IndianAPI / cache / NSE-direct /
@@ -569,7 +569,7 @@ const ALL_TABLES: string[] = [
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     INDEX idx_feed_provider_time (provider, request_started_at),
     INDEX idx_feed_status_time (status, request_started_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── SYSTEM CONFIG ─────────────────────────────────────────────
   // Column names MUST be key_name / key_value — systemConfigService.ts,
@@ -586,7 +586,7 @@ const ALL_TABLES: string[] = [
     description VARCHAR(500) DEFAULT NULL,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_key_name (key_name)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Market-close snapshot — last-known per-symbol price written by the
   // 15:30 IST cron (bootInProc.ts) so off-hours resolver requests can
@@ -608,7 +608,7 @@ const ALL_TABLES: string[] = [
     updated_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (symbol),
     INDEX idx_session (snapshot_session)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── PHASE 1–6 CLOSURE TABLES ──────────────────────────────────
   //
@@ -648,7 +648,7 @@ const ALL_TABLES: string[] = [
     INDEX idx_outcomes_strategy_time (strategy, evaluated_at),
     INDEX idx_outcomes_symbol (symbol),
     INDEX idx_outcomes_evaluated_at (evaluated_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Phase 2 Priority 2 — pre-aggregated per-strategy/per-window
   // performance snapshots. One row per (strategy_id, window_label).
@@ -668,7 +668,7 @@ const ALL_TABLES: string[] = [
     snapshot_at       DATETIME NOT NULL,
     UNIQUE KEY uniq_strategy_window (strategy_id, window_label),
     INDEX idx_snapshot_at (snapshot_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // Phase 5 bulk options — per-symbol option-chain snapshot used by
   // the bulk /api/signals enricher. One row per F&O symbol, updated
@@ -687,7 +687,7 @@ const ALL_TABLES: string[] = [
     snapshot_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_symbol_snapshot (symbol, snapshot_at),
     INDEX idx_options_symbol_time (symbol, snapshot_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 ];
 
 // Idempotent column additions for tables that pre-existed before a
