@@ -1,3 +1,4 @@
+@use "sass:color";
 @use '../variables' as *;
 @use '../mixins'    as *;
 
@@ -85,7 +86,7 @@
   font-size:$text-xs; font-weight:600;
   background:$color-primary-pale; color:$color-primary-hover;
 
-  &--green  { background:$color-accent-light;  color:darken(#059669,5%); }
+  &--green  { background:$color-accent-light;  color:color.adjust(#059669, $lightness: -5%) }
   &--red    { background:$color-danger-light;  color:$color-danger; }
   &--orange { background:$color-warning-light; color:$color-warning; }
   &--gray   { background:#F0F4F8;              color:$color-muted; }
@@ -151,7 +152,7 @@
   font-size:$text-sm; font-weight:500; margin-bottom:$s4;
   @include flex-start; gap:$s2;
   svg { width:15px; height:15px; flex-shrink:0; }
-  &--success { background:$color-accent-light;  color:darken(#059669,8%); }
+  &--success { background:$color-accent-light;  color:color.adjust(#059669, $lightness: -8%); }
   &--error   { background:$color-danger-light;  color:$color-danger; }
   &--warning { background:$color-warning-light; color:$color-warning; }
   &--info    { background:$color-primary-pale;  color:$color-primary-hover; }
