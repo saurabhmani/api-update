@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
-    "start": "next start -p 5000",
+    "start": "next start -p 3000",
     "start:server": "node server.js",
-    "lint": "next lint",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/lib/db/migrate.ts",
     "db:migrate:pg": "tsx src/lib/db/postgres/migrate.ts",
     "db:check:pg": "tsx scripts/validatePg.ts",

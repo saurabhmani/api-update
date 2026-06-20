@@ -181,7 +181,7 @@ export async function getLivePrice(symbol: string): Promise<PriceResponse> {
   // candle_type='eod' AND interval_unit='1day', i.e. authoritative
   // Kite closes recorded by the candle ingest pipeline. // @deprecated marker
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line
     const { db } = await import('@/lib/db');
     const { rows } = await db.query<{
       ts: Date | string | number;

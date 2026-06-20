@@ -95,6 +95,7 @@ export default function NewsPage() {
                   {withImage.map(a => (
                     <a key={a.id} href={getHref(a)} target={isExternal(a) ? '_blank' : undefined} rel={isExternal(a) ? 'noopener noreferrer' : undefined} style={{ textDecoration: 'none', display: 'block' }}>
                       <Card className="card--hover" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' } as any}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={a.thumbnail!}
                           alt={a.title}

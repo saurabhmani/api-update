@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Button, Loading, Empty } from '@/components/ui';
 import { watchlistApi, marketApi } from '@/lib/apiClient';
@@ -26,7 +26,11 @@ export default function WatchlistPage() {
 
   useEffect(() => { load(); }, []);
 
-  const suggest = useCallback(debounce(async (q: string) => {
+  // useMemo (not useCallback) is used here because ESLint cannot inspect
+  // the dependencies of a debounce-wrapped function passed to useCallback.
+  // useMemo(() => debounce(...), []) is equivalent: stable reference for
+  // the component lifetime, no re-creation on re-renders.
+  const suggest = useMemo(() => debounce(async (q: string) => {
     if (q.length < 2) { setSuggestions([]); return; }
     const d = await marketApi.suggest(q) as any;
     setSuggestions(d.results?.slice(0,8) || []);

@@ -104,7 +104,7 @@ async function directYahooFetch(sym: string): Promise<PriceResponse> { // @depre
   // module and the enforcer (which itself doesn't import priceCache,
   // but the indirection keeps future-us safe from accidentally
   // creating one).
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line
   const { withProviderFrame } = require('./enforcer') as typeof import('./enforcer');
   return withProviderFrame(() => fetchFromYahoo(sym)); // @deprecated marker
 }

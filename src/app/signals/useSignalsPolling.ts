@@ -1462,6 +1462,10 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     return () => {
       clearTimeout(loadingTimeoutId);
       clearInterval(pollId);
+      // reqSeqRef is a numeric sequence counter (not a DOM ref) — incrementing
+      // it in cleanup is intentional: it invalidates any in-flight load() call
+      // so stale responses are discarded when the effect re-mounts.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       reqSeqRef.current++;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

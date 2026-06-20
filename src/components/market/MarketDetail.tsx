@@ -263,7 +263,7 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
         .then(d => setSigHist(d.history ?? []))
         .catch(() => {});
     }
-  }, [activeTab, symbol]);
+  }, [activeTab, symbol, news.length, sigHistory.length]);
 
   // Chart interval switch
   const switchInterval = useCallback(async (iv: string) => {

@@ -120,7 +120,7 @@ async function runSignalGeneration(): Promise<void> {
       try {
         // Lazy-load to avoid pulling the constants module before
         // configureWatchlist primes the universe.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line
         const c = require('@/lib/signal-engine/constants/signalEngine.constants');
         return Array.isArray(c.DEFAULT_PHASE1_CONFIG?.universe)
           ? c.DEFAULT_PHASE1_CONFIG.universe.length
@@ -135,7 +135,7 @@ async function runSignalGeneration(): Promise<void> {
     try {
       // Lazy import to avoid pulling the monitor module before
       // bootstrapping is complete.
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line
       const m = require('@/lib/monitor/institutionalHealth');
       m.recordFullScanStart({ universe_size: universeSize });
     } catch { /* monitor optional */ }
@@ -165,7 +165,7 @@ async function runSignalGeneration(): Promise<void> {
         elapsed_ms: elapsedMs,
       });
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line
         const m = require('@/lib/monitor/institutionalHealth');
         m.recordFullScanComplete({ ok: false, elapsed_ms: elapsedMs });
       } catch { /* monitor optional */ }
@@ -193,7 +193,7 @@ async function runSignalGeneration(): Promise<void> {
       provider_coverage_pct: providerCoveragePct,
     });
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line
       const m = require('@/lib/monitor/institutionalHealth');
       m.recordFullScanComplete({
         ok:        true,

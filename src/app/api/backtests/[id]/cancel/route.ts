@@ -10,7 +10,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cancelBacktestRun } from '@/lib/backtesting/runner/backtestQueue';
 
-export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(
+  _req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/cancel`;
   try {
     const result = await cancelBacktestRun(params.id);

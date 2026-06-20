@@ -67,7 +67,7 @@ async function main(): Promise<number> {
       // Lazy import so a missing dep in this module doesn't break the
       // rest of the script (e.g. when the pipeline's own deps need a
       // schema that hasn't been migrated yet).
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line
       require('tsconfig-paths/register');
       const mod = await import('@/lib/news-engine/pipeline/runNewsPipeline');
       console.log(c('dim', '  running runFullPipeline (in-process)…'));

@@ -11,7 +11,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { loadPerformanceMetrics } from '@/lib/backtesting/repository/metricsPersistence';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(
+  _req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/performance`;
   try {
     await ensureBacktestTables();

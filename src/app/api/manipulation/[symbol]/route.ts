@@ -23,8 +23,9 @@ import { loadDailyBars } from '@/lib/manipulation-engine/data/candleLoader';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { symbol: string } },
+  props: { params: Promise<{ symbol: string }> }
 ) {
+  const params = await props.params;
   try {
     const symbol = decodeURIComponent(params.symbol || '').toUpperCase();
     if (!symbol) {

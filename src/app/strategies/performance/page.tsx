@@ -217,7 +217,7 @@ export default function StrategyPerformancePage() {
   useEffect(() => { void load(); }, [load]);
 
   // Derived display values
-  const leaderboard   = data?.leaderboard ?? [];
+  const leaderboard   = useMemo(() => data?.leaderboard ?? [], [data?.leaderboard]);
   const strategies    = data?.strategies  ?? [];
   const selectedDetail = selected && data?.detail ? data.detail[selected] : null;
   const selectedStrategy = data?.selectedStrategy ?? (selected

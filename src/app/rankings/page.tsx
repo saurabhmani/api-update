@@ -222,6 +222,13 @@ const riskBadge = (risk: number | null) => {
   return <Badge variant="green">{risk.toFixed(0)} Low</Badge>;
 };
 
+// Conviction-band numeric rank used by the defensive client-side sort
+// (mirrors compareRanked in rankingsService.ts). Defined at module
+// level so it is a stable reference and never triggers exhaustive-deps.
+const CONVICTION_RANK_LOCAL: Record<string, number> = {
+  high_conviction: 4, actionable: 3, watchlist: 2, reject: 0,
+};
+
 // ─── Page ─────────────────────────────────────────────────────────
 
 export default function RankingsPage() {
@@ -269,11 +276,8 @@ export default function RankingsPage() {
   //   4. risk_score ASC (lower wins ties)
   //   5. volume DESC
   //   6. symbol ASC
-  const CONVICTION_RANK_LOCAL: Record<string, number> = {
-    high_conviction: 4, actionable: 3, watchlist: 2, reject: 0,
-  };
-  const rawRows = resp?.data ?? [];
-  const rows    = useMemo(() => {
+  const rows = useMemo(() => {
+    const rawRows = resp?.data ?? [];
     return [...rawRows].sort((a, b) => {
       const aOpp = Number(opportunityOf(a) ?? 0);
       const bOpp = Number(opportunityOf(b) ?? 0);
@@ -292,7 +296,7 @@ export default function RankingsPage() {
       if (aVol !== bVol) return bVol - aVol;
       return symbolOf(a).localeCompare(symbolOf(b));
     });
-  }, [rawRows]);
+  }, [resp?.data]);
   const buckets = useMemo(() => bucket(rows), [rows]);
 
   const mode      = resp?.mode;

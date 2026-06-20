@@ -193,7 +193,7 @@ if (require.main === module) {
 
   // Default to the EMA/RSI crossover strategy. Swap this out for
   // generatePhase4Signals or any other StrategyFn-shaped wrapper.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line
   const { createEmaRsiStrategy } = require('./strategies/emaRsiStrategy') as {
     createEmaRsiStrategy: () => StrategyFn;
   };

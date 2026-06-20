@@ -175,7 +175,7 @@ export default function NotificationsPage() {
     };
   }, [load]);
 
-  const items = resp?.data ?? [];
+  const items = useMemo(() => resp?.data ?? [], [resp?.data]);
 
   const markRead = async (id: string): Promise<void> => {
     // Idempotent optimistic update. Looks up the current row state
