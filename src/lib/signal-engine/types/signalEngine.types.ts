@@ -104,6 +104,18 @@ export interface StructureFeatures {
   rangeCompressionRatio: number;
   consecutiveHigherLows: number;
   consecutiveLowerHighs: number;
+  fib236?: number;
+  fib382?: number;
+  fib50?: number;
+  fib618?: number;
+  fib786?: number;
+  fib100?: number;
+  fib1272?: number;
+  fib1618?: number;
+  fibNearestLevel?: number;
+  fibNearestLevelName?: string;
+  fibDistancePct?: number;
+  fibZoneMatched?: boolean;
 }
 
 export interface ContextFeatures {
