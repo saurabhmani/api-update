@@ -355,6 +355,7 @@ function computeContextScore(label: MarketRegimeLabel): number {
 const STRATEGY_TO_SCENARIO: Record<StrategyName, ScenarioTag> = {
   bullish_breakout:       'BREAKOUT_CONTINUATION',
   bullish_pullback:       'PULLBACK_IN_TREND',
+  fibonacci_pullback:     'PULLBACK_IN_TREND',
   bearish_breakdown:      'BREAKOUT_CONTINUATION',
   mean_reversion_bounce:  'MEAN_REVERSION',
   momentum_continuation:  'MOMENTUM_EXPANSION',

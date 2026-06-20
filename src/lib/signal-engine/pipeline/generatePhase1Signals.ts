@@ -45,6 +45,7 @@ const STRATEGY_META: Record<StrategyName, {
 }> = {
   bullish_breakout:       { signalType: 'bullish_breakout',       signalSubtype: 'fresh_breakout',    action: 'enter_on_strength' },
   bullish_pullback:       { signalType: 'bullish_pullback',       signalSubtype: 'pullback_entry',    action: 'enter_on_pullback' },
+  fibonacci_pullback:     { signalType: 'fibonacci_pullback',     signalSubtype: 'fib_retracement_entry', action: 'enter_on_pullback' },
   bearish_breakdown:      { signalType: 'bearish_breakdown',      signalSubtype: 'breakdown',         action: 'enter_short' },
   mean_reversion_bounce:  { signalType: 'mean_reversion_bounce',  signalSubtype: 'reversal_bounce',   action: 'enter_on_bounce' },
   momentum_continuation:  { signalType: 'momentum_continuation',  signalSubtype: 'momentum_ride',     action: 'enter_on_momentum' },

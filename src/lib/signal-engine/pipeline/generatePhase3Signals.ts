@@ -51,6 +51,7 @@ export interface Phase3Result {
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
   bullish_breakout:       'enter_on_strength',
   bullish_pullback:       'enter_on_pullback',
+  fibonacci_pullback:     'enter_on_pullback',
   bearish_breakdown:      'enter_short',
   mean_reversion_bounce:  'enter_on_bounce',
   momentum_continuation:  'enter_on_momentum',
@@ -78,6 +79,7 @@ const ACTION_MAP: Record<StrategyName, SignalAction> = {
 const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
   bullish_breakout:       'fresh_breakout',
   bullish_pullback:       'pullback_entry',
+  fibonacci_pullback:     'fib_retracement_entry',
   bearish_breakdown:      'breakdown',
   mean_reversion_bounce:  'reversal_bounce',
   momentum_continuation:  'momentum_ride',

@@ -69,6 +69,7 @@ export const STRATEGY_CATEGORY_MAP: Record<StrategyName, StrategyCategory> = {
   // because the weight profile is meaningfully different from
   // momentum (lower R:R weight, higher regime weight).
   bullish_pullback:       'pullback',
+  fibonacci_pullback:     'pullback',
 
   // Momentum — continuation trades riding an already-established
   // move. EMA crossover + weak-trend breakdown sit here because

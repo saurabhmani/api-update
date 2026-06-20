@@ -137,6 +137,24 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
   },
 
+  fibonacci_pullback: {
+    strategyId: 'fibonacci_pullback',
+    displayName: 'Fibonacci Pullback',
+    direction: 'long',
+    allowedRegimes: ['Strong Bullish', 'Bullish'],
+    blockedRegimes: ['Bearish', 'High Volatility Risk'],
+    idealRsiRange: [42, 65],
+    defaultConfidenceWeight: 0.95,
+    category:            'pullback',
+    entryType:           'pullback_entry',
+    riskProfile:         'moderate',
+    timeframe:           'swing',
+    signalType:          'fibonacci_pullback',
+    explanationTemplate: 'Price is reacting from a key Fibonacci retracement zone inside a bullish trend.',
+    invalidationLogic:   'Close below the 61.8% or 78.6% Fibonacci support zone invalidates the setup.',
+    idealMarketRegime:   ['Strong Bullish', 'Bullish'],
+  },
+
   // ── Mean reversion family ──────────────────────────────────
   mean_reversion_bounce: {
     strategyId: 'mean_reversion_bounce',

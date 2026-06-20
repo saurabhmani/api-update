@@ -26,6 +26,7 @@ const TARGET3_R_MAP: Record<StrategyName, number> = {
   momentum_continuation:  4.0,  // momentum can run further
   gap_continuation:       4.0,  // gap setups have extended targets
   bullish_pullback:       3.0,  // pullbacks = more conservative
+  fibonacci_pullback:     3.0,  // Fibonacci pullbacks = conservative
   bearish_breakdown:      3.5,  // standard
   mean_reversion_bounce:  2.5,  // mean reversion = tighter targets
   bullish_divergence:     3.0,  // moderate
@@ -101,6 +102,7 @@ export function buildTradePlanForStrategy(features: SignalFeatures, strategy: St
   let plan: TradePlan;
   switch (strategy) {
     case 'bullish_pullback':
+    case 'fibonacci_pullback':
       plan = buildPullbackPlan(features); break;
     case 'bearish_breakdown':
       plan = buildBreakdownPlan(features); break;
