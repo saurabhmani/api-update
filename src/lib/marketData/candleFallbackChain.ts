@@ -24,6 +24,7 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
+import type { HistoricalRange } from '@/types/market';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { isInFlight } from '@/lib/scanner/scannerState';
 
@@ -171,9 +172,13 @@ function mapProviderErrorCode(
 ): IndianApiCandleErrorCode | string {
   const code = (errorCode ?? '').toUpperCase();
   if (code === 'API_KEY_MISSING' || code.includes('NOT_CONFIGURED')) return 'API_KEY_MISSING';
-  if (code === 'HTTP_403' || code === 'HTTP_401' || code.includes('AUTH')) return 'API_KEY_INVALID';
+  if (
+    code === 'API_KEY_INVALID' || code === 'HTTP_403' || code === 'HTTP_401'
+    || code.includes('AUTH')
+  ) return 'API_KEY_INVALID';
   if (code === 'HTTP_429' || code.includes('RATE') || code.includes('429')) return 'RATE_LIMITED';
   if (code === 'BUDGET_EXHAUSTED' || code === 'API_BUDGET_EXCEEDED') return 'BUDGET_EXCEEDED';
+  if (code.includes('PER_RUN') || code.includes('PER_RUN_LIMIT')) return 'BUDGET_EXCEEDED';
   if (code === 'BUDGET_THROTTLED') return 'BUDGET_THROTTLED';
   if (code === 'MARKET_CLOSED') return 'MARKET_CLOSED';
   if (code === 'EMPTY_RESPONSE' || code === 'UPSTREAM_NULL') return 'EMPTY_RESPONSE';
@@ -215,7 +220,7 @@ function normalizeHistoricalCandles(
  */
 export async function fetchIndianApiDailyCandles(
   symbol: string,
-  range: '1y' = '1y',
+  range: HistoricalRange = '1y',
 ): Promise<IndianApiCandleFetchResult> {
   const sym = symbol.toUpperCase();
   const endpoint = `historical_data:${range}`;

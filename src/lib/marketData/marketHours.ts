@@ -188,6 +188,41 @@ export function getMarketStatus(): MarketStatus {
   };
 }
 
+/** Calendar date (YYYY-MM-DD) for a timestamp in IST. */
+export function toIstCalendarDate(ts: Date): string {
+  const ist = new Date(ts.getTime() + 5.5 * 3_600_000);
+  return istDateString(ist);
+}
+
+/**
+ * Latest NSE trading day whose EOD bar should exist as of `nowMs`.
+ * After 15:30 IST on a trading day → today; otherwise the prior session.
+ */
+export function getLatestCompletedTradingDay(nowMs: number = Date.now()): string {
+  const ist = new Date(nowMs + 5.5 * 3_600_000);
+  const holidays = getHolidaySet();
+  const closeMin = CLOSE_HOUR * 60 + CLOSE_MINUTE;
+  const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+
+  const isTradingDay = (d: Date): boolean => {
+    const wd = d.getUTCDay();
+    if (wd === 0 || wd === 6) return false;
+    return !holidays.has(istDateString(d));
+  };
+
+  const todayStr = istDateString(ist);
+  if (isTradingDay(ist) && minutes >= closeMin) {
+    return todayStr;
+  }
+
+  let cursor = new Date(ist.getTime());
+  do {
+    cursor = new Date(cursor.getTime() - 86_400_000);
+  } while (!isTradingDay(cursor));
+
+  return istDateString(cursor);
+}
+
 /** Convenience wrapper — the common case. */
 export function isMarketOpen(): boolean {
   return getMarketStatus().isOpen;

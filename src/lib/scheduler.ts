@@ -167,17 +167,47 @@ export function startScheduler(): void {
     );
   }, { timezone: IST }));
 
+  // 16:00 IST — post-close incremental EOD candle update (NSE 1000 universe).
+  // Fetches only symbols missing the latest completed trading day; 1mo range
+  // for incremental, 1y only when bar depth is insufficient.
+  tasks.push(cron.schedule(
+    process.env.CANDLE_DAILY_UPDATE_CRON?.trim() || '0 16 * * 1-5',
+    () => {
+      void (async () => {
+        try {
+          const { runCandleDailyUpdateJob } = await import(
+            '@/lib/marketData/candleDailyUpdateJob'
+          );
+          const r = await runCandleDailyUpdateJob();
+          log.info('post-close candle daily update complete', {
+            total: r.totalSymbols,
+            skipped: r.skippedAlreadyUpdated,
+            fetched: r.fetched,
+            failed: r.failed,
+            requests: r.requestsUsed,
+            latestCandleDate: r.latestCandleDate,
+            targetDay: r.targetTradingDay,
+          });
+        } catch (err) {
+          log.error('post-close candle daily update failed', { err: String(err) });
+        }
+      })();
+    },
+    { timezone: IST },
+  ));
+
   log.info('scheduler started', {
     timezone: IST,
     batchUniverse: getBatchUniverse().length,
     cronJobs: tasks.length,
     layout: {
-      batch:     '*/10 9-15 * * 1-5',
-      heartbeat: '* 9-15 * * 1-5',
-      trigger:   '5,25,45 9-15 * * 1-5',
-      intel:     '15 9-15 * * 1-5',
-      warmup:    '20 9 * * 1-5',
-      postClose: '35 15 * * 1-5',
+      batch:       '*/10 9-15 * * 1-5',
+      heartbeat:   '* 9-15 * * 1-5',
+      trigger:     '5,25,45 9-15 * * 1-5',
+      intel:       '15 9-15 * * 1-5',
+      warmup:      '20 9 * * 1-5',
+      postClose:   '35 15 * * 1-5',
+      candleDaily: process.env.CANDLE_DAILY_UPDATE_CRON?.trim() || '0 16 * * 1-5',
     },
   });
 }

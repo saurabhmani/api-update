@@ -989,6 +989,19 @@ export async function getHistorical(
     log.warn('historical_data fetch failed', {
       symbol: sym, period, filter, status: ax?.status, message: ax?.message,
     });
+    // Budget / per-run caps must propagate — swallowing them as an empty
+    // series surfaces as a generic "provider status=failed" upstream.
+    const msg = ax?.message ?? '';
+    const status = ax?.status;
+    if (
+      msg.includes('PER_RUN_LIMIT_EXCEEDED')
+      || msg.includes('API_BUDGET_EXCEEDED')
+      || msg.includes('AUTH_FAILED')
+      || status === 403
+      || status === 401
+    ) {
+      throw err;
+    }
     // Return an empty series instead of throwing — the candle-ingest
     // layer treats `candles.length === 0` as a clean skip (negative-
     // cached for 1h) so a single bad symbol never blocks the pipeline.
