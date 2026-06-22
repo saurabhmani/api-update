@@ -346,7 +346,10 @@ async function main(): Promise<void> {
   await runPhase4OnTestSymbol(true);
 }
 
-main().catch((err) => {
-  console.error('[seedFibonacciPullbackTest] fatal:', err);
-  process.exit(2);
-});
+const isDirectRun = process.argv[1]?.includes('seedFibonacciPullbackTest');
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error('[seedFibonacciPullbackTest] fatal:', err);
+    process.exit(2);
+  });
+}
