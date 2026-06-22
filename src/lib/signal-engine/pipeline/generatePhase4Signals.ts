@@ -47,6 +47,20 @@ import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 // the correct entry type and would re-introduce the Phase 1 leak.
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
+export function countRejectedInsufficientCandles(
+  rejectionLog: Array<{ symbol: string; reason: string }>,
+): number {
+  return rejectionLog.filter((r) => {
+    const t = String(r.reason ?? '').toLowerCase();
+    return (
+      t.includes('insufficient candle')
+      || t.includes('candle_invalid')
+      || t.includes('candle_no_data')
+      || (t.startsWith('error:') && t.includes('candle'))
+    );
+  }).length;
+}
+
 export interface Phase4Result {
   signals: Phase4SignalEnvelope[];
   commentary: PortfolioCommentary;
@@ -62,6 +76,8 @@ export interface Phase4Result {
     approved: number;
     deferred: number;
     rejected: number;
+    rejectedInsufficientCandles: number;
+    signalsSaved: number;
     scenarioTag:  string;
     marketStance: string;
   };
@@ -521,6 +537,7 @@ export async function generatePhase4Signals(
   );
   console.log(`[PIPELINE_TRACE] stage=saveSignals_called count=${enriched.length}`);
   const dbInsertStart = Date.now();
+  let signalsSaved = 0;
   try {
     // Save base signals (Phase 3 data) to get real DB IDs
     const signalIdMap = await saveSignals(enriched.map(sig => ({
@@ -596,6 +613,7 @@ export async function generatePhase4Signals(
       phase11LiveValidationReasons: sig.phase11?.live_validation_reasons ?? [],
       phase11Explanation:           sig.phase11?.explanation             ?? undefined,
     } as any)), generationSource);
+    signalsSaved = signalIdMap.size;
     // Spec "VERIFY INSERT" — saveSignals returned a row-id map. The
     // q365_signals INSERTs already committed; size of the map ==
     // number of rows persisted. If this is < enriched.length, some
@@ -824,6 +842,8 @@ export async function generatePhase4Signals(
     `persisted=${enriched.length}`,
   );
 
+  const rejectedInsufficientCandles = countRejectedInsufficientCandles(phase3.rejectionLog);
+
   return {
     signals: enriched,
     commentary,
@@ -837,6 +857,8 @@ export async function generatePhase4Signals(
       approved: phase3.approved,
       deferred: phase3.deferred,
       rejected: phase3.rejected,
+      rejectedInsufficientCandles,
+      signalsSaved,
       scenarioTag:  scenario.scenario_tag,
       marketStance: marketStance.market_stance,
     },
