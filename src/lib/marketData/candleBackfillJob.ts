@@ -25,6 +25,10 @@ import {
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
+import {
+  resolveBackfillMaxFetch,
+  resolveBackfillPerRunLimit,
+} from '@/lib/marketData/providerRequestPolicy';
 
 // ── Config ────────────────────────────────────────────────────────
 
@@ -396,7 +400,11 @@ export async function runCandleBackfillJob(
   const maxAgeDays = options.maxAgeDays ?? BACKFILL_MAX_AGE_DAYS_DEFAULT();
   const requestDelayMs = options.requestDelayMs ?? BACKFILL_REQUEST_DELAY_MS_DEFAULT();
   const dryRun = options.dryRun ?? false;
-  const maxFetch = options.maxFetch;
+  const maxFetch = resolveBackfillMaxFetch({
+    resume: options.resume,
+    maxFetch: options.maxFetch,
+    symbols: options.symbols,
+  });
 
   const { apiKey } = getIndianApiConfig();
   if (!apiKey && !dryRun) {
@@ -407,7 +415,10 @@ export async function runCandleBackfillJob(
 
   const jobId = `candle-backfill_${Date.now()}`;
   if (!dryRun) {
-    const estimate = await estimateBackfillApiRequests(options);
+    const estimate = await estimateBackfillApiRequests({
+      ...options,
+      maxFetch,
+    });
     await assertQuotaForJob({
       estimatedRequests: estimate,
       jobId,
@@ -445,7 +456,12 @@ async function runCandleBackfillJobInner(ctx: {
   } = ctx;
 
   resetCandleSourceCounters();
-  beginPerRunBudget();
+  const perRunLimit = resolveBackfillPerRunLimit({
+    resume: options.resume,
+    maxFetch,
+    symbols: options.symbols,
+  });
+  beginPerRunBudget(perRunLimit);
 
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)

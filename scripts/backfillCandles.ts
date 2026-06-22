@@ -21,7 +21,12 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 import { runCandleBackfillJob } from '@/lib/marketData/candleBackfillJob';
 import { getHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
-import { INDIANAPI_PER_RUN_LIMIT } from '@/providers/adapters/IndianAPIAdapter';
+import {
+  EMERGENCY_REPAIR_MAX_FETCH,
+  INITIAL_BACKFILL_PER_RUN_LIMIT,
+  resolveBackfillMaxFetch,
+  resolveBackfillPerRunLimit,
+} from '@/lib/marketData/providerRequestPolicy';
 
 interface CliArgs {
   limit: number;
@@ -108,7 +113,15 @@ async function main(): Promise<void> {
     );
   }
 
-  const effectiveFetchCap = args.maxFetch ?? INDIANAPI_PER_RUN_LIMIT;
+  const effectiveFetchCap = args.maxFetch ?? resolveBackfillMaxFetch({
+    resume: args.resume,
+    symbols: args.symbols,
+  });
+  const effectivePerRun = resolveBackfillPerRunLimit({
+    resume: args.resume,
+    maxFetch: args.maxFetch,
+    symbols: args.symbols,
+  });
   if (
     !args.dryRun
     && !args.symbols.length
@@ -117,7 +130,7 @@ async function main(): Promise<void> {
   ) {
     console.warn(
       `[CANDLE BACKFILL] Quota guard: will fetch at most ${effectiveFetchCap} symbols this run ` +
-      `(max_fetch=${args.maxFetch ?? 'unset'}, per_run_limit=${INDIANAPI_PER_RUN_LIMIT}). ` +
+      `(policy repair batch=${EMERGENCY_REPAIR_MAX_FETCH()}, per_run=${effectivePerRun}). ` +
       `Run npm run candles:backfill:preflight first. Re-run --resume until plan shows fetched=0.`,
     );
   }
@@ -150,7 +163,8 @@ async function main(): Promise<void> {
   if (args.dryRun && summary.fetched > 0) {
     console.log(
       `\nEstimated live API cost: ${summary.fetched} requests. ` +
-      `Run in batches: npx tsx scripts/backfillCandles.ts --resume --max-fetch 50`,
+      `Repair batches: npm run candles:repair. ` +
+      `Initial one-shot: npx tsx scripts/backfillCandles.ts --max-fetch ${INITIAL_BACKFILL_PER_RUN_LIMIT()}`,
     );
   }
 

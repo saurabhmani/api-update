@@ -37,6 +37,7 @@ import {
 } from '@/lib/signal-engine/constants/signalEngine.constants';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { markPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
+import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
 
 const log = logger.child({ component: 'dailyScanSchedule' });
 export const DAILY_SCAN_TIMEZONE = 'Asia/Kolkata';
@@ -198,7 +199,9 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
     start_time: startTime,
   });
 
-  const summary = await runCandleDailyUpdateJob();
+  const summary = await runCandleDailyUpdateJob({
+    maxFetch: DAILY_UPDATE_MAX_REQUESTS(),
+  });
   const endMs = Date.now();
   const failedSample = summary.failures.slice(0, 10).map((f) => ({
     symbol: f.symbol,

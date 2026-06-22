@@ -20,6 +20,7 @@ import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
 import { getHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
+import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
 
 interface CliArgs {
   limit: number;
@@ -105,6 +106,13 @@ async function main(): Promise<void> {
     maxFetch: args.maxFetch,
     symbols: args.symbols.length > 0 ? args.symbols : undefined,
   });
+
+  const policyCap = DAILY_UPDATE_MAX_REQUESTS();
+  if (!args.dryRun && summary.requestsUsed > policyCap) {
+    console.warn(
+      `[CANDLE DAILY UPDATE] requests_used=${summary.requestsUsed} exceeded policy cap=${policyCap}`,
+    );
+  }
 
   console.log('\n[CANDLE DAILY UPDATE SUMMARY]');
   console.log(JSON.stringify({

@@ -55,7 +55,7 @@ async function estimateDbScanStats(): Promise<{
   rejectedInsufficient: number;
 } | null> {
   try {
-    const universe = await loadActiveUniverseSymbols();
+    const universe = await loadActiveUniverseSymbols(1000);
     let sufficient = 0;
     for (const symbol of universe) {
       const candles = await readDailyCandlesFromDb(symbol);

@@ -62,11 +62,11 @@ export function checkProductionEnvSafety(): EnvSafetyViolation[] {
   }
 
   const perRunLimit = readNumeric('INDIANAPI_PER_RUN_LIMIT');
-  if (perRunLimit != null && perRunLimit > 500) {
+  if (perRunLimit != null && perRunLimit > 1500) {
     violations.push({
       envName: 'INDIANAPI_PER_RUN_LIMIT',
       value:   process.env.INDIANAPI_PER_RUN_LIMIT,
-      rule:    'INDIANAPI_PER_RUN_LIMIT must be ≤ 500 in production — one run could otherwise exhaust the daily budget',
+      rule:    'INDIANAPI_PER_RUN_LIMIT must be ≤ 1500 in production — one run could otherwise exhaust the daily budget',
     });
   }
 

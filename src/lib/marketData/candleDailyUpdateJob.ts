@@ -32,12 +32,15 @@ import {
   beginPerRunBudget,
   endPerRunBudget,
   getApiUsage,
-  INDIANAPI_PER_RUN_LIMIT,
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import type { HistoricalRange } from '@/types/market';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
+import {
+  DAILY_UPDATE_MAX_REQUESTS,
+  resolveDailyUpdateMaxFetch,
+} from '@/lib/marketData/providerRequestPolicy';
 
 function envNum(name: string, lo: number, hi: number, fallback: number): number {
   const raw = Number(process.env[name]);
@@ -92,7 +95,7 @@ function perRunBudgetFailureReason(): string {
   const usage = getApiUsage();
   return (
     `PER_RUN_LIMIT_EXCEEDED (${usage.per_run_count}/${usage.per_run_limit}) — ` +
-    `re-run later or raise INDIANAPI_PER_RUN_LIMIT`
+    `re-run later or raise CANDLE_DAILY_UPDATE_MAX_FETCH`
   );
 }
 
@@ -269,7 +272,7 @@ async function runCandleDailyUpdateJobInner(
   const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
   const requestDelayMs = options.requestDelayMs ?? BACKFILL_REQUEST_DELAY_MS_DEFAULT();
   const dryRun = options.dryRun ?? false;
-  const maxFetch = options.maxFetch;
+  const maxFetch = resolveDailyUpdateMaxFetch(options.maxFetch);
   const targetTradingDay = getLatestCompletedTradingDay();
 
   const { apiKey } = getIndianApiConfig();
@@ -280,7 +283,7 @@ async function runCandleDailyUpdateJobInner(
   }
 
   resetCandleSourceCounters();
-  beginPerRunBudget();
+  beginPerRunBudget(DAILY_UPDATE_MAX_REQUESTS());
 
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
@@ -305,7 +308,7 @@ async function runCandleDailyUpdateJobInner(
   console.log(
     `[CANDLE DAILY UPDATE] start symbols=${symbols.length} target_day=${targetTradingDay} ` +
     `min_bars=${minBars} delay_ms=${requestDelayMs} dry_run=${dryRun} ` +
-    `max_fetch=${maxFetch ?? 'none'} per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
+    `max_fetch=${maxFetch} per_run_limit=${DAILY_UPDATE_MAX_REQUESTS()}`,
   );
 
   let processed = 0;

@@ -21,6 +21,7 @@ import {
 import { estimateBackfillApiRequests } from '@/lib/marketData/candleBackfillJob';
 import { estimateDailyUpdateApiRequests } from '@/lib/marketData/candleDailyUpdateJob';
 import { getApiUsage } from '@/providers/adapters/IndianAPIAdapter';
+import { getProviderRequestPolicy } from '@/lib/marketData/providerRequestPolicy';
 
 async function main(): Promise<void> {
   await migrateProviderRequestLogs();
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   const usage = getApiUsage();
 
   console.log('\n=== PROVIDER QUOTA AUDIT ===\n');
+  console.log('Policy:', getProviderRequestPolicy());
   console.log('Counters (file):', {
     daily: `${usage.daily}/${usage.daily_limit}`,
     monthly: `${usage.monthly}/${usage.monthly_limit}`,

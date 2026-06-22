@@ -4,9 +4,11 @@
 //  Persists every billable upstream call to `provider_request_logs`
 //  and exposes aggregation + pre-job budget checks.
 //
-//  Recommended env:
-//    INDIAN_API_MONTHLY_BUDGET=100000   (alias: INDIANAPI_MONTHLY_LIMIT)
+//  Recommended env (see docs/PROVIDER_REQUEST_POLICY.md):
+//    INDIAN_API_MONTHLY_BUDGET=100000   (alias: INDIANAPI_MONTHLY_LIMIT) — hard ceiling
+//    INDIANAPI_MONTHLY_TARGET=25000     — ops planning band 22k–30k
 //    INDIAN_API_DAILY_SOFT_LIMIT=4000   (alias: INDIANAPI_DAILY_LIMIT)
+//    CANDLE_DAILY_UPDATE_MAX_FETCH=1000 — evening update per-run cap
 //    INDIAN_API_HARD_STOP_ON_LIMIT=true
 // ════════════════════════════════════════════════════════════════
 

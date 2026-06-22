@@ -2,12 +2,14 @@
 
 Three scheduled jobs run on weekdays when `DAILY_SCAN_SCHEDULE_ENABLED=true` (default). Registered by `startDailyScanSchedule()` from the worker process (`npm run scheduler`).
 
+**IndianAPI budget policy:** [PROVIDER_REQUEST_POLICY.md](./PROVIDER_REQUEST_POLICY.md)
+
 ## Schedule
 
 | Job | Window | Cron (default) | Mode | Data source | IndianAPI historical |
 |-----|--------|----------------|------|-------------|----------------------|
 | **Morning Scan** | 08:30–09:00 | `30 8 * * 1-5` | `scan` | `market_data_daily` (DB) | **0** |
-| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | IndianAPI | ~1 req/symbol behind target day |
+| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | IndianAPI | **≤ 1,000** (~1 req/symbol behind target day) |
 | **Evening Scan** | 16:30–17:00 | `30 16 * * 1-5` | `scan` | `market_data_daily` (DB) | **0** |
 
 ### Purpose
@@ -52,6 +54,7 @@ MORNING_SCAN_CRON="30 8 * * 1-5"
 EVENING_UPDATE_CRON="0 16 * * 1-5"    # alias: CANDLE_DAILY_UPDATE_CRON
 EVENING_SCAN_CRON="30 16 * * 1-5"
 DAILY_SCAN_SCHEDULE_ENABLED=true
+CANDLE_DAILY_UPDATE_MAX_FETCH=1000
 
 # Optional legacy duplicate scan at 18:30 IST (off by default)
 SIGNAL_LEGACY_EVENING_SCAN_1830=false
