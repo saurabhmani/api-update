@@ -85,6 +85,12 @@ import {
 } from '@/providers/adapters/IndianAPIAdapter';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { getRunCount, incrementRunCount } from '@/lib/scanner/runCounter';
+import {
+  beginSignalEngineRun,
+  completeSignalEngineRun,
+  failSignalEngineRun,
+  buildSignalEngineStatus,
+} from '@/lib/signal-engine/runSignalEngineStatus';
 
 // Spec "SMART ROTATION" — per-run universe cap with runCount-based
 // chunk rotation. Each run scans CHUNK_SIZE = SIGNAL_RUN_UNIVERSE_CAP
@@ -380,7 +386,42 @@ let migrated = false;
 // /api/run-signal-engine click and an auto-recovery can never run
 // simultaneously, and either path's 409/skip envelope can read the
 // other's running batch.
-let inFlight: { batchId: string; startedAt: string } | null = null;
+let inFlight: { batchId: string; startedAt: string; mode: string } | null = null;
+
+function recordSuccessfulSignalEngineRun(opts: {
+  jobId: string;
+  mode: string;
+  startedAt: string;
+  durationMs: number;
+  totalSymbols: number;
+  scannedSymbols: number;
+  rejectedInsufficientCandles: number;
+  rejectedProviderError: number;
+  signalsGenerated: number;
+  signalsSaved: number;
+  indianApiRequestsUsed: number;
+  dataSource: string;
+  failedSymbolsSample: Array<{ symbol: string; reason: string }>;
+}): void {
+  completeSignalEngineRun({
+    jobId: opts.jobId,
+    mode: opts.mode,
+    success: true,
+    startedAt: opts.startedAt,
+    finishedAt: new Date().toISOString(),
+    durationMs: opts.durationMs,
+    totalSymbols: opts.totalSymbols,
+    scannedSymbols: opts.scannedSymbols,
+    rejectedInsufficientCandles: opts.rejectedInsufficientCandles,
+    rejectedProviderError: opts.rejectedProviderError,
+    signalsGenerated: opts.signalsGenerated,
+    signalsSaved: opts.signalsSaved,
+    indianApiRequestsUsed: opts.indianApiRequestsUsed,
+    dataSource: opts.dataSource,
+    lastError: null,
+    failedSymbolsSample: opts.failedSymbolsSample,
+  });
+}
 
 // Spec "FIX PIPELINE CONCURRENCY" §1+§8 — single source of truth for
 // the progress envelope shipped on the 409 (and on GET ?status=true).
@@ -696,6 +737,15 @@ async function runScanInner(
     `chunk_used=${fullUniverseScan ? 'no (full-scan mode)' : 'yes (legacy mode)'} ` +
     `api_per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
   );
+  const runStartedAtIso = new Date(start).toISOString();
+  beginSignalEngineRun({
+    jobId: batchId,
+    mode,
+    startedAt: runStartedAtIso,
+    totalSymbols: runUniverse.length,
+  });
+
+  try {
   // Single-grep carve-point trace. When `out` < `in`, the bottleneck is
   // either fullUniverseScan=false (prefilter slice in effect) or the
   // universe itself is short (q365_universe(is_active=1) row count).
@@ -799,6 +849,22 @@ async function runScanInner(
         (err as Error)?.message,
       );
     }
+    const failedSample = (refreshResult?.failed ?? []).slice(0, 10);
+    recordSuccessfulSignalEngineRun({
+      jobId: batchId,
+      mode: 'backfill',
+      startedAt: runStartedAtIso,
+      durationMs: totalElapsedMs,
+      totalSymbols: runUniverse.length,
+      scannedSymbols: 0,
+      rejectedInsufficientCandles: 0,
+      rejectedProviderError: refreshResult?.failed?.length ?? 0,
+      signalsGenerated: 0,
+      signalsSaved: 0,
+      indianApiRequestsUsed: indianApiRequests,
+      dataSource: resolveDataSourceUsed('backfill', indianApiRequests),
+      failedSymbolsSample: failedSample,
+    });
     return {
       success: true,
       mode: 'backfill',
@@ -1155,18 +1221,35 @@ async function runScanInner(
     refreshResult?.indianApiRequests ?? 0,
   );
   const rejectedInsufficient = result.meta.rejectedInsufficientCandles;
+  const rejectedProviderError = result.meta.rejectedProviderErrors;
   const scannedSymbols = Math.max(0, result.meta.scanned - rejectedInsufficient);
   const runSummary = {
     mode,
     total_symbols: runUniverse.length,
     scanned_symbols: scannedSymbols,
     rejected_insufficient_candles: rejectedInsufficient,
+    rejected_provider_errors: rejectedProviderError,
     signals_generated: result.signals.length,
     signals_saved: result.meta.signalsSaved,
     data_source_used: resolveDataSourceUsed(mode, indianApiRequests),
     indianapi_requests_used: indianApiRequests,
   };
   console.log('[RUN SUMMARY]', runSummary);
+  recordSuccessfulSignalEngineRun({
+    jobId: batchId,
+    mode,
+    startedAt: runStartedAtIso,
+    durationMs: totalElapsedMs,
+    totalSymbols: runUniverse.length,
+    scannedSymbols,
+    rejectedInsufficientCandles: rejectedInsufficient,
+    rejectedProviderError,
+    signalsGenerated: result.signals.length,
+    signalsSaved: result.meta.signalsSaved,
+    indianApiRequestsUsed: indianApiRequests,
+    dataSource: resolveDataSourceUsed(mode, indianApiRequests),
+    failedSymbolsSample: result.meta.failedSymbolsSample,
+  });
   return {
     success: true,
     mode,
@@ -1235,6 +1318,20 @@ async function runScanInner(
       failed:   failedCount,
     },
   };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const progress = getScannerProgress();
+    failSignalEngineRun({
+      jobId: batchId,
+      mode,
+      startedAt: runStartedAtIso,
+      error: msg,
+      durationMs: Date.now() - start,
+      totalSymbols: runUniverse.length,
+      scannedSymbols: progress?.done ?? 0,
+    });
+    throw err;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -1655,7 +1752,7 @@ export async function POST(req: NextRequest) {
     return 60_000;
   })();
 
-  const claimLock = async () => {
+  const claimLock = async (mode: string) => {
     // Spec "FIX PIPELINE CONCURRENCY" §2 — acquire the distributed execution
     // lock first. This is the global guard across all instances.
     const acquired = await tryAcquireExecutionLock(batchId);
@@ -1663,7 +1760,7 @@ export async function POST(req: NextRequest) {
       throw new Error('EXECUTION_LOCK_HELD');
     }
 
-    inFlight = { batchId, startedAt: new Date(start).toISOString() };
+    inFlight = { batchId, startedAt: new Date(start).toISOString(), mode };
     setScannerInFlight(true);
     // Spec "Per-run API call limit" — open a fresh per-run window
     // BEFORE any IndianAPI call lands so the counter starts at 0.
@@ -1723,7 +1820,7 @@ export async function POST(req: NextRequest) {
     // bubble out of the route AFTER setScannerInFlight(true) had run,
     // leaking a permanent inFlight=true.
     try {
-      await claimLock();
+      await claimLock(runMode);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       if (msg === 'EXECUTION_LOCK_HELD') {
@@ -1772,7 +1869,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         status:    'started',
-        mode:      'async',
+        mode:      runMode,
+        jobId:     batchId,
         batch_id:  batchId,
         startedAt: new Date(start).toISOString(),
         // Spec "FIX PIPELINE CONCURRENCY" §8 — frontend-friendly
@@ -1804,7 +1902,7 @@ export async function POST(req: NextRequest) {
   // still routes through `finally → releaseLock` instead of leaking a
   // half-claimed flag.
   try {
-    await claimLock();
+    await claimLock(runMode);
     // Spec "FAIL FAST IF NO EXECUTION" — explicit "we got past the
     // lock, about to invoke" trace tag. Pairs with [PIPELINE START]
     // emitted at the top of runScanInner; missing the latter while
@@ -1849,10 +1947,9 @@ export async function POST(req: NextRequest) {
  *   - otherwise → trigger a run (legacy URL-paste convenience).
  *     Same session + lock guards as POST.
  *
- * Spec "FIX PIPELINE CONCURRENCY" §3+§8 — `?status=true` now ships
- * a frontend-friendly running envelope: { running, batch_id,
- * percent_complete, eta_seconds, progress: { scanned, total, ... } }.
- * When no run is active, `running=false` and `progress=null`.
+ * Spec "FIX PIPELINE CONCURRENCY" §3+§8 — `?status=true` ships
+ * a frontend-friendly running envelope plus persistent lastCompletedRun.
+ * When idle, top-level counters mirror the last completed run.
  */
 export async function GET(req: NextRequest): Promise<Response> {
   if (req.nextUrl.searchParams.get('status') === 'true') {
@@ -1867,7 +1964,19 @@ export async function GET(req: NextRequest): Promise<Response> {
     };
     const globalRunning = isScannerInFlight();
     const startedAtMs   = inFlight ? (Date.parse(inFlight.startedAt) || Date.now()) : null;
-    if (inFlight || globalRunning) {
+    const running       = Boolean(inFlight || globalRunning);
+    const progress      = running
+      ? buildPipelineProgress({ startedAtMs })
+      : null;
+    const runStatus     = buildSignalEngineStatus({
+      running,
+      jobId: inFlight?.batchId ?? null,
+      mode: inFlight?.mode ?? null,
+      startedAtMs: running ? startedAtMs : null,
+      progressScanned: progress?.scanned ?? null,
+      progressTotal: progress?.total ?? null,
+    });
+    if (running) {
       const env = buildRunningEnvelope({
         batchId:     inFlight?.batchId ?? null,
         startedAtMs,
@@ -1876,6 +1985,9 @@ export async function GET(req: NextRequest): Promise<Response> {
         {
           ...lockEnvelope,
           ...env,
+          ...runStatus,
+          batch_id:  runStatus.jobId ?? env.batch_id,
+          started_at: runStatus.startedAt ?? env.started_at,
           source:    inFlight ? 'manual' : 'auto-recovery',
           api_usage: getApiUsage(),
         },
@@ -1885,11 +1997,11 @@ export async function GET(req: NextRequest): Promise<Response> {
     return NextResponse.json(
       {
         ...lockEnvelope,
-        running:          false,
+        ...runStatus,
         status:           'idle' as const,
-        batch_id:         null,
-        started_at:       null,
-        elapsed_ms:       null,
+        batch_id:         runStatus.jobId,
+        started_at:       runStatus.startedAt,
+        elapsed_ms:       runStatus.durationMs,
         percent_complete: 0,
         eta_seconds:      null,
         progress:         null,

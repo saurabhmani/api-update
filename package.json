@@ -73,6 +73,8 @@
     "test:news-intelligence": "vitest run --reporter verbose newsSignalIntegration newsContextualModifiers newsDexterNarrative",
     "scan:custom-universe": "tsx scripts/runCustomUniverseScan.ts",
     "validate:signals": "tsx scripts/validateScannerSmokeTest.ts",
+    "validate:signal-engine-status": "tsx scripts/validateSignalEngineStatus.ts",
+    "validate:signal-engine-status:live": "tsx scripts/validateSignalEngineStatus.ts --live",
     "debug:pipeline": "tsx scripts/debugPipeline.ts",
     "db:status": "tsx scripts/checkDbState.ts",
     "db:fix": "tsx scripts/fix-db.ts",
