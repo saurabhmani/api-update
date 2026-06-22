@@ -14,9 +14,14 @@
  *   scheduler` (and PM2) invoke. It bootstraps env + path aliases,
  *   starts the canonical market-data scheduler, and registers the
  *   non-market-data nightly jobs that used to live here:
- *     18:30 IST — signal generation (Phase-4)
+ *     08:30 IST — morning DB scan (pre-market signals)
+ *     16:00 IST — evening incremental candle update (IndianAPI)
+ *     16:30 IST — evening DB scan (fresh EOD signals)
  *     19:00 IST — nightly backtest
  *     00:00 IST — midnight maintenance
+ *
+ * Signal generation at 18:30 IST is superseded by the 16:30 evening
+ * scan unless SIGNAL_LEGACY_EVENING_SCAN_1830=true.
  *
  * Jobs REMOVED from this file during the Priority 1B cutover
  * (now served by `startScheduler()` in `src/lib/scheduler.ts`):
@@ -44,6 +49,7 @@ import cron from 'node-cron';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { startScheduler as startMarketDataScheduler } from '@/lib/scheduler';
+import { startDailyScanSchedule } from '@/lib/workers/dailyScanSchedule';
 import {
   generatePhase4Signals,
   DEFAULT_PHASE3_CONFIG,
@@ -260,12 +266,9 @@ log.info('worker-scheduler starting', { timezone: IST });
 // 1. Market-data ingestion — canonical 10-minute IST cadence.
 startMarketDataScheduler();
 
-// 2. 18:30 IST — signal generation (post-close, Mon–Fri).
-cron.schedule('30 18 * * 1-5', () => {
-  runSignalGeneration().catch(err => {
-    log.error('signal generation failed', { err: (err as Error).message });
-  });
-}, { timezone: IST });
+// 2. Daily scan schedule — 08:30 morning scan, 16:00 evening update,
+//    16:30 evening scan (see docs/DAILY_SCAN_SCHEDULE.md).
+startDailyScanSchedule();
 
 // 3. 19:00 IST — nightly backtest (Mon–Fri).
 cron.schedule('0 19 * * 1-5', () => {
