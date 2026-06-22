@@ -50,6 +50,8 @@
     "scans:morning": "tsx scripts/runDailyScanJob.ts morning-scan",
     "scans:evening-update": "tsx scripts/runDailyScanJob.ts evening-update",
     "scans:evening": "tsx scripts/runDailyScanJob.ts evening-scan",
+    "quota:audit": "tsx scripts/auditProviderQuota.ts",
+    "quota:migrate": "tsx src/lib/db/migrateProviderRequestLogs.ts",
     "ws-server": "tsx src/lib/ws/streamServerCli.ts",
     "db:setup": "ts-node -P tsconfig.node.json src/lib/db/setup.ts",
     "test:phase1": "tsx src/__tests__/backtestingPhase1.test.ts",

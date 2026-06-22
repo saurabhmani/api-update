@@ -14,6 +14,7 @@
 
 import { db } from '../db';
 import { migrateMarketData } from './migrateMarketData';
+import { migrateProviderRequestLogs } from './migrateProviderRequestLogs';
 import { migrateSignalEngine } from './migrateSignalEngine';
 
 let _ensured = false;
@@ -796,6 +797,14 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
   } catch (err) {
     failed++;
     console.error('[ensureAllSchemas] migrateMarketData failed:', (err as Error).message);
+  }
+
+  try {
+    await migrateProviderRequestLogs();
+    created += 1;
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] migrateProviderRequestLogs failed:', (err as Error).message);
   }
 
   // 4. Apply the signal-engine column migrations on top of the slim

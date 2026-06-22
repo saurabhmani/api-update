@@ -36,6 +36,8 @@ import {
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import type { HistoricalRange } from '@/types/market';
+import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
+import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 
 function envNum(name: string, lo: number, hi: number, fallback: number): number {
   const raw = Number(process.env[name]);
@@ -220,7 +222,46 @@ async function updateOneSymbol(
   return { status: 'fetched', inserted, updated };
 }
 
+export async function estimateDailyUpdateApiRequests(
+  options: Pick<CandleDailyUpdateJobOptions, 'universeLimit' | 'minBars' | 'symbols'> = {},
+): Promise<number> {
+  const universeLimit = options.universeLimit ?? BACKFILL_UNIVERSE_LIMIT_DEFAULT();
+  const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
+  const targetTradingDay = getLatestCompletedTradingDay();
+  const symbols = options.symbols?.length
+    ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
+    : await loadActiveUniverseSymbols(universeLimit);
+
+  let wouldFetch = 0;
+  for (const symbol of symbols) {
+    const stats = await getSymbolCandleStats(symbol);
+    const latestDate = stats.latestTs ? toIstCalendarDate(stats.latestTs) : null;
+    if (latestDate != null && latestDate >= targetTradingDay) continue;
+    wouldFetch++;
+  }
+  return wouldFetch;
+}
+
 export async function runCandleDailyUpdateJob(
+  options: CandleDailyUpdateJobOptions = {},
+): Promise<CandleDailyUpdateSummary> {
+  const jobId = `candle-daily-update_${Date.now()}`;
+  const dryRun = options.dryRun ?? false;
+  if (!dryRun) {
+    const estimate = await estimateDailyUpdateApiRequests(options);
+    await assertQuotaForJob({
+      estimatedRequests: estimate,
+      jobId,
+      sourceJob: 'candle-daily-update',
+    });
+  }
+  return runWithProviderRequestContext(
+    { jobId, sourceJob: 'candle-daily-update', requestType: 'incremental_daily' },
+    () => runCandleDailyUpdateJobInner(options),
+  );
+}
+
+async function runCandleDailyUpdateJobInner(
   options: CandleDailyUpdateJobOptions = {},
 ): Promise<CandleDailyUpdateSummary> {
   const t0 = Date.now();

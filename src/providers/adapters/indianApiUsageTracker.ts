@@ -108,13 +108,21 @@ function persist(force = false): void {
 //
 // Defaults match the user-stated plan limits. Env-overridable for
 // operators on different tiers (paid plans get a higher daily ceiling).
-function resolveLimit(envName: string, fallback: number): number {
-  const raw = Number(process.env[envName]);
-  if (!Number.isFinite(raw) || raw <= 0) return fallback;
-  return Math.max(1, Math.floor(raw));
+function resolveLimitMulti(envNames: string[], fallback: number): number {
+  for (const name of envNames) {
+    const raw = Number(process.env[name]);
+    if (Number.isFinite(raw) && raw > 0) return Math.max(1, Math.floor(raw));
+  }
+  return fallback;
 }
-export const INDIANAPI_DAILY_LIMIT   = resolveLimit('INDIANAPI_DAILY_LIMIT',   2500);
-export const INDIANAPI_MONTHLY_LIMIT = resolveLimit('INDIANAPI_MONTHLY_LIMIT', 70000);
+export const INDIANAPI_DAILY_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_DAILY_LIMIT', 'INDIAN_API_DAILY_SOFT_LIMIT', 'INDIANAPI_DAILY_SOFT_LIMIT'],
+  4_000,
+);
+export const INDIANAPI_MONTHLY_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_LIMIT', 'INDIAN_API_MONTHLY_BUDGET', 'BUDGET_MONTHLY_HARD_LIMIT'],
+  100_000,
+);
 // Spec "Per-run API call limit" — a pipeline run (refreshDailyCandles +
 // Phase 4) historically consumed ~1500 IndianAPI calls. Two unbounded
 // runs exhaust the daily 2500 ceiling; the per-run cap fails fast
@@ -134,7 +142,10 @@ export const INDIANAPI_MONTHLY_LIMIT = resolveLimit('INDIANAPI_MONTHLY_LIMIT', 7
 // fetch more symbols than the chunk contains). Override via
 // INDIANAPI_PER_RUN_LIMIT env when running historical bootstrap /
 // one-shot bulk ingestion.
-export const INDIANAPI_PER_RUN_LIMIT = resolveLimit('INDIANAPI_PER_RUN_LIMIT', 100);
+export const INDIANAPI_PER_RUN_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_PER_RUN_LIMIT'],
+  100,
+);
 
 // Soft warn threshold (percent of daily limit). When today's count
 // crosses this, every increment emits the [API USAGE WARN] line so
@@ -360,8 +371,14 @@ export function incrementApiUsage(label = 'indianapi'): void {
 // absolute ceiling defaults to 90,000 (worst-case). Both env-tunable.
 export type ComplianceLabel = 'SAFE' | 'BORDERLINE' | 'UNSAFE';
 
-export const INDIANAPI_MONTHLY_TARGET = resolveLimit('INDIANAPI_MONTHLY_TARGET', 70_000);
-export const INDIANAPI_MONTHLY_CEILING = resolveLimit('INDIANAPI_MONTHLY_CEILING', 90_000);
+export const INDIANAPI_MONTHLY_TARGET = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_TARGET', 'BUDGET_MONTHLY_SOFT_CAP'],
+  70_000,
+);
+export const INDIANAPI_MONTHLY_CEILING = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_CEILING', 'INDIAN_API_MONTHLY_BUDGET', 'INDIANAPI_MONTHLY_LIMIT'],
+  100_000,
+);
 
 export interface ComplianceProjection {
   label:                ComplianceLabel;

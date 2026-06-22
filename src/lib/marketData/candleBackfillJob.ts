@@ -23,6 +23,8 @@ import {
   INDIANAPI_PER_RUN_LIMIT,
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
+import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
+import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 
 // ── Config ────────────────────────────────────────────────────────
 
@@ -356,6 +358,35 @@ async function backfillOneSymbol(
 
 // ── Main job ──────────────────────────────────────────────────────
 
+export async function estimateBackfillApiRequests(
+  options: Pick<
+    CandleBackfillJobOptions,
+    'universeLimit' | 'minBars' | 'maxAgeDays' | 'resume' | 'symbols' | 'maxFetch'
+  > = {},
+): Promise<number> {
+  const universeLimit = options.universeLimit ?? BACKFILL_UNIVERSE_LIMIT_DEFAULT();
+  const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
+  const maxAgeDays = options.maxAgeDays ?? BACKFILL_MAX_AGE_DAYS_DEFAULT();
+
+  const symbols = options.symbols?.length
+    ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
+    : options.resume
+      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays)
+      : await loadActiveUniverseSymbols(universeLimit);
+
+  let wouldFetch = 0;
+  for (const symbol of symbols) {
+    const stats = await getSymbolCandleStats(symbol);
+    if (!shouldSkipSymbol(stats, minBars, maxAgeDays)) {
+      wouldFetch++;
+      if (options.maxFetch != null && options.maxFetch > 0 && wouldFetch >= options.maxFetch) {
+        break;
+      }
+    }
+  }
+  return wouldFetch;
+}
+
 export async function runCandleBackfillJob(
   options: CandleBackfillJobOptions = {},
 ): Promise<CandleBackfillJobSummary> {
@@ -373,6 +404,45 @@ export async function runCandleBackfillJob(
       'IndianAPI key missing — set INDIANAPI_API_KEY (or INDIANAPI_KEY) before running backfill',
     );
   }
+
+  const jobId = `candle-backfill_${Date.now()}`;
+  if (!dryRun) {
+    const estimate = await estimateBackfillApiRequests(options);
+    await assertQuotaForJob({
+      estimatedRequests: estimate,
+      jobId,
+      sourceJob: 'candle-backfill',
+    });
+  }
+
+  return runWithProviderRequestContext(
+    { jobId, sourceJob: 'candle-backfill', requestType: 'historical_daily' },
+    async () => runCandleBackfillJobInner({
+      t0,
+      universeLimit,
+      minBars,
+      maxAgeDays,
+      requestDelayMs,
+      dryRun,
+      maxFetch,
+      options,
+    }),
+  );
+}
+
+async function runCandleBackfillJobInner(ctx: {
+  t0: number;
+  universeLimit: number;
+  minBars: number;
+  maxAgeDays: number;
+  requestDelayMs: number;
+  dryRun: boolean;
+  maxFetch?: number;
+  options: CandleBackfillJobOptions;
+}): Promise<CandleBackfillJobSummary> {
+  const {
+    t0, universeLimit, minBars, maxAgeDays, requestDelayMs, dryRun, maxFetch, options,
+  } = ctx;
 
   resetCandleSourceCounters();
   beginPerRunBudget();
