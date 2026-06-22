@@ -1,13 +1,10 @@
 // ════════════════════════════════════════════════════════════════
-//  NSE Historical Provider — DEGRADED-MODE FALLBACK FOR CANDLES
+//  NSE Historical Provider — OPT-IN FALLBACK FOR CANDLES
 //
 //  Hits www.nseindia.com/api/historical/cm/equity for daily OHLCV
-//  bars. Used by the candle fallback chain ONLY when:
-//    1. The DB has < 100 bars for a symbol AND
-//    2. IndianAPI live fetch failed/empty AND
-//    3. NSE_HISTORICAL_FETCH_ENABLED=true is set in env.
-//
-//  Default OFF. NSE actively rate-limits and IP-bans unattended
+//  bars. Used by the candle chain ONLY when:
+//    1. IndianAPI fetch failed/empty AND
+//    2. NSE_HISTORICAL_FETCH_ENABLED=true is set in env (default OFF).
 //  scrapers, so this provider mirrors `nseDirectProvider`'s
 //  conservative contract:
 //    • Cookie acquisition before the API call (NSE 403s without it).
@@ -56,11 +53,15 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
   return Math.max(lo, Math.min(hi, raw));
 }
 
-// Spec "ENABLE NSE fallback" — default ON. Operators who hit
-// NSE bot-blocks repeatedly can flip NSE_HISTORICAL_FETCH_ENABLED=false
-// to take NSE out of the chain (the per-symbol provider trip + soft
-// backoff already handle transient blocks without a kill switch).
-const NSE_HISTORICAL_ENABLED = () => envBool('NSE_HISTORICAL_FETCH_ENABLED', true);
+// Default OFF — NSE scraping is opt-in via NSE_HISTORICAL_FETCH_ENABLED=true.
+// IndianAPI is the primary upstream for daily candle backfill; NSE is a
+// last-resort fallback when explicitly enabled by the operator.
+const NSE_HISTORICAL_ENABLED = () => envBool('NSE_HISTORICAL_FETCH_ENABLED', false);
+
+/** Whether the NSE historical fallback leg is enabled. */
+export function isNseHistoricalFetchEnabled(): boolean {
+  return NSE_HISTORICAL_ENABLED();
+}
 const NSE_REQUEST_TIMEOUT_MS = () => envNum('NSE_HISTORICAL_TIMEOUT_MS', 3_000, 30_000, 8_000);
 const NSE_MIN_GAP_MS         = () => envNum('NSE_HISTORICAL_MIN_GAP_MS', 1_000, 60_000, 7_000);
 const NSE_DAILY_CAP          = () => envNum('NSE_HISTORICAL_DAILY_CAP', 1, 500, 50);

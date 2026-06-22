@@ -293,11 +293,22 @@ async function runIndianApi<T>(
   try {
     data = await fn(signal);
   } catch (err) {
-    const e = err as { name?: string; message?: string; status?: number };
-    errorCode = (e?.status ? `HTTP_${e.status}` : (e?.name ?? 'UPSTREAM_ERROR'));
+    const e = err as { name?: string; message?: string; status?: number; code?: string };
+    const status = e?.status;
+    if (status === 403 || status === 401 || e?.code === 'AUTH_FAILED') {
+      errorCode = 'API_KEY_INVALID';
+    } else if (status === 429) {
+      errorCode = 'RATE_LIMITED';
+    } else if (status != null && status >= 500 && status < 600) {
+      errorCode = 'UPSTREAM_5XX';
+    } else if (e?.code === 'API_BUDGET_EXCEEDED') {
+      errorCode = 'BUDGET_EXCEEDED';
+    } else {
+      errorCode = status ? `HTTP_${status}` : (e?.name ?? 'UPSTREAM_ERROR');
+    }
     errorMessage = e?.message ?? String(err);
     log.warn('IndianAPI call failed', {
-      endpoint: opts.endpoint, errorCode, errorMessage,
+      endpoint: opts.endpoint, errorCode, errorMessage, status,
     });
   }
 
@@ -507,7 +518,7 @@ export async function getHistorical(
   signal?: AbortSignal,
 ): Promise<ProviderInvocation<HistoricalSeries>> {
   const sym = await mapToIndianApiSymbol(symbol);
-  return runIndianApi((sig) => IndianAPI.getHistorical(sym, range, sig), {
+  const inv = await runIndianApi((sig) => IndianAPI.getHistorical(sym, range, sig), {
     endpoint: `historical_data:${range}`,
     requestType: 'hist',
     cost: 1,
@@ -517,6 +528,53 @@ export async function getHistorical(
       timestamp: s.candles[s.candles.length - 1]?.t,
     }),
   }, signal);
+
+  if (inv.status === 'success' || inv.status === 'partial') {
+    const candles = inv.data?.candles ?? [];
+    if (candles.length === 0) {
+      return {
+        ...inv,
+        status: 'failed',
+        dataQuality: 'LOW',
+        symbolsReturned: 0,
+        coveragePercent: 0,
+        freshnessScore: 0,
+        errorCode: 'EMPTY_RESPONSE',
+        errorMessage: 'IndianAPI historical_data returned zero candles',
+        data: null,
+      };
+    }
+    const valid = candles.filter(
+      (c) =>
+        Number.isFinite(c.t) && Number.isFinite(c.o) && Number.isFinite(c.h)
+        && Number.isFinite(c.l) && Number.isFinite(c.c)
+        && c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0,
+    );
+    if (valid.length === 0) {
+      return {
+        ...inv,
+        status: 'failed',
+        dataQuality: 'LOW',
+        symbolsReturned: 0,
+        coveragePercent: 0,
+        freshnessScore: 0,
+        errorCode: 'MALFORMED_RESPONSE',
+        errorMessage: `All ${candles.length} historical bars failed validation`,
+        data: null,
+      };
+    }
+    if (valid.length < candles.length) {
+      return {
+        ...inv,
+        status: 'partial',
+        data: inv.data
+          ? { ...inv.data, candles: valid }
+          : { symbol: sym, range, candles: valid },
+      };
+    }
+  }
+
+  return inv;
 }
 
 // ── Market overview ────────────────────────────────────────────────

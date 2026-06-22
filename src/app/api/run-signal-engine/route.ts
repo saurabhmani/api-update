@@ -419,21 +419,10 @@ function buildRunningEnvelope(opts: {
   };
 }
 
-// Candle provider — walks the unified fallback chain (DB-fast →
-// IndianAPI live → NSE direct → DB-thin → throw) so a symbol with
-// any source returning data flows into Phase 3.
-//
-// Spec "ALLOW MARKET CLOSED FETCH" + "FORCE MIN DATA GUARANTEE":
-// the legacy `if (market.isOpen && refreshAgeMs > STALE_SKIP_AGE_MS) return []`
-// branch was deleted. Returning an empty array silently turned every
-// symbol into a Phase-3 rejection during market hours when a candle
-// refresh was lagging — exactly the failure the user reported.
-// Stale data is now passed through; Phase 3's own validateCandleSeries
-// gate decides whether the bars are usable.
-//
-// `STALE_SKIP_AGE_MS` is no longer referenced from the read path; it
-// remains in scope as documentation of the historical threshold and
-// is still consumed by upstream freshness reporting.
+// Candle provider — DB cache while scan is in flight; never calls
+// IndianAPI during strategy evaluation (`isInFlight()` gate inside
+// fetchDailyCandlesWithFallback). Upstream backfill happens earlier
+// via refreshDailyCandles → getCandles.
 void STALE_SKIP_AGE_MS;
 const dbCandleProvider: CandleProvider = {
   async fetchDailyCandles(symbol: string): Promise<Candle[]> {

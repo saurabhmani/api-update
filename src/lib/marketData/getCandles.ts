@@ -1,78 +1,134 @@
 // ════════════════════════════════════════════════════════════════
-//  getCandles — daily-OHLC entry point used by the candle ingest path.
+//  getCandles — daily-OHLC entry point for candle ingest (backfill).
 //
-//  Step 9 of the IndianAPI cutover: this module now pulls from
-//  IndianAPI via the provider wrapper. The legacy yahooCandles stub // @deprecated marker
-//  remains for compile-time compatibility but is never called from
-//  here. Production paths (run-signal-engine, candleRefreshScheduler)
-//  go through this function and never see the deprecated Yahoo path. // @deprecated marker
+//  IndianAPI is the primary upstream for historical daily bars.
+//  This module is used ONLY by `candleIngest` — strategy evaluation
+//  reads from DB via `fetchDailyCandlesWithFallback` and never
+//  calls this function while a scan is in flight.
 //
-//  Never throws. Failure returns `{ ok: false, reason }` so callers
-//  (candleIngest's bulk loop) can skip-and-continue without a
-//  try/catch at every site.
+//  Never throws. Failure returns `{ ok: false, reason }`.
 // ════════════════════════════════════════════════════════════════
 
-import { getHistorical as indianHistorical } from './providers/indianApiProvider';
 import { mapToIndianApiSymbol } from './symbolMapper';
-import type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles'; // @deprecated marker
+import {
+  fetchIndianApiDailyCandles,
+  getDbBarCount,
+  SUFFICIENT_BAR_DEPTH,
+} from './candleFallbackChain';
+import {
+  fetchNseHistoricalCandles,
+  isNseHistoricalFetchEnabled,
+} from './providers/nseHistoricalProvider';
+import { getIndianApiConfig } from './providers/indianApiEndpoints';
+import type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
 
-export type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles'; // @deprecated marker
+export type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
 
-const PERMANENT_SKIP = new Set<string>([
-  'JUNCTION',
-]);
+export interface GetCandlesOptions {
+  /** When true, call upstream even if DB already has sufficient depth. */
+  incrementalRefresh?: boolean;
+}
 
-// *INAV pseudo-symbols are NSE indicative-NAV feeds for ETFs — not
-// tradeable instruments. Drop them at the candle layer so every
-// caller is freed from re-implementing the filter.
+const PERMANENT_SKIP = new Set<string>(['JUNCTION']);
 const INAV_PSEUDO_RE = /INAV$/;
 
-// Negative cache — when the provider fails, don't re-probe for 1h.
-// Daily bars only update once a day anyway; thrashing a dead symbol
-// every minute is pure noise. Cleared on process restart.
 const NEGATIVE_TTL_MS = 15 * 60 * 1_000;
 const failedAt = new Map<string, number>();
 
-export async function getCandles(symbol: string): Promise<CandleFetchResult> {
-  const sym = await mapToIndianApiSymbol(symbol);
+function toOhlcBars(candles: Array<{
+  ts: string | Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}>): OhlcBar[] {
+  return candles.map((c) => ({
+    ts: new Date(c.ts as string | Date).getTime(),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
+}
+
+function providerReason(code: string, message?: string | null): string {
+  return message ? `provider:${code}:${message}` : `provider:${code}`;
+}
+
+export async function getCandles(
+  symbol: string,
+  opts: GetCandlesOptions = {},
+): Promise<CandleFetchResult> {
+  const sym = (await mapToIndianApiSymbol(symbol)).toUpperCase();
 
   if (PERMANENT_SKIP.has(sym)) {
-    return { ok: false, source: 'yahoo', reason: 'skip:not_tradable' }; // @deprecated marker
+    return { ok: false, source: 'indianapi', reason: 'skip:not_tradable' };
   }
   if (INAV_PSEUDO_RE.test(sym)) {
-    return { ok: false, source: 'yahoo', reason: 'skip:inav_pseudo_symbol' }; // @deprecated marker
+    return { ok: false, source: 'indianapi', reason: 'skip:inav_pseudo_symbol' };
   }
 
   const negAt = failedAt.get(sym);
   if (negAt && Date.now() - negAt < NEGATIVE_TTL_MS) {
-    return { ok: false, source: 'yahoo', reason: 'neg_cache:provider_recently_failed' }; // @deprecated marker
+    return { ok: false, source: 'indianapi', reason: 'neg_cache:provider_recently_failed' };
   }
 
-  const inv = await indianHistorical(sym, '1y');
-  if (inv.status === 'success' || inv.status === 'partial') {
-    const series = inv.data;
-    const bars: OhlcBar[] = (series?.candles ?? []).map((c) => ({
-      ts:     c.t,
-      open:   c.o,
-      high:   c.h,
-      low:    c.l,
-      close:  c.c,
-      volume: c.v,
-    }));
-    if (bars.length > 0) {
-      failedAt.delete(sym);
-      // The CandleSource union is still typed as 'yahoo' for legacy // @deprecated marker
-      // reasons — leaving it that way keeps the caller's discriminator
-      // working unchanged. The provenance is faithfully recorded in
-      // q365_data_feed_health (Step 7).
-      return { ok: true, candles: bars, source: 'yahoo' as CandleSource }; // @deprecated marker
+  const { apiKey } = getIndianApiConfig();
+  if (!apiKey) {
+    return {
+      ok: false,
+      source: 'indianapi',
+      reason: providerReason('API_KEY_MISSING', 'INDIANAPI key not configured in env'),
+    };
+  }
+
+  const sufficientDepth = SUFFICIENT_BAR_DEPTH();
+  if (!opts.incrementalRefresh) {
+    const dbCount = await getDbBarCount(sym);
+    if (dbCount >= sufficientDepth) {
+      console.log(
+        `[CANDLE INGEST SKIP] symbol=${sym} db_bars=${dbCount} ` +
+        `threshold=${sufficientDepth} reason=sufficient_depth`,
+      );
+      return { ok: false, source: 'db', reason: 'skip:sufficient_depth' };
     }
+  }
+
+  // 1) IndianAPI — primary
+  const ia = await fetchIndianApiDailyCandles(sym);
+  if (ia.ok && ia.candles.length > 0) {
+    failedAt.delete(sym);
+    return { ok: true, candles: toOhlcBars(ia.candles), source: 'indianapi' };
+  }
+
+  const iaCode = String(ia.errorCode ?? 'UPSTREAM_ERROR');
+  console.warn(
+    `[getCandles] IndianAPI failed symbol=${sym} code=${iaCode} — ` +
+    `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
+  );
+
+  // 2) NSE — opt-in fallback only
+  if (isNseHistoricalFetchEnabled()) {
+    const nse = await fetchNseHistoricalCandles(sym);
+    if (nse.ok && nse.candles.length > 0) {
+      failedAt.delete(sym);
+      return { ok: true, candles: toOhlcBars(nse.candles), source: 'nse' };
+    }
+    const nseCode = nse.errorCode ?? 'NSE_FAILED';
+    failedAt.set(sym, Date.now());
+    return {
+      ok: false,
+      source: 'nse',
+      reason: providerReason(nseCode, nse.errorMessage),
+    };
   }
 
   failedAt.set(sym, Date.now());
   return {
     ok: false,
-    source: 'yahoo', // @deprecated marker
-    reason: inv.errorCode ? `provider:${inv.errorCode}` : 'provider:no_data',
+    source: 'indianapi',
+    reason: providerReason(iaCode, ia.errorMessage),
   };
 }
