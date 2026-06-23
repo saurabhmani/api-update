@@ -84,6 +84,22 @@ const log = logger.child({ adapter: 'IndianAPI' });
 // API key likewise come from the endpoint config so swapping the host
 // or rotating the key is one diff in one file.
 
+// Per-call symbol cap for emulated batch_quote fan-out (see getBatchQuotes).
+// Shared with the keep-alive agent below so transport concurrency tracks
+// INDIANAPI_EMULATED_BATCH_MAX without duplicating the env read.
+export function resolveIndianApiTransportCapacity(
+  emulatedBatchMaxEnv?: string,
+): { maxEmulatedBatchSymbols: number; httpAgentMaxSockets: number } {
+  const maxEmulatedBatchSymbols = Math.max(1, Number(emulatedBatchMaxEnv) || 25);
+  // Floor at 25 preserves legacy socket-pool sizing when batch ≤ 25; scales up
+  // automatically when operators raise INDIANAPI_EMULATED_BATCH_MAX.
+  const httpAgentMaxSockets = Math.max(25, maxEmulatedBatchSymbols);
+  return { maxEmulatedBatchSymbols, httpAgentMaxSockets };
+}
+
+const { maxEmulatedBatchSymbols: MAX_EMULATED_BATCH_SYMBOLS, httpAgentMaxSockets: HTTP_AGENT_MAX_SOCKETS } =
+  resolveIndianApiTransportCapacity(process.env.INDIANAPI_EMULATED_BATCH_MAX);
+
 // ── Shared axios client with HTTPS keep-alive ──────────────────────
 //
 // Critical perf fix (FIX-DATA-PIPELINE follow-up): the adapter used to
@@ -98,8 +114,8 @@ const log = logger.child({ adapter: 'IndianAPI' });
 // Caching one axios instance + a keep-alive `https.Agent` lets the
 // underlying socket pool reuse the TLS handshake across requests.
 // Latency drops from ~5 s/req at saturation to <500 ms/req for the
-// same workload. `maxSockets:25` matches INDIANAPI_EMULATED_BATCH_MAX
-// so the pool never queues at the agent layer.
+// same workload. `HTTP_AGENT_MAX_SOCKETS` tracks MAX_EMULATED_BATCH_SYMBOLS
+// so the pool never queues at the agent layer when batch size scales up.
 let _httpClient: AxiosInstance | null = null;
 let _httpClientForKey: string | null = null;
 
@@ -117,14 +133,14 @@ function http(): AxiosInstance {
   const httpsAgent = new HttpsAgent({
     keepAlive: true,
     keepAliveMsecs: 30_000,
-    maxSockets: 25,
+    maxSockets: HTTP_AGENT_MAX_SOCKETS,
     maxFreeSockets: 10,
     timeout: cfg.timeoutMs,
   });
   const httpAgent = new HttpAgent({
     keepAlive: true,
     keepAliveMsecs: 30_000,
-    maxSockets: 25,
+    maxSockets: HTTP_AGENT_MAX_SOCKETS,
     maxFreeSockets: 10,
     timeout: cfg.timeoutMs,
   });
@@ -1392,7 +1408,6 @@ export interface BatchQuoteResult {
 //     rate-limiter chain saturated even when one symbol's /stock
 //     call stalls. Bound stays low enough to avoid bursty IP-rate
 //     limit trips.
-const MAX_EMULATED_BATCH_SYMBOLS = Math.max(1, Number(process.env.INDIANAPI_EMULATED_BATCH_MAX) || 25);
 const EMULATED_BATCH_CONCURRENCY = Math.max(1, Number(process.env.INDIANAPI_EMULATED_BATCH_CONCURRENCY) || 5);
 
 export async function getBatchQuotes(
