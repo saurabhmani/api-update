@@ -55,7 +55,6 @@ import type {
   SuspicionBand,
   ManipulationPenaltyRecord,
 } from '@/lib/manipulation-engine/types';
-import { DEFAULT_PHASE1_CONFIG } from '@/lib/signal-engine';
 import { decideActions } from '@/lib/manipulation-engine/actions/actionRegistry';
 
 // ════════════════════════════════════════════════════════════════
@@ -191,10 +190,35 @@ export async function runManipulationScan(
 
   await ensureManipulationEngineTables();
 
-  const universe = (options.universe ?? DEFAULT_PHASE1_CONFIG.universe).slice(
-    0,
-    options.limit ?? Infinity,
-  );
+  // TRADEABLE_UNIVERSE is an empty array at module load; only Next.js
+  // instrumentation hydrates it in-process. Standalone CLI / cron runs
+  // must load from q365_universe before slicing the scan list.
+  let universeList: string[];
+  if (options.universe?.length) {
+    universeList = options.universe;
+  } else {
+    const { loadTradeableUniverse } = await import(
+      '@/lib/signal-engine/constants/signalEngine.constants'
+    );
+    universeList = await loadTradeableUniverse();
+  }
+  const universe = universeList.slice(0, options.limit ?? Infinity);
+  if (universe.length === 0) {
+    console.error(
+      '[MANIPULATION] universe empty — load q365_universe (is_active=1) before scanning. ' +
+      'Run db:migrate / scripts/loadNifty500.ts if the table is unseeded.',
+    );
+    return {
+      scanned:             0,
+      snapshotsPersisted:  0,
+      skippedInsufficient: 0,
+      failed:              1,
+      bandCounts:          { low: 0, watch: 0, elevated: 0, high: 0, severe: 0 },
+      penaltiesWritten:    0,
+      durationMs:          Date.now() - start,
+    };
+  }
+
   console.log(`[MANIPULATION] scan started — ${universe.length} symbols`);
 
   const result: ScanRunResult = {

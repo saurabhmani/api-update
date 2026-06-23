@@ -3,7 +3,7 @@ import {
   getIntelligenceMode,
   resolveEngineHealthCheck,
 } from '@/types/dashboard';
-import { buildLightweightEngineHealthPreview, buildIndicatorHealthNode, buildDataFeedHealthNode, buildScannerHealthNode, buildDueDiligenceHealthNode, buildDailyReportHealthNode, buildPipelineReadiness } from '@/lib/signals/engineHealthMap';
+import { buildLightweightEngineHealthPreview, buildIndicatorHealthNode, buildDataFeedHealthNode, buildScannerHealthNode, buildDueDiligenceHealthNode, buildManipulationHealthNode, buildPipelineReadiness } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthContext } from '@/lib/signals/engineHealthMap';
 
 const baseFeedCtx = (feed: Partial<EngineHealthContext['feed']>, marketOpen = true): EngineHealthContext => ({
@@ -259,43 +259,167 @@ describe('buildDueDiligenceHealthNode — pipeline readiness', () => {
   });
 });
 
-describe('buildDailyReportHealthNode — PARTIAL is normal operation', () => {
-  const withDailyReport = (reportStatus: 'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA' | 'PENDING') => ({
+describe('buildManipulationHealthNode — metadata-driven status (3.x)', () => {
+  const base = (signals = {
+    approved: [] as unknown[],
+    highPotential: [] as unknown[],
+    watchlist: [] as unknown[],
+    developing: [] as unknown[],
+    scannerCandidates: [] as unknown[],
+    riskRestricted: [] as unknown[],
+    rejected: [] as unknown[],
+  }) => ({
     ...baseFeedCtx({ staleMinutes: 10, candleAgeHours: 1 }),
-    dailyReport: {
-      available: true,
-      reportStatus,
-      generatedAt: new Date().toISOString(),
-      warnings: reportStatus === 'PARTIAL'
-        ? ['Daily report is partial — some sections are awaiting post-signal data.']
-        : [],
-    },
-    counters: {
-      approvedTotal: 0, approvedBuy: 0, approvedSell: 0,
-      highPotentialTotal: 3, watchlistTotal: 0, rejectedTotal: 0, candidateTotal: 3,
-    },
-    signals: {
-      approved: [],
-      highPotential: [{ symbol: 'A' } as any, { symbol: 'B' } as any, { symbol: 'C' } as any],
-      watchlist: [], developing: [], scannerCandidates: [], riskRestricted: [], rejected: [],
-    },
+    signals,
   });
 
-  it('stays HEALTHY when reportStatus is PARTIAL (awaiting outcome sections)', () => {
-    const node = buildDailyReportHealthNode(withDailyReport('PARTIAL'));
+  const freshMeta = {
+    configured: true,
+    symbolCount: 10,
+    snapshotCount: 8,
+    freshestSnapshotAt: '2026-06-22T15:30:00.000Z',
+    stale: false,
+    globalSnapshotCount: 8,
+    globalLatestScanAt: '2026-06-22T15:30:00.000Z',
+  };
+
+  it('3.1 — configured scanner + fresh snapshots → HEALTHY', () => {
+    const node = buildManipulationHealthNode({
+      ...base(),
+      manipulationRiskMeta: freshMeta,
+    });
     expect(node.status).toBe('HEALTHY');
-    expect(node.metrics.reportStatus).toBe('PARTIAL');
+    expect(node.metrics.hardRejectionEnabled).toBe(true);
   });
 
-  it('stays HEALTHY when reportStatus is INSUFFICIENT_DATA but pipeline rows exist', () => {
-    const node = buildDailyReportHealthNode(withDailyReport('INSUFFICIENT_DATA'));
+  it('3.2 — configured scanner + stale snapshots → DEGRADED', () => {
+    const node = buildManipulationHealthNode({
+      ...base(),
+      manipulationRiskMeta: {
+        ...freshMeta,
+        freshestSnapshotAt: '2026-06-01T10:00:00.000Z',
+        stale: true,
+      },
+    });
+    expect(node.status).toBe('DEGRADED');
+    expect(node.metrics.warningOnlyMode).toBe(true);
+  });
+
+  it('3.3 — configured + global idle (no snapshots anywhere) → HEALTHY warning-only', () => {
+    const node = buildManipulationHealthNode({
+      ...base(),
+      manipulationRiskMeta: {
+        configured: true,
+        symbolCount: 20,
+        snapshotCount: 0,
+        freshestSnapshotAt: null,
+        stale: false,
+        globalSnapshotCount: 0,
+        globalLatestScanAt: null,
+      },
+    });
     expect(node.status).toBe('HEALTHY');
+    expect(node.metrics.warningOnlyMode).toBe(true);
+    expect(node.status).not.toBe('NOT_CONFIGURED');
+    expect(node.status).not.toBe('INSUFFICIENT_DATA');
   });
 
-  it('was WARNING before fix when reportStatus was PARTIAL', () => {
-    // Document the root cause: PARTIAL mapped to WARNING in engine health.
-    const node = buildDailyReportHealthNode(withDailyReport('PARTIAL'));
-    expect(node.status).not.toBe('WARNING');
+  it('3.3b — configured + global snapshots but probed pool uncovered → INSUFFICIENT_DATA', () => {
+    const node = buildManipulationHealthNode({
+      ...base(),
+      manipulationRiskMeta: {
+        configured: true,
+        symbolCount: 20,
+        snapshotCount: 0,
+        freshestSnapshotAt: null,
+        stale: false,
+        globalSnapshotCount: 42,
+        globalLatestScanAt: '2026-06-20T10:00:00.000Z',
+      },
+    });
+    expect(node.status).toBe('INSUFFICIENT_DATA');
+    expect(node.status).not.toBe('NOT_CONFIGURED');
+  });
+
+  it('3.4 — metadata missing → NOT_CONFIGURED', () => {
+    const nodeAbsent = buildManipulationHealthNode(base());
+    expect(nodeAbsent.status).toBe('NOT_CONFIGURED');
+
+    const nodeUnconfigured = buildManipulationHealthNode({
+      ...base(),
+      manipulationRiskMeta: {
+        configured: false,
+        symbolCount: 0,
+        snapshotCount: 0,
+        freshestSnapshotAt: null,
+        stale: false,
+        globalSnapshotCount: 0,
+        globalLatestScanAt: null,
+      },
+    });
+    expect(nodeUnconfigured.status).toBe('NOT_CONFIGURED');
+  });
+
+  it('3.5 — zero approved signals never NOT_CONFIGURED when metadata exists', () => {
+    const scenarios = [
+      { ...freshMeta },
+      {
+        configured: true,
+        symbolCount: 20,
+        snapshotCount: 0,
+        freshestSnapshotAt: null,
+        stale: false,
+        globalSnapshotCount: 0,
+        globalLatestScanAt: null,
+      },
+      {
+        configured: true,
+        symbolCount: 10,
+        snapshotCount: 8,
+        freshestSnapshotAt: '2026-06-01T10:00:00.000Z',
+        stale: true,
+        globalSnapshotCount: 8,
+        globalLatestScanAt: '2026-06-01T10:00:00.000Z',
+      },
+    ];
+    for (const manipulationRiskMeta of scenarios) {
+      const node = buildManipulationHealthNode({
+        ...base({
+          approved: [],
+          highPotential: [],
+          watchlist: [],
+          developing: [],
+          scannerCandidates: [],
+          riskRestricted: [],
+          rejected: [],
+        }),
+        manipulationRiskMeta,
+      });
+      expect(node.status).not.toBe('NOT_CONFIGURED');
+    }
+  });
+
+  it('legacy gateImpact fallback when manipulationRiskMeta is absent', () => {
+    const node = buildManipulationHealthNode({
+      ...base(),
+      manipulationGateImpact: {
+        blockedFromApproval: 0,
+        riskRestrictedCount: 0,
+        penalizedCount: 0,
+        warningOnlyCount: 0,
+        blockedSymbols: [],
+        riskRestrictedSymbols: [],
+        active: false,
+        dataStatus: 'FRESH',
+        symbolsQueried: 20,
+        symbolsWithEnvelope: 18,
+        latestScanAt: new Date().toISOString(),
+        latestEventDate: '2026-06-20',
+        usedFallbackUniverse: true,
+      },
+    });
+    expect(node.status).toBe('HEALTHY');
+    expect(node.metrics.symbolsQueried).toBe(20);
   });
 });
 

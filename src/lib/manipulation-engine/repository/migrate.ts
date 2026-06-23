@@ -211,6 +211,44 @@ export async function migrateManipulationEngineTables(): Promise<void> {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  // ── Idempotent snapshot schema repair ─────────────────────────
+  //
+  // ensureAllSchemas.ts historically created q365_manipulation_snapshots
+  // with `features_json` (plural) and without `triggered_events_json`.
+  // persistence.ts writes `feature_json` + `triggered_events_json`.
+  // CREATE TABLE IF NOT EXISTS cannot fix an existing drifted table.
+  try {
+    const { rows: snapCols } = await db.query<{ COLUMN_NAME: string }>(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'q365_manipulation_snapshots'`,
+    );
+    if (snapCols.length > 0) {
+      const present = new Set(snapCols.map((r) => String((r as any).COLUMN_NAME).toLowerCase()));
+      if (present.has('features_json') && !present.has('feature_json')) {
+        await db.query(
+          `ALTER TABLE q365_manipulation_snapshots
+             CHANGE COLUMN features_json feature_json JSON NULL`,
+        );
+        console.warn('[migrate] renamed q365_manipulation_snapshots.features_json → feature_json');
+      }
+      if (!present.has('feature_json') && !present.has('features_json')) {
+        await db.query(
+          `ALTER TABLE q365_manipulation_snapshots
+             ADD COLUMN feature_json JSON NULL`,
+        );
+      }
+      if (!present.has('triggered_events_json')) {
+        await db.query(
+          `ALTER TABLE q365_manipulation_snapshots
+             ADD COLUMN triggered_events_json JSON NULL`,
+        );
+      }
+    }
+  } catch (snapErr) {
+    console.warn('[migrate] snapshot schema repair failed:', (snapErr as any)?.message);
+  }
+
   // ── Idempotent ALTER: event triage status ─────────────────
   //
   // Added during the manipulation split-brain cleanup so the /api/manipulation

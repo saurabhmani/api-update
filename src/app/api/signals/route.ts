@@ -70,8 +70,11 @@ import {
   type ClosestToApprovalRow,
 }                                     from '@/lib/signals/responseAssembly';
 import {
+  attachManipulationRiskToSignal,
   getManipulationRiskForSymbols,
 }                                     from '@/lib/manipulation-engine/manipulationSignalRisk';
+import { DEFAULT_PHASE1_CONFIG }      from '@/lib/signal-engine/constants/signalEngine.constants';
+import { fetchManipulationRiskForSignalPools } from '@/lib/signals/manipulationRiskFetch';
 import {
   rankSignalsByInstitutionalScore,
   buildClosestToApprovalSignals,
@@ -1929,6 +1932,25 @@ export async function GET(req: NextRequest) {
             (r) => String((r as { direction?: string | null }).direction ?? '').toUpperCase() === 'SELL',
           ).length;
 
+          const {
+            manipulationRiskMap:      closedManipulationRiskMap,
+            manipulationUsedFallbackUniverse: closedManipulationUsedFallbackUniverse,
+            manipulationRiskMeta:     closedManipulationRiskMeta,
+          } = await fetchManipulationRiskForSignalPools(
+            {
+              finalRows:          closedTieredApproved as TieredRow[],
+              belowFloorDemoted:  [],
+              inProgressEnriched: [
+                ...closedTieredDeveloping,
+                ...closedTieredScanner,
+                ...closedHighPotential,
+                ...closedTieredWatchlist,
+              ],
+            },
+            DEFAULT_PHASE1_CONFIG.universe,
+            getManipulationRiskForSymbols,
+          );
+
           const dataSourceField =
             closedSignalRows.length > 0 ? 'last_close_signals' :
             has_data                     ? 'market_close_snapshot' :
@@ -2002,7 +2024,10 @@ export async function GET(req: NextRequest) {
               const ctx: DueDiligenceContext = { ...closedDDContext, tier };
               const performance = buildPerformanceReview(r as unknown as RankableSignal, ctx);
               const dd          = buildSignalDueDiligence(r as unknown as RankableSignal, ctx, performance);
-              return { ...r, dueDiligence: dd, performanceReview: performance };
+              const base = { ...r, dueDiligence: dd, performanceReview: performance };
+              return closedManipulationRiskMap
+                ? attachManipulationRiskToSignal(base, closedManipulationRiskMap)
+                : base;
             });
           };
 
@@ -2249,6 +2274,26 @@ export async function GET(req: NextRequest) {
 
             // ── PHASE_5_HEALTH_OBSERVABILITY_2026-05 ──
             healthPreview:       closedHealthPreview,
+
+            // ── PHASE_B_MANIPULATION — stable scanner metadata (every cycle) ──
+            manipulationRiskMeta: closedManipulationRiskMeta,
+            manipulationGateImpact: closedManipulationRiskMap ? {
+              blockedFromApproval:   0,
+              riskRestrictedCount:   0,
+              penalizedCount:        0,
+              warningOnlyCount:      0,
+              blockedSymbols:        [] as string[],
+              riskRestrictedSymbols: [] as string[],
+              active:                false,
+              usedFallbackUniverse:  closedManipulationUsedFallbackUniverse === true,
+              dataStatus:            closedManipulationRiskMeta.stale ? 'STALE' as const
+                                     : closedManipulationRiskMeta.snapshotCount > 0 ? 'FRESH' as const
+                                     : 'NO_DATA' as const,
+              symbolsQueried:        closedManipulationRiskMeta.symbolCount,
+              symbolsWithEnvelope:   closedManipulationRiskMeta.snapshotCount,
+              latestScanAt:          closedManipulationRiskMeta.freshestSnapshotAt,
+              latestEventDate:       null,
+            } : undefined,
           };
           // Compute closest-to-approval for the closed-market path,
           // and enrich each row with per-row due diligence so the
@@ -2517,26 +2562,15 @@ export async function GET(req: NextRequest) {
       });
 
       // ── PHASE_B_MANIPULATION_INTEGRATION ──
-      // Fetch the manipulation risk map for every symbol the assembler
-      // will see (approved + below-floor + in-progress). The map is
-      // small and the lookup batches into two DB queries, so this is
-      // cheap. On any failure we degrade to undefined so the assembler
-      // skips the gate entirely (no false rejections).
-      let manipulationRiskMap: Awaited<ReturnType<typeof getManipulationRiskForSymbols>> | undefined;
-      try {
-        const allSymbols: string[] = [];
-        for (const r of [...finalRows, ...belowFloorDemoted, ...inProgressEnriched]) {
-          const s = (r as { symbol?: string | null; tradingsymbol?: string | null }).symbol
-                 ?? (r as { symbol?: string | null; tradingsymbol?: string | null }).tradingsymbol;
-          if (s) allSymbols.push(String(s));
-        }
-        if (allSymbols.length > 0) {
-          manipulationRiskMap = await getManipulationRiskForSymbols(allSymbols);
-        }
-      } catch (err) {
-        console.warn('[api/signals] manipulation risk fetch failed — gate disabled this cycle:', err);
-        manipulationRiskMap = undefined;
-      }
+      const {
+        manipulationRiskMap,
+        manipulationUsedFallbackUniverse,
+        manipulationRiskMeta,
+      } = await fetchManipulationRiskForSignalPools(
+        { finalRows, belowFloorDemoted, inProgressEnriched },
+        DEFAULT_PHASE1_CONFIG.universe,
+        getManipulationRiskForSymbols,
+      );
 
       let responsePayloadBase = await buildSignalsResponsePayload({
         finalRows,
@@ -2557,6 +2591,8 @@ export async function GET(req: NextRequest) {
         // the registry by 1 and miscount the next request's cooldowns).
         skipRotationCommit: finalRows.length === 0,
         manipulationRiskMap,
+        manipulationUsedFallbackUniverse,
+        manipulationRiskMeta,
       });
 
       // ── Spec FAIL-SAFE §7 — relaxed / scanner-candidate fallback ──

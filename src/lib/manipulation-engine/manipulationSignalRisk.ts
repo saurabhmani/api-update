@@ -38,14 +38,16 @@ export type RecommendedAction =
   | 'BLOCK_APPROVAL';
 
 export interface FreshnessEnvelope {
-  latestEventDate:   string | null;
-  latestCandleDate:  string | null;
-  latestScanAt:      string | null;
-  latestTradingDate: string | null;
-  isStale:           boolean;
-  daysLag:           number | null;
-  status:            FreshnessStatus;
-  reason:            string;
+  latestEventDate:        string | null;
+  latestCandleDate:       string | null;
+  latestScanAt:           string | null;
+  latestTradingDate:      string | null;
+  isStale:                boolean;
+  daysLag:                number | null;
+  status:                 FreshnessStatus;
+  reason:                 string;
+  /** Snapshot rows persisted in the last 30 days (global surveillance). */
+  snapshotsPersisted30d?: number;
 }
 
 /**
@@ -242,6 +244,7 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
     daysLag,
     status,
     reason,
+    snapshotsPersisted30d: snapshotCount30d,
   };
 
   _freshnessCache = { value: envelope, expiresAt: Date.now() + FRESHNESS_TTL_MS };

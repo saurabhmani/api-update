@@ -96,6 +96,10 @@ import {
 import {
   type ManipulationRisk,
 } from '@/lib/manipulation-engine/manipulationSignalRisk';
+import {
+  buildManipulationRiskMeta,
+  type ManipulationRiskMeta,
+} from '@/lib/signals/manipulationRiskFetch';
 
 const log = logger.child({ component: 'responseAssembly' });
 
@@ -287,6 +291,10 @@ export interface BuildSignalsResponseInput {
    *       rejected tiers with a manipulation-specific rejection reason.
    *  Absent map → no attachment, no gate (safe degradation). */
   manipulationRiskMap?: ReadonlyMap<string, ManipulationRisk>;
+  /** True when risk was probed via DEFAULT_PHASE1_CONFIG sample. */
+  manipulationUsedFallbackUniverse?: boolean;
+  /** Scanner metadata from route-layer fetch (stable every cycle). */
+  manipulationRiskMeta?:            ManipulationRiskMeta;
 }
 
 /** Per-tier impact counters from the manipulation gate. Surfaced on
@@ -301,6 +309,11 @@ export interface ManipulationGateImpact {
   riskRestrictedSymbols: string[];
   active:                boolean;
   dataStatus:            ManipulationRisk['freshnessStatus'];
+  symbolsQueried:        number;
+  symbolsWithEnvelope:   number;
+  latestScanAt:          string | null;
+  latestEventDate:       string | null;
+  usedFallbackUniverse:  boolean;
 }
 
 export interface SignalsResponsePayload {
@@ -434,6 +447,8 @@ export interface SignalsResponsePayload {
    *  signals. `active=false` means the gate was skipped (no risk map
    *  provided, or data is stale and could only warn). */
   manipulationGateImpact?: ManipulationGateImpact;
+  /** Stable scanner metadata for health probes — present every cycle. */
+  manipulationRiskMeta:    ManipulationRiskMeta;
 }
 
 export interface ClosestToApprovalRow {
@@ -474,6 +489,40 @@ export interface ClosestToApprovalRow {
  * + `is_demoted: true` from confirmedSignalsService — this builder
  * does NOT re-tag them.
  */
+function summarizeManipulationRiskMap(
+  map: ReadonlyMap<string, ManipulationRisk>,
+): Pick<ManipulationGateImpact, 'dataStatus' | 'symbolsQueried' | 'symbolsWithEnvelope' | 'latestScanAt' | 'latestEventDate'> {
+  let latestScanAt: string | null = null;
+  let latestEventDate: string | null = null;
+  let symbolsWithEnvelope = 0;
+  let dataStatus: ManipulationRisk['freshnessStatus'] = 'NO_DATA';
+  for (const risk of map.values()) {
+    if (risk.freshnessStatus !== 'NO_DATA' || risk.band !== 'UNKNOWN') {
+      symbolsWithEnvelope++;
+    }
+    if (risk.latestScanAt && (!latestScanAt || risk.latestScanAt > latestScanAt)) {
+      latestScanAt = risk.latestScanAt;
+    }
+    if (risk.latestEventDate && (!latestEventDate || risk.latestEventDate > latestEventDate)) {
+      latestEventDate = risk.latestEventDate;
+    }
+    if (dataStatus === 'NO_DATA' && risk.freshnessStatus !== 'NO_DATA') {
+      dataStatus = risk.freshnessStatus;
+    }
+  }
+  const first = map.values().next().value;
+  if (dataStatus === 'NO_DATA' && first) {
+    dataStatus = first.freshnessStatus;
+  }
+  return {
+    dataStatus,
+    symbolsQueried:      map.size,
+    symbolsWithEnvelope,
+    latestScanAt,
+    latestEventDate,
+  };
+}
+
 export async function buildSignalsResponsePayload(
   input: BuildSignalsResponseInput,
 ): Promise<SignalsResponsePayload> {
@@ -481,7 +530,7 @@ export async function buildSignalsResponsePayload(
     belowFloorDemoted, inProgressEnriched,
     buyCount: rawBuy, sellCount: rawSell, freshness, syntheticBatchId,
     requestId, lite, validationStatus, skipRotationCommit,
-    manipulationRiskMap,
+    manipulationRiskMap, manipulationUsedFallbackUniverse, manipulationRiskMeta,
   } = input;
 
   // ── Phase B helpers (no-op when no risk map) ─────────────────────
@@ -1389,30 +1438,28 @@ export async function buildSignalsResponsePayload(
     healthPreview,
 
     // ── PHASE_B_MANIPULATION_INTEGRATION — gate-impact telemetry ──
-    manipulationGateImpact: manipulationRiskMap ? {
-      blockedFromApproval:   manipulationBlockedRows.length,
-      riskRestrictedCount:   manipulationRiskRestrictedRows.length,
-      penalizedCount:        manipulationPenalizedCount,
-      warningOnlyCount:      manipulationWarningCount,
-      blockedSymbols:        manipulationBlockedRows
-        .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
-        .filter(Boolean),
-      riskRestrictedSymbols: manipulationRiskRestrictedRows
-        .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
-        .filter(Boolean),
-      // active=true only when the gate had a chance to demote (fresh
-      // data + a non-empty approved set). Stale/no-data caps every
-      // recommendedAction at WARNING_ONLY which never enters the
-      // demotion loop, so `active` truthfully reports "the gate ran".
-      active:                manipulationBlockedRows.length > 0 || manipulationRiskRestrictedRows.length > 0
-                             || manipulationPenalizedCount > 0 || manipulationWarningCount > 0,
-      dataStatus:            (() => {
-        for (const risk of manipulationRiskMap.values()) {
-          return risk.freshnessStatus;
-        }
-        return 'NO_DATA' as const;
-      })(),
-    } : undefined,
+    manipulationGateImpact: manipulationRiskMap ? (() => {
+      const riskMeta = summarizeManipulationRiskMap(manipulationRiskMap);
+      return {
+        blockedFromApproval:   manipulationBlockedRows.length,
+        riskRestrictedCount:   manipulationRiskRestrictedRows.length,
+        penalizedCount:        manipulationPenalizedCount,
+        warningOnlyCount:      manipulationWarningCount,
+        blockedSymbols:        manipulationBlockedRows
+          .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
+          .filter(Boolean),
+        riskRestrictedSymbols: manipulationRiskRestrictedRows
+          .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
+          .filter(Boolean),
+        active:                manipulationBlockedRows.length > 0 || manipulationRiskRestrictedRows.length > 0
+                               || manipulationPenalizedCount > 0 || manipulationWarningCount > 0,
+        usedFallbackUniverse:  manipulationUsedFallbackUniverse === true,
+        ...riskMeta,
+      };
+    })() : undefined,
+
+    // ── PHASE_B_MANIPULATION — stable scanner metadata (every cycle) ──
+    manipulationRiskMeta: manipulationRiskMeta ?? buildManipulationRiskMeta(manipulationRiskMap),
   };
 }
 

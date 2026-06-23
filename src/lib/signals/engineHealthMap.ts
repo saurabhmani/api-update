@@ -24,6 +24,8 @@
 
 import type { RankableSignal } from '@/lib/signals/signalRanking';
 import type { DueDiligenceSummary } from '@/lib/signals/signalDueDiligence';
+import type { ManipulationGateImpact } from '@/lib/signals/responseAssembly';
+import type { ManipulationRiskMeta } from '@/lib/signals/manipulationRiskFetch';
 import {
   classifyCandleFreshness,
 } from '@/lib/marketData/candleFreshness';
@@ -210,6 +212,13 @@ export interface EngineHealthContext {
   };
 
   dueDiligenceSummary: DueDiligenceSummary | null;
+
+  /** Manipulation gate telemetry from /api/signals — readable by the
+   *  health map even when no signal row carries a per-row envelope. */
+  manipulationGateImpact?: ManipulationGateImpact | null;
+
+  /** Stable scanner metadata from /api/signals manipulationRiskMeta. */
+  manipulationRiskMeta?: ManipulationRiskMeta | null;
 
   /** Optional already-computed reports/backtests. Builder DOES NOT
    *  call APIs — the route layer fetches and passes results. */
@@ -1033,7 +1042,6 @@ export function buildDueDiligenceHealthNode(ctx: EngineHealthContext): EngineHea
 export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const dr = ctx.dailyReport;
-  const rowCount = pipelineRowCount(ctx);
   let status: EngineStatus;
   if (!dr || !dr.available) {
     status = 'NOT_CONFIGURED';
@@ -1041,33 +1049,14 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
     diag.recommendedActions.push('Run report after signal validation');
   } else if (dr.reportStatus === 'COMPLETE') {
     status = 'HEALTHY';
-    diag.findings.push('Daily report generated with all measurable sections populated.');
   } else if (dr.reportStatus === 'PARTIAL') {
-    // PARTIAL is the normal intraday state: the engine ran, but outcome
-    // sections (sector win-rate, indicator performance, etc.) await
-    // post-signal data. This is not engine degradation.
-    status = 'HEALTHY';
-    diag.findings.push('Daily report generated — some outcome sections await post-signal data.');
-  } else if (dr.reportStatus === 'PENDING') {
-    status = 'HEALTHY';
-    diag.findings.push('Daily report is queued for the next signal envelope.');
+    status = 'WARNING';
+    diag.primaryIssue = 'Daily report partial — some sections awaiting post-signal data.';
   } else if (dr.reportStatus === 'INSUFFICIENT_DATA') {
-    if (rowCount > 0 || !ctx.marketStatus.isOpen) {
-      status = 'HEALTHY';
-      diag.findings.push(
-        rowCount > 0
-          ? 'Daily report ran on the current pipeline — outcome sections not measurable yet.'
-          : 'Market closed — daily report will populate on the next session envelope.',
-      );
-    } else {
-      status = 'INSUFFICIENT_DATA';
-      diag.primaryIssue = 'Daily report has no measurable data yet.';
-    }
+    status = 'INSUFFICIENT_DATA';
+    diag.primaryIssue = 'Daily report has no measurable data yet.';
   } else {
-    status = dr.generatedAt ? 'HEALTHY' : 'UNKNOWN';
-    if (status === 'HEALTHY') {
-      diag.findings.push('Daily report envelope present without a recognised status code.');
-    }
+    status = 'UNKNOWN';
   }
   if (dr?.warnings && dr.warnings.length > 0) diag.warnings.push(...dr.warnings.slice(0, 3));
   return {
@@ -1185,14 +1174,70 @@ export function buildLearningHealthNode(ctx: EngineHealthContext): EngineHealthN
 
 // ── PHASE_B_MANIPULATION — Manipulation Risk Engine node ───────
 //
-// Derives node health from the manipulationRisk envelopes attached to
-// every reviewed signal. We DO NOT re-query the manipulation tables
-// here — the responseAssembly pipeline already fetched them once per
-// /api/signals cycle, and every row carries the same global freshness
-// snapshot. Falling back to NOT_CONFIGURED when no envelope is present
-// keeps the node honest about whether the integration is wired.
+// Status is derived from manipulationRiskMeta on the /api/signals envelope
+// (not from per-row manipulationRisk attachments). Signal rows are only
+// used for operational severity counts (SEVERE symbols in pool).
+
+type ResolvedManipulationMetadata = {
+  metadataPresent:      boolean;
+  configured:           boolean;
+  symbolCount:          number;
+  snapshotCount:        number;
+  freshestSnapshotAt:   string | null;
+  stale:                boolean;
+  usedFallbackUniverse: boolean;
+  globalSnapshotCount:  number;
+  globalLatestScanAt:   string | null;
+};
+
+function resolveManipulationMetadata(ctx: EngineHealthContext): ResolvedManipulationMetadata {
+  const meta = ctx.manipulationRiskMeta;
+  if (meta) {
+    return {
+      metadataPresent:      true,
+      configured:           meta.configured,
+      symbolCount:          meta.symbolCount,
+      snapshotCount:        meta.snapshotCount,
+      freshestSnapshotAt:   meta.freshestSnapshotAt,
+      stale:                meta.stale,
+      usedFallbackUniverse: ctx.manipulationGateImpact?.usedFallbackUniverse ?? false,
+      globalSnapshotCount:  meta.globalSnapshotCount ?? 0,
+      globalLatestScanAt:   meta.globalLatestScanAt ?? null,
+    };
+  }
+  // Legacy fallback when only gateImpact is present on older envelopes.
+  const gate = ctx.manipulationGateImpact;
+  if (gate) {
+    return {
+      metadataPresent:      true,
+      configured:           gate.symbolsQueried > 0,
+      symbolCount:          gate.symbolsQueried,
+      snapshotCount:        gate.symbolsWithEnvelope,
+      freshestSnapshotAt:   gate.latestScanAt,
+      stale:                gate.dataStatus === 'STALE' || gate.dataStatus === 'PARTIAL',
+      usedFallbackUniverse: gate.usedFallbackUniverse,
+      globalSnapshotCount:  gate.symbolsWithEnvelope,
+      globalLatestScanAt:   gate.latestScanAt,
+    };
+  }
+  return {
+    metadataPresent:      false,
+    configured:           false,
+    symbolCount:          0,
+    snapshotCount:        0,
+    freshestSnapshotAt:   null,
+    stale:                false,
+    usedFallbackUniverse: false,
+    globalSnapshotCount:  0,
+    globalLatestScanAt:   null,
+  };
+}
+
 export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
+  const md = resolveManipulationMetadata(ctx);
+
+  // Operational pool metrics — never used for configured / NOT_CONFIGURED.
   const reviewed = [
     ...ctx.signals.approved, ...ctx.signals.highPotential,
     ...ctx.signals.watchlist, ...ctx.signals.developing,
@@ -1200,7 +1245,6 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     ...ctx.signals.rejected,
   ] as Array<{ symbol?: string | null; tradingsymbol?: string | null; manipulationRisk?: import('@/lib/manipulation-engine/manipulationSignalRisk').ManipulationRisk }>;
   const withRisk = reviewed.filter((r) => !!r.manipulationRisk);
-  const firstRisk = withRisk[0]?.manipulationRisk;
 
   let symbolsWithRisk = 0;
   let severeRiskSymbols = 0;
@@ -1212,33 +1256,63 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     if (m.freshnessStatus !== 'FRESH' && m.band !== 'LOW' && m.band !== 'UNKNOWN') staleRiskSymbols++;
   }
 
-  // Engine state derivation per spec STEP_9.
+  const latestScanAt = md.freshestSnapshotAt;
+  const latestEventDate = ctx.manipulationGateImpact?.latestEventDate ?? null;
+  const freshnessStatus: import('@/lib/manipulation-engine/manipulationSignalRisk').FreshnessStatus =
+    !md.metadataPresent || !md.configured ? 'NO_DATA'
+    : md.snapshotCount === 0              ? 'NO_DATA'
+    : md.stale                            ? 'STALE'
+    :                                     'FRESH';
+
   let status: EngineStatus;
-  const freshness = firstRisk?.freshnessStatus ?? 'NO_DATA';
-  if (!firstRisk) {
+  if (!md.metadataPresent || !md.configured) {
     status = 'NOT_CONFIGURED';
-    diag.warnings.push('Signal Engine has not received a manipulation risk envelope this cycle.');
-    diag.recommendedActions.push('Wire getManipulationRiskForSymbols into responseAssembly (Phase B).');
-  } else if (freshness === 'NO_DATA') {
-    status = 'INSUFFICIENT_DATA';
-    diag.warnings.push('Manipulation engine has no events on record yet — run a scan.');
-  } else if (freshness === 'STALE') {
-    status = 'STALE';
-    diag.primaryIssue = `Manipulation data is stale (latest event ${firstRisk.latestEventDate ?? '—'}). ` +
-      'Hard rejection disabled — Signal Engine sees warnings only until fresh scan runs.';
-    diag.recommendedActions.push('Run the manipulation scan worker.');
-  } else if (freshness === 'PARTIAL') {
+    diag.warnings.push('Manipulation scanner metadata not available on this cycle.');
+    diag.recommendedActions.push('Ensure getManipulationRiskForSymbols runs on every /api/signals response.');
+  } else if (md.snapshotCount === 0) {
+    if (md.globalSnapshotCount === 0) {
+      // Integration is live and DB queries succeed, but the surveillance
+      // warehouse has never been populated (or is empty in the 30d window).
+      // This is normal idle state — not a broken pipeline — so we report
+      // HEALTHY with warning-only gating rather than INSUFFICIENT_DATA.
+      status = 'HEALTHY';
+      diag.findings.push(
+        'Manipulation integration active — surveillance DB awaiting first scan. ' +
+        'Hard rejection disabled (warning-only) until snapshots are persisted.',
+      );
+      diag.recommendedActions.push('Run manipulation scan: npm run manipulation-scan');
+    } else {
+      status = 'INSUFFICIENT_DATA';
+      diag.warnings.push(
+        `Global surveillance has ${md.globalSnapshotCount} snapshot(s) but none of the ` +
+        `${md.symbolCount} probed symbol${md.symbolCount === 1 ? '' : 's'} in this cycle.`,
+      );
+      diag.recommendedActions.push('Run the manipulation scan worker for the current signal pool.');
+      if (md.usedFallbackUniverse) {
+        diag.findings.push(`Probed ${md.symbolCount} fallback universe symbols — no snapshots for this sample.`);
+      }
+    }
+  } else if (md.stale) {
     status = 'DEGRADED';
-    diag.primaryIssue = 'Manipulation events exist but no snapshot persisted in the last 30 days.';
-  } else if (severeRiskSymbols > 0) {
-    status = 'WARNING';
-    diag.findings.push(`${severeRiskSymbols} symbol(s) at SEVERE manipulation risk in current pool.`);
+    diag.primaryIssue = `Manipulation snapshots are stale (latest ${latestScanAt ?? '—'}). ` +
+      'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
+    diag.recommendedActions.push('Run the manipulation scan worker.');
   } else {
     status = 'HEALTHY';
+    diag.findings.push(
+      `${md.snapshotCount} snapshot${md.snapshotCount === 1 ? '' : 's'} across ${md.symbolCount} probed symbol${md.symbolCount === 1 ? '' : 's'} — freshness within threshold.`,
+    );
+    if (md.usedFallbackUniverse && withRisk.length === 0) {
+      diag.findings.push('Metadata sourced from fallback universe probe (zero signal rows this cycle).');
+    }
+    if (severeRiskSymbols > 0) {
+      status = 'WARNING';
+      diag.findings.push(`${severeRiskSymbols} symbol(s) at SEVERE manipulation risk in current pool.`);
+    }
   }
 
-  const signalEngineIntegrationActive = !!firstRisk;
-  const hardRejectionEnabled = freshness === 'FRESH';
+  const signalEngineIntegrationActive = md.configured;
+  const hardRejectionEnabled = md.configured && md.snapshotCount > 0 && !md.stale;
   const warningOnlyMode      = !hardRejectionEnabled;
 
   return {
@@ -1248,12 +1322,12 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     status,
     severity:          severityFromStatus(status),
     description:       'Surveillance gate: penalises / risk-restricts / blocks signals on fresh manipulation evidence; warning-only when data is stale.',
-    lastRunAt:         firstRisk?.latestScanAt ?? null,
-    lastSuccessAt:     firstRisk?.latestScanAt ?? null,
+    lastRunAt:         latestScanAt,
+    lastSuccessAt:     latestScanAt,
     lastFailureAt:     null,
-    freshnessMinutes:  minutesSince(firstRisk?.latestScanAt ?? null),
-    inputCount:        reviewed.length,
-    outputCount:       withRisk.length,
+    freshnessMinutes:  minutesSince(latestScanAt),
+    inputCount:        md.symbolCount,
+    outputCount:       md.snapshotCount,
     errorCount:        0,
     warningCount:      diag.warnings.length,
     dependencies:      ['data_feed'],
@@ -1261,15 +1335,21 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     downstreamImpact:  ['confirmation'],
     diagnostics:       diag,
     metrics: {
-      latestEventDate:           firstRisk?.latestEventDate ?? null,
-      latestScanAt:              firstRisk?.latestScanAt ?? null,
+      latestEventDate:           latestEventDate,
+      latestScanAt:              latestScanAt,
       symbolsWithRisk,
       severeRiskSymbols,
       staleRiskSymbols,
+      symbolsQueried:            md.symbolCount,
+      snapshotCount:             md.snapshotCount,
+      globalSnapshotCount:       md.globalSnapshotCount,
+      globalLatestScanAt:        md.globalLatestScanAt,
+      usedFallbackUniverse:      md.usedFallbackUniverse,
       signalEngineIntegrationActive,
       hardRejectionEnabled,
       warningOnlyMode,
-      freshnessStatus:           freshness,
+      stale:                     md.stale,
+      freshnessStatus,
     },
     links: [
       { label: 'Open Manipulation Watch', href: '/manipulation' },
@@ -1306,11 +1386,6 @@ function isBenignWarningNode(node: EngineHealthNode): boolean {
         || issue.includes('awaiting today')
         || issue.includes('session cycle')
         || issue.includes('behind expected');
-    case 'daily_report':
-      return issue.includes('partial')
-        || issue.includes('awaiting post-signal')
-        || issue.includes('outcome sections')
-        || issue.includes('not measurable yet');
     default:
       return false;
   }

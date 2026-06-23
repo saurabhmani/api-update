@@ -336,6 +336,8 @@ export async function GET(req: NextRequest) {
       highPotentialTotal: 0, watchlistTotal: 0, rejectedTotal: 0, candidateTotal: 0,
     },
     dueDiligenceSummary: payload?.dueDiligenceSummary ?? null,
+    manipulationGateImpact: payload?.manipulationGateImpact ?? null,
+    manipulationRiskMeta:   payload?.manipulationRiskMeta ?? null,
   };
 
   if (daily.ok && daily.data) {
