@@ -148,7 +148,10 @@ async function main(): Promise<void> {
 
   console.log('\n[CANDLE BACKFILL SUMMARY]');
   console.log(JSON.stringify({
-    total_symbols: summary.totalSymbols,
+    universe_total: summary.universeTotal,
+    already_sufficient: summary.alreadySufficient,
+    symbols_attempted: summary.universeTotal,
+    queue_this_run: summary.totalSymbols,
     skipped_already_sufficient: summary.skippedSufficient,
     fetched: summary.fetched,
     failed: summary.failed,

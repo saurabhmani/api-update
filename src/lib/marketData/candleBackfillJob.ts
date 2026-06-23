@@ -93,8 +93,18 @@ export interface SymbolBackfillFailure {
   reason: string;
 }
 
+export interface UniverseBackfillStats {
+  universeTotal: number;
+  alreadySufficient: number;
+  needingBackfill: number;
+}
+
 export interface CandleBackfillJobSummary {
   totalSymbols: number;
+  /** Active universe size (q365_universe), regardless of resume queue. */
+  universeTotal: number;
+  /** Symbols with enough fresh bars — no API call needed this campaign. */
+  alreadySufficient: number;
   skippedSufficient: number;
   fetched: number;
   failed: number;
@@ -165,6 +175,64 @@ export async function loadActiveUniverseSymbols(limit: number): Promise<string[]
  * Active universe symbols that still need a historical fetch (thin or stale).
  * Use with `resume: true` to avoid iterating symbols that would skip anyway.
  */
+/**
+ * One SQL round-trip for universe coverage — avoids N per-symbol stats queries.
+ */
+export async function getUniverseBackfillStats(
+  limit: number,
+  minBars: number,
+  maxAgeDays: number,
+): Promise<UniverseBackfillStats> {
+  const { rows } = await db.query<{
+    universe_total: number;
+    already_sufficient: number;
+    needing_backfill: number;
+  }>(
+    `SELECT
+       COUNT(*) AS universe_total,
+       SUM(
+         CASE
+           WHEN d.bar_count >= ?
+            AND d.latest_ts IS NOT NULL
+            AND TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) <= ?
+           THEN 1 ELSE 0
+         END
+       ) AS already_sufficient,
+       SUM(
+         CASE
+           WHEN d.bar_count IS NULL
+            OR d.bar_count < ?
+            OR d.latest_ts IS NULL
+            OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
+           THEN 1 ELSE 0
+         END
+       ) AS needing_backfill
+     FROM (
+       SELECT symbol
+         FROM q365_universe
+        WHERE is_active = 1
+        ORDER BY symbol ASC
+        LIMIT ?
+     ) u
+     LEFT JOIN (
+       SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
+         FROM market_data_daily
+        GROUP BY symbol
+     ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci`,
+    [minBars, maxAgeDays, minBars, maxAgeDays, limit],
+  );
+  const row = (rows[0] as {
+    universe_total?: number;
+    already_sufficient?: number;
+    needing_backfill?: number;
+  }) ?? {};
+  return {
+    universeTotal: Number(row.universe_total) || 0,
+    alreadySufficient: Number(row.already_sufficient) || 0,
+    needingBackfill: Number(row.needing_backfill) || 0,
+  };
+}
+
 export async function loadSymbolsNeedingBackfill(
   limit: number,
   minBars: number,
@@ -330,11 +398,16 @@ async function backfillOneSymbol(
   }
 
   let fetch = await fetchIndianApiDailyCandles(symbol, '1y');
-  if (!fetch.ok && fetch.errorCode === 'RATE_LIMITED') {
+  const isRetryable = (code: string | null | undefined) =>
+    code === 'RATE_LIMITED' || code === 'API_KEY_INVALID';
+  if (!fetch.ok && isRetryable(fetch.errorCode)) {
+    const backoffMs = fetch.errorCode === 'RATE_LIMITED'
+      ? RATE_LIMIT_BACKOFF_MS()
+      : 60_000;
     console.warn(
-      `[CANDLE BACKFILL] ${symbol} rate limited — sleeping ${RATE_LIMIT_BACKOFF_MS()}ms`,
+      `[CANDLE BACKFILL] ${symbol} ${fetch.errorCode} — sleeping ${backoffMs}ms then one retry`,
     );
-    await sleep(RATE_LIMIT_BACKOFF_MS());
+    await sleep(backoffMs);
     fetch = await fetchIndianApiDailyCandles(symbol, '1y');
   }
 
@@ -463,6 +536,10 @@ async function runCandleBackfillJobInner(ctx: {
   });
   beginPerRunBudget(perRunLimit);
 
+  const universeStats = options.symbols?.length
+    ? null
+    : await getUniverseBackfillStats(universeLimit, minBars, maxAgeDays);
+
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
     : options.resume
@@ -471,6 +548,8 @@ async function runCandleBackfillJobInner(ctx: {
 
   const summary: CandleBackfillJobSummary = {
     totalSymbols: symbols.length,
+    universeTotal: universeStats?.universeTotal ?? symbols.length,
+    alreadySufficient: universeStats?.alreadySufficient ?? 0,
     skippedSufficient: 0,
     fetched: 0,
     failed: 0,
@@ -483,12 +562,34 @@ async function runCandleBackfillJobInner(ctx: {
     dryRun,
   };
 
+  const symbolsAttempted = summary.universeTotal;
   console.log(
-    `[CANDLE BACKFILL] start symbols=${symbols.length} min_bars=${minBars} ` +
+    `[CANDLE BACKFILL] start universe=${summary.universeTotal} ` +
+    `already_sufficient=${summary.alreadySufficient} queue=${symbols.length} ` +
+    `symbols_attempted=${symbolsAttempted} min_bars=${minBars} ` +
     `max_age_days=${maxAgeDays} delay_ms=${requestDelayMs} dry_run=${dryRun} ` +
     `resume=${options.resume ?? false} max_fetch=${maxFetch ?? 'none'} ` +
     `per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
   );
+
+  // Plan-only full-universe dry-run: one SQL stats query, zero per-symbol DB walks.
+  if (
+    dryRun
+    && !options.symbols?.length
+    && !options.resume
+    && universeStats
+  ) {
+    summary.skippedSufficient = universeStats.alreadySufficient;
+    summary.fetched = universeStats.needingBackfill;
+    summary.durationMs = Date.now() - t0;
+    console.log('[CANDLE BACKFILL] complete', {
+      ...summary,
+      failures: [],
+      per_run_budget: endPerRunBudget(),
+      plan_note: 'dry_run full-universe plan via SQL (no per-symbol iteration)',
+    });
+    return summary;
+  }
 
   let processed = 0;
   for (const symbol of symbols) {
@@ -531,13 +632,12 @@ async function runCandleBackfillJobInner(ctx: {
           break;
         }
         if (abort === 'auth') {
-          summary.deferredDueToBudget = symbols.length - processed;
+          // Per-symbol auth failure — continue queue to avoid deferring the whole batch.
+          // backfillOneSymbol already slept + retried once; skip burns no extra API quota.
           console.warn(
-            `[CANDLE BACKFILL] IndianAPI auth rejected — stopping early ` +
-            `(${summary.deferredDueToBudget} symbols deferred). ` +
-            `Wait ~60s for the auth backoff, verify INDIANAPI_API_KEY / daily quota, then re-run.`,
+            `[CANDLE BACKFILL] ${symbol} auth rejected after retry — skipping ` +
+            `(verify INDIANAPI_API_KEY if failures cluster)`,
           );
-          break;
         }
       }
     } catch (err) {
