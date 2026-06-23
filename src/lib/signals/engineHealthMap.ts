@@ -1270,19 +1270,16 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     diag.warnings.push('Manipulation scanner metadata not available on this cycle.');
     diag.recommendedActions.push('Ensure getManipulationRiskForSymbols runs on every /api/signals response.');
   } else if (md.snapshotCount === 0) {
+    status = 'INSUFFICIENT_DATA';
     if (md.globalSnapshotCount === 0) {
-      // Integration is live and DB queries succeed, but the surveillance
-      // warehouse has never been populated (or is empty in the 30d window).
-      // This is normal idle state — not a broken pipeline — so we report
-      // HEALTHY with warning-only gating rather than INSUFFICIENT_DATA.
-      status = 'HEALTHY';
       diag.findings.push(
-        'Manipulation integration active — surveillance DB awaiting first scan. ' +
-        'Hard rejection disabled (warning-only) until snapshots are persisted.',
+        'Manipulation integration active — no surveillance snapshots persisted yet. ' +
+        'Hard rejection disabled (warning-only) until snapshots land.',
       );
-      diag.recommendedActions.push('Run manipulation scan: npm run manipulation-scan');
+      diag.recommendedActions.push(
+        'Run manipulation scan: npm run manipulation-scan — or wait for the 18:30 IST scheduled scan.',
+      );
     } else {
-      status = 'INSUFFICIENT_DATA';
       diag.warnings.push(
         `Global surveillance has ${md.globalSnapshotCount} snapshot(s) but none of the ` +
         `${md.symbolCount} probed symbol${md.symbolCount === 1 ? '' : 's'} in this cycle.`,

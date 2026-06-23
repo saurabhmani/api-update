@@ -1,15 +1,32 @@
 // ════════════════════════════════════════════════════════════════
 //  Daily scan schedule — morning DB scan, evening candle update,
-//  evening DB scan (IST, Mon–Fri).
+//  evening DB scan, manipulation surveillance scan (IST, Mon–Fri).
 //
-//  Morning Scan      08:30 IST  mode=scan               DB only
-//  Evening Update    16:00 IST  mode=incremental-update IndianAPI
-//  Evening Scan      16:30 IST  mode=scan               DB only
+//  EXECUTION ORDER (wall-clock IST, Mon–Fri):
+//    08:30  Morning Scan        — DB-only Phase 4 signals (prior close)
+//    16:00  Evening Update     — IndianAPI incremental EOD candle fetch
+//                                 └─► populates `candles` warehouse
+//    16:30  Evening Scan        — DB-only Phase 4 signals (fresh EOD)
+//    18:30  Manipulation Scan   — runDailyScan({ skipIngestion: true })
+//                                 └─► reads candles refreshed at 16:00;
+//                                     NEVER re-runs EOD ingestion here
+//
+//  Manipulation scan DEPENDS on the 16:00 Evening Update completing
+//  first. The 2h30m gap (16:00 → 18:30) is deliberate slack for the
+//  ~1,000-symbol IndianAPI fetch. If Evening Update overruns, the
+//  manipulation job still runs (warning-only against last warehouse
+//  state) — it does not stack a second ingestion pass.
+//
+//  OVERLAP / RACE GUARDS:
+//    • guardJob()            — one in-flight run per signal job name
+//    • manipulationDailyScanInFlight — skips duplicate 18:30 ticks
+//    • Cron callbacks catch errors — a failed job never stops tasks[]
 //
 //  Cron overrides (env):
 //    MORNING_SCAN_CRON=30 8 * * 1-5
 //    EVENING_UPDATE_CRON=0 16 * * 1-5
 //    EVENING_SCAN_CRON=30 16 * * 1-5
+//    MANIPULATION_DAILY_SCAN_CRON=30 18 * * 1-5
 //    DAILY_SCAN_SCHEDULE_ENABLED=true|false
 //    SIGNAL_LEGACY_EVENING_SCAN_1830=true  — optional 18:30 duplicate scan
 //
@@ -38,9 +55,49 @@ import {
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { markPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
 import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
+import {
+  runDailyScan,
+  type DailyScanResult,
+} from '@/lib/manipulation-engine/pipeline/runDailyScan';
 
 const log = logger.child({ component: 'dailyScanSchedule' });
 export const DAILY_SCAN_TIMEZONE = 'Asia/Kolkata';
+
+/** Default cron expressions — minute hour dom month dow (IST). */
+export const DAILY_SCHEDULE_CRONS = {
+  morningScan:           '30 8 * * 1-5',
+  eveningUpdate:         '0 16 * * 1-5',
+  eveningScan:           '30 16 * * 1-5',
+  manipulationDailyScan: '30 18 * * 1-5',
+} as const;
+
+/** Parse `minute hour * * *` cron into minutes-from-midnight (IST wall clock). */
+export function cronIstMinutesFromMidnight(expr: string): number {
+  const [minuteStr, hourStr] = expr.trim().split(/\s+/);
+  const minute = Number(minuteStr);
+  const hour = Number(hourStr);
+  if (!Number.isFinite(minute) || !Number.isFinite(hour)) {
+    throw new Error(`Invalid cron time expression: ${expr}`);
+  }
+  return hour * 60 + minute;
+}
+
+/** Cron triple validated at schedule startup (evening update → scan → manipulation). */
+export interface EveningScheduleCrons {
+  eveningUpdate: string;
+  eveningScan: string;
+  manipulationDailyScan: string;
+}
+
+/** True when every later job fires strictly after `eveningUpdate` on the IST clock. */
+export function isManipulationScheduledAfterEodUpdate(
+  crons: EveningScheduleCrons = DAILY_SCHEDULE_CRONS,
+): boolean {
+  const eodMinutes = cronIstMinutesFromMidnight(crons.eveningUpdate);
+  const eveningScanMinutes = cronIstMinutesFromMidnight(crons.eveningScan);
+  const manipulationMinutes = cronIstMinutesFromMidnight(crons.manipulationDailyScan);
+  return eveningScanMinutes > eodMinutes && manipulationMinutes > eodMinutes;
+}
 
 export type DailyJobMode = 'scan' | 'incremental-update';
 export type DailyJobDataSource = 'db' | 'indianapi';
@@ -72,6 +129,7 @@ export interface DailyScanJobResult extends DailyJobLogEntry {
 
 const tasks: ScheduledTask[] = [];
 const inFlight = new Map<string, Promise<DailyScanJobResult>>();
+let manipulationDailyScanInFlight: Promise<DailyScanResult> | null = null;
 
 function envCron(name: string, fallback: string): string {
   const raw = process.env[name]?.trim();
@@ -303,6 +361,66 @@ export function runLegacyEveningScanJob(): Promise<DailyScanJobResult> {
   );
 }
 
+/** Manipulation Scan — 18:30 IST, scan-only (EOD candles refreshed at 16:00).
+ *
+ * Calls runDailyScan({ skipIngestion: true }) so this job NEVER invokes
+ * runDailyEodIngestion — duplicate ingestion is owned exclusively by the
+ * 16:00 Evening Update (`runEveningUpdateJob`). The scanner reads whatever
+ * `candles` rows landed during that update.
+ */
+export function runManipulationDailyScanJob(): Promise<DailyScanResult> {
+  if (manipulationDailyScanInFlight) {
+    log.warn('manipulation daily scan skipped — previous run still in flight');
+    return manipulationDailyScanInFlight;
+  }
+
+  console.log('[manipulation] daily scan started');
+  log.info('[manipulation] daily scan started');
+
+  const promise = runDailyScan({ skipIngestion: true })
+    .then((result) => {
+      if (result.ok) {
+        console.log('[manipulation] daily scan complete', {
+          scanned: result.scan.scanned,
+          snapshotsPersisted: result.scan.snapshotsPersisted,
+          failed: result.scan.failed,
+          durationMs: result.scan.durationMs,
+        });
+        log.info('[manipulation] daily scan complete', {
+          scanned:            result.scan.scanned,
+          snapshotsPersisted: result.scan.snapshotsPersisted,
+          failed:             result.scan.failed,
+          penaltiesWritten:   result.scan.penaltiesWritten,
+          durationMs:         result.scan.durationMs,
+          latestEventDate:    result.latestEventDate,
+        });
+      } else {
+        console.error('[manipulation] daily scan failed', {
+          reason: result.reason,
+          warnings: result.warnings,
+        });
+        log.error('[manipulation] daily scan failed', {
+          reason:   result.reason,
+          warnings: result.warnings,
+          scan:     result.scan,
+        });
+      }
+      return result;
+    })
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[manipulation] daily scan failed', { error: msg });
+      log.error('[manipulation] daily scan failed', { err: msg });
+      throw err;
+    })
+    .finally(() => {
+      manipulationDailyScanInFlight = null;
+    });
+
+  manipulationDailyScanInFlight = promise;
+  return promise;
+}
+
 export function startDailyScanSchedule(): void {
   if (!envEnabled('DAILY_SCAN_SCHEDULE_ENABLED', true)) {
     log.info('daily scan schedule disabled (DAILY_SCAN_SCHEDULE_ENABLED=false)');
@@ -313,13 +431,29 @@ export function startDailyScanSchedule(): void {
     return;
   }
 
-  const morningCron = envCron('MORNING_SCAN_CRON', '30 8 * * 1-5');
+  const morningCron = envCron('MORNING_SCAN_CRON', DAILY_SCHEDULE_CRONS.morningScan);
   const eveningUpdateCron = envCron(
     'EVENING_UPDATE_CRON',
-    process.env.CANDLE_DAILY_UPDATE_CRON?.trim() || '0 16 * * 1-5',
+    process.env.CANDLE_DAILY_UPDATE_CRON?.trim() || DAILY_SCHEDULE_CRONS.eveningUpdate,
   );
-  const eveningScanCron = envCron('EVENING_SCAN_CRON', '30 16 * * 1-5');
-  const legacy1830Cron = envCron('SIGNAL_LEGACY_EVENING_SCAN_CRON', '30 18 * * 1-5');
+  const eveningScanCron = envCron('EVENING_SCAN_CRON', DAILY_SCHEDULE_CRONS.eveningScan);
+  const manipulationDailyScanCron = envCron(
+    'MANIPULATION_DAILY_SCAN_CRON',
+    DAILY_SCHEDULE_CRONS.manipulationDailyScan,
+  );
+  const legacy1830Cron = envCron('SIGNAL_LEGACY_EVENING_SCAN_CRON', DAILY_SCHEDULE_CRONS.manipulationDailyScan);
+
+  if (!isManipulationScheduledAfterEodUpdate({
+    eveningUpdate: eveningUpdateCron,
+    eveningScan: eveningScanCron,
+    manipulationDailyScan: manipulationDailyScanCron,
+  })) {
+    log.warn('manipulation daily scan cron is not after evening EOD update — check MANIPULATION_DAILY_SCAN_CRON / EVENING_UPDATE_CRON', {
+      evening_update: eveningUpdateCron,
+      evening_scan: eveningScanCron,
+      manipulation_daily_scan: manipulationDailyScanCron,
+    });
+  }
 
   tasks.push(cron.schedule(morningCron, () => {
     void runMorningScanJob().catch((err) => {
@@ -339,6 +473,13 @@ export function startDailyScanSchedule(): void {
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
+  tasks.push(cron.schedule(manipulationDailyScanCron, () => {
+    // Scheduled 2h30m after Evening Update — relies on 16:00 candle refresh.
+    void runManipulationDailyScanJob().catch((err) => {
+      log.error('manipulation daily scan cron failed', { err: String(err) });
+    });
+  }, { timezone: DAILY_SCAN_TIMEZONE }));
+
   if (envEnabled('SIGNAL_LEGACY_EVENING_SCAN_1830', false)) {
     tasks.push(cron.schedule(legacy1830Cron, () => {
       void runLegacyEveningScanJob().catch((err) => {
@@ -352,6 +493,7 @@ export function startDailyScanSchedule(): void {
     morning_scan: morningCron,
     evening_update: eveningUpdateCron,
     evening_scan: eveningScanCron,
+    manipulation_daily_scan: manipulationDailyScanCron,
     legacy_1830: envEnabled('SIGNAL_LEGACY_EVENING_SCAN_1830', false) ? legacy1830Cron : 'disabled',
     jobs: tasks.length,
   });

@@ -305,7 +305,7 @@ describe('buildManipulationHealthNode — metadata-driven status (3.x)', () => {
     expect(node.metrics.warningOnlyMode).toBe(true);
   });
 
-  it('3.3 — configured + global idle (no snapshots anywhere) → HEALTHY warning-only', () => {
+  it('3.3 — configured + no snapshots yet (global idle) → INSUFFICIENT_DATA', () => {
     const node = buildManipulationHealthNode({
       ...base(),
       manipulationRiskMeta: {
@@ -318,10 +318,9 @@ describe('buildManipulationHealthNode — metadata-driven status (3.x)', () => {
         globalLatestScanAt: null,
       },
     });
-    expect(node.status).toBe('HEALTHY');
+    expect(node.status).toBe('INSUFFICIENT_DATA');
     expect(node.metrics.warningOnlyMode).toBe(true);
     expect(node.status).not.toBe('NOT_CONFIGURED');
-    expect(node.status).not.toBe('INSUFFICIENT_DATA');
   });
 
   it('3.3b — configured + global snapshots but probed pool uncovered → INSUFFICIENT_DATA', () => {

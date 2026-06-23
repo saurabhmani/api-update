@@ -39,7 +39,10 @@ import {
 } from '@/lib/signals/engineHealthMap';
 
 const UNIVERSE = Array.from({ length: 25 }, (_, i) => `SYM${i + 1}`);
-const FRESH_AT = '2026-06-22T15:30:00.000Z';
+const FRESH_AT = new Date().toISOString().split('T')[0] + 'T13:41:10.000Z';
+const STALE_AT = '2026-06-01T10:00:00.000Z';
+const TODAY_SNAPSHOT_AT = `${new Date().toISOString().split('T')[0]}T12:00:00.000Z`;
+const STALE_SNAPSHOT_AT = '2026-06-01T10:00:00.000Z';
 
 const emptyPools = () => ({
   finalRows:          [] as Array<{ symbol?: string; tradingsymbol?: string }>,
@@ -190,7 +193,7 @@ function candidateSignals(count = 4): EngineHealthContext['signals'] {
   };
 }
 
-/** Wire shape asserted by manipulation health integration scenarios. */
+/** API contract shape exposed via engine-health manipulation node. */
 function manipulationRiskHealth(status: string) {
   return { manipulation_risk: { status } };
 }
@@ -213,7 +216,7 @@ async function runManipulationHealthCycle(
   return { fetch, ctx, healthNode, manipulationNode };
 }
 
-describe('manipulation health integration — scenarios A–D', () => {
+describe('manipulation_risk status contract — Scenarios A–D', () => {
   beforeEach(() => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -222,50 +225,83 @@ describe('manipulation health integration — scenarios A–D', () => {
     vi.restoreAllMocks();
   });
 
-  it('Scenario A — 4 candidates, 0 approved, snapshots available → HEALTHY', async () => {
-    const pools = candidatePools(4);
-    const { fetch, healthNode } = await runManipulationHealthCycle(
-      pools,
+  it('Scenario A — fresh snapshots generated today → HEALTHY', async () => {
+    const { fetch, healthNode, manipulationNode } = await runManipulationHealthCycle(
+      candidatePools(4),
       async (symbols) => mapForSymbols(symbols, () => riskWithSnapshot(FRESH_AT)),
       candidateSignals(4),
     );
 
-    expect(fetch.manipulationUsedFallbackUniverse).toBe(false);
     expect(fetch.manipulationRiskMeta).toMatchObject({
       configured: true,
-      symbolCount: 4,
       snapshotCount: 4,
       stale: false,
     });
-    expect(manipulationRiskHealth(healthNode.status)).toEqual(
-      manipulationRiskHealth('HEALTHY'),
-    );
-    expect(healthNode.status).not.toBe('NOT_CONFIGURED');
+    expect(manipulationRiskHealth(healthNode.status)).toEqual({
+      manipulation_risk: { status: 'HEALTHY' },
+    });
+    expect(manipulationNode?.status).toBe('HEALTHY');
   });
 
-  it('Scenario B — 4 candidates, 0 approved, no snapshots (global idle) → HEALTHY', async () => {
-    const pools = candidatePools(4);
-    const { fetch, healthNode } = await runManipulationHealthCycle(
-      pools,
-      async (symbols) => mapForSymbols(symbols, () => unknownRisk()),
-      candidateSignals(4),
+  it('Scenario B — snapshots older than freshness threshold → DEGRADED', async () => {
+    const { fetch, healthNode, manipulationNode } = await runManipulationHealthCycle(
+      emptyPools(),
+      async (symbols) => mapForSymbols(symbols, () => riskWithSnapshot(STALE_AT, 'STALE')),
     );
 
-    expect(fetch.manipulationUsedFallbackUniverse).toBe(false);
+    expect(fetch.manipulationRiskMeta.stale).toBe(true);
+    expect(manipulationRiskHealth(healthNode.status)).toEqual({
+      manipulation_risk: { status: 'DEGRADED' },
+    });
+    expect(manipulationNode?.status).toBe('DEGRADED');
+  });
+
+  it('Scenario C — new deployment, no snapshots yet → INSUFFICIENT_DATA', async () => {
+    const { fetch, healthNode, manipulationNode } = await runManipulationHealthCycle(
+      emptyPools(),
+      async (symbols) => mapForSymbols(symbols, () => unknownRisk()),
+    );
+
     expect(fetch.manipulationRiskMeta).toMatchObject({
       configured: true,
-      symbolCount: 4,
       snapshotCount: 0,
       globalSnapshotCount: 0,
     });
-    expect(manipulationRiskHealth(healthNode.status)).toEqual(
-      manipulationRiskHealth('HEALTHY'),
-    );
-    expect(healthNode.status).not.toBe('NOT_CONFIGURED');
-    expect(healthNode.status).not.toBe('INSUFFICIENT_DATA');
+    expect(manipulationRiskHealth(healthNode.status)).toEqual({
+      manipulation_risk: { status: 'INSUFFICIENT_DATA' },
+    });
+    expect(manipulationNode?.status).toBe('INSUFFICIENT_DATA');
   });
 
-  it('Scenario B2 — pool coverage gap (global snapshots exist, probed pool empty) → INSUFFICIENT_DATA', async () => {
+  it('Scenario D — scanner disabled or unavailable → NOT_CONFIGURED', async () => {
+    const { fetch, healthNode, manipulationNode } = await runManipulationHealthCycle(
+      candidatePools(4),
+      async () => { throw new Error('scanner DB unreachable'); },
+      candidateSignals(4),
+    );
+
+    expect(fetch.manipulationRiskMeta).toMatchObject({
+      configured: false,
+      symbolCount: 0,
+      snapshotCount: 0,
+    });
+    expect(manipulationRiskHealth(healthNode.status)).toEqual({
+      manipulation_risk: { status: 'NOT_CONFIGURED' },
+    });
+    expect(manipulationNode?.status).toBe('NOT_CONFIGURED');
+  });
+});
+
+describe('manipulation health integration — signal enrichment', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('pool coverage gap (global snapshots exist, probed pool empty) → INSUFFICIENT_DATA', async () => {
     const pools = candidatePools(4);
     const fetch = await fetchManipulationRiskForSignalPools(
       pools,
@@ -286,7 +322,7 @@ describe('manipulation health integration — scenarios A–D', () => {
     expect(healthNode.status).toBe('INSUFFICIENT_DATA');
   });
 
-  it('Scenario C — approved signals exist → manipulation envelopes attached', async () => {
+  it('approved signals exist → manipulation envelopes attached', async () => {
     const pools = {
       finalRows:          [{ symbol: 'RELIANCE' }, { symbol: 'TCS' }],
       belowFloorDemoted:  [] as Array<{ symbol?: string }>,
@@ -311,24 +347,6 @@ describe('manipulation health integration — scenarios A–D', () => {
       expect(row.manipulationRisk.latestScanAt).toBe(FRESH_AT);
       expect(row.manipulationRisk.band).not.toBe('UNKNOWN');
     }
-  });
-
-  it('Scenario D — scanner unavailable → NOT_CONFIGURED', async () => {
-    const pools = candidatePools(4);
-    const { fetch, healthNode } = await runManipulationHealthCycle(
-      pools,
-      async () => { throw new Error('scanner DB unreachable'); },
-      candidateSignals(4),
-    );
-
-    expect(fetch.manipulationRiskMeta).toMatchObject({
-      configured: false,
-      symbolCount: 0,
-      snapshotCount: 0,
-    });
-    expect(manipulationRiskHealth(healthNode.status)).toEqual(
-      manipulationRiskHealth('NOT_CONFIGURED'),
-    );
   });
 });
 
@@ -364,7 +382,7 @@ describe('manipulation health integration — fetch → meta → health', () => 
     expect(healthNode.metrics.snapshotCount).toBe(MANIPULATION_FALLBACK_SAMPLE_SIZE);
   });
 
-  it('I.2 — zero-signal cycle without snapshots (global idle) → HEALTHY, not NOT_CONFIGURED', async () => {
+  it('I.2 — zero-signal cycle without snapshots (global idle) → INSUFFICIENT_DATA, not NOT_CONFIGURED', async () => {
     const { fetch, healthNode, manipulationNode } = await runManipulationHealthCycle(
       emptyPools(),
       async (symbols) => mapForSymbols(symbols, () => unknownRisk()),
@@ -377,10 +395,9 @@ describe('manipulation health integration — fetch → meta → health', () => 
       snapshotCount: 0,
       globalSnapshotCount: 0,
     });
-    expect(healthNode.status).toBe('HEALTHY');
+    expect(healthNode.status).toBe('INSUFFICIENT_DATA');
     expect(healthNode.status).not.toBe('NOT_CONFIGURED');
-    expect(healthNode.status).not.toBe('INSUFFICIENT_DATA');
-    expect(manipulationNode?.status).toBe('HEALTHY');
+    expect(manipulationNode?.status).toBe('INSUFFICIENT_DATA');
   });
 
   it('I.3 — normal signal cycle → HEALTHY, signal enrichment attaches manipulationRisk', async () => {
