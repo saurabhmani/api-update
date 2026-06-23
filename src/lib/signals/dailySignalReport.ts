@@ -205,6 +205,16 @@ export interface DailySignalReport {
   executiveSummary:         DailyExecutiveSummary;
   signalPerformance:        DailySignalPerformance;
   indicatorPerformance:     DailyIndicatorPerformance;
+  /** EOD market movers from `candles` (Phase 4B). Populated when the
+   *  daily-report route resolves getHistoricalMarketMovers(). */
+  marketMovers?: Array<{
+    symbol:        string;
+    movePercent:   number;
+    direction:     'UP' | 'DOWN';
+    volume?:        number | null;
+    date?:          string;
+  }>;
+  marketMoversStatus?: 'COMPLETE' | 'INSUFFICIENT_DATA';
   missedOpportunities:      MissedOpportunityItem[];
   missedOpportunitiesStatus: 'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA';
   sectorPerformance:        DailySectorPerformance;
@@ -276,6 +286,8 @@ export interface DailyReportInput {
     symbol:        string;
     movePercent:   number;
     direction:     'UP' | 'DOWN';
+    volume?:        number | null;
+    date?:          string;
   }>;
 }
 
@@ -1110,7 +1122,11 @@ export function buildDailyDataQualitySummary(
   const warnings: string[] = [];
   if (input.dataQuality.isBootstrap) warnings.push('Operating on bootstrap-seeded data — outcomes not validated by live broker feed.');
   if (input.dataQuality.isFallback)  warnings.push('Provider in fallback mode — data path degraded.');
-  if (input.dataQuality.staleMinutes != null && input.dataQuality.staleMinutes > 30) {
+  if (
+    input.marketStatus.isOpen &&
+    input.dataQuality.staleMinutes != null &&
+    input.dataQuality.staleMinutes > 30
+  ) {
     warnings.push(`Feed stale ${input.dataQuality.staleMinutes}m — beyond institutional freshness window.`);
   }
   if (input.dataQuality.coveragePercent != null && input.dataQuality.coveragePercent < 60) {
@@ -1193,9 +1209,15 @@ const todayISO = (date?: string): string => {
   return new Date().toISOString().slice(0, 10);
 };
 
-const inferDataStatus = (q: DailyReportInput['dataQuality']): DailyReportDataStatus => {
+const inferDataStatus = (
+  q: DailyReportInput['dataQuality'],
+  marketOpen = true,
+): DailyReportDataStatus => {
   if (q.isBootstrap) return 'BOOTSTRAP';
   if (q.isFallback)  return 'FALLBACK';
+  // Off-hours the last close snapshot is canonical; age > 30m is expected
+  // and must not surface as STALE on a daily EOD report.
+  if (!marketOpen && q.lastSuccessAt) return 'LIVE';
   if (q.staleMinutes != null && q.staleMinutes > 30) return 'STALE';
   if (q.lastSuccessAt) return 'LIVE';
   return 'INSUFFICIENT_DATA';
@@ -1224,6 +1246,15 @@ export function buildDailySignalReport(
   const signalPerformance     = buildSignalPerformanceSummary(sortedInput);
   const indicatorPerformance  = buildIndicatorPerformance(sortedInput);
   const missed                = buildMissedOpportunities(sortedInput);
+  const marketMovers          = (sortedInput.marketMovers ?? []).map((m) => ({
+    symbol:      m.symbol,
+    movePercent: m.movePercent,
+    direction:   m.direction,
+    volume:      m.volume ?? null,
+    date:        m.date ?? todayISO(input.reportDate),
+  }));
+  const marketMoversStatus: DailySignalReport['marketMoversStatus'] =
+    marketMovers.length > 0 ? 'COMPLETE' : 'INSUFFICIENT_DATA';
   const sectorPerformance     = buildSectorPerformance(sortedInput);
   const timeWindowPerformance = buildTimeWindowPerformance(sortedInput);
   const marketRegimeReview    = buildMarketRegimeReview(sortedInput);
@@ -1233,7 +1264,7 @@ export function buildDailySignalReport(
     sortedInput, indicatorPerformance, signalPerformance, topBlockReasons,
   );
 
-  const dataStatus = inferDataStatus(input.dataQuality);
+  const dataStatus = inferDataStatus(input.dataQuality, input.marketStatus.isOpen);
   const executiveSummary = buildExecutiveSummary(
     signalPerformance,
     indicatorPerformance,
@@ -1308,6 +1339,8 @@ export function buildDailySignalReport(
     executiveSummary,
     signalPerformance,
     indicatorPerformance,
+    marketMovers,
+    marketMoversStatus,
     missedOpportunities:       missed.items,
     missedOpportunitiesStatus: missed.status,
     sectorPerformance,

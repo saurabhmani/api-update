@@ -1,0 +1,6 @@
+{
+  "base": "http://localhost:3000",
+  "steps": [],
+  "ok": false,
+  "error": "fetch failed"
+}
