@@ -460,8 +460,9 @@ export async function GET(req: NextRequest) {
   const newsRiskCount = 0; // not exposed by /summary; module page surfaces severities.
 
   const dataFreshness = sigPayload.dataFreshness ?? null;
-  const isStaleData = dataFreshness?.isStale === true ||
-    (typeof dataFreshness?.ageMinutes === 'number' && dataFreshness.ageMinutes > 240);
+  // Trust the signals API freshness flag (daily-tolerant). The legacy
+  // `ageMinutes > 240` check falsely marked normal EOD candles stale.
+  const isStaleData = dataFreshness?.isStale === true;
 
   const rejectedTopReasons = arr<any>(dueDiligenceSummary?.topBlockReasons).slice(0, 5).map((r) => ({
     reason: String(r.reason ?? 'UNSPECIFIED'),
@@ -515,7 +516,27 @@ export async function GET(req: NextRequest) {
     classifyTransport(signals, 'Signal Engine'),
     () => {
       const preview = sigPayload.healthPreview;
-      const overall = preview?.overallStatus ?? engineOverallStatus;
+      let overall = preview?.overallStatus ?? engineOverallStatus;
+      const reason = String(preview?.primaryBlockingReason ?? '');
+      const marketOpen = sigPayload.marketStatus?.isOpen === true;
+      const candidateTotal = signalSummary.candidateTotal;
+
+      // Benign states should not downgrade the Command Center chip.
+      const benign =
+        (overall === 'WARNING' || overall === 'DEGRADED')
+        && candidateTotal > 0
+        && (
+          !marketOpen
+          || reason.toLowerCase().includes('market closed')
+          || (
+            !reason.toLowerCase().includes('fallback')
+            && !reason.toLowerCase().includes('bootstrap')
+            && !reason.toLowerCase().includes('frozen')
+            && preview?.canGenerateCandidates !== false
+          )
+        );
+      if (benign) overall = 'HEALTHY';
+
       let status: FusionStatus;
       if      (overall === 'HEALTHY')  status = 'HEALTHY';
       else if (overall === 'WARNING')  status = 'WARNING';
@@ -761,7 +782,16 @@ export async function GET(req: NextRequest) {
     stale:             moduleStatusList.filter((m) => m.status === 'STALE').length,
     notConfigured:     moduleStatusList.filter((m) => m.status === 'NOT_CONFIGURED').length,
     insufficient:      moduleStatusList.filter((m) => m.status === 'INSUFFICIENT_DATA').length,
-    partial:           moduleStatusList.filter((m) => m.status === 'PARTIAL' || m.status === 'WARNING' || m.status === 'DEGRADED').length,
+    partial:           moduleStatusList.filter((m) => {
+      if (m.status !== 'PARTIAL' && m.status !== 'WARNING' && m.status !== 'DEGRADED') return false;
+      if (m.label === 'Signal Engine') {
+        const r = m.reason.toLowerCase();
+        if (!r.includes('fallback') && !r.includes('frozen') && !r.includes('bootstrap')) {
+          if (r.includes('market closed') || signalSummary.candidateTotal > 0) return false;
+        }
+      }
+      return true;
+    }).length,
   };
 
   for (const m of moduleStatusList) {

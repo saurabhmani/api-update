@@ -98,8 +98,9 @@ interface EngineHealthMap {
 interface ApiEnvelope {
   ok:           boolean;
   generatedAt?: string;
-  health?:      EngineHealthMap;
+  health?:      EngineHealthMap | null;
   warnings?:    string[];
+  degraded?:    boolean;
 }
 
 const STATUS_PALETTE: Record<EngineStatus, { bg: string; color: string; border: string; label: string }> = {
@@ -360,34 +361,74 @@ export default function EngineHealthPage() {
   const loadAbortRef = useRef<AbortController | null>(null);
 
   const load = async () => {
-    loadAbortRef.current?.abort('superseded');
+    loadAbortRef.current?.abort();
     const controller = new AbortController();
     loadAbortRef.current = controller;
+    const clientTimeout = window.setTimeout(() => controller.abort(), 45_000);
     setLoading(true);
     setError(null);
     try {
       const res = await fetch('/api/signals/engine-health', {
-        cache: 'no-store', signal: controller.signal,
+        cache:         'no-store',
+        credentials:   'same-origin',
+        signal:        controller.signal,
       });
-      if (!res.ok) {
-        setError(`API returned ${res.status}`);
+      if (controller.signal.aborted) return;
+
+      let body: ApiEnvelope;
+      try {
+        body = await res.json() as ApiEnvelope;
+      } catch {
+        setError('Engine health API returned an invalid response — retry in a moment.');
         setData(null);
         return;
       }
-      if (!controller.signal.aborted) setData(await res.json() as ApiEnvelope);
+
+      if (res.status === 401) {
+        setError('Session expired — sign in again to view engine health.');
+        setData(null);
+        return;
+      }
+
+      // Route returns structured 200 even when degraded; only hard HTTP
+      // failures should blank the page.
+      if (!res.ok && !body.health) {
+        setError(`Engine health API returned ${res.status}.`);
+        setData(null);
+        return;
+      }
+
+      if (body.health) {
+        setData(body);
+        setError(null);
+        return;
+      }
+
+      setData(body);
+      setError(
+        body.warnings?.[0]
+          ?? 'Engine health map unavailable — partial telemetry only.',
+      );
     } catch (e) {
+      if (controller.signal.aborted) return;
       const err = e as Error;
-      if (err.name === 'AbortError') return; // expected on supersede/unmount
-      setError(err.message ?? 'Failed to load engine health');
+      if (err.name === 'AbortError') return;
+      const msg = (err.message ?? '').toLowerCase();
+      setError(
+        msg.includes('failed to fetch') || msg.includes('network')
+          ? 'Could not reach the engine health API — check that the server is running and retry.'
+          : (err.message || 'Failed to load engine health'),
+      );
       setData(null);
     } finally {
+      window.clearTimeout(clientTimeout);
       if (loadAbortRef.current === controller) setLoading(false);
     }
   };
 
   useEffect(() => {
     void load();
-    return () => { loadAbortRef.current?.abort('unmount'); };
+    return () => { loadAbortRef.current?.abort(); };
   }, []);
 
   const health = data?.health ?? null;
@@ -467,7 +508,16 @@ export default function EngineHealthPage() {
             </div>
           )}
           {error && (
-            <div style={{ marginTop: 8, fontSize: 12, color: '#B91C1C' }}>{error}</div>
+            <div style={{
+              marginTop: 8, fontSize: 12,
+              color: health ? '#92400E' : '#B91C1C',
+              padding: health ? '8px 10px' : undefined,
+              background: health ? '#FFFBEB' : undefined,
+              border: health ? '1px solid #FDE68A' : undefined,
+              borderRadius: health ? 6 : undefined,
+            }}>
+              {health ? 'Notice: ' : ''}{error}
+            </div>
           )}
           {data?.warnings && data.warnings.length > 0 && (
             <ul style={{ marginTop: 8, paddingLeft: 18, fontSize: 11.5, color: '#92400E', lineHeight: 1.5 }}>

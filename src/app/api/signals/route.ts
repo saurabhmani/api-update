@@ -96,6 +96,7 @@ import {
 import {
   buildLightweightEngineHealthPreview,
 }                                     from '@/lib/signals/engineHealthMap';
+import { classifyCandleFreshness }    from '@/lib/marketData/candleFreshness';
 import { buildSignalFunnel }          from '@/lib/signals/signalFunnelBuilder';
 import {
   partitionByTier,
@@ -1989,7 +1990,7 @@ export async function GET(req: NextRequest) {
             marketOpen:  false,
             marketLabel: status.label,
             isBootstrap: bootstrap,
-            isFallback:  true,
+            isFallback:  false,
             freshnessMode: 'NORMAL_OPERATION',
             candleAgeMinutes: ageMinutes,
           };
@@ -2050,21 +2051,29 @@ export async function GET(req: NextRequest) {
             topBlockReason:         closedDDSummary.topBlockReasons[0]?.reason ?? null,
             marketOpen:             false,
             isBootstrap:            bootstrap,
-            isFallback:             true,
+            isFallback:             false,
             staleMinutes:           ageMinutes,
           });
           // PHASE_5_HEALTH_OBSERVABILITY_2026-05 — closed-market preview.
+          const closedCandleFreshness = classifyCandleFreshness({
+            latest_candle_ms: latestSnapshotMs,
+            market_open:      false,
+            candle_source:    'daily',
+          });
           const closedHealthPreview = buildLightweightEngineHealthPreview({
-            marketOpen:     false,
-            isBootstrap:    bootstrap,
-            isFallback:     true,
-            staleMinutes:   ageMinutes,
-            approvedTotal:  closedEnrichedApproved.length,
-            candidateTotal: closedEnrichedHighPotential.length
-                          + closedEnrichedWatchlist.length
-                          + closedEnrichedDeveloping.length
-                          + closedEnrichedScanner.length
-                          + closedEnrichedRisk.length,
+            marketOpen:         false,
+            isBootstrap:        false,
+            isFallback:         false,
+            staleMinutes:       ageMinutes,
+            freshnessMode:      closedCandleFreshness.freshness_mode,
+            feedFrozen:         closedCandleFreshness.feed_frozen,
+            freshnessQuality:   closedCandleFreshness.freshness_quality,
+            approvedTotal:      closedEnrichedApproved.length,
+            candidateTotal:     closedEnrichedHighPotential.length
+                              + closedEnrichedWatchlist.length
+                              + closedEnrichedDeveloping.length
+                              + closedEnrichedScanner.length
+                              + closedEnrichedRisk.length,
           });
 
           const closedPayload = {
@@ -2218,7 +2227,7 @@ export async function GET(req: NextRequest) {
             },
             provider:             'market_close_snapshot',
             isBootstrap:          bootstrap,
-            isFallback:           true,
+            isFallback:           false,
             lastApiRequestAt:     new Date().toISOString(),
             lastSuccessAt:        new Date().toISOString(),
             lastPipelineRunAt:    latestSnapshotIso,

@@ -13,6 +13,7 @@ const PUBLIC_PATHS = [
   '/register',
   '/api/auth',
   '/api/health',
+  '/api/engine-health/status',
   '/api/events',
   '/api/market-data/health',
   '/api/market-data/reseed',

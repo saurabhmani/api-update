@@ -2225,15 +2225,12 @@ export default function SignalsPage() {
           let dot = '#F59E0B';
           let headline: string;
           let sub: string;
-          // Spec SIGNAL_ENGINE_FIXED_AND_CLEAN §6 — provider-aware
-          // banner copy. The closed-mode payload exposes data_source,
-          // and `last_close_signals` means the dashboard is reading
-          // bootstrap-seeded NSE rows (not the prior Yahoo fallback).
-          // Default to the live IndianAPI string when the market is
-          // open and no closed-mode envelope is set.
+          // Closed-mode payload exposes data_source for off-hours copy.
+          // Bootstrap is only true when the API was invoked with
+          // ?bootstrap=true (one-time NSE cold-start seed) — not for
+          // normal last-close signals or market-close snapshots.
           const closedDataSource = marketClosed?.data_source ?? null;
-          const isBootstrapData = isBootstrap || closedDataSource === 'last_close_signals'
-                                || closedDataSource === 'market_close_snapshot';
+          const isBootstrapData = isBootstrap;
           if (!marketOpen) {
             headline = `Market ${marketLabel}`;
             const approvedZero = (counters?.approvedTotal ?? 0) === 0;
@@ -2242,9 +2239,9 @@ export default function SignalsPage() {
               : isBootstrap
                 ? 'Operating on Bootstrap Data (NSE manual seed)'
                 : closedDataSource === 'last_close_signals'
-                  ? 'Showing last market signals (NSE Bootstrap)'
+                  ? 'Showing signals from the last trading session'
                   : closedDataSource === 'market_close_snapshot'
-                    ? 'Showing last-close prices (NSE Bootstrap snapshot)'
+                    ? 'Showing last-close snapshot from stored market data'
                     : 'Market closed — no stored signals to show.';
           } else {
             // SIGNAL-ENGINE-COPY-2026-05 — use the unified
@@ -2270,10 +2267,8 @@ export default function SignalsPage() {
               <div style={{ flex: 1, minWidth: 260 }}>
                 <strong>{headline}</strong>
                 <span style={{ opacity: 0.85, marginLeft: 8 }}>{sub}</span>
-                {/* Spec §7 — visible badge when the dashboard is reading
-                    bootstrap-seeded rows. Disambiguates "real live data"
-                    from "one-time NSE seed" so operators don't trade off
-                    the seed during off-hours. */}
+                {/* Visible only when ?bootstrap=true cold-start seed is
+                    active — not for normal off-hours last-close data. */}
                 {isBootstrapData && (
                   <span style={{
                     display: 'inline-block',
