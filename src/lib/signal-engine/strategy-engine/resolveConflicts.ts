@@ -167,6 +167,11 @@ function computeStructuralQuality(candidate: StrategyCandidate): number {
   if (candidate.tradePlan.rewardRiskApprox >= 2.0) score += 10;
   else if (candidate.tradePlan.rewardRiskApprox >= 1.5) score += 5;
 
+  // Fibonacci golden-zone alignment — more specific than generic pullback
+  if (candidate.strategy === 'fibonacci_pullback' && f.structure.fibZoneMatched) {
+    score += 12;
+  }
+
   return Math.min(score, 100);
 }
 

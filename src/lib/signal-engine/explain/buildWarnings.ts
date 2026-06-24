@@ -21,10 +21,11 @@ export function buildWarnings(features: SignalFeatures, strategy?: StrategyName)
   const warnings: string[] = [];
 
   if (strategy === 'fibonacci_pullback') {
-    const { fib50, fib618, fib786 } = structure;
+    const { fib382, fib50, fib618, fib786 } = structure;
     const inGoldenZone = structure.fibZoneMatched === true;
     const nearKeyFib =
-      (fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_WARNING_TOLERANCE_PCT))
+      (fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, FIB_WARNING_TOLERANCE_PCT))
+      || (fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_WARNING_TOLERANCE_PCT))
       || (fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, FIB_WARNING_TOLERANCE_PCT));
 
     if (!inGoldenZone || !nearKeyFib) {

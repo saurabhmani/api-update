@@ -762,7 +762,20 @@ export async function generatePhase3Signals(
       // of primary, (c) secondary score ≥ 50. Otherwise emit just
       // the dominant one. No faking — every emitted candidate had to
       // actually match its strategy's criteria.
-      const bullishBest = candidates.find((c) => !BEARISH_STRATEGIES.has(c.strategy));
+      // When both generic pullback and fibonacci_pullback match, prefer
+      // the Fibonacci-specific setup if it is within 8 confidence points
+      // of the top bullish candidate — avoids suppressing fib rows when
+      // the more specific detector also fired.
+      const bullishBest = (() => {
+        const bullish = candidates.filter((c) => !BEARISH_STRATEGIES.has(c.strategy));
+        if (bullish.length === 0) return undefined;
+        const top = bullish[0];
+        if (top.strategy !== 'bullish_pullback') return top;
+        const fib = bullish.find((c) => c.strategy === 'fibonacci_pullback');
+        if (!fib?.features.structure.fibZoneMatched) return top;
+        const gap = top.confidence.finalScore - fib.confidence.finalScore;
+        return gap <= 8 ? fib : top;
+      })();
       const bearishBest = candidates.find((c) =>  BEARISH_STRATEGIES.has(c.strategy));
       const toBuild: typeof candidates = [];
       if (bullishBest && bearishBest) {

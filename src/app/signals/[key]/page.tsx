@@ -154,18 +154,27 @@ export default function SignalDetailPage() {
 
             {/* Reasons */}
             <Card title="Why this signal?">
-              {signal.reasons?.length ? signal.reasons.map((r: any) => (
-                <div key={r.key} className="reason-item">
-                  <div className={`reason-item__dot reason-item__dot--${r.score > 0 ? 'positive' : r.score < 0 ? 'negative' : 'neutral'}`} />
+              {signal.reasons?.length ? signal.reasons.map((r: any, i: number) => {
+                const label = r.label ?? r.text ?? r.message ?? 'Reason';
+                const desc = r.description ?? (r.label && r.text ? r.text : '');
+                const rawScore = typeof r.score === 'number' ? r.score : typeof r.contribution === 'number' ? r.contribution : null;
+                const scoreDisplay = rawScore != null && Number.isFinite(rawScore)
+                  ? `${rawScore > 0 ? '+' : ''}${(rawScore * 100).toFixed(0)}`
+                  : null;
+                return (
+                <div key={r.key ?? r.factor_key ?? r.rank ?? i} className="reason-item">
+                  <div className={`reason-item__dot reason-item__dot--${(rawScore ?? 0) > 0 ? 'positive' : (rawScore ?? 0) < 0 ? 'negative' : 'neutral'}`} />
                   <div style={{ flex: 1 }}>
-                    <div className="reason-item__label">{r.label}</div>
-                    <div className="reason-item__desc">{r.description}</div>
+                    <div className="reason-item__label">{label}</div>
+                    {desc ? <div className="reason-item__desc">{desc}</div> : null}
                   </div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: r.score > 0 ? '#16A34A' : r.score < 0 ? '#DC2626' : '#94A3B8' }}>
-                    {r.score > 0 ? '+' : ''}{(r.score * 100).toFixed(0)}
-                  </div>
+                  {scoreDisplay ? (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: (rawScore ?? 0) > 0 ? '#16A34A' : (rawScore ?? 0) < 0 ? '#DC2626' : '#94A3B8' }}>
+                      {scoreDisplay}
+                    </div>
+                  ) : null}
                 </div>
-              )) : <p style={{ color: '#94A3B8', fontSize: 14 }}>No detailed reasons available.</p>}
+              ); }) : <p style={{ color: '#94A3B8', fontSize: 14 }}>No detailed reasons available.</p>}
             </Card>
 
             {/* Disclaimer */}

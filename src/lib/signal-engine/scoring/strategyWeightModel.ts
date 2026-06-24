@@ -290,6 +290,15 @@ export const STRATEGY_FACTOR_WEIGHT_PRESETS: Readonly<Record<string, StrategyFac
     liquidity:           10,
     volume_confirmation:  5,
   },
+  fibonacci_pullback: {
+    trend_alignment:     25,
+    strategy_quality:    20,
+    risk_reward:         20,
+    portfolio_fit:       10,
+    momentum:            10,
+    liquidity:           10,
+    volume_confirmation:  5,
+  },
   momentum_continuation: {
     momentum:            25,
     trend_alignment:     20,

@@ -248,10 +248,11 @@ export function scoreConfidenceForStrategy(
     case 'fibonacci_pullback': {
       const { trend, momentum, volume, structure, context } = features;
       const close = trend.close;
-      const { fib50, fib618, fib786 } = structure;
+      const { fib382, fib50, fib618, fib786 } = structure;
+      const near382 = fib382 !== undefined && isPriceNearFibLevel(close, fib382, FIB_CONFIDENCE_TOLERANCE_PCT);
       const near50 = fib50 !== undefined && isPriceNearFibLevel(close, fib50, FIB_CONFIDENCE_TOLERANCE_PCT);
       const near618 = fib618 !== undefined && isPriceNearFibLevel(close, fib618, FIB_CONFIDENCE_TOLERANCE_PCT);
-      const nearKeyFib = near50 || near618;
+      const nearKeyFib = near382 || near50 || near618;
       const trendBullish = trend.ema20Above50 && trend.closeAbove200Ema;
       const emaSupport = trend.closeAbove20Ema || trend.closeAbove50Ema;
       const rsiInPullbackBand =
@@ -263,8 +264,7 @@ export function scoreConfidenceForStrategy(
 
       // Bonus only when Fibonacci aligns with trend, RSI, and volume — not Fib alone.
       if (nearKeyFib && trendBullish && emaSupport && rsiInPullbackBand && volumeAcceptable && regimeSupportive) {
-        if (near50) adjustment += 2;
-        else if (near618) adjustment += 2;
+        if (near382 || near50 || near618) adjustment += 2;
         adjustment += 2; // bullish trend structure
         if (trend.closeAbove20Ema && trend.closeAbove50Ema) adjustment += 1;
         adjustment += 2; // RSI in constructive pullback band

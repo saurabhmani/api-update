@@ -951,6 +951,7 @@ const STRATEGY_DISPLAY: Record<string, string> = {
   bullish_breakout:      'Bullish Breakout',
   bearish_breakdown:     'Bearish Breakdown',
   bullish_pullback:      'Bullish Pullback',
+  fibonacci_pullback:    'Fibonacci Pullback',
   bearish_pullback:      'Bearish Pullback',
   mean_reversion_bounce: 'Mean Reversion Bounce',
   mean_reversion_fade:   'Mean Reversion Fade',
@@ -1086,7 +1087,10 @@ export async function getIntelligenceSignals(): Promise<{
     const conf     = s.confidence_score || 0;
     const band     = s.conviction_band || 'watchlist';
 
-    const stratGroup   = resolveStrategyGroup(scenario, dir);
+    const signalType   = (s.signal_type ?? s.strategy ?? '').toString();
+    const stratGroup   = signalType === 'fibonacci_pullback'
+      ? 'fibonacci_pullback'
+      : resolveStrategyGroup(scenario, dir);
     const stratDisplay = STRATEGY_DISPLAY[stratGroup] || stratGroup.replace(/_/g, ' ');
     const strengthTag  = resolveStrengthTag(conf);
     const contextTag   = resolveMarketContextTag(regime);

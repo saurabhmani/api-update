@@ -101,6 +101,22 @@ export function findNearestFibLevel(
  * Returns `true` when `currentPrice` is within `tolerancePct` percent of `level`
  * (e.g. `tolerancePct = 1` allows ±1% from the level).
  */
+/** Human-readable label for a Fibonacci level key (e.g. `fib382` → `38.2%`). */
+export function formatFibLevelDisplay(name: FibLevelName | string): string {
+  const labels: Record<FibLevelName, string> = {
+    fib236:  '23.6%',
+    fib382:  '38.2%',
+    fib50:   '50%',
+    fib618:  '61.8%',
+    fib786:  '78.6%',
+    fib100:  '100%',
+    fib1272: '127.2%',
+    fib1618: '161.8%',
+  };
+  if (name in labels) return labels[name as FibLevelName];
+  return String(name);
+}
+
 export function isPriceNearFibLevel(
   currentPrice: number,
   level: number,
