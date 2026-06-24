@@ -1550,6 +1550,9 @@ export async function POST(req: NextRequest) {
   // ensures exactly one executor owns the pipe.
   const batchId = `batch_${Date.now()}`;
   const lockAcquired = await tryAcquireExecutionLock(batchId).catch(() => false);
+  const releaseDistributedLock = async () => {
+    await releaseExecutionLock().catch(() => {});
+  };
   
   if (!lockAcquired && !forceRun) {
     const lockRow = await getLockRow('system', '2000-01-01');
@@ -1599,6 +1602,7 @@ export async function POST(req: NextRequest) {
       `daily=${usage.daily}/${usage.daily_limit} ` +
       `monthly=${usage.monthly}/${usage.monthly_limit}`,
     );
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         error:        'API budget exhausted — refusing to run',
@@ -1671,6 +1675,7 @@ export async function POST(req: NextRequest) {
       overrideReason: override ? effectiveReason : null,
     });
   } catch (err: any) {
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         error:  'run lock unavailable; refusing to run unbounded',
@@ -1696,6 +1701,7 @@ export async function POST(req: NextRequest) {
       cooldown:        true,
       next_allowed_at: claim.nextAllowedAt,
     });
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         blocked:         true,
@@ -1753,11 +1759,16 @@ export async function POST(req: NextRequest) {
   })();
 
   const claimLock = async (mode: string) => {
-    // Spec "FIX PIPELINE CONCURRENCY" §2 — acquire the distributed execution
-    // lock first. This is the global guard across all instances.
-    const acquired = await tryAcquireExecutionLock(batchId);
-    if (!acquired) {
-      throw new Error('EXECUTION_LOCK_HELD');
+    // The route may have already acquired the distributed lock above.
+    // Re-acquiring here would always fail and wedge the lock in DB.
+    const existing = await getLockRow('system', '2000-01-01');
+    const alreadyOwned =
+      existing?.status === 'started' && existing?.request_source === batchId;
+    if (!alreadyOwned) {
+      const acquired = await tryAcquireExecutionLock(batchId);
+      if (!acquired) {
+        throw new Error('EXECUTION_LOCK_HELD');
+      }
     }
 
     inFlight = { batchId, startedAt: new Date(start).toISOString(), mode };
@@ -1825,6 +1836,7 @@ export async function POST(req: NextRequest) {
       const msg = err?.message ?? String(err);
       if (msg === 'EXECUTION_LOCK_HELD') {
         console.warn(`[ENGINE_LOCK_SKIPPED] reason=execution_lock_held batch=${batchId}`);
+        await releaseDistributedLock();
         return NextResponse.json(
           buildRunningEnvelope({ batchId: null, startedAtMs: null }),
           { status: 409 },

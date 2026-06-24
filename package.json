@@ -92,6 +92,7 @@
     "validate:phase4-functional": "tsx scripts/validatePhase4Functional.ts",
     "validate:phase4-signoff": "tsx scripts/validatePhase4Signoff.ts",
     "test:fibonacci-pullback": "tsx scripts/seedFibonacciPullbackTest.ts --apply --run",
+    "unblock:execution-lock": "tsx scripts/unblockExecutionLock.ts",
     "debug:pipeline": "tsx scripts/debugPipeline.ts",
     "db:status": "tsx scripts/checkDbState.ts",
     "db:fix": "tsx scripts/fix-db.ts",
