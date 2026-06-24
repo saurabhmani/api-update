@@ -8,27 +8,32 @@
 //
 //  Source class: deals
 //  Deal events often have high impact on symbol prices.
+//
+//  Premium integration — disabled until DEALS_FEED_API_URL is set.
+//  Onboarding: docs/PREMIUM_NEWS_FEEDS.md
+//  TODO(provider): add vendor-specific auth, pagination, and POST bodies
+//  once a deals data vendor is selected.
 // ════════════════════════════════════════════════════════════════
 
 import type { NewsAdapter, RawNewsItem } from '../types/newsEngine.types';
-
-const DEALS_API_URL = process.env.DEALS_FEED_API_URL ?? '';
-const DEALS_API_KEY = process.env.DEALS_FEED_API_KEY ?? '';
 
 export const dealsFeedAdapter: NewsAdapter = {
   sourceId: 'deals_feed',
 
   async fetch(query: string, limit = 15): Promise<RawNewsItem[]> {
-    if (!DEALS_API_URL) return [];
+    const dealsUrl = process.env.DEALS_FEED_API_URL?.trim();
+    if (!dealsUrl) return [];
+
+    const dealsApiKey = process.env.DEALS_FEED_API_KEY?.trim() ?? '';
 
     try {
       const headers: Record<string, string> = {
         'Accept': 'application/json',
       };
-      if (DEALS_API_KEY) headers['Authorization'] = `Bearer ${DEALS_API_KEY}`;
+      if (dealsApiKey) headers['Authorization'] = `Bearer ${dealsApiKey}`;
 
       const res = await fetch(
-        `${DEALS_API_URL}?q=${encodeURIComponent(query)}&limit=${limit}`,
+        `${dealsUrl}?q=${encodeURIComponent(query)}&limit=${limit}`,
         { headers, signal: AbortSignal.timeout(10_000) },
       );
       if (!res.ok) return [];
