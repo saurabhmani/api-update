@@ -40,6 +40,13 @@ import type {
 
 export type BacktestWindow = 'INTRADAY' | '1D' | '7D' | '30D' | '90D' | 'CUSTOM';
 export type BacktestStatus = 'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA' | 'FAILED';
+
+/** Warehouse is EOD-backed (`eod`/`1day`). Intraday bars are optional. */
+export function intervalForBacktestWindow(
+  window: BacktestWindow,
+): '1day' | '5minute' {
+  return window === 'INTRADAY' ? '5minute' : '1day';
+}
 export type SignalOutcome = 'WIN' | 'LOSS' | 'NEUTRAL' | 'PENDING' | 'PARTIAL_WIN' | 'PARTIAL_LOSS' | 'INSUFFICIENT_DATA';
 export type GovernanceFlag = 'REVIEW_ONLY' | 'REVIEW_REQUIRED' | 'DO_NOT_APPLY_AUTOMATICALLY';
 
@@ -333,6 +340,8 @@ export function evaluateSignalOutcome(
   if (candles.length > 0) {
     const cutoffMs = options.windowEndIso ? new Date(options.windowEndIso).getTime() : null;
     const startMs  = generatedAt ? new Date(generatedAt).getTime() : null;
+    const signalDay = generatedAt ? generatedAt.slice(0, 10) : null;
+    const useCalendarDayFilter = options.reviewWindowLabel !== 'INTRADAY';
     let exit:       number | null = null;
     let mfe = 0, mae = 0;
     let targetHit:  boolean | null = null;
@@ -343,7 +352,14 @@ export function evaluateSignalOutcome(
     for (const c of candles) {
       const t = new Date(c.ts).getTime();
       if (!Number.isFinite(t)) continue;
-      if (startMs != null && t < startMs) continue; // never use pre-signal candles
+      if (startMs != null) {
+        if (useCalendarDayFilter && signalDay) {
+          const candleDay = String(c.ts).slice(0, 10);
+          if (candleDay < signalDay) continue;
+        } else if (t < startMs) {
+          continue;
+        }
+      }
       if (cutoffMs != null && t > cutoffMs) break;  // no future-data leakage
       evaluated++;
       exit = c.close;
@@ -1028,7 +1044,7 @@ export interface RunBacktestInput {
 export function runDailyBacktest(input: RunBacktestInput): BacktestResult {
   const warnings: string[] = [...(input.warnings ?? [])];
   const stamp = (s: SignalForBacktest, tier: BacktestTierPerformance['tier']): SignalForBacktest => {
-    const sym = String(s.symbol ?? s.tradingsymbol ?? '');
+    const sym = String(s.symbol ?? s.tradingsymbol ?? '').toUpperCase();
     return {
       ...s,
       __tier:    tier,

@@ -20,7 +20,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
-import { getMarketStatus }           from '@/lib/marketData/marketHours';
+import { getMarketStatus, toIstCalendarDate } from '@/lib/marketData/marketHours';
 import {
   buildDailySignalReport,
   type DailyReportInput,
@@ -32,10 +32,10 @@ export const revalidate = 0;
 
 const isoDate = (s?: string | null): string => {
   if (s && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  return new Date().toISOString().slice(0, 10);
+  return toIstCalendarDate(new Date());
 };
 
-const todayISO = (): string => new Date().toISOString().slice(0, 10);
+const todayISO = (): string => toIstCalendarDate(new Date());
 
 export async function GET(req: NextRequest) {
   // Auth — same predicate as /api/signals.

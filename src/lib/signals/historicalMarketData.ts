@@ -71,6 +71,8 @@ export interface MarketMoverResult {
 export interface HistoricalMarketMoversOptions {
   /** Max movers returned (gainers + losers by |move|). Default 20. */
   limit?: number;
+  /** When true (default), use latest warehouse EOD if requested date is empty. */
+  fallbackToLatestEod?: boolean;
 }
 
 const EOD_CANDLE_TYPE   = 'eod';
@@ -149,29 +151,59 @@ export async function getHistoricalCandles(
     warnings.push('symbol/startDate/endDate required');
     return { symbol, interval, candles: [], warnings, available: false };
   }
+  const sym = symbol.toUpperCase().trim();
   const { candle_type, interval_unit } = intervalToCandleType(interval);
+  const useDateBounds = interval === '1day';
 
   try {
     const rows: Array<{
       ts: string | Date; open: number; high: number; low: number; close: number; volume: number;
-    }> = await (db as any).query(
-      `SELECT ts, open, high, low, close, volume
-       FROM candles
-       WHERE (instrument_key = ?
-              OR instrument_key LIKE ?
-              OR instrument_key LIKE ?
-              OR instrument_key LIKE ?)
-         AND candle_type   = ?
-         AND interval_unit = ?
-         AND ts >= ?
-         AND ts <= ?
-       ORDER BY ts ASC`,
-      [
-        symbol, `%|${symbol}`, `${symbol}|%`, `%|${symbol}|%`,
-        candle_type, interval_unit,
-        startDate, endDate,
-      ],
-    ).then((r: any) => Array.isArray(r) ? r : (r?.rows ?? []));
+    }> = queryRows(await (db as any).query(
+      useDateBounds
+        ? `SELECT ts, open, high, low, close, volume
+           FROM candles
+           WHERE (instrument_key = ?
+                  OR instrument_key = ?
+                  OR instrument_key LIKE ?
+                  OR instrument_key LIKE ?
+                  OR instrument_key LIKE ?)
+             AND candle_type   = ?
+             AND interval_unit = ?
+             AND DATE(ts) >= DATE(?)
+             AND DATE(ts) <= DATE(?)
+           ORDER BY ts ASC`
+        : `SELECT ts, open, high, low, close, volume
+           FROM candles
+           WHERE (instrument_key = ?
+                  OR instrument_key = ?
+                  OR instrument_key LIKE ?
+                  OR instrument_key LIKE ?
+                  OR instrument_key LIKE ?)
+             AND candle_type   = ?
+             AND interval_unit = ?
+             AND ts >= ?
+             AND ts <= ?
+           ORDER BY ts ASC`,
+      useDateBounds
+        ? [
+          sym,
+          `NSE_EQ|${sym}`,
+          `%|${sym}`,
+          `${sym}|%`,
+          `%|${sym}|%`,
+          candle_type, interval_unit,
+          startDate, endDate,
+        ]
+        : [
+          sym,
+          `NSE_EQ|${sym}`,
+          `%|${sym}`,
+          `${sym}|%`,
+          `%|${sym}|%`,
+          candle_type, interval_unit,
+          startDate, endDate,
+        ],
+    ));
 
     const candles: HistoricalCandle[] = rows.map((r) => ({
       ts:     typeof r.ts === 'string' ? r.ts : new Date(r.ts).toISOString(),
@@ -182,9 +214,9 @@ export async function getHistoricalCandles(
       volume: Number(r.volume ?? 0),
     }));
     if (candles.length === 0) {
-      warnings.push(`No ${interval} candles in DB for ${symbol} between ${startDate} and ${endDate}.`);
+      warnings.push(`No ${interval} candles in DB for ${sym} between ${startDate} and ${endDate}.`);
     }
-    return { symbol, interval, candles, warnings, available: candles.length > 0 };
+    return { symbol: sym, interval, candles, warnings, available: candles.length > 0 };
   } catch (e) {
     const msg = (e as Error).message ?? 'unknown error';
     log.warn('getHistoricalCandles failed', { symbol, interval, msg });
@@ -207,6 +239,90 @@ export async function getIntradayCandles(
   return getHistoricalCandles(symbol, start, end, interval);
 }
 
+/** Latest trade date with any EOD bar in the warehouse. */
+export async function getLatestEodTradeDateInWarehouse(): Promise<string | null> {
+  try {
+    const { rows } = await db.query<{ trade_date: string | Date | null }>(
+      `SELECT DATE(MAX(ts)) AS trade_date
+         FROM candles
+        WHERE candle_type = ?
+          AND interval_unit = ?`,
+      [EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT],
+    );
+    const raw = rows[0]?.trade_date;
+    if (!raw) return null;
+    if (raw instanceof Date) return raw.toISOString().slice(0, 10);
+    const s = String(raw).trim().slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  } catch (e) {
+    log.warn('getLatestEodTradeDateInWarehouse failed', { msg: (e as Error).message });
+    return null;
+  }
+}
+
+async function queryMarketMoversForDate(
+  tradeDate: string,
+  limit: number,
+): Promise<MarketMover[]> {
+  const rows: Array<{
+    instrument_key: string;
+    symbol: string;
+    close: number;
+    prev_close: number;
+    volume: number | null;
+    move_percent: number;
+  }> = queryRows(await (db as any).query(
+    `SELECT
+       curr.instrument_key,
+       SUBSTRING_INDEX(curr.instrument_key, '|', -1) AS symbol,
+       curr.close,
+       prev.close AS prev_close,
+       curr.volume,
+       ((curr.close - prev.close) / prev.close) * 100 AS move_percent
+     FROM candles curr
+     INNER JOIN candles prev
+       ON prev.instrument_key = curr.instrument_key
+      AND prev.candle_type   = ?
+      AND prev.interval_unit = ?
+      AND prev.ts = (
+        SELECT MAX(p2.ts)
+        FROM candles p2
+        WHERE p2.instrument_key = curr.instrument_key
+          AND p2.candle_type   = ?
+          AND p2.interval_unit = ?
+          AND DATE(p2.ts) < DATE(curr.ts)
+      )
+     WHERE curr.candle_type   = ?
+       AND curr.interval_unit = ?
+       AND DATE(curr.ts) = ?
+       AND prev.close > 0
+       AND curr.close > 0
+     ORDER BY ABS(((curr.close - prev.close) / prev.close) * 100) DESC
+     LIMIT ?`,
+    [
+      EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
+      EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
+      EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
+      tradeDate,
+      limit,
+    ],
+  ));
+
+  return rows.map((r) => {
+    const movePercent = Math.round(Number(r.move_percent) * 100) / 100;
+    const symbol = extractSymbolFromCandleInstrumentKey(
+      r.symbol || r.instrument_key,
+    );
+    return {
+      symbol,
+      movePercent,
+      direction:   movePercent >= 0 ? 'UP' : 'DOWN',
+      volume:      r.volume != null ? Number(r.volume) : null,
+      date:        tradeDate,
+    };
+  });
+}
+
 /** Daily market movers from EOD `candles` — close vs previous trading day.
  *  Returns top symbols by absolute % move (gainers and losers). */
 export async function getHistoricalMarketMovers(
@@ -216,6 +332,7 @@ export async function getHistoricalMarketMovers(
   const warnings: string[] = [];
   const tradeDate = normalizeTradeDate(date);
   const limit = Math.max(1, Number(options.limit) || 20);
+  const fallbackToLatestEod = options.fallbackToLatestEod !== false;
 
   if (!tradeDate || !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
     warnings.push('date required (YYYY-MM-DD)');
@@ -223,70 +340,26 @@ export async function getHistoricalMarketMovers(
   }
 
   try {
-    const rows: Array<{
-      instrument_key: string;
-      symbol: string;
-      close: number;
-      prev_close: number;
-      volume: number | null;
-      move_percent: number;
-    }> = queryRows(await (db as any).query(
-      `SELECT
-         curr.instrument_key,
-         SUBSTRING_INDEX(curr.instrument_key, '|', -1) AS symbol,
-         curr.close,
-         prev.close AS prev_close,
-         curr.volume,
-         ((curr.close - prev.close) / prev.close) * 100 AS move_percent
-       FROM candles curr
-       INNER JOIN candles prev
-         ON prev.instrument_key = curr.instrument_key
-        AND prev.candle_type   = ?
-        AND prev.interval_unit = ?
-        AND prev.ts = (
-          SELECT MAX(p2.ts)
-          FROM candles p2
-          WHERE p2.instrument_key = curr.instrument_key
-            AND p2.candle_type   = ?
-            AND p2.interval_unit = ?
-            AND DATE(p2.ts) < DATE(curr.ts)
-        )
-       WHERE curr.candle_type   = ?
-         AND curr.interval_unit = ?
-         AND DATE(curr.ts) = ?
-         AND prev.close > 0
-         AND curr.close > 0
-       ORDER BY ABS(((curr.close - prev.close) / prev.close) * 100) DESC
-       LIMIT ?`,
-      [
-        EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-        EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-        EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-        tradeDate,
-        limit,
-      ],
-    ));
+    let resolvedDate = tradeDate;
+    let movers = await queryMarketMoversForDate(tradeDate, limit);
 
-    const movers: MarketMover[] = rows.map((r) => {
-      const movePercent = Math.round(Number(r.move_percent) * 100) / 100;
-      const symbol = extractSymbolFromCandleInstrumentKey(
-        r.symbol || r.instrument_key,
-      );
-      return {
-        symbol,
-        movePercent,
-        direction:   movePercent >= 0 ? 'UP' : 'DOWN',
-        volume:      r.volume != null ? Number(r.volume) : null,
-        date:        tradeDate,
-      };
-    });
+    if (movers.length === 0 && fallbackToLatestEod) {
+      const latest = await getLatestEodTradeDateInWarehouse();
+      if (latest && latest !== tradeDate) {
+        const fallback = await queryMarketMoversForDate(latest, limit);
+        if (fallback.length > 0) {
+          movers = fallback;
+          resolvedDate = latest;
+        }
+      }
+    }
 
     if (movers.length === 0) {
       warnings.push(`No EOD market movers found for ${tradeDate} in candles table.`);
     }
 
     return {
-      date: tradeDate,
+      date: resolvedDate,
       movers,
       warnings,
       available: movers.length > 0,

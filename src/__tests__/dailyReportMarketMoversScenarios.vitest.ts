@@ -19,6 +19,8 @@ const SCENARIO_C_ALLOWED = [
   /per-signal (price )?history/i,
   /MFE\/MAE/i,
   /time-to-target/i,
+  /awaiting post-signal/i,
+  /expected platform analytics gap/i,
 ];
 
 function baseInput(overrides: Partial<DailyReportInput> = {}): DailyReportInput {

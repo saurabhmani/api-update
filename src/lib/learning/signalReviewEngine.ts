@@ -283,3 +283,104 @@ function reviewExplanation(label: string, expectancy: number, evaluated: number)
   if (label === 'STABLE')    return `Stable performance — keep monitoring (${evaluated} signals, expectancy ${expectancy.toFixed(2)}R).`;
   return `Weak recent track record (${evaluated} signals, expectancy ${expectancy.toFixed(2)}R). Consider reducing approval weight or human review.`;
 }
+
+// ── Per-signal observation persistence (Phase 6) ───────────────
+
+const MATURED_OUTCOMES = new Set<PerformanceOutcomeRow['outcome']>([
+  'WIN', 'LOSS', 'EXPIRED', 'INVALIDATED',
+]);
+
+export interface SignalLearningObservationWrite {
+  signalId:       number;
+  strategyId:     string;
+  learningTags:   LearningTag[];
+  recommendation: LearningRecommendation;
+  reviewedAt:     string;
+}
+
+/** Resolve q365_signals.id from a normalised outcome row. */
+export function resolveSignalId(row: PerformanceOutcomeRow): number | null {
+  if (row.signalId != null && Number.isFinite(row.signalId) && row.signalId > 0) {
+    return row.signalId;
+  }
+  return null;
+}
+
+/**
+ * Per-signal learning tags — mirrors the strategy-level heuristics in
+ * `buildReviewForStrategy` but applied to one matured outcome row.
+ */
+export function deriveLearningTagsForOutcome(row: PerformanceOutcomeRow): LearningTag[] {
+  const tags: LearningTag[] = [];
+
+  if (row.stopHit) tags.push('stop_too_tight');
+  if (!row.targetHit && (row.outcome === 'WIN' || row.outcome === 'LOSS')) {
+    tags.push('target_too_far');
+  }
+  if (row.outcome === 'LOSS' && (row.returnR ?? 0) <= -0.8) {
+    tags.push('false_breakout');
+  }
+  if (row.maePct != null && row.mfePct != null
+      && row.maePct > 0 && row.mfePct > 0
+      && row.maePct > row.mfePct * 0.85) {
+    tags.push('early_entry');
+  }
+  if (row.holdingPeriodBars != null && row.holdingPeriodBars >= 10 && !row.targetHit) {
+    tags.push('late_entry');
+  }
+  if (row.outcome === 'INVALIDATED' || row.outcome === 'INSUFFICIENT_DATA') {
+    tags.push('data_stale');
+  }
+  if (row.approvalStatus === 'REJECTED' && row.outcome === 'WIN') {
+    tags.push('high_calibration_drift');
+  }
+
+  return tags;
+}
+
+/** Per-signal recommendation when strategy-level review is insufficient. */
+function recommendationForSignal(
+  row: PerformanceOutcomeRow,
+  strategyRecommendation: LearningRecommendation | undefined,
+): LearningRecommendation {
+  if (strategyRecommendation && strategyRecommendation !== 'Insufficient Data') {
+    return strategyRecommendation;
+  }
+  if (row.outcome === 'WIN')  return 'Keep Active';
+  if (row.outcome === 'LOSS') return 'Watch Carefully';
+  return 'Human Review Required';
+}
+
+/**
+ * Map matured, de-duplicated outcomes to per-signal observation writes.
+ * Strategy-level recommendations from the pure report are inherited so
+ * review behaviour stays unchanged.
+ */
+export function buildSignalLearningObservations(
+  outcomes: PerformanceOutcomeRow[],
+  report: LearningReport,
+): SignalLearningObservationWrite[] {
+  const recByStrategy = new Map(
+    report.reviews.map((r) => [r.strategyId, r.recommendation]),
+  );
+  const seen = new Set<number>();
+  const writes: SignalLearningObservationWrite[] = [];
+
+  for (const row of outcomes) {
+    if (!MATURED_OUTCOMES.has(row.outcome)) continue;
+
+    const signalId = resolveSignalId(row);
+    if (signalId == null || seen.has(signalId)) continue;
+    seen.add(signalId);
+
+    writes.push({
+      signalId,
+      strategyId:     row.strategyId,
+      learningTags:   deriveLearningTagsForOutcome(row),
+      recommendation: recommendationForSignal(row, recByStrategy.get(row.strategyId)),
+      reviewedAt:     report.generatedAt,
+    });
+  }
+
+  return writes;
+}

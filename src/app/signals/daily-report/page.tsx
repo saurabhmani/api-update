@@ -27,6 +27,7 @@ import {
   ChevronLeft, RefreshCw, FileText, AlertTriangle, Activity,
   CheckCircle2, Clock, Shield, Database, Target,
 } from 'lucide-react';
+import { toIstCalendarDate } from '@/lib/marketData/marketHours';
 
 // Mirrors src/lib/signals/dailySignalReport.ts. Duplicated structurally
 // here so the page doesn't pull server-side modules into the client
@@ -220,11 +221,11 @@ interface ApiEnvelope {
   warnings?:    string[];
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => toIstCalendarDate(new Date());
 
 /** Known platform gaps — not feed defects; shown separately from operational warnings. */
 const PLATFORM_LIMITATION_RE =
-  /per-signal price history|intraday MFE\/MAE|time-to-target unavailable/i;
+  /per-signal price history|intraday MFE\/MAE|time-to-target unavailable|awaiting post-signal|expected platform analytics gap/i;
 
 const partitionReportWarnings = (warnings: string[]) => ({
   platformLimitations: warnings.filter((w) => PLATFORM_LIMITATION_RE.test(w)),

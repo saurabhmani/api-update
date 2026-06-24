@@ -21,15 +21,19 @@ import { NextRequest, NextResponse }    from 'next/server';
 import { requireSession }               from '@/lib/session';
 import {
   runDailyBacktest,
+  intervalForBacktestWindow,
   type BacktestResult,
   type BacktestWindow,
   type SignalForBacktest,
   type RunBacktestInput,
 }                                       from '@/lib/signals/dailyBacktestEngine';
+import { toIstCalendarDate }            from '@/lib/marketData/marketHours';
 import {
   getHistoricalCandles,
+  getLatestEodTradeDateInWarehouse,
   getMarketMovers,
   type HistoricalCandle,
+  type HistoricalInterval,
 }                                       from '@/lib/signals/historicalMarketData';
 
 export const dynamic    = 'force-dynamic';
@@ -42,7 +46,7 @@ const isoDate = (s?: string | null): string | null => {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 };
 
-const todayISO = (): string => new Date().toISOString().slice(0, 10);
+const todayISO = (): string => toIstCalendarDate(new Date());
 
 const subtractDaysISO = (iso: string, days: number): string => {
   const d = new Date(iso);
@@ -66,11 +70,6 @@ const resolveWindow = (
   return { startDate: end, endDate: end };
 };
 
-const intervalForWindow = (window: BacktestWindow): '1day' | '5minute' | '15minute' =>
-    window === 'INTRADAY' ? '5minute'
-  : window === '1D'       ? '15minute'
-  :                         '1day';
-
 export async function GET(req: NextRequest) {
   await requireSession();
 
@@ -79,8 +78,19 @@ export async function GET(req: NextRequest) {
   const window: BacktestWindow = VALID_WINDOWS.has(rawWin) ? rawWin : '1D';
   const customStart = isoDate(url.searchParams.get('startDate'));
   const customEnd   = isoDate(url.searchParams.get('endDate'));
-  const { startDate, endDate } = resolveWindow(window, customStart, customEnd);
+  let { startDate, endDate } = resolveWindow(window, customStart, customEnd);
   const warnings: string[] = [];
+
+  const latestEod = await getLatestEodTradeDateInWarehouse();
+  if (latestEod && endDate > latestEod) {
+    warnings.push(
+      `Backtest end ${endDate} has no EOD bars yet — using latest warehouse session ${latestEod}.`,
+    );
+    if (window === '1D' || window === 'INTRADAY') {
+      startDate = latestEod;
+    }
+    endDate = latestEod;
+  }
 
   // Pull today's signal pools from the dashboard's own endpoint so
   // the backtest evaluates EXACTLY what the live system surfaced.
@@ -131,21 +141,32 @@ export async function GET(req: NextRequest) {
   // `available=false` with a warning we surface to the operator.
   const candleSeriesBySymbol = new Map<string, HistoricalCandle[]>();
   let symbolsWithCandles = 0;
-  const interval = intervalForWindow(window);
+  let interval: HistoricalInterval = intervalForBacktestWindow(window);
+  let usedEodFallback = false;
   // Defensive cap to keep DB load bounded on large universes.
   const symbolCap = Math.min(allSymbols.size, 200);
-  const symbolList = Array.from(allSymbols).slice(0, symbolCap);
+  const symbolList = Array.from(allSymbols).map((s) => s.toUpperCase()).slice(0, symbolCap);
   if (symbolCap < allSymbols.size) {
     warnings.push(`Symbol pool capped to ${symbolCap} for the historical query — extend cap when scaling.`);
   }
+  const rangeStart = `${startDate} 00:00:00`;
+  const rangeEnd   = `${endDate} 23:59:59`;
   for (const sym of symbolList) {
-    const r = await getHistoricalCandles(sym, `${startDate} 00:00:00`, `${endDate} 23:59:59`, interval);
-    if (r.available && r.candles.length > 0) {
-      candleSeriesBySymbol.set(sym, r.candles);
-      symbolsWithCandles++;
-    } else if (r.warnings.length > 0) {
-      // Aggregate "no data" warnings into one — too noisy to push per symbol.
+    let r = await getHistoricalCandles(sym, rangeStart, rangeEnd, interval);
+    if (!r.available && interval !== '1day') {
+      r = await getHistoricalCandles(sym, rangeStart, rangeEnd, '1day');
+      if (r.available) usedEodFallback = true;
     }
+    if (r.available && r.candles.length > 0) {
+      candleSeriesBySymbol.set(sym.toUpperCase(), r.candles);
+      symbolsWithCandles++;
+    }
+  }
+  if (usedEodFallback) {
+    interval = '1day';
+    warnings.push(
+      'Intraday candles not in warehouse — backtest used EOD daily bars (run candles:daily for intraday).',
+    );
   }
   if (symbolsWithCandles === 0) {
     warnings.push('Historical candle data not available for any backtest symbol. See historicalMarketData.ts for adapter wiring.');
@@ -176,6 +197,15 @@ export async function GET(req: NextRequest) {
       generatedAt: result.generatedAt,
       backtest:    result,
       warnings:    result.warnings,
+      meta: {
+        symbolsQueried:    symbolList.length,
+        symbolsWithCandles: symbolsWithCandles,
+        outcomesAvailable: result.performance.totalTrades - result.performance.insufficientData,
+        outcomesTotal:     result.performance.totalTrades,
+        candleInterval:    interval,
+        startDate,
+        endDate,
+      },
     },
     { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
   );

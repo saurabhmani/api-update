@@ -45,6 +45,13 @@ CREATE INDEX IF NOT EXISTS idx_q365_daily_reports_status
 -- Records every learning recommendation the daily report surfaces so
 -- analysts can review historical observations and the governance
 -- pipeline can audit which observations were applied / rejected.
+--
+-- NOTE: A minimal FALLBACK table (signal_id / strategy_id / learning_tags)
+-- ships first for health probes — see:
+--   migrations/mysql/012_q365_signal_learning_observations_fallback.sql
+-- Apply via: npx tsx scripts/applyLearningPersistenceMigration.ts
+-- When this full schema is adopted, use additive ALTER only; do not DROP
+-- the fallback columns until all writers read the unified shape.
 CREATE TABLE IF NOT EXISTS q365_signal_learning_observations (
   id                  BIGSERIAL PRIMARY KEY,
   report_date         DATE        NOT NULL,
@@ -67,5 +74,12 @@ CREATE INDEX IF NOT EXISTS idx_q365_learning_obs_date
 
 CREATE INDEX IF NOT EXISTS idx_q365_learning_obs_governance
   ON q365_signal_learning_observations (governance_status, applied, priority);
+
+-- Acceptance-test indexes (symbol lookup + observation-type / strategy filter).
+CREATE INDEX IF NOT EXISTS idx_signal
+  ON q365_signal_learning_observations (symbol);
+
+CREATE INDEX IF NOT EXISTS idx_strategy
+  ON q365_signal_learning_observations (observation_type);
 
 COMMIT;

@@ -1290,7 +1290,9 @@ export function buildDailySignalReport(
 
   const warnings: string[] = [];
   if (reportStatus !== 'COMPLETE') {
-    warnings.push('Daily report is partial — some sections are awaiting post-signal data.');
+    warnings.push(
+      'Daily report is partial — some sections are awaiting post-signal data (expected platform analytics gap).',
+    );
   }
   if (signalPerformance.insufficientDataReasons.length > 0) {
     warnings.push(...signalPerformance.insufficientDataReasons);

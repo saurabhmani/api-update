@@ -36,11 +36,21 @@ import {
   type EngineHealthContext,
   type EngineHealthMap,
 }                                      from '@/lib/signals/engineHealthMap';
+import { probeLearningPersistence }    from '@/lib/learning/learningPersistenceProbe';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
 
 const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
+
+function parseCandleCoverageFromWarnings(warnings: unknown): number | null {
+  if (!Array.isArray(warnings)) return null;
+  for (const w of warnings) {
+    const m = String(w).match(/Historical candle data available for (\d+)\//);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
 
 // ── Per-upstream timeout budgets ──────────────────────────────
 //
@@ -53,6 +63,7 @@ const TIMEOUT = {
   dailyReport:   8_000,
   backtest:      8_000,
   candleProbe:   3_000,
+  learningProbe: 3_000,
 } as const;
 
 /** Minimal context when the signals envelope is unavailable or the
@@ -116,6 +127,9 @@ function buildFallbackHealthContext(
     dueDiligenceSummary: null,
     dailyReport:  { available: false },
     backtest:     { available: false },
+    learningPersistence: {
+      tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
+    },
   };
 }
 
@@ -208,7 +222,7 @@ export async function GET(req: NextRequest) {
 
   // Fan-out — every upstream is independent so we run them in parallel
   // and tolerate individual failures via Promise.allSettled.
-  const [signalsRes, dailyRes, backtestRes, candleProbeSettled] = await Promise.allSettled([
+  const [signalsRes, dailyRes, backtestRes, candleProbeSettled, learningProbeSettled] = await Promise.allSettled([
     internalFetch<any>(
       req,
       `/api/signals?action=all&limit=10&lite=true&request_id=health-${Date.now()}`,
@@ -217,12 +231,9 @@ export async function GET(req: NextRequest) {
     internalFetch<any>(req, `/api/signals/daily-report`, {
       cookieHeader, timeoutMs: TIMEOUT.dailyReport,
     }),
-    internalFetch<any>(req, `/api/signals/backtest?window=1D`, {
+    internalFetch<any>(req, `/api/signals/backtest?window=7D`, {
       cookieHeader, timeoutMs: TIMEOUT.backtest,
     }),
-    // The candle probe never throws (it returns a zero-shape on
-    // failure) but we still budget it via Promise.race so a hung DB
-    // can't pin the health route.
     Promise.race([
       probeCandleWarehouse(),
       new Promise<{ latestCandleDate: null; candleCount: 0; distinctSymbols: 0 }>(
@@ -231,6 +242,10 @@ export async function GET(req: NextRequest) {
           TIMEOUT.candleProbe,
         ),
       ),
+    ]),
+    Promise.race([
+      probeLearningPersistence(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT.learningProbe)),
     ]),
   ]);
 
@@ -243,6 +258,9 @@ export async function GET(req: NextRequest) {
   const candleCoverage = candleProbeSettled.status === 'fulfilled'
     ? candleProbeSettled.value
     : { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
+  const learningPersistence = learningProbeSettled.status === 'fulfilled'
+    ? learningProbeSettled.value
+    : null;
 
   // Operator-facing warnings — these become the "Open Issues" + the
   // banner under the overall summary card. We deliberately convert
@@ -338,6 +356,7 @@ export async function GET(req: NextRequest) {
     dueDiligenceSummary: payload?.dueDiligenceSummary ?? null,
     manipulationGateImpact: payload?.manipulationGateImpact ?? null,
     manipulationRiskMeta:   payload?.manipulationRiskMeta ?? null,
+    learningPersistence,
   };
 
   if (daily.ok && daily.data) {
@@ -354,14 +373,21 @@ export async function GET(req: NextRequest) {
 
   if (backtest.ok && backtest.data) {
     const bt = backtest.data?.backtest;
+    const meta = backtest.data?.meta as {
+      symbolsWithCandles?: number;
+      symbolsQueried?: number;
+      outcomesAvailable?: number;
+      outcomesTotal?: number;
+    } | undefined;
     ctx.backtest = bt
       ? {
           available:        true,
           status:           bt.status,
           window:           bt.window,
           generatedAt:      bt.generatedAt,
-          symbolsWithData:  bt.universe?.symbolsTested ?? null,
-          totalSymbols:     bt.universe?.symbolsTested ?? null,
+          symbolsWithData:  meta?.symbolsWithCandles
+            ?? parseCandleCoverageFromWarnings(bt.warnings),
+          totalSymbols:     meta?.symbolsQueried ?? bt.universe?.symbolsTested ?? null,
           warnings:         Array.isArray(bt.warnings) ? bt.warnings : [],
         }
       : { available: false };
@@ -392,10 +418,19 @@ export async function GET(req: NextRequest) {
     // Build a probe-based map so /signals/engine-health always renders.
     logModuleFail('GET-handler', err);
     let candleCoverage = { latestCandleDate: null as string | null, candleCount: 0, distinctSymbols: 0 };
+    let learningPersistence = {
+      tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
+    };
     try {
       candleCoverage = await probeCandleWarehouse();
     } catch { /* keep zero-shape */ }
-    const fallbackHealth = buildEngineHealthMap(buildFallbackHealthContext(candleCoverage));
+    try {
+      learningPersistence = await probeLearningPersistence();
+    } catch { /* keep zero-shape */ }
+    const fallbackHealth = buildEngineHealthMap({
+      ...buildFallbackHealthContext(candleCoverage),
+      learningPersistence,
+    });
     const errMsg = err instanceof Error ? err.message : 'internal error';
     return NextResponse.json(
       {

@@ -125,4 +125,20 @@ describe('getHistoricalMarketMovers — Phase 4B', () => {
     expect(result.available).toBe(true);
     expect(result.warnings).toHaveLength(0);
   });
+
+  it('1.6 — falls back to latest warehouse EOD when requested date has no bars', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ trade_date: TRADE_DATE }] })
+      .mockResolvedValueOnce({
+        rows: [mockMoverRow({ symbol: 'RELIANCE', close: 110, prev_close: 100 })],
+      });
+
+    const result = await getHistoricalMarketMovers('2026-06-24');
+    expect(result.available).toBe(true);
+    expect(result.date).toBe(TRADE_DATE);
+    expect(result.movers).toHaveLength(1);
+    expect(result.warnings).toHaveLength(0);
+    expect(queryMock).toHaveBeenCalledTimes(3);
+  });
 });
