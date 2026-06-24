@@ -1047,7 +1047,7 @@ export async function getIntelligenceSignals(): Promise<{
     try {
       const placeholders = signalIds.map(() => '?').join(',');
       const { rows } = await db.query(
-        `SELECT signal_id, reason_type, message, factor_key, contribution
+        `SELECT signal_id, reason_type, message
          FROM q365_signal_reasons WHERE signal_id IN (${placeholders}) ORDER BY id`,
         signalIds
       );
@@ -1218,7 +1218,7 @@ export async function getSignalStats(): Promise<any> {
 
 export async function getSignalReasons(signalId: number): Promise<any[]> {
   const { rows } = await db.query(
-    `SELECT reason_type, message, factor_key, contribution
+    `SELECT reason_type, message
      FROM q365_signal_reasons WHERE signal_id = ? ORDER BY id`,
     [signalId]
   );
