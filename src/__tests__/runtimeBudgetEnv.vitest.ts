@@ -45,8 +45,8 @@ describe('runtime budget — .env.local', () => {
     expectEnvValue('INDIANAPI_EMULATED_BATCH_MAX', '200');
   });
 
-  it('1.3 — CANDLE_MAX_PER_CYCLE=250 exists', () => {
-    expectEnvValue('CANDLE_MAX_PER_CYCLE', '250');
+  it('1.3 — CANDLE_MAX_PER_CYCLE=100 exists (production-safe cap)', () => {
+    expectEnvValue('CANDLE_MAX_PER_CYCLE', '100');
   });
 
   it('1.4 — application modules parse env without failure', async () => {
