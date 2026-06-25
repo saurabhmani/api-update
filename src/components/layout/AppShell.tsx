@@ -7,7 +7,7 @@ import {
   Newspaper, Bell, FileText, Settings, Users, Database,
   ClipboardList, Menu, X, LogOut, Activity,
   Zap, Target, Brain, BookOpen, LineChart, FlaskConical, ShieldAlert,
-  BarChart3, Cpu, ShieldCheck,
+  BarChart3, Cpu, ShieldCheck, Layers,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
@@ -51,6 +51,8 @@ const NAV: NavGroup[] = [
       { href: '/manipulation',       icon: ShieldAlert,  label: 'Manipulation Watch' },
       { href: '/dexter',             icon: Cpu,          label: 'Dexter AI' },
       { href: '/news-intelligence',  icon: Newspaper,    label: 'News Intelligence' },
+      { href: '/strategies',           icon: Layers,       label: 'Strategy Hub' },
+      { href: '/strategies/performance', icon: BarChart3,  label: 'Strategy Performance' },
       { href: '/calibration',        icon: BarChart3,    label: 'Calibration' },
     ],
   },
