@@ -63,7 +63,9 @@ const NAV: NavGroup[] = [
     label: 'Admin',
     adminOnly: true,
     items: [
+      { href: '/admin/dashboard',  icon: LayoutDashboard, label: 'Admin Dashboard' },
       { href: '/admin/users',      icon: Users,         label: 'Users' },
+      { href: '/admin/reliability', icon: Activity,     label: 'Platform Reliability' },
       { href: '/admin/news',       icon: Newspaper,     label: 'News Mgmt' },
       { href: '/admin/data',       icon: Database,      label: 'Data Management' },
       { href: '/admin/thresholds', icon: Activity,      label: 'Signal Thresholds' },

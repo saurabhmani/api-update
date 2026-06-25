@@ -76,6 +76,8 @@
     "test:paper-trading": "tsx src/__tests__/paperTrading.test.ts",
     "test:broker": "tsx src/__tests__/brokerIntegration.test.ts",
     "test:billing": "tsx src/__tests__/billing.test.ts",
+    "test:reliability": "tsx src/__tests__/reliability.test.ts",
+    "test:admin-monitoring": "tsx src/__tests__/adminMonitoring.test.ts",
     "test:manipulation-freshness": "tsx src/__tests__/manipulationFreshness.test.ts",
     "test:manipulation": "tsx src/__tests__/manipulationEnginePhase1.test.ts",
     "test:manipulation2": "tsx src/__tests__/manipulationEnginePhase2.test.ts",
