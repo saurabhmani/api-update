@@ -46,6 +46,8 @@ export type ManipulationRiskMeta = {
 export type ManipulationRiskGlobalProbe = {
   globalSnapshotCount: number;
   globalLatestScanAt:  string | null;
+  /** Global surveillance freshness — drives engine-health stale flag. */
+  globalIsStale?:      boolean;
 };
 
 export function buildManipulationRiskMeta(
@@ -65,7 +67,7 @@ export function buildManipulationRiskMeta(
 
   let snapshotCount = 0;
   let freshestSnapshotAt: string | null = null;
-  let stale = false;
+  let anySymbolStale = false;
 
   for (const risk of map.values()) {
     if (risk.latestScanAt != null) {
@@ -75,9 +77,11 @@ export function buildManipulationRiskMeta(
       }
     }
     if (risk.freshnessStatus === 'STALE') {
-      stale = true;
+      anySymbolStale = true;
     }
   }
+
+  const stale = Boolean(global.globalIsStale) || anySymbolStale;
 
   return {
     configured:         true,
@@ -119,6 +123,7 @@ export async function fetchManipulationRiskForSignalPools(
     .then((f): ManipulationRiskGlobalProbe => ({
       globalSnapshotCount: f.snapshotsPersisted30d ?? 0,
       globalLatestScanAt:  f.latestScanAt,
+      globalIsStale:       f.isStale,
     }))
     .catch((): ManipulationRiskGlobalProbe => ({
       globalSnapshotCount: 0,

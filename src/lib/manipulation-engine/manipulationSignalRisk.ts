@@ -300,15 +300,30 @@ export function buildManipulationRiskEnvelope(args: {
 }): ManipulationRisk {
   const band = scoreToRiskBand(args.manipulationScore);
 
-  // Per-symbol freshness — a symbol can be stale even when the global
-  // surface is fresh, if its specific events are old.
-  const lag = dayDiff(args.latestEventDate, args.globalFreshness.latestCandleDate);
-  const freshness: FreshnessStatus =
-    !args.latestEventDate ? 'NO_DATA'
-    : lag != null && lag > FRESH_DAYS_THRESHOLD ? 'STALE'
-    : args.globalFreshness.status === 'PARTIAL' ? 'PARTIAL'
-    : args.globalFreshness.status === 'FRESH' ? 'FRESH'
-    : args.globalFreshness.status;
+  // Per-symbol freshness — a recent scan means surveillance is current for
+  // this symbol even when the last recorded event is historical (no new
+  // manipulation since the scan). Staleness is driven by scan age vs the
+  // latest EOD candle, not by how long ago the last alert fired.
+  const candleDate = args.globalFreshness.latestCandleDate;
+  const eventLag = dayDiff(args.latestEventDate, candleDate);
+  const scanLag  = dayDiff(toIsoDate(args.latestScanAt), candleDate);
+
+  let freshness: FreshnessStatus;
+  if (!args.latestScanAt && !args.latestEventDate) {
+    freshness = 'NO_DATA';
+  } else if (args.latestScanAt && scanLag != null && scanLag <= FRESH_DAYS_THRESHOLD) {
+    freshness = 'FRESH';
+  } else if (!args.latestScanAt && eventLag != null && eventLag > FRESH_DAYS_THRESHOLD) {
+    freshness = 'STALE';
+  } else if (args.latestScanAt && scanLag != null && scanLag > FRESH_DAYS_THRESHOLD) {
+    freshness = 'STALE';
+  } else if (args.globalFreshness.status === 'PARTIAL') {
+    freshness = 'PARTIAL';
+  } else if (args.globalFreshness.status === 'FRESH') {
+    freshness = 'FRESH';
+  } else {
+    freshness = args.globalFreshness.status;
+  }
 
   const recommendedAction = recommendedActionFor(band, freshness);
   const canAffectApproval = canAffectApprovalFor(band, freshness);
