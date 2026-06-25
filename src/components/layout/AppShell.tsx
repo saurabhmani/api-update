@@ -52,6 +52,7 @@ const NAV: NavGroup[] = [
       { href: '/dexter',             icon: Cpu,          label: 'Dexter AI' },
       { href: '/news-intelligence',  icon: Newspaper,    label: 'News Intelligence' },
       { href: '/strategies',           icon: Layers,       label: 'Strategy Hub' },
+      { href: '/strategies/lab',       icon: FlaskConical, label: 'Strategy Lab' },
       { href: '/strategies/performance', icon: BarChart3,  label: 'Strategy Performance' },
       { href: '/calibration',        icon: BarChart3,    label: 'Calibration' },
     ],
