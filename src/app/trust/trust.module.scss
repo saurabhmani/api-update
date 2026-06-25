@@ -1,0 +1,42 @@
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #E2E8F0;
+  padding-bottom: 12px;
+}
+
+.tab,
+.tabActive {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  background: transparent;
+  color: #64748B;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab:hover {
+  background: #F1F5F9;
+  color: #334155;
+}
+
+.tabActive {
+  background: #1E40AF;
+  color: #fff;
+}
+
+.panel {
+  min-height: 400px;
+}
+
+@media (max-width: 768px) {
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+}

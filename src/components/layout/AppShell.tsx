@@ -7,11 +7,13 @@ import {
   Newspaper, Bell, FileText, Settings, Users, Database,
   ClipboardList, Menu, X, LogOut, Activity,
   Zap, Target, Brain, BookOpen, LineChart, FlaskConical, ShieldAlert,
-  BarChart3, Cpu,
+  BarChart3, Cpu, ShieldCheck,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
 import TickerStrip from './TickerStrip';
+import { MarketRegimeWidget } from '@/components/trust/MarketRegimeWidget';
+import { PerformanceWidget } from '@/components/trust/PerformanceWidget';
 import '@/styles/components/_layout.scss';
 
 interface NavItem { href: string; icon: React.ElementType; label: string; }
@@ -41,6 +43,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: '/intelligence',       icon: Brain,        label: 'Intelligence Hub' },
       { href: '/trade-setups',       icon: Target,       label: 'Trade Setups' },
+      { href: '/trust',            icon: ShieldCheck,    label: 'Trust Layer' },
       { href: '/signals',            icon: Zap,          label: 'Signals' },
       { href: '/options/chain',      icon: LineChart,    label: 'Option Intelligence' },
       { href: '/trade-journal',      icon: BookOpen,     label: 'Trade Journal' },
@@ -201,6 +204,10 @@ export default function AppShell({ children, title }: Props) {
             {title && <h1 className="topbar__title">{title}</h1>}
           </div>
           <div className="topbar__right">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginRight: 8 }}>
+              <MarketRegimeWidget />
+              <PerformanceWidget />
+            </div>
             <Link
               href="/notifications"
               className="topbar__icon-btn"
