@@ -42,6 +42,7 @@ import {
   buildHookResult,
 } from '@/lib/manipulation-engine';
 import { loadDailyBars } from '@/lib/manipulation-engine/data/candleLoader';
+import { resolveManipulationFreshnessStatus } from '@/lib/manipulation-engine/manipulationSignalRisk';
 import { DEFAULT_PHASE1_CONFIG } from '@/lib/signal-engine/constants/signalEngine.constants';
 
 // Hard cap on POST scan size. The default Phase-1 universe is ~3000
@@ -167,7 +168,7 @@ function titleCase(s: string): string {
 //           breakdown is missing)
 const FRESH_DAYS_THRESHOLD = 3;
 
-export type FreshnessStatus = 'FRESH' | 'STALE' | 'NO_DATA' | 'PARTIAL';
+export type FreshnessStatus = 'FRESH' | 'STALE' | 'NO_DATA' | 'PARTIAL' | 'UNKNOWN';
 
 export interface FreshnessEnvelope {
   latestEventDate:   string | null;
@@ -243,40 +244,22 @@ async function computeFreshness(): Promise<FreshnessEnvelope> {
 
   const latestTradingDate = latestCandleDate;
   const refDate = latestCandleDate ?? toIsoDate(new Date());
-  const daysLag = dayDiff(latestEventDate, refDate);
-
-  let status: FreshnessStatus;
-  let reason: string;
-
-  if (!latestEventDate) {
-    status = 'NO_DATA';
-    reason = 'No manipulation events have been recorded. Run a scan to populate the surveillance surface.';
-  } else if (daysLag != null && daysLag > FRESH_DAYS_THRESHOLD) {
-    status = 'STALE';
-    reason = `No fresh manipulation scan or candle data after ${latestEventDate}. ` +
-             `Latest events are ${daysLag} day(s) behind latest candle date.`;
-  } else if (snapshotCount30d === 0) {
-    // Events exist within the freshness window but no snapshot row was
-    // persisted — the detector breakdown / band is unknown. Treat as
-    // partial so the UI can still show alerts but warn that the symbol
-    // risk view is incomplete.
-    status = 'PARTIAL';
-    reason = 'Manipulation events exist but no snapshot persisted in the last 30 days. ' +
-             'Symbol-level risk view may be incomplete.';
-  } else {
-    status = 'FRESH';
-    reason = `Latest event ${latestEventDate}, lag ${daysLag ?? 0} day(s) — within ${FRESH_DAYS_THRESHOLD}-day freshness window.`;
-  }
+  const resolved = resolveManipulationFreshnessStatus({
+    latestEventDate,
+    latestCandleDate: refDate,
+    latestScanAt,
+    snapshotCount30d,
+  });
 
   return {
     latestEventDate,
     latestCandleDate,
     latestScanAt,
     latestTradingDate,
-    isStale: status === 'STALE',
-    daysLag,
-    status,
-    reason,
+    isStale: resolved.isStale,
+    daysLag: resolved.daysLag,
+    status: resolved.status,
+    reason: resolved.reason,
   };
 }
 

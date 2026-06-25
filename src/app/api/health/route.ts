@@ -16,6 +16,8 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { cacheGet, cacheSet } from '@/lib/redis';
+import { getPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
+import { computeManipulationFreshness } from '@/lib/manipulation-engine/manipulationSignalRisk';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +54,15 @@ function degradeStatus(current: HealthStatus, to: 'degraded' | 'unhealthy'): Hea
   if (current === 'unhealthy') return 'unhealthy';
   if (to === 'unhealthy') return 'unhealthy';
   return 'degraded';
+}
+
+/** Only hard failures flip overall status — warnings stay visible per-check. */
+function applyCheckResult(
+  overall: HealthStatus,
+  checkStatus: CheckStatus,
+): HealthStatus {
+  if (checkStatus === 'fail') return degradeStatus(overall, 'degraded');
+  return overall;
 }
 
 export async function GET() {
@@ -102,13 +113,13 @@ export async function GET() {
       latestBar: latest,
       ageDays,
     };
-    if (cnt === 0) overallStatus = degradeStatus(overallStatus, 'degraded');
+    if (cnt === 0) overallStatus = applyCheckResult(overallStatus, 'fail');
   } catch (err) {
     checks.candleData = {
       status: 'fail',
       error: err instanceof Error ? err.message : String(err),
     };
-    overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, 'fail');
   }
 
   // ── Check 4: Recent backtest activity ─────────────────────
@@ -161,7 +172,9 @@ export async function GET() {
       lastRun, ageHours, jobCount: jobs.length,
       jobs,
     };
-    if (!allSuccess) overallStatus = degradeStatus(overallStatus, 'degraded');
+    if (jobs.length > 0 && !allSuccess) {
+      overallStatus = applyCheckResult(overallStatus, 'warn');
+    }
   } catch {
     checks.learningScheduler = { status: 'unknown', lastRun: null };
   }
@@ -214,13 +227,13 @@ export async function GET() {
       lastDurationMs:  r?.duration_ms ?? null,
       ageHours,
     };
-    if (status !== 'ok') overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, status);
   } catch (err) {
     checks.backtestEngine = {
       status: 'fail',
       error: (err as Error).message,
     };
-    overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, 'fail');
   }
 
   // ── Check 8: Signal engine freshness ─────────────────────
@@ -248,16 +261,18 @@ export async function GET() {
       total7d:         Number(r?.total_7d ?? 0),
       cronGenerated7d: Number(r?.cron_7d ?? 0),
     };
-    if (status !== 'ok') overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, status);
   } catch (err) {
     checks.signalEngine = {
       status: 'fail',
       error: (err as Error).message,
     };
-    overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, 'fail');
   }
 
   // ── Check 9: Market-data scheduler liveness ──────────────
+  // instrument_sync_logs CRON rows are optional — in-proc schedulers
+  // and the pipeline heartbeat are authoritative fallbacks.
   try {
     const { rows } = await db.query<any>(
       `SELECT exchange AS job, status, total, updated, error_msg, synced_at
@@ -267,16 +282,51 @@ export async function GET() {
         LIMIT 1`,
     );
     const r = (rows as any[])[0];
-    const lastRun = r?.synced_at ?? null;
-    const ageHours = lastRun
+    let lastRun: string | null = r?.synced_at ?? null;
+    let ageHours: number | null = lastRun
       ? Math.round((Date.now() - new Date(lastRun).getTime()) / 3600000)
       : null;
-    const status: CheckStatus =
-      !lastRun             ? 'fail' :
-      (ageHours ?? 0) > 48 ? 'fail' :
-      (ageHours ?? 0) > 14 ? 'warn' : 'ok';
+    let probeSource = 'instrument_sync_logs';
+    let status: CheckStatus;
+
+    if (lastRun) {
+      status =
+        (ageHours ?? 0) > 48 ? 'fail' :
+        (ageHours ?? 0) > 14 ? 'warn' : 'ok';
+    } else {
+      const heartbeat = await getPipelineHeartbeat().catch(() => null);
+      const hbAgeMin = heartbeat
+        ? Math.round((Date.now() - heartbeat.at) / 60_000)
+        : null;
+      const candleOk =
+        checks.candleData?.status === 'ok'
+        && (checks.candleData.ageDays as number | null | undefined) != null
+        && (checks.candleData.ageDays as number) <= 1;
+
+      if (heartbeat && hbAgeMin != null && hbAgeMin <= 15) {
+        status = 'ok';
+        probeSource = `redis_heartbeat:${heartbeat.source}`;
+        lastRun = new Date(heartbeat.at).toISOString();
+        ageHours = Math.round(hbAgeMin / 60);
+      } else if (candleOk) {
+        status = 'ok';
+        probeSource = 'candle_freshness_proxy';
+        lastRun = String(checks.candleData?.latestBar ?? null);
+        ageHours = 0;
+      } else if (heartbeat && hbAgeMin != null && hbAgeMin <= 60) {
+        status = 'warn';
+        probeSource = `redis_heartbeat_stale:${heartbeat.source}`;
+        lastRun = new Date(heartbeat.at).toISOString();
+        ageHours = Math.round(hbAgeMin / 60);
+      } else {
+        status = 'warn';
+        probeSource = 'no_cron_log_no_heartbeat';
+      }
+    }
+
     checks.marketDataScheduler = {
       status,
+      probeSource,
       lastJob:     r?.job ?? null,
       lastRun,
       ageHours,
@@ -284,7 +334,7 @@ export async function GET() {
       lastUpdated: Number(r?.updated ?? 0),
       lastError:   r?.error_msg ?? null,
     };
-    if (status !== 'ok') overallStatus = degradeStatus(overallStatus, 'degraded');
+    overallStatus = applyCheckResult(overallStatus, status);
   } catch (err) {
     checks.marketDataScheduler = {
       status: 'unknown',
@@ -294,17 +344,30 @@ export async function GET() {
 
   // ── Check 10: Manipulation scanner status ──────────────────
   try {
+    const freshness = await computeManipulationFreshness().catch(() => null);
     const { rows } = await db.query<any>(
-      `SELECT MAX(snapshot_date) AS latest, COUNT(*) AS total
+      `SELECT MAX(created_at) AS latest_scan_at,
+              MAX(snapshot_date) AS latest_snapshot_date,
+              COUNT(*) AS total
          FROM q365_manipulation_snapshots
-        WHERE snapshot_date >= DATE_SUB(NOW(), INTERVAL 3 DAY)`,
+        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)`,
     );
     const r = (rows as any[])[0];
+    const recentSnapshots = Number(r?.total ?? 0);
+    const manipStatus: CheckStatus =
+      !freshness || freshness.status === 'NO_DATA' ? 'warn' :
+      freshness.isStale ? 'warn' :
+      recentSnapshots > 0 ? 'ok' : 'warn';
     checks.manipulationScanner = {
-      status: Number(r?.total ?? 0) > 0 ? 'ok' : 'warn',
-      latestSnapshot: r?.latest,
-      recentSnapshots: Number(r?.total ?? 0),
+      status: manipStatus,
+      latestScanAt: freshness?.latestScanAt ?? r?.latest_scan_at ?? null,
+      latestSnapshotDate: r?.latest_snapshot_date ?? null,
+      freshnessStatus: freshness?.status ?? 'unknown',
+      recentSnapshots,
     };
+    if (freshness?.isStale) {
+      overallStatus = applyCheckResult(overallStatus, 'warn');
+    }
   } catch {
     checks.manipulationScanner = { status: 'unknown' };
   }
