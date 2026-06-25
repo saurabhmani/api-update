@@ -42,6 +42,7 @@ const NAV: NavGroup[] = [
     label: 'Intelligence',
     items: [
       { href: '/intelligence',       icon: Brain,        label: 'Intelligence Hub' },
+      { href: '/quant',              icon: Cpu,          label: 'Quant Platform' },
       { href: '/trade-setups',       icon: Target,       label: 'Trade Setups' },
       { href: '/trust',            icon: ShieldCheck,    label: 'Trust Layer' },
       { href: '/signals',            icon: Zap,          label: 'Signals' },
