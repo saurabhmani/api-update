@@ -4,6 +4,7 @@ import { randomBytes, createHash } from 'crypto';
 import { db } from '@/lib/db';
 import { cacheDel } from '@/lib/redis';
 import { encrypt, decrypt } from '@/lib/encryption';
+import { enforceSessionLimit } from '@/lib/security/sessionManager';
 import type { User } from '@/types';
 
 const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE || '86400');
@@ -108,6 +109,7 @@ export async function createSession(userId: number, device?: string, ip?: string
   );
   console.log(`[AUTH] Session Created: ${uid}  insertId=${r.insertId ?? 'undefined'}`);
   if (!r.insertId) console.error('[AUTH] ❌ user_sessions INSERT returned no insertId');
+  await enforceSessionLimit(uid);
   return token;
 }
 

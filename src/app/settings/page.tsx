@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { Shield } from 'lucide-react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Button, Input, AlertBanner } from '@/components/ui';
 import { userApi, authApi } from '@/lib/apiClient';
@@ -46,6 +48,13 @@ export default function SettingsPage() {
         <div className="page__header"><div><h1>Settings</h1><p>Manage your account and preferences</p></div></div>
 
         {msg && <AlertBanner variant={msg.type}>{msg.text}</AlertBanner>}
+
+        <Card title="Security & Compliance" style={{ marginBottom:20 } as any}>
+          <p style={{ fontSize:13, color:'#64748B', marginBottom:12 }}>Manage MFA, sessions, consent, and audit logs.</p>
+          <Link href="/settings/security" className="btn btn--secondary btn--sm">
+            <Shield size={14} style={{ marginRight:6, verticalAlign:'middle' }} /> Open Security Settings
+          </Link>
+        </Card>
 
         {/* Account info */}
         <Card title="Account Info" style={{ marginBottom:20 } as any}>

@@ -7,7 +7,7 @@ import {
   Newspaper, Bell, FileText, Settings, Users, Database,
   ClipboardList, Menu, X, LogOut, Activity,
   Zap, Target, Brain, BookOpen, LineChart, FlaskConical, ShieldAlert,
-  BarChart3, Cpu, ShieldCheck, Layers, Wallet, CreditCard,
+  BarChart3, Cpu, ShieldCheck, Shield, Layers, Wallet, CreditCard, Scale,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
@@ -70,7 +70,9 @@ const NAV: NavGroup[] = [
       { href: '/admin/data',       icon: Database,      label: 'Data Management' },
       { href: '/admin/thresholds', icon: Activity,      label: 'Signal Thresholds' },
       { href: '/admin/pipeline',   icon: Zap,           label: 'Pipeline Control' },
-      { href: '/admin/audit',      icon: ClipboardList, label: 'Audit Logs' },
+      { href: '/admin/roles',       icon: Shield,         label: 'Role Management' },
+      { href: '/admin/audit-logs',  icon: ClipboardList,  label: 'Audit Logs' },
+      { href: '/compliance',        icon: Scale,          label: 'Compliance Center' },
     ],
   },
   {

@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { loginUser, registerUser, invalidateSession, verifyTotp, createSession } from '@/services/auth';
 import { getSession } from '@/lib/session';
 import { authLimiter } from '@/lib/rateLimit';
+import { logSecurityEvent } from '@/lib/security/audit';
 import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 
 export const dynamic = 'force-dynamic';
@@ -54,6 +55,13 @@ export async function POST(req: NextRequest) {
     }
     const res = NextResponse.json({ user: result.user, requires2fa: false });
     res.cookies.set(COOKIE, result.sessionToken!, COOKIE_OPTS);
+    await logSecurityEvent({
+      userId: result.user.id,
+      actorEmail: result.user.email,
+      eventType: 'auth',
+      action: 'auth.login',
+      ipAddress: req.headers.get('x-forwarded-for') ?? undefined,
+    });
     console.log(`OK OK ✅ API SUCCESS  /api/auth  login  user=${result.user.id}`);
     return res;
   }
