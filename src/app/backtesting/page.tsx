@@ -5,8 +5,12 @@ import { Card } from '@/components/ui';
 import { fmt } from '@/lib/utils';
 import {
   FlaskConical, Play, RefreshCw, Database, Download, AlertTriangle,
-  CheckCircle, Activity, BarChart2, FileText, ChevronRight,
+  CheckCircle, Activity, BarChart2, FileText, ChevronRight, Settings, GitCompare,
 } from 'lucide-react';
+import { BacktestConfigPanel } from '@/components/backtesting/BacktestConfigPanel';
+import { BacktestComparePanel } from '@/components/backtesting/BacktestComparePanel';
+import { CLIENT_DEFAULT_BACKTEST_CONFIG } from '@/lib/backtesting/config/clientDefaults';
+import type { BacktestRunConfig } from '@/lib/backtesting/types';
 import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -140,11 +144,13 @@ export default function BacktestingPage() {
   const [calibration, setCalibration] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [tab, setTab] = useState<'overview' | 'trades' | 'calibration' | 'equity' | 'dexter' | 'audit'>('overview');
+  const [tab, setTab] = useState<'overview' | 'trades' | 'calibration' | 'equity' | 'dexter' | 'audit' | 'compare'>('overview');
   const [dexterData, setDexterData] = useState<any>(null);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showConfig, setShowConfig] = useState(false);
+  const [runConfig, setRunConfig] = useState<BacktestRunConfig>({ ...CLIENT_DEFAULT_BACKTEST_CONFIG });
 
   // Data seeding / EOD candle availability
   const [dataReady, setDataReady] = useState<number | null>(null);
@@ -178,9 +184,23 @@ export default function BacktestingPage() {
 
   const loadRuns = useCallback(async () => {
     try {
-      const res = await fetch('/api/backtests', { cache: 'no-store' });
-      const data = await readJsonOrThrow(res, '/api/backtests');
-      const list = data.runs ?? [];
+      const res = await fetch('/api/backtest', { cache: 'no-store' });
+      const data = await readJsonOrThrow(res, '/api/backtest');
+      const list = (data.backtests ?? data.runs ?? []).map((r: Record<string, unknown>) => ({
+        run_id: r.backtestId ?? r.id ?? r.run_id,
+        name: r.name,
+        status: r.status,
+        started_at: r.startedAt ?? r.started_at,
+        completed_at: r.completedAt ?? r.completed_at,
+        duration_ms: r.durationMs ?? r.duration_ms ?? null,
+        signal_count: r.signalCount ?? r.signal_count ?? 0,
+        trade_count: r.tradeCount ?? r.trade_count ?? 0,
+        summary_json: r.summary ?? r.summary_json,
+        config_json: r.config ?? r.config_json,
+        progress_percent: r.progressPercent ?? r.progress_percent,
+        current_step: r.currentStep ?? r.current_step,
+        error: r.error,
+      }));
       setRuns(list);
       if (list.length > 0 && !selectedId) {
         const completed = list.find((r: BacktestRunRow) => r.status === 'completed');
@@ -217,24 +237,22 @@ export default function BacktestingPage() {
     const fetchJson = (route: string) =>
       fetch(route).then(r => readJsonOrThrow(r, route));
     try {
-      const [analyticsRes, tradesRes, calibRes, auditRes, dexterRes] = await Promise.allSettled([
+      const [detailRes, analyticsRes, calibRes, auditRes, dexterRes] = await Promise.allSettled([
+        fetchJson(`/api/backtest/${runId}?include=summary,trades,equity`),
         fetchJson(`/api/backtests/${runId}/analytics`),
-        fetchJson(`/api/backtests/${runId}/trades`),
         fetchJson(`/api/backtests/${runId}/calibration`),
         fetchJson(`/api/backtests/${runId}/audit`).catch(() => ({ logs: [] })),
         fetchJson(`/api/backtests/${runId}/dexter`).catch(() => null),
       ]);
 
-      // Surface any non-JSON / 5xx failures so the user sees a clear cause
-      // instead of an empty panel. Audit & dexter are tolerated (best-effort).
       const failures: string[] = [];
+      if (detailRes.status === 'rejected') failures.push(formatBacktestApiError(detailRes.reason));
       if (analyticsRes.status === 'rejected') failures.push(formatBacktestApiError(analyticsRes.reason));
-      if (tradesRes.status    === 'rejected') failures.push(formatBacktestApiError(tradesRes.reason));
-      if (calibRes.status     === 'rejected') failures.push(formatBacktestApiError(calibRes.reason));
+      if (calibRes.status === 'rejected') failures.push(formatBacktestApiError(calibRes.reason));
       if (failures.length > 0) setError(failures.join(' | '));
-      if (analyticsRes.status === 'fulfilled') {
-        // Coerce all numeric summary fields — DB JSON columns can return strings
-        const raw = analyticsRes.value.summary;
+
+      if (detailRes.status === 'fulfilled') {
+        const raw = detailRes.value.summary;
         if (raw) {
           const numericKeys: (keyof SummaryData)[] = [
             'totalSignalsGenerated', 'totalTradesTaken', 'totalWins', 'totalLosses',
@@ -244,17 +262,38 @@ export default function BacktestingPage() {
             'target1HitRate', 'target2HitRate', 'target3HitRate',
             'initialCapital', 'finalEquity',
           ];
-          const normalized = { ...raw };
+          const normalized: Record<string, number> = {};
           for (const k of numericKeys) normalized[k] = Number(raw[k] ?? 0);
-          setSummary(normalized);
+          setSummary(normalized as unknown as SummaryData);
         } else {
           setSummary(null);
         }
+        setTrades(detailRes.value.trades ?? []);
+        setEquityCurve(detailRes.value.equityCurve ?? []);
+      }
+      if (analyticsRes.status === 'fulfilled') {
         setStrategyBreak(analyticsRes.value.strategyBreakdown ?? []);
         setRegimeBreak(analyticsRes.value.regimeBreakdown ?? []);
-        setEquityCurve(analyticsRes.value.equityCurve ?? []);
+        if (detailRes.status === 'fulfilled' && !detailRes.value.summary) {
+          const raw = analyticsRes.value.summary;
+          if (raw) {
+            const normalized = { ...raw };
+            const numericKeys: (keyof SummaryData)[] = [
+              'totalSignalsGenerated', 'totalTradesTaken', 'totalWins', 'totalLosses',
+              'winRate', 'avgWinPct', 'avgLossPct', 'profitFactor', 'expectancyR',
+              'totalReturnPct', 'annualizedReturnPct', 'maxDrawdownPct', 'sharpeRatio',
+              'sortinoRatio', 'calmarRatio', 'avgBarsInTrade',
+              'target1HitRate', 'target2HitRate', 'target3HitRate',
+              'initialCapital', 'finalEquity',
+            ];
+            for (const k of numericKeys) normalized[k] = Number(raw[k] ?? 0);
+            setSummary(normalized);
+          }
+        }
+        if (analyticsRes.value.equityCurve?.length && detailRes.status === 'fulfilled' && !(detailRes.value.equityCurve?.length)) {
+          setEquityCurve(analyticsRes.value.equityCurve);
+        }
       }
-      if (tradesRes.status === 'fulfilled') setTrades(tradesRes.value.trades ?? []);
       if (calibRes.status === 'fulfilled') setCalibration(calibRes.value.buckets ?? []);
       if (auditRes.status === 'fulfilled') setAuditLogs(auditRes.value.logs ?? []);
       if (dexterRes.status === 'fulfilled' && dexterRes.value) setDexterData(dexterRes.value);
@@ -266,15 +305,17 @@ export default function BacktestingPage() {
     }
   };
 
-  const runNewBacktest = async () => {
+  const runNewBacktest = async (configOverride?: BacktestRunConfig) => {
+    const config = configOverride ?? runConfig;
     setRunning(true);
     setError(null);
     setToast(null);
+    setShowConfig(false);
     try {
-      const res = await fetch('/api/backtests', {
+      const res = await fetch('/api/backtest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: {} }),
+        body: JSON.stringify({ config }),
       });
       // POST /api/backtests is asynchronous by default — see the queue
       // implementation in src/lib/backtesting/runner/backtestQueue.ts.
@@ -282,12 +323,12 @@ export default function BacktestingPage() {
       // The legacy synchronous path is still reachable via
       // BACKTEST_SYNC_MODE=true; in that case mode='sync' and the
       // status is already 'completed' or 'failed'.
-      const data = await readJsonOrThrow(res, '/api/backtests');
+      const data = await readJsonOrThrow(res, '/api/backtest');
       if (!res.ok && res.status !== 202) {
         setError(data.error ?? `Run failed (HTTP ${res.status})`);
         return;
       }
-      const runId = data.runId as string;
+      const runId = (data.backtestId ?? data.runId) as string;
       const status = normalizeApiStatus(data.status);
 
       // Optimistic sidebar insert so the queued run appears immediately
@@ -296,7 +337,7 @@ export default function BacktestingPage() {
         if (prev.some((r) => r.run_id === runId)) return prev;
         const optimistic: BacktestRunRow = {
           run_id:        runId,
-          name:          'New Backtest',
+          name:          config.name || 'New Backtest',
           status:        status.toLowerCase(),
           started_at:    new Date().toISOString(),
           completed_at:  null,
@@ -394,7 +435,7 @@ export default function BacktestingPage() {
     let cancelled = false;
     const pollOnce = async () => {
       try {
-        const url = `/api/backtests/${selectedId}`;
+        const url = `/api/backtest/${selectedId}`;
         const res = await fetch(url, { cache: 'no-store' });
         const data = await readJsonOrThrow(res, url);
         if (cancelled) return;
@@ -403,7 +444,7 @@ export default function BacktestingPage() {
         setRunStatus(next);
         setRunProgress(Number(run.progressPercent ?? 0));
         setRunCurrentStep(run.currentStep ?? null);
-        setRunErrorMessage(run.errorMessage ?? null);
+        setRunErrorMessage(run.error ?? run.errorMessage ?? null);
         // Mirror the queue-side fields onto the sidebar row so the
         // status badge / progress chip stay in sync.
         setRuns((prev) => prev.map((r) =>
@@ -413,7 +454,7 @@ export default function BacktestingPage() {
                 status:           String(run.rawStatus ?? next.toLowerCase()),
                 progress_percent: Number(run.progressPercent ?? 0),
                 current_step:     run.currentStep ?? null,
-                error:            run.errorMessage ?? null,
+                error:            run.error ?? run.errorMessage ?? null,
                 completed_at:     run.completedAt ?? r.completed_at,
               }
             : r,
@@ -454,8 +495,22 @@ export default function BacktestingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, runStatus]);
 
+  const exportRun = (format: 'csv' | 'json') => {
+    if (!selectedId) return;
+    window.open(`/api/backtest/${selectedId}/export?format=${format}`, '_blank');
+  };
+
   return (
     <AppShell title="Backtesting Engine">
+      {showConfig && (
+        <BacktestConfigPanel
+          config={runConfig}
+          onChange={setRunConfig}
+          onRun={() => runNewBacktest(runConfig)}
+          onClose={() => setShowConfig(false)}
+          running={running}
+        />
+      )}
       <div className="page">
         {/* Header */}
         <div className="page__header">
@@ -467,7 +522,10 @@ export default function BacktestingPage() {
             <button className="btn btn--secondary btn--sm" onClick={() => loadRuns()} disabled={loading}>
               <RefreshCw size={13} className={loading ? 'spin' : ''} /> Refresh
             </button>
-            <button className="btn btn--primary btn--sm" onClick={runNewBacktest} disabled={running || (dataReady !== null && dataReady < 1)}>
+            <button className="btn btn--secondary btn--sm" onClick={() => setShowConfig(true)} disabled={running}>
+              <Settings size={13} /> Configure
+            </button>
+            <button className="btn btn--primary btn--sm" onClick={() => setShowConfig(true)} disabled={running || (dataReady !== null && dataReady < 1)}>
               {running ? <RefreshCw size={13} className="spin" /> : <Play size={13} />}
               {running ? ' Running...' : ' New Backtest'}
             </button>
@@ -724,6 +782,7 @@ export default function BacktestingPage() {
                     { key: 'trades', label: `Trades (${trades.length})`, icon: Activity },
                     { key: 'calibration', label: `Calibration (${calibration.length})`, icon: CheckCircle },
                     { key: 'equity', label: 'Equity Curve', icon: BarChart2 },
+                    { key: 'compare', label: 'Compare', icon: GitCompare },
                     { key: 'dexter', label: 'Dexter AI', icon: AlertTriangle },
                     { key: 'audit', label: `Audit (${auditLogs.length})`, icon: FileText },
                   ].map(t => {
@@ -764,13 +823,21 @@ export default function BacktestingPage() {
                       ))}
                     </div>
 
-                    <div style={{ display: 'flex', gap: 16, padding: '10px 16px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 12, marginBottom: 16 }}>
+                    <div style={{ display: 'flex', gap: 16, padding: '10px 16px', background: '#F8FAFC', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
                       <span>Initial: <strong>{fmt.currency(summary.initialCapital)}</strong></span>
                       <span>Final: <strong style={{ color: summary.finalEquity >= summary.initialCapital ? '#15803D' : '#DC2626' }}>{fmt.currency(summary.finalEquity)}</strong></span>
                       <span>Sortino: <strong>{summary.sortinoRatio?.toFixed(2) ?? '—'}</strong></span>
                       <span>Calmar: <strong>{summary.calmarRatio?.toFixed(2) ?? '—'}</strong></span>
                       <span>T1 hit: <strong>{(summary.target1HitRate * 100).toFixed(0)}%</strong></span>
                       <span>T2 hit: <strong>{(summary.target2HitRate * 100).toFixed(0)}%</strong></span>
+                      <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                        <button type="button" className="btn btn--outline btn--sm" onClick={() => exportRun('csv')}>
+                          <Download size={12} /> CSV
+                        </button>
+                        <button type="button" className="btn btn--outline btn--sm" onClick={() => exportRun('json')}>
+                          <Download size={12} /> JSON
+                        </button>
+                      </span>
                     </div>
 
                     {strategyBreak.length > 0 && (
@@ -1129,6 +1196,15 @@ export default function BacktestingPage() {
                       </div>
                     )}
                   </Card>
+                )}
+
+                {/* Compare tab */}
+                {tab === 'compare' && (
+                  <BacktestComparePanel runs={runs.map((r) => ({
+                    run_id: r.run_id,
+                    name: r.name,
+                    status: r.status,
+                  }))} />
                 )}
 
                 {/* Audit tab */}

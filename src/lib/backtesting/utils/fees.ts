@@ -75,6 +75,41 @@ export function calculateTradeFees(
 }
 
 /**
+ * Compute total execution costs for a closed trade.
+ * Slippage is applied on entry fill; commission/fees on round-trip.
+ */
+export function computeExecutionCosts(
+  config: {
+    slippageBps: number;
+    commissionPerTrade: number;
+    feeModel?: 'flat' | 'nse_delivery';
+  },
+  entryPrice: number,
+  exitPrice: number,
+  positionSize: number,
+): { slippageCost: number; commissionCost: number; totalCosts: number } {
+  const slippageCost = (config.slippageBps / 10000) * entryPrice * positionSize;
+  const buyValue = entryPrice * positionSize;
+  const sellValue = exitPrice * positionSize;
+
+  let commissionCost: number;
+  if (config.feeModel === 'nse_delivery') {
+    commissionCost = calculateTradeFees(buyValue, sellValue, {
+      ...DEFAULT_FEE_CONFIG,
+      commissionPerOrder: config.commissionPerTrade,
+    }).totalFees;
+  } else {
+    commissionCost = config.commissionPerTrade * 2;
+  }
+
+  return {
+    slippageCost: Math.round(slippageCost * 100) / 100,
+    commissionCost: Math.round(commissionCost * 100) / 100,
+    totalCosts: Math.round((slippageCost + commissionCost) * 100) / 100,
+  };
+}
+
+/**
  * Quick fee estimate (simplified: flat commission + percentage).
  */
 export function quickFeeEstimate(

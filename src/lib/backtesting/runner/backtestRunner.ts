@@ -385,6 +385,10 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
           equity, config.riskPerTradePct,
           entry.fillPrice, sig.stopLoss,
           config.maxGrossExposurePct, currentGross,
+          {
+            model: config.positionSizingModel ?? 'risk_based',
+            fixedPct: config.fixedPositionPct,
+          },
         );
 
         if (sizing.positionSize <= 0) continue;
