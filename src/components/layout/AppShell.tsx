@@ -7,7 +7,7 @@ import {
   Newspaper, Bell, FileText, Settings, Users, Database,
   ClipboardList, Menu, X, LogOut, Activity,
   Zap, Target, Brain, BookOpen, LineChart, FlaskConical, ShieldAlert,
-  BarChart3, Cpu, ShieldCheck, Layers, Wallet,
+  BarChart3, Cpu, ShieldCheck, Layers, Wallet, CreditCard,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
@@ -54,6 +54,7 @@ const NAV: NavGroup[] = [
       { href: '/strategies',           icon: Layers,       label: 'Strategy Hub' },
       { href: '/strategies/lab',       icon: FlaskConical, label: 'Strategy Lab' },
       { href: '/paper',                icon: Wallet,       label: 'Paper Trading' },
+      { href: '/billing',              icon: CreditCard,   label: 'Billing' },
       { href: '/strategies/performance', icon: BarChart3,  label: 'Strategy Performance' },
       { href: '/calibration',        icon: BarChart3,    label: 'Calibration' },
     ],

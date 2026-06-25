@@ -41,9 +41,11 @@ export const FREE_DAILY_SIGNAL_LIMIT = 3;
 
 // Plan display names
 export const PLAN_LABELS: Record<string, string> = {
-  free:  'Free',
-  pro:   'Pro',
-  elite: 'Elite',
+  free:       'Free',
+  pro:        'Pro',
+  premium:    'Premium',
+  enterprise: 'Enterprise',
+  elite:      'Premium', // legacy alias
 };
 
 // Plan upgrade message per feature
