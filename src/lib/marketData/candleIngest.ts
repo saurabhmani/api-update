@@ -1,28 +1,18 @@
 /**
- * Daily OHLC ingest — Yahoo Finance only. // @deprecated marker
+ * Daily OHLC ingest — IndianAPI primary, NSE opt-in fallback.
  *
- * Why this file exists
- * ────────────────────
- * The signal engine reads daily bars from the `market_data_daily`
- * view (which projects the underlying `candles` table). This module
- * is the single writer: it pulls fresh day-bars from Yahoo, upserts // @deprecated marker
- * them into `candles`, and returns a structured summary the caller
- * can log.
+ * The signal engine reads daily bars from `market_data_daily` (and the
+ * `candles` table via persistCandle). This module is the ingest writer:
+ * it pulls day-bars from IndianAPI for symbols that need refresh, upserts
+ * them into `candles`, and returns a structured summary.
  *
- * Design
- *   - Yahoo Finance is the sole historical upstream. Real-time // @deprecated marker
- *     pricing is served by Kite WebSocket ticks — never mixed with // @deprecated marker
- *     historical ingest.
- *   - Bulk refresh is bounded by INGEST_CONCURRENCY (default 6).
- *     A per-symbol failure never stops the run — the loop just
- *     records the reason and moves on.
- *   - `force` mode re-fetches every symbol regardless of DB age.
- *     `/api/run-signal-engine` always passes `force: true` so every
- *     pipeline run starts from fresh upstream bars.
+ * Strategy evaluation NEVER calls IndianAPI — Phase 3/4 reads DB cache
+ * via `fetchDailyCandlesWithFallback` while a scan is in flight.
  */
 
 import { getCandles } from './getCandles';
 import type { OhlcBar, CandleSource } from './getCandles';
+import { getIndianApiCandleRequestCount } from './candleFallbackChain';
 import { persistCandle } from '@/services/marketDataService';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
@@ -85,6 +75,7 @@ export interface RefreshCandlesResult {
   ageHoursBefore: number | null;
   ageHoursAfter:  number | null;
   durationMs:     number;
+  indianApiRequests: number;
 }
 
 // ── Internal helpers ───────────────────────────────────────────
@@ -125,28 +116,7 @@ async function fetchLatestTsPerSymbol(symbols: string[]): Promise<LatestRow[]> {
   });
 }
 
-/**
- * Fetch fresh daily bars for a single symbol from Yahoo and // @deprecated marker
- * upsert them into the `candles` table. Returns `{ written, source }`
- * so the caller can log exactly which upstream served each symbol.
- *
- * Throws only for DB errors — upstream failures resolve to
- * `{ written: 0, source: null }`.
- */
-/**
- * Spec "FIX CANDLE INGEST" §2 — fallback to last-known-bar.
- *
- * When IndianAPI's /historical_data fails for a symbol (no_data /
- * timeout / 5xx), check market_data_daily for the most recent stored
- * bars. If we already have a usable history (≥ minBars within
- * maxAgeDays of NOW), the symbol isn't truly broken — it just couldn't
- * be refreshed today. Treating that as a "fallback success" lets the
- * downstream signal engine still score the symbol from stored bars
- * instead of skipping it entirely.
- *
- * NOTE: this never WRITES new bars. It only verifies that existing
- * stored bars are sufficient for the strategy engine.
- */
+/** When IndianAPI refresh fails, verify stored bars are still usable. */
 const FALLBACK_MIN_BARS = Math.max(
   10,
   Number(process.env.CANDLE_FALLBACK_MIN_BARS) || 50,
@@ -157,9 +127,9 @@ const FALLBACK_MAX_AGE_DAYS = Math.max(
 );
 
 async function checkStoredBarsFallback(symbol: string): Promise<{
-  usable:   boolean;
+  usable: boolean;
   barCount: number;
-  ageDays:  number | null;
+  ageDays: number | null;
 }> {
   try {
     const { rows } = await db.query<{ cnt: number; latest: Date | null }>(
@@ -168,38 +138,39 @@ async function checkStoredBarsFallback(symbol: string): Promise<{
         WHERE symbol = ?`,
       [symbol.toUpperCase()],
     );
-    const row     = (rows[0] as any) ?? { cnt: 0, latest: null };
+    const row = (rows[0] as any) ?? { cnt: 0, latest: null };
     const barCount = Number(row.cnt) || 0;
-    const latest   = row.latest instanceof Date
+    const latest = row.latest instanceof Date
       ? row.latest
       : (row.latest ? new Date(row.latest) : null);
-    const ageDays  = latest
+    const ageDays = latest
       ? Math.round((Date.now() - latest.getTime()) / 86_400_000 * 10) / 10
       : null;
     const usable =
-      barCount >= FALLBACK_MIN_BARS &&
-      ageDays != null &&
-      ageDays <= FALLBACK_MAX_AGE_DAYS;
+      barCount >= FALLBACK_MIN_BARS
+      && ageDays != null
+      && ageDays <= FALLBACK_MAX_AGE_DAYS;
     return { usable, barCount, ageDays };
   } catch {
     return { usable: false, barCount: 0, ageDays: null };
   }
 }
 
+/**
+ * Fetch fresh daily bars for a single symbol and upsert into `candles`.
+ * Uses IndianAPI primary; NSE only when NSE_HISTORICAL_FETCH_ENABLED=true.
+ */
 async function ingestOneSymbol(
   symbol: string,
+  incrementalRefresh: boolean,
 ): Promise<{ written: number; source: CandleSource | null; reason?: string; fallback?: boolean }> {
-  log.debug('Fetching candles', { symbol });
-  const result = await getCandles(symbol);
+  log.debug('Fetching candles', { symbol, incrementalRefresh });
+  const result = await getCandles(symbol, { incrementalRefresh });
   if (result.ok !== true) {
     const reason = (result as { reason: string }).reason;
-    // Negative-cache hits and the permanent-skip list are expected
-    // steady-state noise — log them at debug so a healthy run
-    // doesn't flood the terminal. Real upstream failures
-    // (timeouts, 5xx, parse errors) stay at warn.
     const isQuiet =
-      reason.startsWith('neg_cache:') ||
-      reason.startsWith('skip:');
+      reason.startsWith('neg_cache:')
+      || reason.startsWith('skip:');
     if (isQuiet) {
       log.debug('Candle fetch skipped (cached)', { symbol, reason });
     } else {
@@ -284,11 +255,9 @@ async function mapWithConcurrency<T, R>(
 // ── Public API ─────────────────────────────────────────────────
 
 /**
- * Refresh daily OHLC bars via Yahoo, scoped to a specific // @deprecated marker
- * universe. With `force: true` every symbol is re-fetched — the
- * "Run Pipeline" path sets that so stale DB bars never leak into a
- * run. Without `force`, only symbols older than `maxAgeHours` are
- * touched (used by background schedulers).
+ * Refresh daily OHLC bars via IndianAPI (primary), scoped to a universe.
+ * Symbols selected for refresh always use incrementalRefresh so upstream
+ * is called even when DB depth is already sufficient.
  */
 export async function refreshDailyCandles(
   opts: RefreshCandlesOptions,
@@ -323,6 +292,7 @@ export async function refreshDailyCandles(
     ageHoursBefore: null,
     ageHoursAfter:  null,
     durationMs:     0,
+    indianApiRequests: 0,
   };
 
   if (symbols.length === 0) {
@@ -511,11 +481,14 @@ export async function refreshDailyCandles(
   const TOTAL_TO_PROCESS = toRefresh.length;
   console.log(`[BATCH] candle refresh starting — total=${TOTAL_TO_PROCESS} concurrency=${INGEST_CONCURRENCY}`);
   let processedCount = 0;
-  const bySource: Record<string, number> = { yahoo: 0 }; // @deprecated marker
+  const bySource: Record<string, number> = { indianapi: 0, nse: 0 };
   let fallbackCount = 0;
   await mapWithConcurrency(toRefresh, INGEST_CONCURRENCY, async (row) => {
     try {
-      const { written, source, reason, fallback } = await ingestOneSymbol(row.symbol);
+      const { written, source, reason, fallback } = await ingestOneSymbol(
+        row.symbol,
+        true, // incremental refresh — symbol was selected for upstream fetch
+      );
       if (source && written > 0) {
         bySource[source] = (bySource[source] ?? 0) + 1;
         result.refreshed++;
@@ -560,6 +533,10 @@ export async function refreshDailyCandles(
       `[CANDLE] fallback summary — ${fallbackCount}/${toRefresh.length} symbols served from last-known stored bars`,
     );
   }
+  console.log(
+    `[CANDLE REFRESH] indianapi_requests=${result.indianApiRequests} ` +
+    `indianapi_symbols=${bySource.indianapi ?? 0} nse_symbols=${bySource.nse ?? 0}`,
+  );
 
   // ── 4. Measure freshness AFTER ───────────────────────────────
   const afterRows = await fetchLatestTsPerSymbol(symbols);
@@ -573,13 +550,16 @@ export async function refreshDailyCandles(
     : null;
 
   result.durationMs = Date.now() - t0;
+  result.indianApiRequests = getIndianApiCandleRequestCount();
 
   log.info('Candle refresh complete', {
     durationMs: result.durationMs,
     refreshed: result.refreshed,
     attempted: toRefresh.length,
     barsIngested: result.barsIngested,
-    yahoo: bySource.yahoo ?? 0, // @deprecated marker
+    indianapi: bySource.indianapi ?? 0,
+    nse: bySource.nse ?? 0,
+    indianApiRequests: result.indianApiRequests,
     failed: result.failed.length,
     latestBefore: result.latestTsBefore ?? 'none',
     ageHoursBefore: result.ageHoursBefore ?? null,

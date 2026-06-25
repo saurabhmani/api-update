@@ -200,7 +200,7 @@ async function loadLatestStored(symbol: string, instrumentKey: string): Promise<
     let reasons: StoredSignalRow['reasons'] = [];
     try {
       const reasonRes = await db.query<any>(
-        `SELECT reason_type, message, factor_key
+        `SELECT reason_type, message
            FROM q365_signal_reasons
           WHERE signal_id = ?
           ORDER BY id ASC`,
@@ -209,7 +209,7 @@ async function loadLatestStored(symbol: string, instrumentKey: string): Promise<
       reasons = (reasonRes.rows as any[]).map((rr) => ({
         type:       String(rr.reason_type ?? ''),
         message:    String(rr.message ?? ''),
-        factor_key: rr.factor_key ? String(rr.factor_key) : null,
+        factor_key: null,
       }));
     } catch { /* optional table */ }
 

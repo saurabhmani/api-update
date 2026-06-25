@@ -38,7 +38,11 @@ function parseIncludes(raw: string | null): Set<string> {
   return new Set(parts);
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(
+  req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}`;
   try {
     await ensureBacktestTables();
@@ -198,7 +202,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(
+  req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}`;
   try {
     await ensureBacktestTables();

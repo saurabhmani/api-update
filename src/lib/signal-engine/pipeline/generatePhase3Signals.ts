@@ -51,6 +51,7 @@ export interface Phase3Result {
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
   bullish_breakout:       'enter_on_strength',
   bullish_pullback:       'enter_on_pullback',
+  fibonacci_pullback:     'enter_on_pullback',
   bearish_breakdown:      'enter_short',
   mean_reversion_bounce:  'enter_on_bounce',
   momentum_continuation:  'enter_on_momentum',
@@ -78,6 +79,7 @@ const ACTION_MAP: Record<StrategyName, SignalAction> = {
 const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
   bullish_breakout:       'fresh_breakout',
   bullish_pullback:       'pullback_entry',
+  fibonacci_pullback:     'fib_retracement_entry',
   bearish_breakdown:      'breakdown',
   mean_reversion_bounce:  'reversal_bounce',
   momentum_continuation:  'momentum_ride',
@@ -760,7 +762,20 @@ export async function generatePhase3Signals(
       // of primary, (c) secondary score ≥ 50. Otherwise emit just
       // the dominant one. No faking — every emitted candidate had to
       // actually match its strategy's criteria.
-      const bullishBest = candidates.find((c) => !BEARISH_STRATEGIES.has(c.strategy));
+      // When both generic pullback and fibonacci_pullback match, prefer
+      // the Fibonacci-specific setup if it is within 8 confidence points
+      // of the top bullish candidate — avoids suppressing fib rows when
+      // the more specific detector also fired.
+      const bullishBest = (() => {
+        const bullish = candidates.filter((c) => !BEARISH_STRATEGIES.has(c.strategy));
+        if (bullish.length === 0) return undefined;
+        const top = bullish[0];
+        if (top.strategy !== 'bullish_pullback') return top;
+        const fib = bullish.find((c) => c.strategy === 'fibonacci_pullback');
+        if (!fib?.features.structure.fibZoneMatched) return top;
+        const gap = top.confidence.finalScore - fib.confidence.finalScore;
+        return gap <= 8 ? fib : top;
+      })();
       const bearishBest = candidates.find((c) =>  BEARISH_STRATEGIES.has(c.strategy));
       const toBuild: typeof candidates = [];
       if (bullishBest && bearishBest) {

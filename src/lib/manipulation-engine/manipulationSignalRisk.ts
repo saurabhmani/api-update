@@ -38,14 +38,16 @@ export type RecommendedAction =
   | 'BLOCK_APPROVAL';
 
 export interface FreshnessEnvelope {
-  latestEventDate:   string | null;
-  latestCandleDate:  string | null;
-  latestScanAt:      string | null;
-  latestTradingDate: string | null;
-  isStale:           boolean;
-  daysLag:           number | null;
-  status:            FreshnessStatus;
-  reason:            string;
+  latestEventDate:        string | null;
+  latestCandleDate:       string | null;
+  latestScanAt:           string | null;
+  latestTradingDate:      string | null;
+  isStale:                boolean;
+  daysLag:                number | null;
+  status:                 FreshnessStatus;
+  reason:                 string;
+  /** Snapshot rows persisted in the last 30 days (global surveillance). */
+  snapshotsPersisted30d?: number;
 }
 
 /**
@@ -164,6 +166,46 @@ function dayDiff(a: string | null, b: string | null): number | null {
   return Math.round((db - da) / 86_400_000);
 }
 
+/** Pure freshness resolver — shared by DB probe + tests. */
+export function resolveManipulationFreshnessStatus(input: {
+  latestEventDate:  string | null;
+  latestCandleDate: string | null;
+  latestScanAt:     string | null;
+  snapshotCount30d: number;
+}): Pick<FreshnessEnvelope, 'status' | 'reason' | 'daysLag' | 'isStale'> {
+  const refDate = input.latestCandleDate ?? toIsoDate(new Date());
+  const daysLag = dayDiff(input.latestEventDate, refDate);
+  const scanDate = toIsoDate(input.latestScanAt);
+
+  let status: FreshnessStatus;
+  let reason: string;
+
+  if (!input.latestEventDate) {
+    status = 'NO_DATA';
+    reason = 'No manipulation events have been recorded. Run a scan to populate the surveillance surface.';
+  } else if (daysLag != null && daysLag > FRESH_DAYS_THRESHOLD) {
+    status = 'STALE';
+    reason = `No fresh manipulation scan or candle data after ${input.latestEventDate}. ` +
+             `Latest events are ${daysLag} day(s) behind latest candle date.`;
+  } else if (input.snapshotCount30d === 0) {
+    status = 'PARTIAL';
+    reason = 'Manipulation events exist but no snapshot persisted in the last 30 days. ' +
+             'Symbol-level risk view may be incomplete.';
+  } else {
+    status = 'FRESH';
+    reason = `Latest event ${input.latestEventDate}, lag ${daysLag ?? 0} day(s) — within ${FRESH_DAYS_THRESHOLD}-day freshness window.`;
+  }
+
+  // Candles advanced but surveillance scan did not — hard rejection must stay off.
+  if (status === 'FRESH' && scanDate && refDate && scanDate < refDate) {
+    status = 'STALE';
+    reason = `Manipulation snapshots are stale (latest ${input.latestScanAt}). ` +
+      'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
+  }
+
+  return { status, reason, daysLag, isStale: status === 'STALE' };
+}
+
 // ── Freshness probe ────────────────────────────────────────────────
 
 /**
@@ -213,35 +255,23 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
   } catch {/* candles table missing — extremely unusual */}
 
   const refDate = latestCandleDate ?? toIsoDate(new Date());
-  const daysLag = dayDiff(latestEventDate, refDate);
-
-  let status: FreshnessStatus;
-  let reason: string;
-  if (!latestEventDate) {
-    status = 'NO_DATA';
-    reason = 'No manipulation events have been recorded. Run a scan to populate the surveillance surface.';
-  } else if (daysLag != null && daysLag > FRESH_DAYS_THRESHOLD) {
-    status = 'STALE';
-    reason = `No fresh manipulation scan or candle data after ${latestEventDate}. ` +
-             `Latest events are ${daysLag} day(s) behind latest candle date.`;
-  } else if (snapshotCount30d === 0) {
-    status = 'PARTIAL';
-    reason = 'Manipulation events exist but no snapshot persisted in the last 30 days. ' +
-             'Symbol-level risk view may be incomplete.';
-  } else {
-    status = 'FRESH';
-    reason = `Latest event ${latestEventDate}, lag ${daysLag ?? 0} day(s) — within ${FRESH_DAYS_THRESHOLD}-day freshness window.`;
-  }
+  const resolved = resolveManipulationFreshnessStatus({
+    latestEventDate,
+    latestCandleDate: refDate,
+    latestScanAt,
+    snapshotCount30d,
+  });
 
   const envelope: FreshnessEnvelope = {
     latestEventDate,
     latestCandleDate,
     latestScanAt,
     latestTradingDate: latestCandleDate,
-    isStale: status === 'STALE',
-    daysLag,
-    status,
-    reason,
+    isStale: resolved.isStale,
+    daysLag: resolved.daysLag,
+    status: resolved.status,
+    reason: resolved.reason,
+    snapshotsPersisted30d: snapshotCount30d,
   };
 
   _freshnessCache = { value: envelope, expiresAt: Date.now() + FRESHNESS_TTL_MS };

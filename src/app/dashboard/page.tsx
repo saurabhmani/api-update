@@ -32,13 +32,15 @@ import {
   TrendingDown, TrendingUp, Zap,
 } from 'lucide-react';
 import styles from './dashboard.module.scss';
-
-// ── Wire types (mirror /api/dashboard) ─────────────────────────────
-
-type FusionStatus =
-  | 'HEALTHY' | 'WARNING' | 'PARTIAL' | 'STALE' | 'DEGRADED'
-  | 'TIMEOUT' | 'BROKEN' | 'AUTH_REQUIRED'
-  | 'NOT_CONFIGURED' | 'INSUFFICIENT_DATA' | 'RUNNING' | 'UNKNOWN';
+import {
+  type EngineHealthStatus,
+  type FusionStatus,
+  type IntelligenceMode,
+  type IntelligenceModeLabel,
+  INTELLIGENCE_MODE_LABELS,
+  getIntelligenceMode,
+  normalizeEngineHealthStatus,
+} from '@/types/dashboard';
 
 type TrustLabel    = 'HIGH' | 'MEDIUM' | 'LOW' | 'INSUFFICIENT_DATA';
 type ActionPrio    = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -265,63 +267,72 @@ function describeMarket(
   };
 }
 
-// Reframe Signal Engine state. TIMEOUT / DEGRADED / WARNING become
-// "Partial Intelligence Mode" — the engine is alive but missing
-// confirmation from one or more upstream modules.
+// Reframe Signal Engine state for the Command Center header.
+// Priority: critical failure → market closed → healthy → degraded → standby.
 interface EngineDescriptor {
-  value: string;
+  value: IntelligenceMode;
   sub:   string;
   tone:  'green' | 'amber' | 'red' | 'blue' | 'grey' | 'purple';
-  mode:  string;  // headline label used in the header chip + system notice
+  mode:  IntelligenceModeLabel;
+}
+
+function engineDescriptor(
+  value: IntelligenceMode,
+  sub: string,
+  tone: EngineDescriptor['tone'],
+): EngineDescriptor {
+  return { value, sub, tone, mode: INTELLIGENCE_MODE_LABELS[value] };
 }
 
 function describeSignalEngine(
-  status: FusionStatus,
+  status: EngineHealthStatus,
   primaryBlockingReason: string | null | undefined,
   canApproved: boolean | undefined,
   canCandidates: boolean | undefined,
+  marketOpen: boolean = false,
 ): EngineDescriptor {
-  switch (status) {
-    case 'HEALTHY':
-      return {
-        value: 'OPERATIONAL',
-        sub:   canApproved ? 'Approval pipeline ready.' : canCandidates ? 'Generating candidates.' : 'Status nominal.',
-        tone:  'green',
-        mode:  'Full Intelligence Mode',
-      };
-    case 'WARNING':
+  const reason = niceText(primaryBlockingReason, '');
+  const mode = getIntelligenceMode(marketOpen, status);
+
+  switch (mode) {
+    case 'RECOVERY':
+      return engineDescriptor(
+        mode,
+        status === 'AUTH_REQUIRED'
+          ? 'Re-authentication required.'
+          : 'Engine pending recovery — refresh recommended.',
+        'amber',
+      );
+    case 'MONITORING':
+      return engineDescriptor(
+        mode,
+        reason || 'Off-hours — reviewing last session signals.',
+        'blue',
+      );
+    case 'OPERATIONAL':
+      return engineDescriptor(
+        mode,
+        canApproved
+          ? 'Approval pipeline ready.'
+          : canCandidates
+            ? (reason || 'Generating candidates.')
+            : 'Status nominal.',
+        'green',
+      );
     case 'PARTIAL':
-    case 'DEGRADED':
-      return {
-        value: 'PARTIAL',
-        sub:   niceText(primaryBlockingReason, 'Running with delayed modules.'),
-        tone:  'amber',
-        mode:  'Partial Intelligence Mode',
-      };
-    case 'TIMEOUT':
-      return {
-        value: 'PARTIAL',
-        sub:   'Engine summary delayed — retry to refresh.',
-        tone:  'amber',
-        mode:  'Partial Intelligence Mode',
-      };
-    case 'BROKEN':
-    case 'AUTH_REQUIRED':
-      return {
-        value: 'RECOVERY',
-        sub:   status === 'AUTH_REQUIRED'
-                 ? 'Re-authentication required.'
-                 : 'Engine pending recovery — refresh recommended.',
-        tone:  'amber',
-        mode:  'Recovery Mode',
-      };
-    default:
-      return {
-        value: 'PENDING',
-        sub:   'Awaiting first engine response.',
-        tone:  'grey',
-        mode:  'Standby',
-      };
+      return engineDescriptor(
+        mode,
+        status === 'TIMEOUT'
+          ? 'Engine summary delayed — retry to refresh.'
+          : (reason || 'Running with delayed modules.'),
+        'amber',
+      );
+    case 'PENDING':
+      return engineDescriptor(
+        mode,
+        'Awaiting first engine response.',
+        'grey',
+      );
   }
 }
 
@@ -618,19 +629,26 @@ export default function DashboardPage() {
   const warnings       = data?.warnings ?? [];
   const moduleCounts   = data?.moduleStatusCounts;
 
-  const signalEngineStatus = fusion?.signalEngine.status ?? 'UNKNOWN';
+  const signalEngineStatus = normalizeEngineHealthStatus(
+    fusion?.signalEngine.status ?? 'UNKNOWN',
+  );
 
   // Institutional copy descriptors — pure display transformations on
   // the existing payload, no business logic.
   const marketDesc = describeMarket(market);
   const engineDesc = describeSignalEngine(
     signalEngineStatus,
-    engineHealth?.primaryBlockingReason,
+    fusion?.signalEngine.reason ?? engineHealth?.primaryBlockingReason,
     engineHealth?.canGenerateApprovedSignals,
-    engineHealth?.canGenerateCandidates,
+    engineHealth?.canGenerateCandidates ?? (summary?.candidateTotal ?? 0) > 0,
+    market?.status === 'OPEN',
   );
   const freshnessDesc = describeFreshness(risk?.staleData, summary?.latestSignalAt);
-  const trustDesc     = describeTrust(trust, !!risk?.staleData, signalEngineStatus);
+  const trustDesc     = describeTrust(
+    trust,
+    !!risk?.staleData,
+    fusion?.signalEngine.status ?? 'UNKNOWN',
+  );
 
   // Signal Readiness — count of candidates the engine is actively
   // tracking but hasn't yet approved. Derived from the existing

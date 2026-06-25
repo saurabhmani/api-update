@@ -58,6 +58,8 @@ import {
   incrementApiUsage,
   ApiBudgetExceededError,
 } from './indianApiUsageTracker';
+import { logProviderRequest } from '@/lib/marketData/providerRequestLog';
+import { getProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 import {
   validateMarketSnapshot,
   logProviderInvalidPayload,
@@ -82,6 +84,22 @@ const log = logger.child({ adapter: 'IndianAPI' });
 // API key likewise come from the endpoint config so swapping the host
 // or rotating the key is one diff in one file.
 
+// Per-call symbol cap for emulated batch_quote fan-out (see getBatchQuotes).
+// Shared with the keep-alive agent below so transport concurrency tracks
+// INDIANAPI_EMULATED_BATCH_MAX without duplicating the env read.
+export function resolveIndianApiTransportCapacity(
+  emulatedBatchMaxEnv?: string,
+): { maxEmulatedBatchSymbols: number; httpAgentMaxSockets: number } {
+  const maxEmulatedBatchSymbols = Math.max(1, Number(emulatedBatchMaxEnv) || 25);
+  // Floor at 25 preserves legacy socket-pool sizing when batch ≤ 25; scales up
+  // automatically when operators raise INDIANAPI_EMULATED_BATCH_MAX.
+  const httpAgentMaxSockets = Math.max(25, maxEmulatedBatchSymbols);
+  return { maxEmulatedBatchSymbols, httpAgentMaxSockets };
+}
+
+const { maxEmulatedBatchSymbols: MAX_EMULATED_BATCH_SYMBOLS, httpAgentMaxSockets: HTTP_AGENT_MAX_SOCKETS } =
+  resolveIndianApiTransportCapacity(process.env.INDIANAPI_EMULATED_BATCH_MAX);
+
 // ── Shared axios client with HTTPS keep-alive ──────────────────────
 //
 // Critical perf fix (FIX-DATA-PIPELINE follow-up): the adapter used to
@@ -96,8 +114,8 @@ const log = logger.child({ adapter: 'IndianAPI' });
 // Caching one axios instance + a keep-alive `https.Agent` lets the
 // underlying socket pool reuse the TLS handshake across requests.
 // Latency drops from ~5 s/req at saturation to <500 ms/req for the
-// same workload. `maxSockets:25` matches INDIANAPI_EMULATED_BATCH_MAX
-// so the pool never queues at the agent layer.
+// same workload. `HTTP_AGENT_MAX_SOCKETS` tracks MAX_EMULATED_BATCH_SYMBOLS
+// so the pool never queues at the agent layer when batch size scales up.
 let _httpClient: AxiosInstance | null = null;
 let _httpClientForKey: string | null = null;
 
@@ -115,14 +133,14 @@ function http(): AxiosInstance {
   const httpsAgent = new HttpsAgent({
     keepAlive: true,
     keepAliveMsecs: 30_000,
-    maxSockets: 25,
+    maxSockets: HTTP_AGENT_MAX_SOCKETS,
     maxFreeSockets: 10,
     timeout: cfg.timeoutMs,
   });
   const httpAgent = new HttpAgent({
     keepAlive: true,
     keepAliveMsecs: 30_000,
-    maxSockets: 25,
+    maxSockets: HTTP_AGENT_MAX_SOCKETS,
     maxFreeSockets: 10,
     timeout: cfg.timeoutMs,
   });
@@ -224,6 +242,47 @@ function removedEndpoint(op: string): never {
 interface CallOptions {
   query?: Record<string, unknown>;
   body?:  unknown;
+}
+
+function endpointLabel(spec: EndpointSpec): string {
+  return spec.path.replace(/^\//, '');
+}
+
+function extractSymbolFromCall(opts: CallOptions): string | null {
+  const q = opts.query;
+  if (q?.stock_name) return String(q.stock_name).trim().toUpperCase();
+  if (q?.name) return String(q.name).trim().toUpperCase();
+  if (q?.symbol) return String(q.symbol).trim().toUpperCase();
+  const body = opts.body;
+  if (typeof body === 'string' && body.trim()) return body.trim().toUpperCase();
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const rec = body as Record<string, unknown>;
+    if (rec.stock_name) return String(rec.stock_name).trim().toUpperCase();
+    if (rec.name) return String(rec.name).trim().toUpperCase();
+  }
+  const ctx = getProviderRequestContext();
+  return ctx?.symbol?.toUpperCase() ?? null;
+}
+
+function recordCallOutcome(
+  spec: EndpointSpec,
+  opts: CallOptions,
+  outcome: {
+    success: boolean;
+    statusCode?: number | null;
+    errorMessage?: string | null;
+    responseCount?: number | null;
+  },
+): void {
+  void logProviderRequest({
+    endpoint: endpointLabel(spec),
+    symbol: extractSymbolFromCall(opts),
+    requestType: getProviderRequestContext()?.requestType ?? spec.path,
+    statusCode: outcome.statusCode ?? null,
+    success: outcome.success,
+    errorMessage: outcome.errorMessage ?? null,
+    responseCount: outcome.responseCount ?? null,
+  });
 }
 
 /** Errors that are worth retrying once. Permanent 4xx (e.g. 404, 422)
@@ -715,6 +774,7 @@ async function call<T>(spec: EndpointSpec, opts: CallOptions = {}, signal?: Abor
         // leading slash and querystring noise) so the [API USAGE] log
         // attributes load to the right endpoint family.
         incrementApiUsage(spec.path.replace(/^\//, ''));
+        recordCallOutcome(spec, opts, { success: true, statusCode: 200 });
         noteIndianApiSuccess();
         // If this call was the post-cooldown probe, clear the
         // endpoint's unavailable entry and emit [ENDPOINT RECOVERED].
@@ -732,6 +792,7 @@ async function call<T>(spec: EndpointSpec, opts: CallOptions = {}, signal?: Abor
       }
       const res = await rateLimit(() => http().post<T>(spec.path, payload, { params: opts.query, signal }), signal);
       incrementApiUsage(spec.path.replace(/^\//, ''));
+      recordCallOutcome(spec, opts, { success: true, statusCode: 200 });
       noteIndianApiSuccess();
       noteEndpointSuccess(spec.path);
       return res.data;
@@ -780,6 +841,11 @@ async function call<T>(spec: EndpointSpec, opts: CallOptions = {}, signal?: Abor
   }
   const ax = lastErr as AxiosError;
   const status = ax?.response?.status;
+  recordCallOutcome(spec, opts, {
+    success: false,
+    statusCode: status ?? null,
+    errorMessage: ax?.message ?? 'unknown',
+  });
   // Spec "FIX 429" — show the REAL attempt count, not the configured
   // ceiling. With 429 / 4xx, attemptsMade is 1; with 5xx + transient,
   // it can be up to ATTEMPTS.
@@ -989,6 +1055,19 @@ export async function getHistorical(
     log.warn('historical_data fetch failed', {
       symbol: sym, period, filter, status: ax?.status, message: ax?.message,
     });
+    // Budget / per-run caps must propagate — swallowing them as an empty
+    // series surfaces as a generic "provider status=failed" upstream.
+    const msg = ax?.message ?? '';
+    const status = ax?.status;
+    if (
+      msg.includes('PER_RUN_LIMIT_EXCEEDED')
+      || msg.includes('API_BUDGET_EXCEEDED')
+      || msg.includes('AUTH_FAILED')
+      || status === 403
+      || status === 401
+    ) {
+      throw err;
+    }
     // Return an empty series instead of throwing — the candle-ingest
     // layer treats `candles.length === 0` as a clean skip (negative-
     // cached for 1h) so a single bad symbol never blocks the pipeline.
@@ -1329,7 +1408,6 @@ export interface BatchQuoteResult {
 //     rate-limiter chain saturated even when one symbol's /stock
 //     call stalls. Bound stays low enough to avoid bursty IP-rate
 //     limit trips.
-const MAX_EMULATED_BATCH_SYMBOLS = Math.max(1, Number(process.env.INDIANAPI_EMULATED_BATCH_MAX) || 25);
 const EMULATED_BATCH_CONCURRENCY = Math.max(1, Number(process.env.INDIANAPI_EMULATED_BATCH_CONCURRENCY) || 5);
 
 export async function getBatchQuotes(

@@ -45,6 +45,12 @@ export interface BacktestRunConfig {
   // Execution assumptions (persisted for reproducibility)
   slippageBps: number;
   commissionPerTrade: number;
+  /** flat = commissionPerTrade only; nse_delivery = full NSE fee model */
+  feeModel?: 'flat' | 'nse_delivery';
+  /** risk_based = % risk per trade; fixed_pct = fixed % of equity per position */
+  positionSizingModel?: 'risk_based' | 'fixed_pct';
+  /** Used when positionSizingModel = fixed_pct */
+  fixedPositionPct?: number;
   fillModel: 'conservative' | 'midpoint' | 'aggressive';
 
   // Production hardening (Section 1, 4)

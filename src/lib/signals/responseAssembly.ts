@@ -96,6 +96,10 @@ import {
 import {
   type ManipulationRisk,
 } from '@/lib/manipulation-engine/manipulationSignalRisk';
+import {
+  buildManipulationRiskMeta,
+  type ManipulationRiskMeta,
+} from '@/lib/signals/manipulationRiskFetch';
 
 const log = logger.child({ component: 'responseAssembly' });
 
@@ -287,6 +291,10 @@ export interface BuildSignalsResponseInput {
    *       rejected tiers with a manipulation-specific rejection reason.
    *  Absent map → no attachment, no gate (safe degradation). */
   manipulationRiskMap?: ReadonlyMap<string, ManipulationRisk>;
+  /** True when risk was probed via DEFAULT_PHASE1_CONFIG sample. */
+  manipulationUsedFallbackUniverse?: boolean;
+  /** Scanner metadata from route-layer fetch (stable every cycle). */
+  manipulationRiskMeta?:            ManipulationRiskMeta;
 }
 
 /** Per-tier impact counters from the manipulation gate. Surfaced on
@@ -301,6 +309,11 @@ export interface ManipulationGateImpact {
   riskRestrictedSymbols: string[];
   active:                boolean;
   dataStatus:            ManipulationRisk['freshnessStatus'];
+  symbolsQueried:        number;
+  symbolsWithEnvelope:   number;
+  latestScanAt:          string | null;
+  latestEventDate:       string | null;
+  usedFallbackUniverse:  boolean;
 }
 
 export interface SignalsResponsePayload {
@@ -434,6 +447,8 @@ export interface SignalsResponsePayload {
    *  signals. `active=false` means the gate was skipped (no risk map
    *  provided, or data is stale and could only warn). */
   manipulationGateImpact?: ManipulationGateImpact;
+  /** Stable scanner metadata for health probes — present every cycle. */
+  manipulationRiskMeta:    ManipulationRiskMeta;
 }
 
 export interface ClosestToApprovalRow {
@@ -474,6 +489,40 @@ export interface ClosestToApprovalRow {
  * + `is_demoted: true` from confirmedSignalsService — this builder
  * does NOT re-tag them.
  */
+function summarizeManipulationRiskMap(
+  map: ReadonlyMap<string, ManipulationRisk>,
+): Pick<ManipulationGateImpact, 'dataStatus' | 'symbolsQueried' | 'symbolsWithEnvelope' | 'latestScanAt' | 'latestEventDate'> {
+  let latestScanAt: string | null = null;
+  let latestEventDate: string | null = null;
+  let symbolsWithEnvelope = 0;
+  let dataStatus: ManipulationRisk['freshnessStatus'] = 'NO_DATA';
+  for (const risk of map.values()) {
+    if (risk.freshnessStatus !== 'NO_DATA' || risk.band !== 'UNKNOWN') {
+      symbolsWithEnvelope++;
+    }
+    if (risk.latestScanAt && (!latestScanAt || risk.latestScanAt > latestScanAt)) {
+      latestScanAt = risk.latestScanAt;
+    }
+    if (risk.latestEventDate && (!latestEventDate || risk.latestEventDate > latestEventDate)) {
+      latestEventDate = risk.latestEventDate;
+    }
+    if (dataStatus === 'NO_DATA' && risk.freshnessStatus !== 'NO_DATA') {
+      dataStatus = risk.freshnessStatus;
+    }
+  }
+  const first = map.values().next().value;
+  if (dataStatus === 'NO_DATA' && first) {
+    dataStatus = first.freshnessStatus;
+  }
+  return {
+    dataStatus,
+    symbolsQueried:      map.size,
+    symbolsWithEnvelope,
+    latestScanAt,
+    latestEventDate,
+  };
+}
+
 export async function buildSignalsResponsePayload(
   input: BuildSignalsResponseInput,
 ): Promise<SignalsResponsePayload> {
@@ -481,7 +530,7 @@ export async function buildSignalsResponsePayload(
     belowFloorDemoted, inProgressEnriched,
     buyCount: rawBuy, sellCount: rawSell, freshness, syntheticBatchId,
     requestId, lite, validationStatus, skipRotationCommit,
-    manipulationRiskMap,
+    manipulationRiskMap, manipulationUsedFallbackUniverse, manipulationRiskMeta,
   } = input;
 
   // ── Phase B helpers (no-op when no risk map) ─────────────────────
@@ -531,7 +580,9 @@ export async function buildSignalsResponsePayload(
   const candleReport = classifyCandleFreshness({
     latest_candle_ms: candleAgeMs != null ? Date.now() - candleAgeMs : null,
     market_open:      marketOpenForDecay,
-    candle_source:    undefined,
+    // IndianAPI layer is daily-only; explicit source avoids intraday
+    // false-positives when CANDLE_FEED_SOURCE env is unset.
+    candle_source:    'daily',
   });
   logCandleFreshness(candleReport, 'responseAssembly');
 
@@ -578,7 +629,16 @@ export async function buildSignalsResponsePayload(
   let freshnessMode: 'NORMAL_OPERATION' | 'WATCHLIST_ONLY_MODE' | 'APPROVAL_FREEZE_MODE' = 'NORMAL_OPERATION';
 
   if (marketOpenForDecay) {
-    if (candleAgeMins <= 15) {
+    if (candleReport.freshness_mode === 'daily_tolerant') {
+      // Daily bars age 18+h between sessions — use quality bands, not 15/45m intraday gates.
+      if (candleReport.feed_frozen) {
+        freshnessMode = 'APPROVAL_FREEZE_MODE';
+      } else if (candleReport.freshness_quality === 'stale') {
+        freshnessMode = 'WATCHLIST_ONLY_MODE';
+      } else {
+        freshnessMode = 'NORMAL_OPERATION';
+      }
+    } else if (candleAgeMins <= 15) {
       freshnessMode = 'NORMAL_OPERATION';
     } else if (candleAgeMins <= 45) {
       freshnessMode = 'WATCHLIST_ONLY_MODE';
@@ -1106,7 +1166,7 @@ export async function buildSignalsResponsePayload(
     marketOpen:        marketOpenForDecay,
     marketLabel:       marketOpenForDecay ? 'Market Open' : 'Market Closed',
     isBootstrap:       false, // closed-market route may override at the route layer.
-    isFallback:        freshnessMode !== 'NORMAL_OPERATION',
+    isFallback:        false,
     freshnessMode,
     candleAgeMinutes:  Math.round(candleAgeMins),
   };
@@ -1265,23 +1325,28 @@ export async function buildSignalsResponsePayload(
     topBlockReason:          dueDiligenceSummary.topBlockReasons[0]?.reason ?? null,
     marketOpen:              marketOpenForDecay,
     isBootstrap:             false, // route layer overrides for closed-market path
-    isFallback:              freshnessMode !== 'NORMAL_OPERATION',
+    isFallback:              false,
     staleMinutes:            Math.round(candleAgeMins),
   });
 
   // ── PHASE_5_HEALTH_OBSERVABILITY_2026-05 — lightweight preview ──
   const healthPreview = buildLightweightEngineHealthPreview({
-    marketOpen:     marketOpenForDecay,
-    isBootstrap:    false,
-    isFallback:     freshnessMode !== 'NORMAL_OPERATION',
-    staleMinutes:   Math.round(candleAgeMins),
-    approvedTotal:  enrichedApproved.length,
-    candidateTotal: enrichedHighPotential.length
-                  + enrichedWatchlist.length
-                  + enrichedDeveloping.length
-                  + enrichedScannerCandidates.length
-                  + enrichedRiskRestricted.length
-                  + enrichedRejectedDisplay.length,
+    marketOpen:         marketOpenForDecay,
+    isBootstrap:        false,
+    // Provider fallback is surfaced separately via /api/data-feed/health;
+    // stale daily candles must not mark engine health DEGRADED.
+    isFallback:         false,
+    staleMinutes:       Math.round(candleAgeMins),
+    freshnessMode:      candleReport.freshness_mode,
+    feedFrozen:         candleReport.feed_frozen,
+    freshnessQuality:   candleReport.freshness_quality,
+    approvedTotal:      enrichedApproved.length,
+    candidateTotal:     enrichedHighPotential.length
+                      + enrichedWatchlist.length
+                      + enrichedDeveloping.length
+                      + enrichedScannerCandidates.length
+                      + enrichedRiskRestricted.length
+                      + enrichedRejectedDisplay.length,
   });
 
   return {
@@ -1320,13 +1385,13 @@ export async function buildSignalsResponsePayload(
       state:  marketOpenForDecay ? 'open' : 'closed',
     },
     dataFreshness: {
-      isStale:    candleAgeMins > 30,
+      isStale:    candleReport.freshness_quality === 'stale' || candleReport.freshness_quality === 'frozen',
       ageMinutes: Math.round(candleAgeMins),
       label:      candleReport.freshness_quality,
     },
     provider:          freshness.kite_health.source ?? 'unknown',
     isBootstrap:       false, // Overridden in route.ts if applicable
-    isFallback:        freshnessMode !== 'NORMAL_OPERATION',
+    isFallback:        false, // Provider fallback surfaced via /api/data-feed/health
     lastApiRequestAt:  null, // Populated in route.ts
     lastSuccessAt:     null, // Populated in route.ts
     lastPipelineRunAt: freshness.last_pipeline_run,
@@ -1373,30 +1438,28 @@ export async function buildSignalsResponsePayload(
     healthPreview,
 
     // ── PHASE_B_MANIPULATION_INTEGRATION — gate-impact telemetry ──
-    manipulationGateImpact: manipulationRiskMap ? {
-      blockedFromApproval:   manipulationBlockedRows.length,
-      riskRestrictedCount:   manipulationRiskRestrictedRows.length,
-      penalizedCount:        manipulationPenalizedCount,
-      warningOnlyCount:      manipulationWarningCount,
-      blockedSymbols:        manipulationBlockedRows
-        .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
-        .filter(Boolean),
-      riskRestrictedSymbols: manipulationRiskRestrictedRows
-        .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
-        .filter(Boolean),
-      // active=true only when the gate had a chance to demote (fresh
-      // data + a non-empty approved set). Stale/no-data caps every
-      // recommendedAction at WARNING_ONLY which never enters the
-      // demotion loop, so `active` truthfully reports "the gate ran".
-      active:                manipulationBlockedRows.length > 0 || manipulationRiskRestrictedRows.length > 0
-                             || manipulationPenalizedCount > 0 || manipulationWarningCount > 0,
-      dataStatus:            (() => {
-        for (const risk of manipulationRiskMap.values()) {
-          return risk.freshnessStatus;
-        }
-        return 'NO_DATA' as const;
-      })(),
-    } : undefined,
+    manipulationGateImpact: manipulationRiskMap ? (() => {
+      const riskMeta = summarizeManipulationRiskMap(manipulationRiskMap);
+      return {
+        blockedFromApproval:   manipulationBlockedRows.length,
+        riskRestrictedCount:   manipulationRiskRestrictedRows.length,
+        penalizedCount:        manipulationPenalizedCount,
+        warningOnlyCount:      manipulationWarningCount,
+        blockedSymbols:        manipulationBlockedRows
+          .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
+          .filter(Boolean),
+        riskRestrictedSymbols: manipulationRiskRestrictedRows
+          .map((r) => String(r.symbol ?? r.tradingsymbol ?? ''))
+          .filter(Boolean),
+        active:                manipulationBlockedRows.length > 0 || manipulationRiskRestrictedRows.length > 0
+                               || manipulationPenalizedCount > 0 || manipulationWarningCount > 0,
+        usedFallbackUniverse:  manipulationUsedFallbackUniverse === true,
+        ...riskMeta,
+      };
+    })() : undefined,
+
+    // ── PHASE_B_MANIPULATION — stable scanner metadata (every cycle) ──
+    manipulationRiskMeta: manipulationRiskMeta ?? buildManipulationRiskMeta(manipulationRiskMap),
   };
 }
 

@@ -24,6 +24,13 @@ import { officialExchangeAdapter, corporateFilingsAdapter } from './officialExch
 import { dealsFeedAdapter } from './dealsFeedAdapter';
 import { socialSignalsAdapter } from './socialSignalsAdapter';
 import { logger } from '@/lib/logger';
+import {
+  isSourceConfigured,
+  enrichSourceHealth,
+  collectIngestionHealthWarnings,
+  buildExchangeFeedHealth,
+  type NewsSourceHealthRow,
+} from '../health/newsSourceHealth';
 
 const log = logger.child({ component: 'newsIngestion' });
 
@@ -39,6 +46,7 @@ export const DEFAULT_NEWS_QUERY = 'Indian stock market NSE';
 const ALL_ADAPTERS: NewsAdapter[] = [
   // Official sources (highest credibility)
   officialExchangeAdapter,
+  // Optional premium integration — docs/PREMIUM_NEWS_FEEDS.md
   corporateFilingsAdapter,
   // Media sources (standard credibility)
   gnewsAdapter,
@@ -47,9 +55,10 @@ const ALL_ADAPTERS: NewsAdapter[] = [
   rssEtAdapter,
   rssMcAdapter,
   finnhubAdapter,
-  // Deals sources (high impact events)
+  // Deals sources (high impact events) — optional; see docs/PREMIUM_NEWS_FEEDS.md
   dealsFeedAdapter,
   // Social sources (lower credibility, higher manipulation scrutiny)
+  // Optional; see docs/PREMIUM_NEWS_FEEDS.md
   socialSignalsAdapter,
 ];
 
@@ -60,7 +69,9 @@ export interface RawIngestionResult {
   sourceClassCoverage: Record<NewsSourceClass, { attempted: number; succeeded: number; itemCount: number }>;
   errors: string[];
   /** Per-source detailed status (configured, fetched, error, lastFetchedAt). */
-  sourceStatus: NewsSourceStatus[];
+  sourceStatus: NewsSourceHealthRow[];
+  /** BSE/NSE sub-feed breakdown from official_exchange items this run. */
+  exchangeFeedHealth?: import('../health/newsSourceHealth').ExchangeFeedHealth;
   /** ISO timestamp of the newest publishedAt that landed this run. */
   latestNewsPublishedAt: string | null;
 }
@@ -71,22 +82,9 @@ export interface RawIngestionResult {
  * `configured` flag on NewsSourceStatus so the UI / API can show
  * NOT_CONFIGURED honestly instead of silent zeros.
  *
- * Keep this in sync with each adapter's env-var contract.
+ * Re-exported from newsSourceHealth — single source of truth.
  */
-function isSourceConfigured(source: NewsSourceId): boolean {
-  switch (source) {
-    case 'gnews':              return !!process.env.GNEWS_API_KEY;
-    case 'newsdata':           return !!process.env.NEWSDATA_API_KEY;
-    case 'newsapi':            return !!(process.env.NEWSAPI_KEY || process.env.NEWSAPI_API_KEY);
-    case 'finnhub':            return !!process.env.FINNHUB_API_KEY;
-    case 'rss_et':             return true; // public RSS — always reachable
-    case 'rss_mc':             return true; // public RSS — always reachable
-    case 'official_exchange':  return !!(process.env.BSE_ANNOUNCEMENTS_RSS || process.env.NSE_ANNOUNCEMENTS_RSS);
-    case 'corporate_filings':  return !!process.env.CORPORATE_FILINGS_API_URL;
-    case 'deals_feed':         return !!process.env.DEALS_FEED_API_URL;
-    case 'social_signals':     return !!process.env.SOCIAL_SIGNALS_API_URL;
-  }
-}
+export { isSourceConfigured };
 
 /**
  * Public snapshot of which sources are configured right now — exposed
@@ -182,22 +180,12 @@ export async function ingestFromAllSources(
     .join(' ');
   log.info('Source class coverage', { coverage: coverageSummary });
 
-  // Adapter validation warnings — surface unconfigured adapters
-  const envWarnings: string[] = [];
-  if (!process.env.BSE_ANNOUNCEMENTS_RSS && !process.env.NSE_ANNOUNCEMENTS_RSS) {
-    envWarnings.push('official_exchange: BSE_ANNOUNCEMENTS_RSS / NSE_ANNOUNCEMENTS_RSS not configured');
-  }
-  if (!process.env.CORPORATE_FILINGS_API_URL) {
-    envWarnings.push('corporate_filings: CORPORATE_FILINGS_API_URL not configured');
-  }
-  if (!process.env.DEALS_FEED_API_URL) {
-    envWarnings.push('deals_feed: DEALS_FEED_API_URL not configured');
-  }
-  if (!process.env.SOCIAL_SIGNALS_API_URL) {
-    envWarnings.push('social_signals: SOCIAL_SIGNALS_API_URL not configured');
-  }
-  if (envWarnings.length > 0) {
-    log.warn('Unconfigured adapters', { count: envWarnings.length, adapters: envWarnings });
+  // Adapter health warnings — only legitimate issues (optional sources
+  // without API keys are intentionally silent).
+  const enrichedStatus = sourceStatus.map((row) => enrichSourceHealth(row, true));
+  const healthWarnings = collectIngestionHealthWarnings(enrichedStatus);
+  if (healthWarnings.length > 0) {
+    log.warn('News source health issues', { count: healthWarnings.length, issues: healthWarnings });
   }
 
   // Newest publishedAt across this run's items — gives the UI an
@@ -216,7 +204,10 @@ export async function ingestFromAllSources(
     sourceBreakdown,
     sourceClassCoverage: classCoverage,
     errors,
-    sourceStatus,
+    sourceStatus: enrichedStatus,
     latestNewsPublishedAt,
+    exchangeFeedHealth: buildExchangeFeedHealth(
+      deduped.filter((i) => i.sourceId === 'official_exchange'),
+    ),
   };
 }

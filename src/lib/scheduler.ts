@@ -167,17 +167,22 @@ export function startScheduler(): void {
     );
   }, { timezone: IST }));
 
+  // Evening candle update + morning/evening DB scans are registered by
+  // startDailyScanSchedule() in src/lib/workers/dailyScanSchedule.ts
+  // (called from the worker scheduler process).
+
   log.info('scheduler started', {
     timezone: IST,
     batchUniverse: getBatchUniverse().length,
     cronJobs: tasks.length,
     layout: {
-      batch:     '*/10 9-15 * * 1-5',
-      heartbeat: '* 9-15 * * 1-5',
-      trigger:   '5,25,45 9-15 * * 1-5',
-      intel:     '15 9-15 * * 1-5',
-      warmup:    '20 9 * * 1-5',
-      postClose: '35 15 * * 1-5',
+      batch:       '*/10 9-15 * * 1-5',
+      heartbeat:   '* 9-15 * * 1-5',
+      trigger:     '5,25,45 9-15 * * 1-5',
+      intel:       '15 9-15 * * 1-5',
+      warmup:      '20 9 * * 1-5',
+      postClose:   '35 15 * * 1-5',
+      dailyScans:  'see dailyScanSchedule (08:30 scan, 16:00 update, 16:30 scan)',
     },
   });
 }

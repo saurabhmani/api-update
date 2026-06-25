@@ -14,6 +14,7 @@ import type {
 import { getSector } from '../../signal-engine/constants/phase3.constants';
 import type { IntraBarAssumption } from '../utils/barExecution';
 import { getIntraBarPricePath } from '../utils/barExecution';
+import { computeExecutionCosts } from '../utils/fees';
 
 /**
  * Map the user-facing fillModel to the bar execution path assumption.
@@ -253,16 +254,29 @@ export function calculateBacktestPositionSize(
   stopLoss: number,
   maxGrossExposurePct: number,
   currentGrossExposure: number,
+  options?: { model?: 'risk_based' | 'fixed_pct'; fixedPct?: number },
 ): { positionSize: number; positionValue: number; riskAmount: number } {
-  const riskBudget = equity * (riskPerTradePct / 100);
+  let positionSize = 0;
+  let positionValue = 0;
   const riskPerUnit = Math.abs(entryPrice - stopLoss);
 
-  if (riskPerUnit <= 0) {
-    return { positionSize: 0, positionValue: 0, riskAmount: 0 };
+  if (options?.model === 'fixed_pct') {
+    const pct = options.fixedPct ?? 5;
+    positionValue = equity * (pct / 100);
+    positionSize = entryPrice > 0 ? Math.floor(positionValue / entryPrice) : 0;
+    positionValue = positionSize * entryPrice;
+  } else {
+    const riskBudget = equity * (riskPerTradePct / 100);
+    if (riskPerUnit <= 0) {
+      return { positionSize: 0, positionValue: 0, riskAmount: 0 };
+    }
+    positionSize = Math.floor(riskBudget / riskPerUnit);
+    positionValue = positionSize * entryPrice;
   }
 
-  let positionSize = Math.floor(riskBudget / riskPerUnit);
-  let positionValue = positionSize * entryPrice;
+  if (positionSize <= 0) {
+    return { positionSize: 0, positionValue: 0, riskAmount: 0 };
+  }
 
   // Cap: max gross exposure
   const maxGross = equity * (maxGrossExposurePct / 100);
@@ -282,8 +296,6 @@ export function calculateBacktestPositionSize(
   const riskAmount = positionSize * riskPerUnit;
   return { positionSize, positionValue, riskAmount };
 }
-
-// ── Close a position and produce TradeRecord ───────────────
 
 export function closePosition(
   pos: OpenPosition,
@@ -306,9 +318,13 @@ export function closePosition(
     ? (exitPrice - pos.entryPrice) * pos.positionSize
     : (pos.entryPrice - exitPrice) * pos.positionSize;
 
-  const commissionCost = config.commissionPerTrade * 2; // entry + exit
-  const slippageCost = (config.slippageBps / 10000) * pos.entryPrice * pos.positionSize;
-  const netPnl = rawPnl - commissionCost - slippageCost;
+  const costs = computeExecutionCosts(
+    { slippageBps: config.slippageBps, commissionPerTrade: config.commissionPerTrade, feeModel: config.feeModel ?? 'flat' },
+    pos.entryPrice, exitPrice, pos.positionSize,
+  );
+  const slippageCost = costs.slippageCost;
+  const commissionCost = costs.commissionCost;
+  const netPnl = rawPnl - costs.totalCosts;
 
   const returnPct = pos.entryPrice > 0
     ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100 * (direction === 'short' ? -1 : 1)

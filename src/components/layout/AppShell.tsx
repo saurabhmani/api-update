@@ -7,11 +7,13 @@ import {
   Newspaper, Bell, FileText, Settings, Users, Database,
   ClipboardList, Menu, X, LogOut, Activity,
   Zap, Target, Brain, BookOpen, LineChart, FlaskConical, ShieldAlert,
-  BarChart3, Cpu,
+  BarChart3, Cpu, ShieldCheck, Shield, Layers, Wallet, CreditCard, Scale,
 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { fmt } from '@/lib/utils';
 import TickerStrip from './TickerStrip';
+import { MarketRegimeWidget } from '@/components/trust/MarketRegimeWidget';
+import { PerformanceWidget } from '@/components/trust/PerformanceWidget';
 import '@/styles/components/_layout.scss';
 
 interface NavItem { href: string; icon: React.ElementType; label: string; }
@@ -40,7 +42,9 @@ const NAV: NavGroup[] = [
     label: 'Intelligence',
     items: [
       { href: '/intelligence',       icon: Brain,        label: 'Intelligence Hub' },
+      { href: '/quant',              icon: Cpu,          label: 'Quant Platform' },
       { href: '/trade-setups',       icon: Target,       label: 'Trade Setups' },
+      { href: '/trust',            icon: ShieldCheck,    label: 'Trust Layer' },
       { href: '/signals',            icon: Zap,          label: 'Signals' },
       { href: '/options/chain',      icon: LineChart,    label: 'Option Intelligence' },
       { href: '/trade-journal',      icon: BookOpen,     label: 'Trade Journal' },
@@ -48,6 +52,11 @@ const NAV: NavGroup[] = [
       { href: '/manipulation',       icon: ShieldAlert,  label: 'Manipulation Watch' },
       { href: '/dexter',             icon: Cpu,          label: 'Dexter AI' },
       { href: '/news-intelligence',  icon: Newspaper,    label: 'News Intelligence' },
+      { href: '/strategies',           icon: Layers,       label: 'Strategy Hub' },
+      { href: '/strategies/lab',       icon: FlaskConical, label: 'Strategy Lab' },
+      { href: '/paper',                icon: Wallet,       label: 'Paper Trading' },
+      { href: '/billing',              icon: CreditCard,   label: 'Billing' },
+      { href: '/strategies/performance', icon: BarChart3,  label: 'Strategy Performance' },
       { href: '/calibration',        icon: BarChart3,    label: 'Calibration' },
     ],
   },
@@ -55,12 +64,16 @@ const NAV: NavGroup[] = [
     label: 'Admin',
     adminOnly: true,
     items: [
+      { href: '/admin/dashboard',  icon: LayoutDashboard, label: 'Admin Dashboard' },
       { href: '/admin/users',      icon: Users,         label: 'Users' },
+      { href: '/admin/reliability', icon: Activity,     label: 'Platform Reliability' },
       { href: '/admin/news',       icon: Newspaper,     label: 'News Mgmt' },
       { href: '/admin/data',       icon: Database,      label: 'Data Management' },
       { href: '/admin/thresholds', icon: Activity,      label: 'Signal Thresholds' },
       { href: '/admin/pipeline',   icon: Zap,           label: 'Pipeline Control' },
-      { href: '/admin/audit',      icon: ClipboardList, label: 'Audit Logs' },
+      { href: '/admin/roles',       icon: Shield,         label: 'Role Management' },
+      { href: '/admin/audit-logs',  icon: ClipboardList,  label: 'Audit Logs' },
+      { href: '/compliance',        icon: Scale,          label: 'Compliance Center' },
     ],
   },
   {
@@ -201,6 +214,10 @@ export default function AppShell({ children, title }: Props) {
             {title && <h1 className="topbar__title">{title}</h1>}
           </div>
           <div className="topbar__right">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginRight: 8 }}>
+              <MarketRegimeWidget />
+              <PerformanceWidget />
+            </div>
             <Link
               href="/notifications"
               className="topbar__icon-btn"

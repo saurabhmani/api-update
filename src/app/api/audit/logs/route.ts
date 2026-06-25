@@ -1,9 +1,11 @@
-// GET /api/audit/logs — Query audit trail
+// GET /api/audit/logs — Query audit trail (admin only)
 import { NextRequest } from 'next/server';
 import { withApiHandler } from '@/lib/apiHandler';
+import { requireAdmin } from '@/lib/session';
 import { queryAuditLogs } from '@/services/auditLogService';
 
 export const GET = withApiHandler(async (req: NextRequest) => {
+  await requireAdmin();
   const sp = req.nextUrl.searchParams;
 
   const result = await queryAuditLogs({

@@ -4,6 +4,9 @@
 
 import type { SignalFeatures, StrategyName } from '../types/signalEngine.types';
 import { round } from '../utils/math';
+import { formatFibLevelDisplay, isPriceNearFibLevel } from '../indicators/fibonacci';
+
+const FIB_REASON_TOLERANCE_PCT = 1;
 
 export function buildReasons(features: SignalFeatures, strategy?: StrategyName): string[] {
   const { trend, momentum, volume, structure, context, volatility } = features;
@@ -54,6 +57,31 @@ export function buildReasons(features: SignalFeatures, strategy?: StrategyName):
           `Gap & go: ${round(volatility.gapPct, 1)}% gap up with ${round(volume.volumeVs20dAvg, 1)}x volume in uptrend`,
         );
         break;
+      case 'fibonacci_pullback': {
+        const { fib382, fib50, fib618 } = structure;
+        const near382 = fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, FIB_REASON_TOLERANCE_PCT);
+        const near50 = fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_REASON_TOLERANCE_PCT);
+        const near618 = fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, FIB_REASON_TOLERANCE_PCT);
+        reasons.push('Price is holding near a key Fibonacci retracement support zone.');
+        if (trend.ema20Above50 && trend.closeAbove200Ema) {
+          reasons.push('Fibonacci pullback is aligned with the bullish trend.');
+        }
+        if (near382 || near50 || near618) {
+          const levelParts: string[] = [];
+          if (near382) levelParts.push('38.2%');
+          if (near50) levelParts.push('50%');
+          if (near618) levelParts.push('61.8%');
+          const levelLabel = levelParts.join(' and ');
+          reasons.push(
+            `Price is reacting from ${levelLabel} retracement with healthy momentum (RSI ${round(momentum.rsi14)})`,
+          );
+        } else if (structure.fibNearestLevelName) {
+          reasons.push(
+            `Nearest Fibonacci level: ${formatFibLevelDisplay(structure.fibNearestLevelName)} at ${structure.fibNearestLevel}`,
+          );
+        }
+        break;
+      }
     }
   } else if (structure.breakoutDistancePct > 0) {
     reasons.push(

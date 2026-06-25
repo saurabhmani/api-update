@@ -11,6 +11,7 @@ import type {
 } from '../types/signalEngine.types';
 import { evaluateBullishBreakout } from '../strategies/bullishBreakout';
 import { evaluateBullishPullback } from '../strategies/bullishPullback';
+import { evaluateFibonacciPullback } from '../strategies/fibonacciPullback';
 import { evaluateBearishBreakdown } from '../strategies/bearishBreakdown';
 import { evaluateMeanReversionBounce } from '../strategies/meanReversionBounce';
 import { evaluateMomentumContinuation } from '../strategies/momentumContinuation';
@@ -49,6 +50,7 @@ const STRATEGIES: StrategyEntry[] = [
   { name: 'momentum_continuation',  evaluate: evaluateMomentumContinuation },
   { name: 'gap_continuation',       evaluate: evaluateGapContinuation },
   { name: 'bullish_pullback',       evaluate: evaluateBullishPullback },
+  { name: 'fibonacci_pullback',     evaluate: evaluateFibonacciPullback },
   { name: 'bearish_breakdown',      evaluate: evaluateBearishBreakdown },
   { name: 'overbought_reversal',    evaluate: evaluateOverboughtReversal   },   // SELL
   { name: 'weak_trend_breakdown',   evaluate: evaluateWeakTrendBreakdown   },   // SELL
@@ -144,7 +146,7 @@ function evaluateOne(
     : baseWarnings;
 
   const bullishStrategies: StrategyName[] = [
-    'bullish_breakout', 'bullish_pullback', 'momentum_continuation', 'gap_continuation',
+    'bullish_breakout', 'bullish_pullback', 'fibonacci_pullback', 'momentum_continuation', 'gap_continuation',
   ];
   if (bullishStrategies.includes(name) && relativeStrength.rsVsIndex < -5) {
     rejections.push({ strategy: name, reason: `Weak relative strength vs index: ${relativeStrength.rsVsIndex}%` });

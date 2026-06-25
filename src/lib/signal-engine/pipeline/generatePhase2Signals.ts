@@ -39,6 +39,7 @@ import type { CandleProvider } from './generatePhase1Signals';
 // ── Strategy evaluators ────────────────────────────────────
 import { evaluateBullishBreakout } from '../strategies/bullishBreakout';
 import { evaluateBullishPullback } from '../strategies/bullishPullback';
+import { evaluateFibonacciPullback } from '../strategies/fibonacciPullback';
 import { evaluateBearishBreakdown } from '../strategies/bearishBreakdown';
 import { evaluateMeanReversionBounce } from '../strategies/meanReversionBounce';
 import { evaluateMomentumContinuation } from '../strategies/momentumContinuation';
@@ -65,6 +66,7 @@ const STRATEGY_EVALUATORS: Record<StrategyName, (f: SignalFeatures) => StrategyM
   momentum_continuation:  evaluateMomentumContinuation,
   gap_continuation:       evaluateGapContinuation,
   bullish_pullback:       evaluateBullishPullback,
+  fibonacci_pullback:     evaluateFibonacciPullback,
   bearish_breakdown:      evaluateBearishBreakdown,
   mean_reversion_bounce:  evaluateMeanReversionBounce,
   bullish_divergence:     evaluateBullishDivergence,
@@ -89,6 +91,7 @@ const STRATEGY_EVALUATORS: Record<StrategyName, (f: SignalFeatures) => StrategyM
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
   bullish_breakout:       'enter_on_strength',
   bullish_pullback:       'enter_on_pullback',
+  fibonacci_pullback:     'enter_on_pullback',
   bearish_breakdown:      'enter_short',
   mean_reversion_bounce:  'enter_on_bounce',
   momentum_continuation:  'enter_on_momentum',
@@ -114,6 +117,7 @@ const ACTION_MAP: Record<StrategyName, SignalAction> = {
 const SUBTYPE_MAP: Record<StrategyName, SignalSubtype> = {
   bullish_breakout:       'fresh_breakout',
   bullish_pullback:       'pullback_entry',
+  fibonacci_pullback:     'fib_retracement_entry',
   bearish_breakdown:      'breakdown',
   mean_reversion_bounce:  'reversal_bounce',
   momentum_continuation:  'momentum_ride',

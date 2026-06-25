@@ -40,6 +40,7 @@ console.log('');
 const named = [
   'bullish_breakout',
   'bullish_pullback',
+  'fibonacci_pullback',
   'momentum_continuation',
   'mean_reversion_bounce',
   'bearish_breakdown',

@@ -14,6 +14,7 @@ import { clamp, round } from '../utils/math';
 import {
   CONFIDENCE_HIGH_CONVICTION, CONFIDENCE_ACTIONABLE, CONFIDENCE_WATCHLIST,
 } from '../constants/signalEngine.constants';
+import { scoreConfidenceForStrategy } from './confidenceScorer';
 
 function classifyBand(score: number): ConfidenceBand {
   if (score >= CONFIDENCE_HIGH_CONVICTION) return 'High Conviction';
@@ -321,6 +322,8 @@ export function scoreForStrategy(
       return scoreBreakdown(features, rs, sectorContext);
     case 'mean_reversion_bounce':
       return scoreMeanReversion(features, rs, sectorContext);
+    case 'fibonacci_pullback':
+      return scoreConfidenceForStrategy(features, strategy, rs);
     default:
       return scoreGeneric(features, rs, sectorContext, strategy);
   }

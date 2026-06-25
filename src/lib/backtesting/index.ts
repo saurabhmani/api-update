@@ -57,7 +57,7 @@ export { checkEntryTrigger, checkExit, updateExcursions, calculateBacktestPositi
 export { getIntraBarPricePath, wasLevelReached, whichLevelFirst } from './utils/barExecution';
 export type { IntraBarAssumption } from './utils/barExecution';
 export { applySlippage, totalSlippageCost } from './utils/slippage';
-export { calculateTradeFees, quickFeeEstimate, DEFAULT_FEE_CONFIG } from './utils/fees';
+export { calculateTradeFees, quickFeeEstimate, computeExecutionCosts, DEFAULT_FEE_CONFIG } from './utils/fees';
 export type { FeeConfig, FeeBreakdown } from './utils/fees';
 
 // ── Metrics: Core ──────────────────────────────────────────
@@ -95,7 +95,9 @@ export { saveBacktestRun, loadBacktestRun, listBacktestRuns, loadBacktestTrades,
 export { saveBacktestMetrics, saveCalibrationSnapshots, saveSignalOutcomes, saveBacktestSignals, loadBacktestMetrics, loadCalibrationSnapshots } from './repository/metricsPersistence';
 export { AuditLogger } from './repository/auditLogger';
 
-// ── Migration ──────────────────────────────────────────────
+export { compareBacktestRuns } from './comparison/compareRuns';
+export type { BacktestComparisonResult, ComparisonRunSnapshot } from './comparison/compareRuns';
+export { buildBacktestExport, serializeExport, exportFilename } from './export/backtestExport';
 export { migrateBacktestTables, ensureBacktestTables } from './repository/migrate';
 
 // ── Types ──────────────────────────────────────────────────

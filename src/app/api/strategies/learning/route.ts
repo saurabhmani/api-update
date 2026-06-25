@@ -31,8 +31,10 @@ import {
 } from '@/lib/strategies/strategyPerformance';
 import {
   buildLearningReport,
+  buildSignalLearningObservations,
   isAutoStrategyControlEnabled,
 } from '@/lib/learning/signalReviewEngine';
+import { persistLearningObservations } from '@/lib/signal-engine/repository/saveLearningObservations';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -81,6 +83,15 @@ export async function GET(req: NextRequest) {
 
   const report = buildLearningReport(outcomes, window);
 
+  // Persist per-signal learning observations (idempotent upsert per signal_id).
+  let persistence: { upserted: number; skipped: number } | null = null;
+  try {
+    const observations = buildSignalLearningObservations(outcomes, report);
+    persistence = await persistLearningObservations(observations);
+  } catch (err) {
+    console.warn('[learning] observation persistence failed:', (err as Error).message);
+  }
+
   // Optional strategyId filter — keeps the report shape but narrows
   // the reviews / rankings to the requested strategy.
   if (strategyId) {
@@ -109,6 +120,7 @@ export async function GET(req: NextRequest) {
       autoStrategyControlEnabled: isAutoStrategyControlEnabled(),
       note: 'Learning report is recommendation-only. Set AUTO_STRATEGY_CONTROL_ENABLED=true to allow a downstream worker to act on these recommendations.',
     },
+    persistence: persistence ?? { upserted: 0, skipped: 0, error: 'unavailable' },
   }, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });

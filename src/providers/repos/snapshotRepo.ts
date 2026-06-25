@@ -216,7 +216,7 @@ export async function getHistoricalCandles(
 // returns the last known value tagged `source='db' quality='stale'`.
 export function registerOnMarketDataProvider(): void {
   // Lazy import to avoid a circular require at module load.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line
   const { registerDbRepo } = require('@/providers/MarketDataProvider') as
     typeof import('@/providers/MarketDataProvider');
   registerDbRepo({

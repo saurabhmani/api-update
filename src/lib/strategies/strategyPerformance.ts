@@ -126,6 +126,8 @@ export interface PerformanceOutcomeRow {
    *  Null when the underlying row has no stable id (legacy backtest
    *  trades). */
   signalRef:         string | null;
+  /** q365_signals.id when resolved from outcomes or snapshots. */
+  signalId:          number | null;
 }
 
 // ── Data-quality contract ─────────────────────────────────────
@@ -304,7 +306,7 @@ export async function loadDirectSignalOutcomes(
     // this, the same matured snapshot can be double-counted as both a
     // direct outcome and an observed terminal row.
     const { rows } = await db.query<any>(
-      `SELECT id, source_snapshot_id, symbol, strategy, direction, sector, regime,
+      `SELECT id, signal_id, source_snapshot_id, symbol, strategy, direction, sector, regime,
               confidence_score, outcome, return_pct, return_r,
               target_hit, stop_hit, invalidated,
               mfe_pct, mae_pct, holding_period_bars,
@@ -370,6 +372,7 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     source:            'direct',
     outcomeSource:     'direct',
     signalRef:         snapshotRef,
+    signalId:          r.signal_id != null ? Number(r.signal_id) : null,
   };
 }
 
@@ -448,7 +451,7 @@ export async function loadObservedOutcomes(
     let rows: any[] = [];
     try {
       const res = await db.query<any>(
-        `SELECT id, symbol, strategy, direction, exchange,
+        `SELECT id, source_signal_id, symbol, strategy, direction, exchange,
                 entry_price, stop_loss, target1, target2,
                 confidence_score, status, classification,
                 confirmed_at, valid_until, status_changed_at,
@@ -464,7 +467,7 @@ export async function loadObservedOutcomes(
     } catch {
       // Older schema — fall back to the minimal column set.
       const res = await db.query<any>(
-        `SELECT id, symbol, strategy, direction, exchange,
+        `SELECT id, source_signal_id, symbol, strategy, direction, exchange,
                 entry_price, stop_loss, target1, target2,
                 confidence_score, status,
                 confirmed_at, valid_until, status_changed_at,
@@ -581,6 +584,7 @@ function observedRowToOutcome(r: any): PerformanceOutcomeRow {
     // when both sources are loaded, so dedupe collapses the pair to the
     // higher-priority `direct` row.
     signalRef:         r.id != null ? `snapshot:${String(r.id)}` : null,
+    signalId:          r.source_signal_id != null ? Number(r.source_signal_id) : null,
   };
 }
 
@@ -666,6 +670,7 @@ function backtestRowToOutcome(r: any): PerformanceOutcomeRow {
     // correct behaviour (a backtest trade is never the same row as a
     // live snapshot or direct outcome).
     signalRef:         null,
+    signalId:          null,
   };
 }
 

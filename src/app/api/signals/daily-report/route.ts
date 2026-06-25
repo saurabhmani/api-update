@@ -20,21 +20,22 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
-import { getMarketStatus }           from '@/lib/marketData/marketHours';
+import { getMarketStatus, toIstCalendarDate } from '@/lib/marketData/marketHours';
 import {
   buildDailySignalReport,
   type DailyReportInput,
 }                                    from '@/lib/signals/dailySignalReport';
+import { getHistoricalMarketMovers } from '@/lib/signals/historicalMarketData';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
 
 const isoDate = (s?: string | null): string => {
   if (s && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  return new Date().toISOString().slice(0, 10);
+  return toIstCalendarDate(new Date());
 };
 
-const todayISO = (): string => new Date().toISOString().slice(0, 10);
+const todayISO = (): string => toIstCalendarDate(new Date());
 
 export async function GET(req: NextRequest) {
   // Auth — same predicate as /api/signals.
@@ -53,6 +54,20 @@ export async function GET(req: NextRequest) {
       + 'See migrations/postgres/010_q365_daily_signal_reports.sql.proposal.',
     );
   }
+
+  const moversResult = await getHistoricalMarketMovers(requestedDate, { limit: 20 });
+  if (!moversResult.available) {
+    warnings.push(...moversResult.warnings);
+  }
+  const marketMoversInput = moversResult.available
+    ? moversResult.movers.map((m) => ({
+        symbol:      m.symbol,
+        movePercent: m.movePercent,
+        direction:   m.direction,
+        volume:      m.volume,
+        date:        m.date,
+      }))
+    : undefined;
 
   // Pull the same payload the dashboard polls so the report is
   // computed off the exact production state. This keeps the report
@@ -88,6 +103,7 @@ export async function GET(req: NextRequest) {
         symbolsRequested: null, symbolsReturned: null, coveragePercent: null,
         isBootstrap: false, isFallback: false, freshnessLabel: null,
       },
+      marketMovers: marketMoversInput,
     };
     const partial = buildDailySignalReport(fallbackInput);
     return NextResponse.json(
@@ -135,6 +151,7 @@ export async function GET(req: NextRequest) {
       isFallback:        payload.isFallback === true,
       freshnessLabel:    payload?.dataFreshness?.label ?? null,
     },
+    marketMovers: marketMoversInput,
   };
 
   const report = buildDailySignalReport(reportInput);

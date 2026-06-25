@@ -14,6 +14,7 @@
 
 import { db } from '../db';
 import { migrateMarketData } from './migrateMarketData';
+import { migrateProviderRequestLogs } from './migrateProviderRequestLogs';
 import { migrateSignalEngine } from './migrateSignalEngine';
 
 let _ensured = false;
@@ -406,7 +407,8 @@ const ALL_TABLES: string[] = [
     manipulation_score INT NOT NULL DEFAULT 0,
     suspicion_band VARCHAR(20) NOT NULL DEFAULT 'low',
     explanation VARCHAR(500) DEFAULT NULL,
-    features_json JSON DEFAULT NULL,
+    feature_json JSON DEFAULT NULL,
+    triggered_events_json JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_symbol_date (symbol, snapshot_date),
     INDEX idx_band (suspicion_band),
@@ -796,6 +798,14 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
   } catch (err) {
     failed++;
     console.error('[ensureAllSchemas] migrateMarketData failed:', (err as Error).message);
+  }
+
+  try {
+    await migrateProviderRequestLogs();
+    created += 1;
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] migrateProviderRequestLogs failed:', (err as Error).message);
   }
 
   // 4. Apply the signal-engine column migrations on top of the slim

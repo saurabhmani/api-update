@@ -104,10 +104,10 @@ export function getPg(): Pool {
     // explode at module-eval time. Any path that actually calls getPg()
     // without the module installed gets a clear error.
     //
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line
     let pgMod: typeof import('pg');
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line
       pgMod = require('pg') as typeof import('pg');
     } catch (err) {
       throw new Error(

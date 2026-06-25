@@ -26,6 +26,16 @@ export function validateBacktestConfig(cfg: BacktestRunConfig): { valid: boolean
   if (cfg.minConfidence < 0 || cfg.minConfidence > 100) errors.push('Min confidence must be 0–100');
   if (cfg.minRewardRisk < 0) errors.push('Min reward-risk must be >= 0');
   if (cfg.commissionPerTrade < 0) errors.push('Commission cannot be negative');
+  if (!['flat', 'nse_delivery'].includes(cfg.feeModel ?? 'flat')) {
+    errors.push('Fee model must be flat or nse_delivery');
+  }
+  if (!['risk_based', 'fixed_pct'].includes(cfg.positionSizingModel ?? 'risk_based')) {
+    errors.push('Position sizing model must be risk_based or fixed_pct');
+  }
+  if (cfg.positionSizingModel === 'fixed_pct') {
+    const pct = cfg.fixedPositionPct ?? 0;
+    if (pct <= 0 || pct > 25) errors.push('Fixed position % must be 0–25%');
+  }
   if (!['conservative', 'midpoint', 'aggressive'].includes(cfg.fillModel)) {
     errors.push('Fill model must be conservative, midpoint, or aggressive');
   }

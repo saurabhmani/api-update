@@ -7,6 +7,7 @@ import type { BacktestRunRecord, SimulatedTrade, EquityPoint } from '../types';
 import { chunk } from '../utils/concurrencyPool';
 import { DEFAULT_PERSIST_CHUNK_SIZE } from './metricsPersistence';
 import { logger as baseLogger } from '../utils/logger';
+import { syncStrategyBacktest, syncBacktestSummaryRow } from './canonicalPersistence';
 
 function toMysqlDatetime(value: string | Date | null | undefined): string | null {
   if (value == null) return null;
@@ -82,6 +83,9 @@ export async function saveBacktestRun(
     ));
     log.debug('equity_batch_persisted', { rows: batch.length });
   }
+
+  await syncStrategyBacktest(run);
+  await syncBacktestSummaryRow(run.runId, run.summary, run.signalCount, run.tradeCount);
 }
 
 /** Load a backtest run summary (without full trade list) */

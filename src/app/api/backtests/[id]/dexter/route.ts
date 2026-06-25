@@ -77,7 +77,11 @@ function buildCalibrationWarnings(calibration: CalibrationBucketResult[]): Dexte
   return warnings;
 }
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(
+  req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/dexter`;
   try {
     await ensureBacktestTables();

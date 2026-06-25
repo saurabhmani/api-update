@@ -27,6 +27,7 @@ import {
   ChevronLeft, RefreshCw, FileText, AlertTriangle, Activity,
   CheckCircle2, Clock, Shield, Database, Target,
 } from 'lucide-react';
+import { toIstCalendarDate } from '@/lib/marketData/marketHours';
 
 // Mirrors src/lib/signals/dailySignalReport.ts. Duplicated structurally
 // here so the page doesn't pull server-side modules into the client
@@ -105,6 +106,8 @@ interface DailySignalReport {
     status:                'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA';
     notes:                 string[];
   };
+  marketMovers?:             MarketMoverRow[];
+  marketMoversStatus?:       'COMPLETE' | 'INSUFFICIENT_DATA';
   missedOpportunities:       MissedItem[];
   missedOpportunitiesStatus: 'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA';
   sectorPerformance: {
@@ -172,6 +175,13 @@ interface MissedItem {
   suggestedReview:     string;
   learningPriority:    'LOW' | 'MEDIUM' | 'HIGH';
 }
+interface MarketMoverRow {
+  symbol:      string;
+  movePercent: number;
+  direction:   'UP' | 'DOWN';
+  volume:      number | null;
+  date:        string;
+}
 interface SectorRow {
   sector:           string;
   totalSignals:     number;
@@ -211,7 +221,16 @@ interface ApiEnvelope {
   warnings?:    string[];
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => toIstCalendarDate(new Date());
+
+/** Known platform gaps — not feed defects; shown separately from operational warnings. */
+const PLATFORM_LIMITATION_RE =
+  /per-signal price history|intraday MFE\/MAE|time-to-target unavailable|awaiting post-signal|expected platform analytics gap/i;
+
+const partitionReportWarnings = (warnings: string[]) => ({
+  platformLimitations: warnings.filter((w) => PLATFORM_LIMITATION_RE.test(w)),
+  operationalWarnings: warnings.filter((w) => !PLATFORM_LIMITATION_RE.test(w)),
+});
 
 const statusBadge = (status: DailyReportStatus): { bg: string; color: string; border: string; label: string } => {
   switch (status) {
@@ -369,6 +388,7 @@ export default function DailySignalReportPage() {
   const report = data?.report ?? null;
   const reportStatus = report?.reportStatus ?? 'INSUFFICIENT_DATA';
   const dataStatus   = report?.dataStatus ?? 'INSUFFICIENT_DATA';
+  const { platformLimitations, operationalWarnings } = partitionReportWarnings(data?.warnings ?? []);
 
   return (
     <AppShell title="Daily Signal Intelligence Report">
@@ -454,10 +474,20 @@ export default function DailySignalReportPage() {
               {error}
             </div>
           )}
-          {data?.warnings && data.warnings.length > 0 && (
+          {operationalWarnings.length > 0 && (
             <ul style={{ marginTop: 10, marginBottom: 0, paddingLeft: 18, color: '#92400E', fontSize: 11.5, lineHeight: 1.5 }}>
-              {data.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              {operationalWarnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
+          )}
+          {platformLimitations.length > 0 && (
+            <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 8, background: '#F8FAFC', border: '1px solid #E2E8F0' }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: '#64748B', marginBottom: 6 }}>
+                PLATFORM ANALYTICS GAP (EXPECTED — NOT A DATA DEFECT)
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: '#475569', fontSize: 11.5, lineHeight: 1.5 }}>
+                {platformLimitations.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
           )}
         </Card>
 
@@ -554,6 +584,19 @@ export default function DailySignalReportPage() {
             </>
           ) : (
             <EmptySection message="Indicator outcome data is not available yet." />
+          )}
+        </Card>
+
+        {/* ── Market Movers ────────────────────────────────────── */}
+        <Card style={{ marginBottom: 16 }}>
+          <SectionHeader title="Market Movers" status={report?.marketMoversStatus} />
+          {report && report.marketMovers && report.marketMovers.length > 0 ? (
+            <>
+              <MarketMoversTable title="Top Gainers" rows={report.marketMovers.filter((m) => m.direction === 'UP')} accent="#15803D" />
+              <MarketMoversTable title="Top Losers" rows={report.marketMovers.filter((m) => m.direction === 'DOWN')} accent="#B91C1C" />
+            </>
+          ) : (
+            <EmptySection message="EOD market movers are not available for this date yet." />
           )}
         </Card>
 
@@ -945,6 +988,41 @@ function SummaryList({ title, items, icon }: {
       ) : (
         <div style={{ fontSize: 11, color: '#94A3B8' }}>—</div>
       )}
+    </div>
+  );
+}
+
+function MarketMoversTable({ title, rows, accent }: {
+  title: string; rows: MarketMoverRow[]; accent: string;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: accent, letterSpacing: 0.4, marginBottom: 6 }}>
+        {title.toUpperCase()}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: '#F8FAFC' }}>
+            <th style={th}>Symbol</th>
+            <th style={th}>Move</th>
+            <th style={th}>Volume</th>
+            <th style={th}>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m, i) => (
+            <tr key={i} style={{ borderTop: '1px solid #F1F5F9' }}>
+              <td style={td}><strong>{m.symbol}</strong></td>
+              <td style={{ ...td, color: accent }}>
+                {m.movePercent.toFixed(2)}%
+              </td>
+              <td style={td}>{m.volume != null ? m.volume.toLocaleString() : '—'}</td>
+              <td style={{ ...td, color: '#475569' }}>{m.date}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

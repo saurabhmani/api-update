@@ -356,7 +356,7 @@ function rowToSnapshot(r: any): ManipulationSnapshot {
   const triggered = parseJson(r.triggered_events_json) ?? [];
   // Re-derive labels on read so old rows work without a schema change.
   // Lazy require to avoid a cycle with scoring/.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line
   const { deriveRiskLabels } = require('../scoring/riskLabels');
   return {
     symbol: r.symbol,

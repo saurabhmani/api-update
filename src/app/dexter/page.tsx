@@ -106,11 +106,6 @@ export default function DexterPage() {
 
   // Auto-refresh when new signals arrive via SSE
   const { lastEvent, connected } = useEventStream();
-  useEffect(() => {
-    if (lastEvent?.type === 'dexter:update' || lastEvent?.type === 'signal:new') {
-      load(false);
-    }
-  }, [lastEvent]);
 
   const load = useCallback(async (spinner = true) => {
     if (spinner) setLoading(true);
@@ -124,6 +119,12 @@ export default function DexterPage() {
   }, [filter]);
 
   useEffect(() => { load(); }, [filter, load]);
+
+  useEffect(() => {
+    if (lastEvent?.type === 'dexter:update' || lastEvent?.type === 'signal:new') {
+      load(false);
+    }
+  }, [lastEvent, load]);
 
   // Auto-refresh every 30 seconds as a polling fallback
   // (SSE events may not cross process boundaries on the server)

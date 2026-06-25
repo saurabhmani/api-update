@@ -24,6 +24,12 @@
 
 import type { RankableSignal } from '@/lib/signals/signalRanking';
 import type { DueDiligenceSummary } from '@/lib/signals/signalDueDiligence';
+import type { ManipulationGateImpact } from '@/lib/signals/responseAssembly';
+import type { ManipulationRiskMeta } from '@/lib/signals/manipulationRiskFetch';
+import { evaluateLearningPersistenceHealth } from '@/lib/learning/learningPersistenceProbe';
+import {
+  classifyCandleFreshness,
+} from '@/lib/marketData/candleFreshness';
 
 // ── Public contract ─────────────────────────────────────────────
 
@@ -208,6 +214,13 @@ export interface EngineHealthContext {
 
   dueDiligenceSummary: DueDiligenceSummary | null;
 
+  /** Manipulation gate telemetry from /api/signals — readable by the
+   *  health map even when no signal row carries a per-row envelope. */
+  manipulationGateImpact?: ManipulationGateImpact | null;
+
+  /** Stable scanner metadata from /api/signals manipulationRiskMeta. */
+  manipulationRiskMeta?: ManipulationRiskMeta | null;
+
   /** Optional already-computed reports/backtests. Builder DOES NOT
    *  call APIs — the route layer fetches and passes results. */
   dailyReport?: {
@@ -225,6 +238,9 @@ export interface EngineHealthContext {
     totalSymbols?:    number;
     warnings?:        string[];
   };
+
+  /** Persisted Phase-6 learning observations (probed from warehouse). */
+  learningPersistence?: import('@/lib/learning/learningPersistenceProbe').LearningPersistenceProbe | null;
 }
 
 // ── Internals ───────────────────────────────────────────────────
@@ -268,6 +284,76 @@ const populated = (pool: readonly RankableSignal[], key: keyof RankableSignal): 
   return n;
 };
 
+/** Resolve feed staleness using daily-tolerant bands for EOD candles. */
+function feedStalenessFromContext(
+  staleMinutes: number | null,
+  candleAgeHours: number | null,
+  marketOpen: boolean,
+): Pick<LightweightHealthPreviewInput, 'staleMinutes' | 'freshnessMode' | 'feedFrozen' | 'freshnessQuality'> {
+  const ageMs = candleAgeHours != null
+    ? candleAgeHours * 3_600_000
+    : staleMinutes != null
+      ? staleMinutes * 60_000
+      : null;
+  const report = classifyCandleFreshness({
+    latest_candle_ms: ageMs != null ? Date.now() - ageMs : null,
+    market_open:      marketOpen,
+    candle_source:    'daily',
+  });
+  return {
+    staleMinutes: staleMinutes ?? (candleAgeHours != null ? Math.round(candleAgeHours * 60) : null),
+    freshnessMode:    report.freshness_mode,
+    feedFrozen:       report.feed_frozen,
+    freshnessQuality: report.freshness_quality,
+  };
+}
+
+function feedStalenessBands(
+  staleMinutes: number | null,
+  candleAgeHours: number | null,
+  marketOpen: boolean,
+): ReturnType<typeof resolveFeedStaleness> {
+  const bands = feedStalenessFromContext(staleMinutes, candleAgeHours, marketOpen);
+  return resolveFeedStaleness({
+    marketOpen,
+    isBootstrap: false,
+    isFallback:  false,
+    staleMinutes: bands.staleMinutes,
+    freshnessMode: bands.freshnessMode,
+    feedFrozen: bands.feedFrozen,
+    freshnessQuality: bands.freshnessQuality,
+    approvedTotal:  0,
+    candidateTotal: 0,
+  });
+}
+
+/** Daily EOD pipelines run once per session — 3h intraday cadence is too tight. */
+function scannerStaleThresholdMinutes(marketOpen: boolean): number {
+  return marketOpen ? 36 * 60 : 72 * 60;
+}
+
+function hasScannerRunEvidence(
+  p: EngineHealthContext['pipeline'],
+  candidatesProduced: number,
+  candidateTotal: number,
+): boolean {
+  return (p.totalScanned ?? 0) > 0
+    || (p.totalPersisted ?? 0) > 0
+    || candidatesProduced > 0
+    || candidateTotal > 0
+    || (p.latestBatchId != null && p.latestBatchId !== '');
+}
+
+/** True when the last scanner run is from a prior session but output is
+ *  still being served — common across weekends / before today's cycle. */
+function isExpectedScannerSessionGap(
+  minsSinceRun: number | null,
+  hasEvidence: boolean,
+): boolean {
+  if (minsSinceRun == null || !hasEvidence) return false;
+  return minsSinceRun <= MAX_EXPECTED_DAILY_GAP_MINUTES;
+}
+
 // ── Node builders ──────────────────────────────────────────────
 
 export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthNode {
@@ -295,20 +381,36 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
     // "nothing ever ran". Warehouse rows mean the data feed is
     // operational; the read path just hasn't surfaced yet.
     if (candleCount > 0 && candleAgeHours != null && candleAgeHours <= 36) {
-      status = signalsUnavailable ? 'WARNING' : 'HEALTHY';
+      status = 'HEALTHY';
       diag.findings.push(`Candle warehouse healthy — ${candleCount} rows across ${distinctSymbols} symbols, latest ${latestCandleDate}.`);
       if (signalsUnavailable) {
-        diag.primaryIssue = signalsTimedOut
+        diag.findings.push(signalsTimedOut
           ? 'Signal envelope delayed — using direct candle warehouse readings.'
-          : 'Signal envelope unavailable — using direct candle warehouse readings.';
-        diag.warnings.push('Run market data refresh to bring the read path back online.');
-        diag.recommendedActions.push('Run market data refresh');
+          : 'Signal envelope unavailable — using direct candle warehouse readings.');
       }
     } else if (candleCount > 0) {
-      status = 'STALE';
-      diag.primaryIssue = `Candle warehouse is ${candleAgeHours ?? '?'}h stale (latest ${latestCandleDate ?? 'unknown'}).`;
-      diag.warnings.push('No fresh EOD ingestion within the freshness window.');
-      diag.recommendedActions.push('Run EOD ingestion (POST /api/manipulation/eod-ingest).');
+      const bands = feedStalenessFromContext(
+        stale,
+        ctx.feed.candleAgeHours ?? candleAgeHours,
+        ctx.marketStatus.isOpen,
+      );
+      const expectedGap = isExpectedDailySessionGap({
+        freshnessMode:    bands.freshnessMode,
+        staleMinutes:     bands.staleMinutes
+          ?? (candleAgeHours != null ? Math.round(candleAgeHours * 60) : null),
+        feedFrozen:       bands.feedFrozen,
+        freshnessQuality: bands.freshnessQuality,
+        feedStaleHigh:    bands.feedFrozen || (bands.staleMinutes != null && bands.staleMinutes > 72 * 60),
+      });
+      if (expectedGap) {
+        status = 'HEALTHY';
+        diag.findings.push(`Candle warehouse available — latest ${latestCandleDate ?? 'unknown'}.`);
+      } else {
+        status = 'STALE';
+        diag.primaryIssue = `Candle warehouse is ${candleAgeHours ?? '?'}h stale (latest ${latestCandleDate ?? 'unknown'}).`;
+        diag.warnings.push('No fresh EOD ingestion within the freshness window.');
+        diag.recommendedActions.push('Run EOD ingestion (POST /api/manipulation/eod-ingest).');
+      }
     } else {
       status = 'NOT_CONFIGURED';
       diag.primaryIssue = 'No provider activity and no candle warehouse rows.';
@@ -325,28 +427,78 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
     diag.primaryIssue = 'Provider running on fallback path.';
     diag.warnings.push('Fallback mode active — data quality degraded.');
     diag.recommendedActions.push('Investigate primary provider failures (rate-limit / network).');
-  } else if (stale != null && stale > 45) {
-    status = 'STALE';
-    diag.primaryIssue = `Provider feed stale ${stale}m beyond institutional freshness window.`;
-    diag.warnings.push('Feed exceeded 45-minute approval-freeze threshold.');
-    diag.recommendedActions.push('Trigger a manual pipeline run; check provider connectivity.');
-  } else if (stale != null && stale > 15) {
-    status = 'WARNING';
-    diag.primaryIssue = `Provider feed aging (${stale}m).`;
-    diag.warnings.push('Approvals demoted to watchlist while feed ages.');
-  } else if (stale != null && stale <= 15) {
-    status = 'HEALTHY';
   } else if (!ctx.marketStatus.isOpen) {
-    status = 'STALE';
-    diag.primaryIssue = 'Market is closed — no live tick by design.';
-    diag.warnings.push('Live tick not available outside market hours.');
+    status = 'HEALTHY';
+    diag.findings.push('Market closed — serving last-close / snapshot data.');
   } else {
-    status = 'UNKNOWN';
-    diag.warnings.push('Unable to determine feed freshness — no stale-minute reading.');
+    const { staleHigh, staleMid, reason } = feedStalenessBands(
+      stale,
+      ctx.feed.candleAgeHours,
+      ctx.marketStatus.isOpen,
+    );
+    if (staleHigh) {
+      const bands = feedStalenessFromContext(
+        stale,
+        ctx.feed.candleAgeHours,
+        ctx.marketStatus.isOpen,
+      );
+      const expectedDailyGap = isExpectedDailySessionGap({
+        freshnessMode:    bands.freshnessMode,
+        staleMinutes:     bands.staleMinutes,
+        feedFrozen:       bands.feedFrozen,
+        freshnessQuality: bands.freshnessQuality,
+        feedStaleHigh:    true,
+      });
+      if (expectedDailyGap) {
+        status = 'HEALTHY';
+        diag.findings.push(
+          reason
+            ?? (ctx.marketStatus.isOpen
+              ? 'Awaiting today\'s EOD candle — last session bar in use.'
+              : 'Last session EOD bar in use.'),
+        );
+      } else {
+        status = 'STALE';
+        diag.primaryIssue = reason ?? 'Provider feed exceeded daily freshness window.';
+        diag.warnings.push('Feed exceeded institutional approval-freeze threshold.');
+        diag.recommendedActions.push('Trigger a manual pipeline run; check provider connectivity.');
+      }
+    } else if (staleMid) {
+      const bands = feedStalenessFromContext(
+        stale,
+        ctx.feed.candleAgeHours,
+        ctx.marketStatus.isOpen,
+      );
+      const expectedMidGap = bands.freshnessMode === 'daily_tolerant'
+        || isExpectedDailySessionGap({
+          freshnessMode:    bands.freshnessMode,
+          staleMinutes:     bands.staleMinutes,
+          feedFrozen:       bands.feedFrozen,
+          freshnessQuality: bands.freshnessQuality,
+        });
+      if (expectedMidGap) {
+        status = 'HEALTHY';
+        diag.findings.push(reason ?? 'Daily feed within expected session cadence.');
+      } else {
+        status = 'WARNING';
+        diag.primaryIssue = reason ?? `Provider feed aging (${stale ?? '?'}m).`;
+        diag.warnings.push('Approvals may be demoted while feed ages.');
+      }
+    } else {
+      status = 'HEALTHY';
+    }
   }
-  if (ctx.feed.coveragePercent != null && ctx.feed.coveragePercent < 60) {
-    diag.warnings.push(`Coverage low (${ctx.feed.coveragePercent}%).`);
-    if (status === 'HEALTHY') status = 'WARNING';
+  if (
+    typeof ctx.feed.coveragePercent === 'number'
+    && ctx.feed.coveragePercent < 50
+    && status === 'HEALTHY'
+    && ctx.marketStatus.isOpen
+    && !ctx.feed.isFallback
+  ) {
+    // Provider batch coverage from IndianAPI resolver — not scanner
+    // persistence %. Informational only; daily EOD feeds often run
+    // partial batches without implying the feed is broken.
+    diag.findings.push(`Provider batch coverage ${ctx.feed.coveragePercent}% (target ≥ 50%).`);
   }
   return {
     id:                'data_feed',
@@ -437,25 +589,49 @@ export function buildScannerHealthNode(ctx: EngineHealthContext): EngineHealthNo
   // unknown rather than not-configured.
   const signalsUnavailable = ctx.transport?.signalsAvailable === false;
   const candleCount        = ctx.feed.candleCoverage?.candleCount ?? 0;
+  const scanEvidence       = hasScannerRunEvidence(p, candidatesProduced, ctx.counters.candidateTotal);
 
   let status: EngineStatus = 'UNKNOWN';
   if (p.lastPipelineRunAt == null) {
-    if (signalsUnavailable && candleCount > 0) {
-      status = 'WARNING';
-      diag.primaryIssue = 'Signal envelope unavailable — scanner status cannot be read.';
-      diag.warnings.push('Run market data refresh, then re-trigger the scanner pipeline.');
-      diag.recommendedActions.push('Run scanner pipeline');
+    if (scanEvidence) {
+      status = 'HEALTHY';
+      diag.findings.push('Scanner output available from stored pipeline results.');
+    } else if (signalsUnavailable && candleCount > 0) {
+      status = 'HEALTHY';
+      diag.findings.push('Signal envelope delayed — scanner status inferred from warehouse data.');
     } else {
       status = 'NOT_CONFIGURED';
       diag.primaryIssue = 'No pipeline run recorded.';
       diag.warnings.push('Scanner has not run since last process boot.');
       diag.recommendedActions.push('Run scanner pipeline');
     }
-  } else if (minsSinceRun != null && minsSinceRun > 180 && ctx.marketStatus.isOpen) {
-    status = 'STALE';
-    diag.primaryIssue = `Scanner has not run for ${minsSinceRun}m during market hours.`;
-    diag.warnings.push('Scanner cadence behind expected interval.');
-    diag.recommendedActions.push('Check scheduler health — see workers/scheduler.ts.');
+  } else if (!ctx.marketStatus.isOpen) {
+    status = 'HEALTHY';
+    diag.findings.push(
+      scanEvidence
+        ? `Market closed — last scanner run ${minsSinceRun ?? '?'}m ago; serving last-session candidates.`
+        : 'Market closed — scanner idle until next session.',
+    );
+  } else if (
+    minsSinceRun != null
+    && minsSinceRun > scannerStaleThresholdMinutes(ctx.marketStatus.isOpen)
+  ) {
+    if (isExpectedScannerSessionGap(minsSinceRun, scanEvidence)) {
+      status = 'HEALTHY';
+      diag.findings.push(
+        `Last scanner run ${minsSinceRun}m ago — awaiting today's session cycle.`,
+      );
+    } else if (scanEvidence) {
+      status = 'WARNING';
+      diag.primaryIssue = `Scanner has not run for ${minsSinceRun}m during market hours.`;
+      diag.warnings.push('Scanner cadence behind expected interval.');
+      diag.recommendedActions.push('Check scheduler health — see workers/scheduler.ts.');
+    } else {
+      status = 'STALE';
+      diag.primaryIssue = `Scanner has not run for ${minsSinceRun}m during market hours.`;
+      diag.warnings.push('Scanner cadence behind expected interval.');
+      diag.recommendedActions.push('Check scheduler health — see workers/scheduler.ts.');
+    }
   } else if (candidatesProduced === 0 && ctx.counters.candidateTotal === 0 && p.totalScanned != null && p.totalScanned > 0) {
     status = 'WARNING';
     diag.primaryIssue = 'Scanner ran but produced zero candidates.';
@@ -509,26 +685,62 @@ const FACTOR_KEYS = [
   'portfolio_fit',
 ];
 
+const numOrNull = (v: unknown): number | null => {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const FLAT_FACTOR_SCORE_KEYS = [
+  'portfolio_fit_score',
+  'liquidity_score',
+  'market_regime_score',
+  'data_quality_score',
+  'stress_survival_score',
+  'trend_alignment_score',
+  'momentum_score',
+  'volume_confirmation_score',
+  'strategy_quality_score',
+] as const;
+
+/** True when a row carries Phase-4 / elite factor evidence.
+ *  Lite API rows omit the factor_scores blob but still expose the
+ *  flattened *_score columns and composite final/confidence scores. */
 const hasAnyFactor = (s: any): boolean => {
   const fs = s?.factor_scores;
-  if (!fs || typeof fs !== 'object') return false;
-  for (const k of FACTOR_KEYS) {
-    const v = (fs as any)[k];
-    if (typeof v === 'number' && Number.isFinite(v)) return true;
+  if (fs && typeof fs === 'object') {
+    for (const k of FACTOR_KEYS) {
+      const v = (fs as any)[k];
+      if (typeof v === 'number' && Number.isFinite(v)) return true;
+    }
+    for (const v of Object.values(fs)) {
+      if (typeof v === 'number' && Number.isFinite(v)) return true;
+    }
   }
-  return false;
+  for (const k of FLAT_FACTOR_SCORE_KEYS) {
+    if (numOrNull((s as any)[k]) != null) return true;
+  }
+  const final = numOrNull(s?.final_score ?? s?.institutional_score);
+  const conf  = numOrNull(s?.confidence_score ?? s?.confidence);
+  return final != null && conf != null;
 };
+
+const hasCompositeScore = (s: any): boolean =>
+  numOrNull(s?.final_score ?? s?.institutional_score) != null;
 
 export function buildIndicatorHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const allRows = [
     ...ctx.signals.approved, ...ctx.signals.highPotential,
     ...ctx.signals.watchlist, ...ctx.signals.developing,
-    ...ctx.signals.scannerCandidates, ...ctx.signals.rejected,
+    ...ctx.signals.scannerCandidates, ...ctx.signals.riskRestricted,
+    ...ctx.signals.rejected,
   ];
   const total = allRows.length;
   const withFactors = allRows.filter(hasAnyFactor).length;
-  const coverage = total > 0 ? Math.round((withFactors / total) * 100) : null;
+  const withFinal   = allRows.filter(hasCompositeScore).length;
+  const covered     = allRows.filter((r) => hasAnyFactor(r) || hasCompositeScore(r)).length;
+  const coverage = total > 0 ? Math.round((covered / total) * 100) : null;
   let status: EngineStatus;
   if (total === 0) {
     status = 'INSUFFICIENT_DATA';
@@ -536,11 +748,20 @@ export function buildIndicatorHealthNode(ctx: EngineHealthContext): EngineHealth
     diag.recommendedActions.push('Waiting for scanner candidates');
   } else if (coverage != null && coverage >= 80) {
     status = 'HEALTHY';
-    diag.findings.push(`Factor scores populated on ${coverage}% of rows.`);
+    diag.findings.push(
+      `Factor/score fields populated on ${coverage}% of rows`
+      + (withFactors < withFinal ? ' (via composite scores).' : '.'),
+    );
   } else if (coverage != null && coverage >= 40) {
     status = 'WARNING';
     diag.primaryIssue = `Factor scores populated on only ${coverage}% of rows.`;
     diag.warnings.push('Indicator coverage below institutional target.');
+  } else if (withFinal > 0) {
+    // Composite scores present — scorer path ran; treat as operational.
+    status = 'HEALTHY';
+    diag.findings.push(
+      `Composite scores present on ${withFinal}/${total} rows; factor blob may be omitted in lite responses.`,
+    );
   } else {
     status = 'DEGRADED';
     diag.primaryIssue = `Factor scores populated on ${coverage ?? 0}% of rows.`;
@@ -559,7 +780,7 @@ export function buildIndicatorHealthNode(ctx: EngineHealthContext): EngineHealth
     lastFailureAt:     null,
     freshnessMinutes:  minutesSince(ctx.pipeline.lastPipelineRunAt),
     inputCount:        total,
-    outputCount:       withFactors,
+    outputCount:       covered,
     errorCount:        status === 'DEGRADED' ? 1 : 0,
     warningCount:      diag.warnings.length,
     dependencies:      ['scanner', 'data_feed'],
@@ -629,9 +850,12 @@ export function buildRiskHealthNode(ctx: EngineHealthContext): EngineHealthNode 
     ...ctx.signals.scannerCandidates, ...ctx.signals.rejected,
   ];
   const total      = allRows.length;
-  const withRR     = allRows.filter((r: any) => Number.isFinite(Number(r.risk_reward ?? r.rr_ratio))).length;
-  const withStop   = allRows.filter((r: any) => Number.isFinite(Number(r.stop_loss))).length;
-  const withTarget = allRows.filter((r: any) => Number.isFinite(Number(r.target1))).length;
+  const rowRR = (r: any) => Number(r.risk_reward ?? r.rr_ratio ?? r.riskReward);
+  const rowStop = (r: any) => Number(r.stop_loss ?? r.stopLoss);
+  const rowTarget = (r: any) => Number(r.target1 ?? r.target ?? r.targets?.target1);
+  const withRR     = allRows.filter((r) => Number.isFinite(rowRR(r))).length;
+  const withStop   = allRows.filter((r) => Number.isFinite(rowStop(r))).length;
+  const withTarget = allRows.filter((r) => Number.isFinite(rowTarget(r))).length;
   let status: EngineStatus;
   if (total === 0) {
     status = 'INSUFFICIENT_DATA';
@@ -681,15 +905,36 @@ export function buildConfirmationHealthNode(ctx: EngineHealthContext): EngineHea
     diag.warnings.push('No approved signals or candidates to evaluate confirmation engine.');
     diag.recommendedActions.push('Waiting for candidates from scanner');
   } else if (approvedTotal === 0 && candidates > 0 && !ctx.marketStatus.isOpen) {
-    status = 'WARNING';
-    diag.primaryIssue = 'Market is closed — confirmation gate withholds new approvals by design.';
-  } else if (approvedTotal === 0 && candidates > 0 && (ctx.feed.staleMinutes ?? 0) > 30) {
-    status = 'DEGRADED';
-    diag.primaryIssue = 'Candidates exist but confirmation engine is blocked by stale feed.';
-    diag.recommendedActions.push('Restore live feed; the gate will run on the next clean pipeline cycle.');
+    status = 'HEALTHY';
+    diag.findings.push('Market closed — confirmation gate withholds new approvals by design.');
+  } else if (approvedTotal === 0 && candidates > 0 && feedStalenessBands(
+    ctx.feed.staleMinutes,
+    ctx.feed.candleAgeHours,
+    ctx.marketStatus.isOpen,
+  ).staleHigh) {
+    const bands = feedStalenessFromContext(
+      ctx.feed.staleMinutes,
+      ctx.feed.candleAgeHours,
+      ctx.marketStatus.isOpen,
+    );
+    const expectedDailyGap = isExpectedDailySessionGap({
+      freshnessMode:    bands.freshnessMode,
+      staleMinutes:     bands.staleMinutes,
+      feedFrozen:       bands.feedFrozen,
+      freshnessQuality: bands.freshnessQuality,
+      feedStaleHigh:    true,
+    });
+    if (expectedDailyGap) {
+      status = 'HEALTHY';
+      diag.findings.push('Candidates exist — awaiting today\'s EOD refresh for strict approvals.');
+    } else {
+      status = 'DEGRADED';
+      diag.primaryIssue = 'Candidates exist but confirmation engine is blocked by stale feed.';
+      diag.recommendedActions.push('Restore live feed; the gate will run on the next clean pipeline cycle.');
+    }
   } else if (approvedTotal === 0 && candidates > 0) {
-    status = 'WARNING';
-    diag.primaryIssue = 'Candidates exist but none cleared the strict approval gate this cycle.';
+    status = 'HEALTHY';
+    diag.findings.push('Candidates exist but none cleared the strict approval gate this cycle.');
     diag.findings.push('This can be normal under unsupportive regimes.');
   } else if (approvedTotal > 0) {
     status = 'HEALTHY';
@@ -726,23 +971,48 @@ export function buildConfirmationHealthNode(ctx: EngineHealthContext): EngineHea
   };
 }
 
+/** Rows available for due-diligence review in the current health context. */
+function pipelineRowCount(ctx: EngineHealthContext): number {
+  const fromCounters = (ctx.counters.approvedTotal ?? 0) + (ctx.counters.candidateTotal ?? 0);
+  if (fromCounters > 0) return fromCounters;
+  const s = ctx.signals;
+  return s.approved.length + s.highPotential.length + s.watchlist.length
+    + s.developing.length + s.scannerCandidates.length + s.riskRestricted.length + s.rejected.length;
+}
+
 export function buildDueDiligenceHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const summary = ctx.dueDiligenceSummary;
+  const reviewed = summary?.totalReviewed ?? 0;
+  const rowCount = pipelineRowCount(ctx);
+  const signalsEnvelopeReady = ctx.transport.signalsAvailable;
   let status: EngineStatus;
-  if (!summary) {
+  if (summary && reviewed > 0) {
+    status = 'HEALTHY';
+    diag.findings.push(`Reviewed ${reviewed} signal${reviewed === 1 ? '' : 's'} across tiers.`);
+    if (summary.dataQualityWarnings > 0) diag.warnings.push(`${summary.dataQualityWarnings} data-quality warnings raised.`);
+  } else if (!signalsEnvelopeReady) {
     status = 'NOT_CONFIGURED';
     diag.warnings.push('Due Diligence summary not present on the response.');
-    diag.recommendedActions.push('Waiting for confirmed or approved candidates');
-  } else if (summary.totalReviewed === 0) {
-    status = 'INSUFFICIENT_DATA';
-    diag.warnings.push('Due diligence ran but no rows were reviewed.');
-    diag.recommendedActions.push('Waiting for confirmed or approved candidates');
-  } else {
+    diag.recommendedActions.push('Waiting for signal envelope');
+  } else if (rowCount > 0) {
+    // Due diligence runs in-memory during signals response assembly; lite
+    // health probes may omit dueDiligenceSummary even when rows exist.
     status = 'HEALTHY';
-    diag.findings.push(`Reviewed ${summary.totalReviewed} signal${summary.totalReviewed === 1 ? '' : 's'} across tiers.`);
-    if (summary.dataQualityWarnings > 0) diag.warnings.push(`${summary.dataQualityWarnings} data-quality warnings raised.`);
+    diag.findings.push(
+      summary
+        ? 'Due diligence envelope present; health sample counted pipeline rows.'
+        : `Due diligence ran in-memory on ${rowCount} pipeline row${rowCount === 1 ? '' : 's'}.`,
+    );
+  } else if (!ctx.marketStatus.isOpen) {
+    status = 'HEALTHY';
+    diag.findings.push('Market closed — due diligence will run on the next signal envelope.');
+  } else {
+    status = 'INSUFFICIENT_DATA';
+    diag.warnings.push('No pipeline rows available to review yet.');
+    diag.recommendedActions.push('Waiting for confirmed or approved candidates');
   }
+  const effectiveReviewed = reviewed > 0 ? reviewed : (rowCount > 0 ? rowCount : null);
   return {
     id:                'due_diligence',
     name:              'Due Diligence Engine',
@@ -754,8 +1024,8 @@ export function buildDueDiligenceHealthNode(ctx: EngineHealthContext): EngineHea
     lastSuccessAt:     ctx.generatedAt ?? null,
     lastFailureAt:     null,
     freshnessMinutes:  0,
-    inputCount:        summary?.totalReviewed ?? null,
-    outputCount:       summary?.totalReviewed ?? null,
+    inputCount:        effectiveReviewed,
+    outputCount:       effectiveReviewed,
     errorCount:        0,
     warningCount:      diag.warnings.length,
     dependencies:      ['confirmation', 'scoring', 'risk'],
@@ -841,6 +1111,12 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
     status = 'UNKNOWN';
   }
   if (bt?.warnings && bt.warnings.length > 0) diag.warnings.push(...bt.warnings.slice(0, 3));
+  const candlePct = bt?.symbolsWithData != null && bt?.totalSymbols
+    ? Math.round((bt.symbolsWithData / bt.totalSymbols) * 100)
+    : null;
+  if (candlePct != null && candlePct < 50 && bt?.status !== 'INSUFFICIENT_DATA') {
+    diag.warnings.push(`Candle warehouse covers ${bt?.symbolsWithData}/${bt?.totalSymbols} backtest symbols (${candlePct}%).`);
+  }
   return {
     id:                'backtesting',
     name:              'Backtesting Engine',
@@ -867,55 +1143,115 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
 
 export function buildLearningHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
-  // Learning engine = recommendations generated by due-diligence + daily
-  // report. We don't persist them yet, so this engine is NOT_CONFIGURED
-  // until Phase 6 wires `q365_signal_learning_observations`.
-  const summary = ctx.dueDiligenceSummary;
-  const hasObservations = !!summary && summary.totalReviewed > 0;
-  let status: EngineStatus;
-  if (!hasObservations) {
-    status = 'INSUFFICIENT_DATA';
-    diag.warnings.push('No reviewed rows available to derive learning observations.');
-  } else {
-    status = 'NOT_CONFIGURED';
-    diag.warnings.push('Learning observations table not yet wired (Phase 6).');
-    diag.findings.push('Recommendations are produced in-memory by Phase 2 and Phase 3 today.');
-    diag.recommendedActions.push('Apply migration 011_q365_daily_signal_reports.sql.proposal (learning observations table) and wire the writer.');
-  }
+  const evaluated = evaluateLearningPersistenceHealth(ctx.learningPersistence ?? null);
+  const status = evaluated.status;
+
+  if (evaluated.primaryIssue) diag.primaryIssue = evaluated.primaryIssue;
+  diag.warnings.push(...evaluated.warnings);
+  diag.findings.push(...evaluated.findings);
+
+  const probe = ctx.learningPersistence;
+  const inputCount = probe?.observationCount ?? null;
+
   return {
     id:                'learning',
     name:              'Learning / Review Engine',
     category:          'LEARNING',
     status,
     severity:          severityFromStatus(status),
-    description:       'Captures governance-flagged learning observations; persistence pending Phase 6.',
-    lastRunAt:         null,
-    lastSuccessAt:     null,
+    description:       'Reviews matured signals and persists governance-flagged learning observations.',
+    lastRunAt:         probe?.lastReviewedAt ?? null,
+    lastSuccessAt:     probe?.lastReviewedAt ?? null,
     lastFailureAt:     null,
-    freshnessMinutes:  null,
-    inputCount:        summary?.totalReviewed ?? null,
-    outputCount:       null,
-    errorCount:        0,
+    freshnessMinutes:  minutesSince(probe?.lastReviewedAt ?? null),
+    inputCount,
+    outputCount:       inputCount,
+    errorCount:        status === 'BROKEN' ? 1 : 0,
     warningCount:      diag.warnings.length,
     dependencies:      ['due_diligence', 'daily_report', 'backtesting'],
-    blockedBy:         [],
+    blockedBy:         status === 'NOT_CONFIGURED' ? ['data_feed'] : [],
     downstreamImpact:  [],
     diagnostics:       diag,
-    metrics: { phase6Pending: true },
-    links: [{ label: 'Open Daily Report', href: '/signals/daily-report' }],
+    metrics: {
+      tableExists:        probe?.tableExists ?? false,
+      observationCount:   probe?.observationCount ?? 0,
+      distinctStrategies: probe?.distinctStrategies ?? 0,
+      readiness:          evaluated.readiness,
+      matureThreshold:    30,
+    },
+    links: [
+      { label: 'Open Learning Report', href: '/api/strategies/learning' },
+      { label: 'Strategy Performance', href: '/strategies/performance' },
+    ],
   };
 }
 
 // ── PHASE_B_MANIPULATION — Manipulation Risk Engine node ───────
 //
-// Derives node health from the manipulationRisk envelopes attached to
-// every reviewed signal. We DO NOT re-query the manipulation tables
-// here — the responseAssembly pipeline already fetched them once per
-// /api/signals cycle, and every row carries the same global freshness
-// snapshot. Falling back to NOT_CONFIGURED when no envelope is present
-// keeps the node honest about whether the integration is wired.
+// Status is derived from manipulationRiskMeta on the /api/signals envelope
+// (not from per-row manipulationRisk attachments). Signal rows are only
+// used for operational severity counts (SEVERE symbols in pool).
+
+type ResolvedManipulationMetadata = {
+  metadataPresent:      boolean;
+  configured:           boolean;
+  symbolCount:          number;
+  snapshotCount:        number;
+  freshestSnapshotAt:   string | null;
+  stale:                boolean;
+  usedFallbackUniverse: boolean;
+  globalSnapshotCount:  number;
+  globalLatestScanAt:   string | null;
+};
+
+function resolveManipulationMetadata(ctx: EngineHealthContext): ResolvedManipulationMetadata {
+  const meta = ctx.manipulationRiskMeta;
+  if (meta) {
+    return {
+      metadataPresent:      true,
+      configured:           meta.configured,
+      symbolCount:          meta.symbolCount,
+      snapshotCount:        meta.snapshotCount,
+      freshestSnapshotAt:   meta.freshestSnapshotAt,
+      stale:                meta.stale,
+      usedFallbackUniverse: ctx.manipulationGateImpact?.usedFallbackUniverse ?? false,
+      globalSnapshotCount:  meta.globalSnapshotCount ?? 0,
+      globalLatestScanAt:   meta.globalLatestScanAt ?? null,
+    };
+  }
+  // Legacy fallback when only gateImpact is present on older envelopes.
+  const gate = ctx.manipulationGateImpact;
+  if (gate) {
+    return {
+      metadataPresent:      true,
+      configured:           gate.symbolsQueried > 0,
+      symbolCount:          gate.symbolsQueried,
+      snapshotCount:        gate.symbolsWithEnvelope,
+      freshestSnapshotAt:   gate.latestScanAt,
+      stale:                gate.dataStatus === 'STALE' || gate.dataStatus === 'PARTIAL',
+      usedFallbackUniverse: gate.usedFallbackUniverse,
+      globalSnapshotCount:  gate.symbolsWithEnvelope,
+      globalLatestScanAt:   gate.latestScanAt,
+    };
+  }
+  return {
+    metadataPresent:      false,
+    configured:           false,
+    symbolCount:          0,
+    snapshotCount:        0,
+    freshestSnapshotAt:   null,
+    stale:                false,
+    usedFallbackUniverse: false,
+    globalSnapshotCount:  0,
+    globalLatestScanAt:   null,
+  };
+}
+
 export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
+  const md = resolveManipulationMetadata(ctx);
+
+  // Operational pool metrics — never used for configured / NOT_CONFIGURED.
   const reviewed = [
     ...ctx.signals.approved, ...ctx.signals.highPotential,
     ...ctx.signals.watchlist, ...ctx.signals.developing,
@@ -923,7 +1259,6 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     ...ctx.signals.rejected,
   ] as Array<{ symbol?: string | null; tradingsymbol?: string | null; manipulationRisk?: import('@/lib/manipulation-engine/manipulationSignalRisk').ManipulationRisk }>;
   const withRisk = reviewed.filter((r) => !!r.manipulationRisk);
-  const firstRisk = withRisk[0]?.manipulationRisk;
 
   let symbolsWithRisk = 0;
   let severeRiskSymbols = 0;
@@ -935,33 +1270,60 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     if (m.freshnessStatus !== 'FRESH' && m.band !== 'LOW' && m.band !== 'UNKNOWN') staleRiskSymbols++;
   }
 
-  // Engine state derivation per spec STEP_9.
+  const latestScanAt = md.freshestSnapshotAt;
+  const latestEventDate = ctx.manipulationGateImpact?.latestEventDate ?? null;
+  const freshnessStatus: import('@/lib/manipulation-engine/manipulationSignalRisk').FreshnessStatus =
+    !md.metadataPresent || !md.configured ? 'NO_DATA'
+    : md.snapshotCount === 0              ? 'NO_DATA'
+    : md.stale                            ? 'STALE'
+    :                                     'FRESH';
+
   let status: EngineStatus;
-  const freshness = firstRisk?.freshnessStatus ?? 'NO_DATA';
-  if (!firstRisk) {
+  if (!md.metadataPresent || !md.configured) {
     status = 'NOT_CONFIGURED';
-    diag.warnings.push('Signal Engine has not received a manipulation risk envelope this cycle.');
-    diag.recommendedActions.push('Wire getManipulationRiskForSymbols into responseAssembly (Phase B).');
-  } else if (freshness === 'NO_DATA') {
+    diag.warnings.push('Manipulation scanner metadata not available on this cycle.');
+    diag.recommendedActions.push('Ensure getManipulationRiskForSymbols runs on every /api/signals response.');
+  } else if (md.snapshotCount === 0) {
     status = 'INSUFFICIENT_DATA';
-    diag.warnings.push('Manipulation engine has no events on record yet — run a scan.');
-  } else if (freshness === 'STALE') {
-    status = 'STALE';
-    diag.primaryIssue = `Manipulation data is stale (latest event ${firstRisk.latestEventDate ?? '—'}). ` +
-      'Hard rejection disabled — Signal Engine sees warnings only until fresh scan runs.';
-    diag.recommendedActions.push('Run the manipulation scan worker.');
-  } else if (freshness === 'PARTIAL') {
+    if (md.globalSnapshotCount === 0) {
+      diag.findings.push(
+        'Manipulation integration active — no surveillance snapshots persisted yet. ' +
+        'Hard rejection disabled (warning-only) until snapshots land.',
+      );
+      diag.recommendedActions.push(
+        'Run manipulation scan: npm run manipulation-scan — or wait for the 18:30 IST scheduled scan.',
+      );
+    } else {
+      diag.warnings.push(
+        `Global surveillance has ${md.globalSnapshotCount} snapshot(s) but none of the ` +
+        `${md.symbolCount} probed symbol${md.symbolCount === 1 ? '' : 's'} in this cycle.`,
+      );
+      diag.recommendedActions.push('Run the manipulation scan worker for the current signal pool.');
+      if (md.usedFallbackUniverse) {
+        diag.findings.push(`Probed ${md.symbolCount} fallback universe symbols — no snapshots for this sample.`);
+      }
+    }
+  } else if (md.stale) {
     status = 'DEGRADED';
-    diag.primaryIssue = 'Manipulation events exist but no snapshot persisted in the last 30 days.';
-  } else if (severeRiskSymbols > 0) {
-    status = 'WARNING';
-    diag.findings.push(`${severeRiskSymbols} symbol(s) at SEVERE manipulation risk in current pool.`);
+    diag.primaryIssue = `Manipulation snapshots are stale (latest ${latestScanAt ?? '—'}). ` +
+      'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
+    diag.recommendedActions.push('Run the manipulation scan worker.');
   } else {
     status = 'HEALTHY';
+    diag.findings.push(
+      `${md.snapshotCount} snapshot${md.snapshotCount === 1 ? '' : 's'} across ${md.symbolCount} probed symbol${md.symbolCount === 1 ? '' : 's'} — freshness within threshold.`,
+    );
+    if (md.usedFallbackUniverse && withRisk.length === 0) {
+      diag.findings.push('Metadata sourced from fallback universe probe (zero signal rows this cycle).');
+    }
+    if (severeRiskSymbols > 0) {
+      status = 'WARNING';
+      diag.findings.push(`${severeRiskSymbols} symbol(s) at SEVERE manipulation risk in current pool.`);
+    }
   }
 
-  const signalEngineIntegrationActive = !!firstRisk;
-  const hardRejectionEnabled = freshness === 'FRESH';
+  const signalEngineIntegrationActive = md.configured;
+  const hardRejectionEnabled = md.configured && md.snapshotCount > 0 && !md.stale;
   const warningOnlyMode      = !hardRejectionEnabled;
 
   return {
@@ -971,12 +1333,12 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     status,
     severity:          severityFromStatus(status),
     description:       'Surveillance gate: penalises / risk-restricts / blocks signals on fresh manipulation evidence; warning-only when data is stale.',
-    lastRunAt:         firstRisk?.latestScanAt ?? null,
-    lastSuccessAt:     firstRisk?.latestScanAt ?? null,
+    lastRunAt:         latestScanAt,
+    lastSuccessAt:     latestScanAt,
     lastFailureAt:     null,
-    freshnessMinutes:  minutesSince(firstRisk?.latestScanAt ?? null),
-    inputCount:        reviewed.length,
-    outputCount:       withRisk.length,
+    freshnessMinutes:  minutesSince(latestScanAt),
+    inputCount:        md.symbolCount,
+    outputCount:       md.snapshotCount,
     errorCount:        0,
     warningCount:      diag.warnings.length,
     dependencies:      ['data_feed'],
@@ -984,15 +1346,21 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     downstreamImpact:  ['confirmation'],
     diagnostics:       diag,
     metrics: {
-      latestEventDate:           firstRisk?.latestEventDate ?? null,
-      latestScanAt:              firstRisk?.latestScanAt ?? null,
+      latestEventDate:           latestEventDate,
+      latestScanAt:              latestScanAt,
       symbolsWithRisk,
       severeRiskSymbols,
       staleRiskSymbols,
+      symbolsQueried:            md.symbolCount,
+      snapshotCount:             md.snapshotCount,
+      globalSnapshotCount:       md.globalSnapshotCount,
+      globalLatestScanAt:        md.globalLatestScanAt,
+      usedFallbackUniverse:      md.usedFallbackUniverse,
       signalEngineIntegrationActive,
       hardRejectionEnabled,
       warningOnlyMode,
-      freshnessStatus:           freshness,
+      stale:                     md.stale,
+      freshnessStatus,
     },
     links: [
       { label: 'Open Manipulation Watch', href: '/manipulation' },
@@ -1003,11 +1371,61 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
 
 // ── Pipeline readiness + overall status ────────────────────────
 
+/** WARNING states that reflect normal operation — not overall degradation. */
+function isBenignWarningNode(node: EngineHealthNode): boolean {
+  if (node.status !== 'WARNING') return false;
+  const issue = (node.diagnostics.primaryIssue ?? '').toLowerCase();
+  switch (node.id) {
+    case 'data_feed':
+      return issue.includes('market is closed')
+        || issue.includes('eod candle')
+        || issue.includes('last session')
+        || issue.includes('daily feed updates')
+        || issue.includes('aging')
+        || issue.includes('awaiting today');
+    case 'confirmation':
+      return issue.includes('market is closed')
+        || issue.includes('none cleared')
+        || issue.includes('strict approval')
+        || issue.includes('candidates exist')
+        || issue.includes('awaiting today');
+    case 'scanner':
+      return issue.includes('zero candidates')
+        || issue.includes('envelope unavailable')
+        || issue.includes('envelope delayed')
+        || issue.includes('normal in unfavourable')
+        || issue.includes('awaiting today')
+        || issue.includes('session cycle')
+        || issue.includes('behind expected');
+    default:
+      return false;
+  }
+}
+
+const OPTIONAL_HEALTH_NODE_IDS = new Set([
+  'daily_report',
+  'backtesting',
+  'learning',
+  'manipulation',
+]);
+
+const CORE_HEALTH_NODE_IDS = [
+  'data_feed',
+  'scanner',
+  'scoring',
+  'confirmation',
+] as const;
+
 export function buildPipelineReadiness(nodes: EngineHealthNode[]): PipelineReadiness {
   const byId = new Map<string, EngineHealthNode>();
   for (const n of nodes) byId.set(n.id, n);
   const blockingReasons: string[] = [];
   const broken = (id: string): boolean => {
+    const n = byId.get(id);
+    if (!n) return true;
+    return n.status === 'BROKEN' || n.status === 'DEGRADED';
+  };
+  const staleOrBroken = (id: string): boolean => {
     const n = byId.get(id);
     if (!n) return true;
     return n.status === 'BROKEN' || n.status === 'DEGRADED' || n.status === 'STALE';
@@ -1021,19 +1439,19 @@ export function buildPipelineReadiness(nodes: EngineHealthNode[]): PipelineReadi
   // Candidates require data feed (or bootstrap) + scanner + scoring.
   const canGenerateCandidates =
        partialOk('data_feed')
-    && !broken('scanner')
+    && !staleOrBroken('scanner')
     && !broken('scoring');
   if (!canGenerateCandidates) {
     if (!partialOk('data_feed')) blockingReasons.push('Data feed unavailable for candidate generation.');
-    if (broken('scanner'))       blockingReasons.push('Scanner engine is broken or stale.');
-    if (broken('scoring'))       blockingReasons.push('Scoring engine missing factor scores.');
+    if (staleOrBroken('scanner'))  blockingReasons.push('Scanner engine is broken or stale.');
+    if (broken('scoring'))         blockingReasons.push('Scoring engine missing factor scores.');
   }
 
   // Approved signals require everything to be HEALTHY/WARNING.
   const canGenerateApprovedSignals =
        partialOk('data_feed')
     && partialOk('market_status')
-    && !broken('scanner')
+    && !staleOrBroken('scanner')
     && partialOk('scoring')
     && partialOk('risk')
     && (byId.get('confirmation')?.status === 'HEALTHY' || byId.get('confirmation')?.status === 'WARNING');
@@ -1050,8 +1468,19 @@ export function buildPipelineReadiness(nodes: EngineHealthNode[]): PipelineReadi
     if (broken('risk'))    blockingReasons.push('Risk engine degraded.');
   }
 
-  const canRunDueDiligence = byId.get('due_diligence')?.status === 'HEALTHY';
-  if (!canRunDueDiligence) blockingReasons.push('Due-diligence summary not generated for this request.');
+  const canRunDueDiligence = partialOk('due_diligence');
+  if (!canRunDueDiligence) {
+    const dd = byId.get('due_diligence');
+    if (dd?.status === 'NOT_CONFIGURED') {
+      blockingReasons.push('Due-diligence summary not generated for this request.');
+    } else if (dd?.status === 'INSUFFICIENT_DATA') {
+      blockingReasons.push('Due diligence has no rows to review yet.');
+    } else if (dd) {
+      blockingReasons.push(`Due diligence engine ${dd.status.toLowerCase()}.`);
+    } else {
+      blockingReasons.push('Due-diligence engine not mapped.');
+    }
+  }
 
   const dr = byId.get('daily_report');
   const canRunDailyReport = dr?.status === 'HEALTHY' || dr?.status === 'WARNING';
@@ -1075,33 +1504,38 @@ export function deriveOverallStatus(
   nodes: EngineHealthNode[],
   pipeline?: PipelineReadiness,
 ): EngineHealthMap['overallStatus'] {
-  let healthy = 0, warning = 0, degraded = 0, broken = 0, notConfigured = 0;
+  let broken = 0;
+  let coreBad = 0;
+  let actionableDegraded = 0;
+  let actionableStale = 0;
+  let actionableWarning = 0;
+  let hasRequiredHealthy = false;
+
   for (const n of nodes) {
-    if (n.status === 'HEALTHY')       healthy++;
-    else if (n.status === 'WARNING')   warning++;
-    else if (n.status === 'DEGRADED' || n.status === 'STALE') degraded++;
-    else if (n.status === 'BROKEN')    broken++;
-    else if (n.status === 'NOT_CONFIGURED' || n.status === 'INSUFFICIENT_DATA') notConfigured++;
+    if (n.status === 'BROKEN') broken++;
+    if (CORE_HEALTH_NODE_IDS.includes(n.id as typeof CORE_HEALTH_NODE_IDS[number])) {
+      if (n.status === 'DEGRADED' || n.status === 'STALE') coreBad++;
+      if (n.status === 'HEALTHY' || n.status === 'WARNING') hasRequiredHealthy = true;
+    }
+    if (n.status === 'DEGRADED' && !OPTIONAL_HEALTH_NODE_IDS.has(n.id)) {
+      actionableDegraded++;
+    }
+    if (n.status === 'STALE' && CORE_HEALTH_NODE_IDS.includes(n.id as typeof CORE_HEALTH_NODE_IDS[number])) {
+      actionableStale++;
+    }
+    if (n.status === 'WARNING' && !OPTIONAL_HEALTH_NODE_IDS.has(n.id) && !isBenignWarningNode(n)) {
+      actionableWarning++;
+    }
   }
+
   if (broken > 0) return 'BROKEN';
-
-  // Readiness gate — the contradiction we're fixing: it's not honest
-  // to call the pipeline HEALTHY when the operator-facing readiness
-  // chips ("Can generate candidates", "Can generate approved signals")
-  // are red. Demote to WARNING/DEGRADED in that case.
-  if (pipeline) {
-    if (!pipeline.canGenerateCandidates) return 'DEGRADED';
-    if (!pipeline.canGenerateApprovedSignals) return 'WARNING';
-  }
-
-  if (degraded >= 2)                       return 'DEGRADED';
-  if (degraded === 1 || warning >= 2)      return 'WARNING';
-  if (healthy === 0)                       return 'UNKNOWN';
-  if (warning === 0 && degraded === 0 && notConfigured === 0) return 'HEALTHY';
-  // Some optional engines unconfigured but core gates pass — surface
-  // as WARNING rather than HEALTHY so the badge matches the chips.
-  if (warning === 0 && degraded === 0)     return 'WARNING';
-  return 'WARNING';
+  if (pipeline && !pipeline.canGenerateCandidates) return 'DEGRADED';
+  if (coreBad >= 2) return 'DEGRADED';
+  if (coreBad === 1 || actionableDegraded > 0) return 'WARNING';
+  if (actionableStale >= 2 || actionableWarning >= 2) return 'WARNING';
+  if (pipeline?.canGenerateCandidates || hasRequiredHealthy) return 'HEALTHY';
+  if (actionableWarning > 0 || actionableStale > 0) return 'WARNING';
+  return 'HEALTHY';
 }
 
 export function buildSignalReadinessExplanation(
@@ -1272,35 +1706,126 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
 export interface LightweightHealthPreviewInput {
   marketOpen:        boolean;
   isBootstrap:       boolean;
+  /** Provider serving from cache/fallback — not approval-freeze from daily candle age. */
   isFallback:        boolean;
   staleMinutes:      number | null;
   approvedTotal:     number;
   candidateTotal:    number;
+  /** From classifyCandleFreshness — daily bars use 24h/72h bands, not 15/45m intraday. */
+  freshnessMode?:    'intraday_strict' | 'daily_tolerant';
+  feedFrozen?:       boolean;
+  freshnessQuality?: 'fresh' | 'aging' | 'stale' | 'frozen' | 'unknown';
+}
+
+/** Max age (minutes) for a daily bar from the prior session before we
+ *  treat "frozen" as a genuine outage rather than expected EOD cadence. */
+export const MAX_EXPECTED_DAILY_GAP_MINUTES = 7 * 24 * 60;
+
+/** Daily-only feeds update once per session — a Friday bar on Monday is
+ *  expected until today's EOD ingests. Don't surface DEGRADED for that. */
+export function isExpectedDailySessionGap(input: {
+  freshnessMode?:     LightweightHealthPreviewInput['freshnessMode'];
+  staleMinutes?:      number | null;
+  feedFrozen?:        boolean;
+  freshnessQuality?:  LightweightHealthPreviewInput['freshnessQuality'];
+  feedStaleHigh?:     boolean;
+}): boolean {
+  if (input.freshnessMode !== 'daily_tolerant') return false;
+  const agedOut = input.staleMinutes != null && input.staleMinutes > MAX_EXPECTED_DAILY_GAP_MINUTES;
+  if (agedOut) return false;
+  return !!(
+    input.feedStaleHigh
+    || input.feedFrozen
+    || input.freshnessQuality === 'frozen'
+    || input.freshnessQuality === 'stale'
+  );
+}
+
+function resolveFeedStaleness(input: LightweightHealthPreviewInput): {
+  staleHigh: boolean;
+  staleMid:  boolean;
+  reason:    string | null;
+} {
+  const stale = input.staleMinutes;
+  const dailyTolerant = input.freshnessMode === 'daily_tolerant';
+
+  if (input.feedFrozen || input.freshnessQuality === 'frozen') {
+    return {
+      staleHigh: true,
+      staleMid:  false,
+      reason:    stale != null ? `Provider feed frozen (${stale}m).` : 'Provider feed frozen.',
+    };
+  }
+
+  if (dailyTolerant) {
+    const staleHigh = stale != null && stale > 72 * 60;
+    const staleMid = !staleHigh && (
+      input.freshnessQuality === 'stale'
+      || (stale != null && stale > 24 * 60)
+    );
+    return {
+      staleHigh,
+      staleMid,
+      reason: staleHigh
+        ? `Provider feed frozen (${stale}m).`
+        : staleMid
+          ? `Provider feed stale (${stale}m).`
+          : null,
+    };
+  }
+
+  const staleHigh = stale != null && stale > 45;
+  const staleMid = !staleHigh && stale != null && stale > 15;
+  return {
+    staleHigh,
+    staleMid,
+    reason: staleHigh
+      ? `Provider feed stale ${stale}m.`
+      : staleMid
+        ? `Provider feed aging (${stale}m).`
+        : null,
+  };
 }
 
 export function buildLightweightEngineHealthPreview(
   input: LightweightHealthPreviewInput,
 ): EngineHealthPreview {
-  const stale = input.staleMinutes;
-  const feedStaleHigh = stale != null && stale > 45;
-  const feedStaleMid  = stale != null && stale > 15;
+  const { staleHigh: feedStaleHigh, staleMid: feedStaleMid, reason: feedStaleReason } =
+    resolveFeedStaleness(input);
   let overallStatus: EngineHealthPreview['overallStatus'] = 'HEALTHY';
   let primaryBlockingReason: string | null = null;
 
-  if (input.isBootstrap || input.isFallback || feedStaleHigh) {
+  const expectedDailyGap = isExpectedDailySessionGap({
+    freshnessMode:    input.freshnessMode,
+    staleMinutes:       input.staleMinutes,
+    feedFrozen:         input.feedFrozen,
+    freshnessQuality:   input.freshnessQuality,
+    feedStaleHigh,
+  });
+
+  if (input.isBootstrap || input.isFallback) {
     overallStatus = 'DEGRADED';
     primaryBlockingReason = input.isBootstrap
       ? 'Bootstrap data in use — provider not live.'
-      : input.isFallback
-        ? 'Provider in fallback mode.'
-        : `Provider feed stale ${stale}m.`;
+      : 'Provider in fallback mode.';
+  } else if (feedStaleHigh && expectedDailyGap) {
+    overallStatus = 'HEALTHY';
+    primaryBlockingReason = null;
+  } else if (feedStaleHigh) {
+    overallStatus = 'DEGRADED';
+    primaryBlockingReason = feedStaleReason;
   } else if (feedStaleMid) {
-    overallStatus = 'WARNING';
-    primaryBlockingReason = `Provider feed aging (${stale}m).`;
-  } else if (!input.marketOpen) {
-    overallStatus = 'WARNING';
-    primaryBlockingReason = 'Market closed — confirmation engine withholds new approvals.';
+    if (input.freshnessMode === 'daily_tolerant' || expectedDailyGap) {
+      overallStatus = 'HEALTHY';
+      primaryBlockingReason = null;
+    } else {
+      overallStatus = 'WARNING';
+      primaryBlockingReason = feedStaleReason ?? `Provider feed aging (${input.staleMinutes}m).`;
+    }
   }
+  // Market closed is expected off-hours — not a degradation. Approvals
+  // are naturally withheld; the dashboard should stay in full/monitoring
+  // mode rather than "Partial Intelligence Mode".
   // Even when status is HEALTHY at preview level, we honour the "no
   // approvals this cycle" message for transparency.
   const canApprove = input.approvedTotal > 0

@@ -1,0 +1,676 @@
+// ════════════════════════════════════════════════════════════════
+//  Candle Backfill Job — IndianAPI → `candles` warehouse
+//
+//  Backfills daily EOD bars for active NSE symbols from q365_universe.
+//  Writes ONLY to the `candles` table (instrument_key + eod + 1day).
+//  `market_data_daily` is a VIEW over `candles` — never written here.
+//
+//  Usage:
+//    import { runCandleBackfillJob } from '@/lib/marketData/candleBackfillJob';
+//    const summary = await runCandleBackfillJob();
+// ════════════════════════════════════════════════════════════════
+
+import { db } from '@/lib/db';
+import {
+  fetchIndianApiDailyCandles,
+  getIndianApiCandleRequestCount,
+  resetCandleSourceCounters,
+} from '@/lib/marketData/candleFallbackChain';
+import {
+  beginPerRunBudget,
+  endPerRunBudget,
+  getApiUsage,
+  INDIANAPI_PER_RUN_LIMIT,
+} from '@/providers/adapters/IndianAPIAdapter';
+import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
+import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
+import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
+import {
+  resolveBackfillMaxFetch,
+  resolveBackfillPerRunLimit,
+} from '@/lib/marketData/providerRequestPolicy';
+
+// ── Config ────────────────────────────────────────────────────────
+
+function envNum(name: string, lo: number, hi: number, fallback: number): number {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(lo, Math.min(hi, Math.floor(raw)));
+}
+
+export const BACKFILL_MIN_BARS_DEFAULT = () =>
+  envNum('CANDLE_BACKFILL_MIN_BARS', 50, 500, 240);
+
+export const BACKFILL_UNIVERSE_LIMIT_DEFAULT = () =>
+  envNum('CANDLE_BACKFILL_UNIVERSE_LIMIT', 1, 5000, 1000);
+
+/** Max calendar age of latest bar to consider history "recent enough". */
+export const BACKFILL_MAX_AGE_DAYS_DEFAULT = () =>
+  envNum('CANDLE_BACKFILL_MAX_AGE_DAYS', 1, 30, 7);
+
+/** Pause between IndianAPI calls (ms). */
+export const BACKFILL_REQUEST_DELAY_MS_DEFAULT = () =>
+  envNum('CANDLE_BACKFILL_REQUEST_DELAY_MS', 200, 10_000, 800);
+
+/** Extra backoff after RATE_LIMITED (ms). */
+const RATE_LIMIT_BACKOFF_MS = () =>
+  envNum('CANDLE_BACKFILL_RATE_LIMIT_BACKOFF_MS', 1_000, 120_000, 15_000);
+
+const CANDLE_TYPE = 'eod' as const;
+const INTERVAL_UNIT = '1day' as const;
+
+function instrumentKey(symbol: string): string {
+  return `NSE_EQ|${symbol.toUpperCase()}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Types ─────────────────────────────────────────────────────────
+
+export interface CandleBackfillJobOptions {
+  /** Max active symbols from q365_universe. Default 1000. */
+  universeLimit?: number;
+  /** Skip upstream when bar count >= this and latest is recent. Default 240. */
+  minBars?: number;
+  /** Latest bar must be newer than this many calendar days. Default 7. */
+  maxAgeDays?: number;
+  /** Delay between IndianAPI requests (ms). Default 800. */
+  requestDelayMs?: number;
+  /** Log plan only — no provider or DB writes. */
+  dryRun?: boolean;
+  /** Only symbols below minBars or with stale latest (zero API on skips). */
+  resume?: boolean;
+  /** Stop after this many successful fetches (quota-safe batching). */
+  maxFetch?: number;
+  /** Optional symbol subset (uppercased); still capped by universeLimit. */
+  symbols?: string[];
+}
+
+export interface SymbolBackfillFailure {
+  symbol: string;
+  reason: string;
+}
+
+export interface UniverseBackfillStats {
+  universeTotal: number;
+  alreadySufficient: number;
+  needingBackfill: number;
+}
+
+export interface CandleBackfillJobSummary {
+  totalSymbols: number;
+  /** Active universe size (q365_universe), regardless of resume queue. */
+  universeTotal: number;
+  /** Symbols with enough fresh bars — no API call needed this campaign. */
+  alreadySufficient: number;
+  skippedSufficient: number;
+  fetched: number;
+  failed: number;
+  /** Symbols not attempted because per-run IndianAPI budget was exhausted. */
+  deferredDueToBudget: number;
+  candlesInserted: number;
+  candlesUpdated: number;
+  indianApiRequestsUsed: number;
+  failures: SymbolBackfillFailure[];
+  durationMs: number;
+  dryRun: boolean;
+}
+
+const PER_RUN_BUDGET_REASON = 'PER_RUN_LIMIT_EXCEEDED';
+
+function isAbortReason(reason: string | undefined): 'budget' | 'auth' | null {
+  if (!reason) return null;
+  if (
+    reason.includes(PER_RUN_BUDGET_REASON)
+    || reason.includes('API_BUDGET_EXCEEDED')
+    || reason.includes('per-run budget exhausted')
+  ) return 'budget';
+  if (
+    reason.includes('AUTH_FAILED')
+    || reason.includes('API_KEY_INVALID')
+    || reason.includes('API key is invalid')
+    || reason.includes('status code 403')
+  ) return 'auth';
+  return null;
+}
+
+function isPerRunBudgetExhausted(): boolean {
+  const usage = getApiUsage();
+  return usage.per_run_active && usage.per_run_exceeded;
+}
+
+function perRunBudgetFailureReason(): string {
+  const usage = getApiUsage();
+  return (
+    `${PER_RUN_BUDGET_REASON} (${usage.per_run_count}/${usage.per_run_limit}) — ` +
+    `re-run with higher INDIANAPI_PER_RUN_LIMIT to continue`
+  );
+}
+
+interface SymbolCandleStats {
+  barCount: number;
+  latestTs: Date | null;
+  ageDays: number | null;
+}
+
+// ── Universe + stats ──────────────────────────────────────────────
+
+export async function loadActiveUniverseSymbols(limit: number): Promise<string[]> {
+  const { rows } = await db.query<{ symbol: string }>(
+    `SELECT symbol
+       FROM q365_universe
+      WHERE is_active = 1
+      ORDER BY symbol ASC
+      LIMIT ?`,
+    [limit],
+  );
+  return (rows as Array<{ symbol: string }>)
+    .map((r) => String(r.symbol).toUpperCase().trim())
+    .filter(Boolean);
+}
+
+/**
+ * Active universe symbols that still need a historical fetch (thin or stale).
+ * Use with `resume: true` to avoid iterating symbols that would skip anyway.
+ */
+/**
+ * One SQL round-trip for universe coverage — avoids N per-symbol stats queries.
+ */
+export async function getUniverseBackfillStats(
+  limit: number,
+  minBars: number,
+  maxAgeDays: number,
+): Promise<UniverseBackfillStats> {
+  const { rows } = await db.query<{
+    universe_total: number;
+    already_sufficient: number;
+    needing_backfill: number;
+  }>(
+    `SELECT
+       COUNT(*) AS universe_total,
+       SUM(
+         CASE
+           WHEN d.bar_count >= ?
+            AND d.latest_ts IS NOT NULL
+            AND TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) <= ?
+           THEN 1 ELSE 0
+         END
+       ) AS already_sufficient,
+       SUM(
+         CASE
+           WHEN d.bar_count IS NULL
+            OR d.bar_count < ?
+            OR d.latest_ts IS NULL
+            OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
+           THEN 1 ELSE 0
+         END
+       ) AS needing_backfill
+     FROM (
+       SELECT symbol
+         FROM q365_universe
+        WHERE is_active = 1
+        ORDER BY symbol ASC
+        LIMIT ?
+     ) u
+     LEFT JOIN (
+       SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
+         FROM market_data_daily
+        GROUP BY symbol
+     ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci`,
+    [minBars, maxAgeDays, minBars, maxAgeDays, limit],
+  );
+  const row = (rows[0] as {
+    universe_total?: number;
+    already_sufficient?: number;
+    needing_backfill?: number;
+  }) ?? {};
+  return {
+    universeTotal: Number(row.universe_total) || 0,
+    alreadySufficient: Number(row.already_sufficient) || 0,
+    needingBackfill: Number(row.needing_backfill) || 0,
+  };
+}
+
+export async function loadSymbolsNeedingBackfill(
+  limit: number,
+  minBars: number,
+  maxAgeDays: number,
+): Promise<string[]> {
+  const { rows } = await db.query<{ symbol: string }>(
+    `SELECT u.symbol
+       FROM q365_universe u
+       LEFT JOIN (
+         SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
+           FROM market_data_daily
+          GROUP BY symbol
+       ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci
+      WHERE u.is_active = 1
+        AND (
+          d.bar_count IS NULL
+          OR d.bar_count < ?
+          OR d.latest_ts IS NULL
+          OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
+        )
+      ORDER BY u.symbol ASC
+      LIMIT ?`,
+    [minBars, maxAgeDays, limit],
+  );
+  return (rows as Array<{ symbol: string }>)
+    .map((r) => String(r.symbol).toUpperCase().trim())
+    .filter(Boolean);
+}
+
+/**
+ * Read bar count + freshness via market_data_daily (view over candles).
+ */
+export async function getSymbolCandleStats(symbol: string): Promise<SymbolCandleStats> {
+  try {
+    const { rows } = await db.query<{ cnt: number; latest: Date | string | null }>(
+      `SELECT COUNT(*) AS cnt, MAX(ts) AS latest
+         FROM market_data_daily
+        WHERE symbol = ?`,
+      [symbol.toUpperCase()],
+    );
+    const row = (rows[0] as { cnt?: number; latest?: Date | string | null }) ?? {};
+    const barCount = Number(row.cnt) || 0;
+    const latestRaw = row.latest;
+    const latestTs = latestRaw instanceof Date
+      ? latestRaw
+      : (latestRaw ? new Date(latestRaw) : null);
+    const ageDays = latestTs && !Number.isNaN(latestTs.getTime())
+      ? Math.round((Date.now() - latestTs.getTime()) / 86_400_000 * 10) / 10
+      : null;
+    return { barCount, latestTs, ageDays };
+  } catch {
+    return { barCount: 0, latestTs: null, ageDays: null };
+  }
+}
+
+function shouldSkipSymbol(
+  stats: SymbolCandleStats,
+  minBars: number,
+  maxAgeDays: number,
+): boolean {
+  if (stats.barCount < minBars) return false;
+  if (stats.ageDays == null) return false;
+  return stats.ageDays <= maxAgeDays;
+}
+
+// ── Upsert with insert/update tracking ────────────────────────────
+
+async function upsertDailyCandle(
+  symbol: string,
+  ts: Date,
+  open: number,
+  high: number,
+  low: number,
+  close: number,
+  volume: number,
+): Promise<'inserted' | 'updated' | 'unchanged'> {
+  const key = instrumentKey(symbol);
+  const result = await db.query(
+    `INSERT INTO candles
+       (instrument_key, candle_type, interval_unit, ts, open, high, low, close, volume, oi)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+     ON DUPLICATE KEY UPDATE
+       open=VALUES(open), high=VALUES(high), low=VALUES(low),
+       close=VALUES(close), volume=VALUES(volume), oi=VALUES(oi)`,
+    [key, CANDLE_TYPE, INTERVAL_UNIT, ts, open, high, low, close, volume],
+  );
+  const affected = result.affectedRows ?? 0;
+  if (affected === 1) return 'inserted';
+  if (affected === 2) return 'updated';
+  return 'unchanged';
+}
+
+export async function persistBarsForSymbol(
+  symbol: string,
+  bars: Array<{ ts: string | Date; open: number; high: number; low: number; close: number; volume: number }>,
+): Promise<{ inserted: number; updated: number }> {
+  let inserted = 0;
+  let updated = 0;
+  for (const bar of bars) {
+    const ts = bar.ts instanceof Date ? bar.ts : new Date(bar.ts);
+    if (Number.isNaN(ts.getTime())) continue;
+    if (
+      !Number.isFinite(bar.open) || !Number.isFinite(bar.high)
+      || !Number.isFinite(bar.low) || !Number.isFinite(bar.close)
+    ) continue;
+
+    const outcome = await upsertDailyCandle(
+      symbol,
+      ts,
+      bar.open,
+      bar.high,
+      bar.low,
+      bar.close,
+      Number.isFinite(bar.volume) ? bar.volume : 0,
+    );
+    if (outcome === 'inserted') inserted++;
+    else if (outcome === 'updated') updated++;
+  }
+  return { inserted, updated };
+}
+
+// ── Per-symbol backfill ───────────────────────────────────────────
+
+async function backfillOneSymbol(
+  symbol: string,
+  opts: {
+    minBars: number;
+    maxAgeDays: number;
+    dryRun: boolean;
+  },
+): Promise<{
+  status: 'skipped' | 'fetched' | 'failed';
+  inserted: number;
+  updated: number;
+  reason?: string;
+}> {
+  const stats = await getSymbolCandleStats(symbol);
+  if (shouldSkipSymbol(stats, opts.minBars, opts.maxAgeDays)) {
+    return {
+      status: 'skipped',
+      inserted: 0,
+      updated: 0,
+      reason: `sufficient: bars=${stats.barCount} age_days=${stats.ageDays}`,
+    };
+  }
+
+  if (opts.dryRun) {
+    return {
+      status: 'fetched',
+      inserted: 0,
+      updated: 0,
+      reason: `dry_run: would_fetch bars=${stats.barCount} min=${opts.minBars}`,
+    };
+  }
+
+  if (isPerRunBudgetExhausted()) {
+    return {
+      status: 'failed',
+      inserted: 0,
+      updated: 0,
+      reason: perRunBudgetFailureReason(),
+    };
+  }
+
+  let fetch = await fetchIndianApiDailyCandles(symbol, '1y');
+  const isRetryable = (code: string | null | undefined) =>
+    code === 'RATE_LIMITED' || code === 'API_KEY_INVALID';
+  if (!fetch.ok && isRetryable(fetch.errorCode)) {
+    const backoffMs = fetch.errorCode === 'RATE_LIMITED'
+      ? RATE_LIMIT_BACKOFF_MS()
+      : 60_000;
+    console.warn(
+      `[CANDLE BACKFILL] ${symbol} ${fetch.errorCode} — sleeping ${backoffMs}ms then one retry`,
+    );
+    await sleep(backoffMs);
+    fetch = await fetchIndianApiDailyCandles(symbol, '1y');
+  }
+
+  if (!fetch.ok || fetch.candles.length === 0) {
+    return {
+      status: 'failed',
+      inserted: 0,
+      updated: 0,
+      reason: fetch.errorMessage ?? String(fetch.errorCode ?? 'fetch_failed'),
+    };
+  }
+
+  const { inserted, updated } = await persistBarsForSymbol(symbol, fetch.candles);
+  if (inserted === 0 && updated === 0) {
+    return {
+      status: 'failed',
+      inserted: 0,
+      updated: 0,
+      reason: 'no_valid_bars_after_upsert',
+    };
+  }
+
+  return { status: 'fetched', inserted, updated };
+}
+
+// ── Main job ──────────────────────────────────────────────────────
+
+export async function estimateBackfillApiRequests(
+  options: Pick<
+    CandleBackfillJobOptions,
+    'universeLimit' | 'minBars' | 'maxAgeDays' | 'resume' | 'symbols' | 'maxFetch'
+  > = {},
+): Promise<number> {
+  const universeLimit = options.universeLimit ?? BACKFILL_UNIVERSE_LIMIT_DEFAULT();
+  const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
+  const maxAgeDays = options.maxAgeDays ?? BACKFILL_MAX_AGE_DAYS_DEFAULT();
+
+  const symbols = options.symbols?.length
+    ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
+    : options.resume
+      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays)
+      : await loadActiveUniverseSymbols(universeLimit);
+
+  let wouldFetch = 0;
+  for (const symbol of symbols) {
+    const stats = await getSymbolCandleStats(symbol);
+    if (!shouldSkipSymbol(stats, minBars, maxAgeDays)) {
+      wouldFetch++;
+      if (options.maxFetch != null && options.maxFetch > 0 && wouldFetch >= options.maxFetch) {
+        break;
+      }
+    }
+  }
+  return wouldFetch;
+}
+
+export async function runCandleBackfillJob(
+  options: CandleBackfillJobOptions = {},
+): Promise<CandleBackfillJobSummary> {
+  const t0 = Date.now();
+  const universeLimit = options.universeLimit ?? BACKFILL_UNIVERSE_LIMIT_DEFAULT();
+  const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
+  const maxAgeDays = options.maxAgeDays ?? BACKFILL_MAX_AGE_DAYS_DEFAULT();
+  const requestDelayMs = options.requestDelayMs ?? BACKFILL_REQUEST_DELAY_MS_DEFAULT();
+  const dryRun = options.dryRun ?? false;
+  const maxFetch = resolveBackfillMaxFetch({
+    resume: options.resume,
+    maxFetch: options.maxFetch,
+    symbols: options.symbols,
+  });
+
+  const { apiKey } = getIndianApiConfig();
+  if (!apiKey && !dryRun) {
+    throw new Error(
+      'IndianAPI key missing — set INDIANAPI_API_KEY (or INDIANAPI_KEY) before running backfill',
+    );
+  }
+
+  const jobId = `candle-backfill_${Date.now()}`;
+  if (!dryRun) {
+    const estimate = await estimateBackfillApiRequests({
+      ...options,
+      maxFetch,
+    });
+    await assertQuotaForJob({
+      estimatedRequests: estimate,
+      jobId,
+      sourceJob: 'candle-backfill',
+    });
+  }
+
+  return runWithProviderRequestContext(
+    { jobId, sourceJob: 'candle-backfill', requestType: 'historical_daily' },
+    async () => runCandleBackfillJobInner({
+      t0,
+      universeLimit,
+      minBars,
+      maxAgeDays,
+      requestDelayMs,
+      dryRun,
+      maxFetch,
+      options,
+    }),
+  );
+}
+
+async function runCandleBackfillJobInner(ctx: {
+  t0: number;
+  universeLimit: number;
+  minBars: number;
+  maxAgeDays: number;
+  requestDelayMs: number;
+  dryRun: boolean;
+  maxFetch?: number;
+  options: CandleBackfillJobOptions;
+}): Promise<CandleBackfillJobSummary> {
+  const {
+    t0, universeLimit, minBars, maxAgeDays, requestDelayMs, dryRun, maxFetch, options,
+  } = ctx;
+
+  resetCandleSourceCounters();
+  const perRunLimit = resolveBackfillPerRunLimit({
+    resume: options.resume,
+    maxFetch,
+    symbols: options.symbols,
+  });
+  beginPerRunBudget(perRunLimit);
+
+  const universeStats = options.symbols?.length
+    ? null
+    : await getUniverseBackfillStats(universeLimit, minBars, maxAgeDays);
+
+  const symbols = options.symbols?.length
+    ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
+    : options.resume
+      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays)
+      : await loadActiveUniverseSymbols(universeLimit);
+
+  const summary: CandleBackfillJobSummary = {
+    totalSymbols: symbols.length,
+    universeTotal: universeStats?.universeTotal ?? symbols.length,
+    alreadySufficient: universeStats?.alreadySufficient ?? 0,
+    skippedSufficient: 0,
+    fetched: 0,
+    failed: 0,
+    deferredDueToBudget: 0,
+    candlesInserted: 0,
+    candlesUpdated: 0,
+    indianApiRequestsUsed: 0,
+    failures: [],
+    durationMs: 0,
+    dryRun,
+  };
+
+  const symbolsAttempted = summary.universeTotal;
+  console.log(
+    `[CANDLE BACKFILL] start universe=${summary.universeTotal} ` +
+    `already_sufficient=${summary.alreadySufficient} queue=${symbols.length} ` +
+    `symbols_attempted=${symbolsAttempted} min_bars=${minBars} ` +
+    `max_age_days=${maxAgeDays} delay_ms=${requestDelayMs} dry_run=${dryRun} ` +
+    `resume=${options.resume ?? false} max_fetch=${maxFetch ?? 'none'} ` +
+    `per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
+  );
+
+  // Plan-only full-universe dry-run: one SQL stats query, zero per-symbol DB walks.
+  if (
+    dryRun
+    && !options.symbols?.length
+    && !options.resume
+    && universeStats
+  ) {
+    summary.skippedSufficient = universeStats.alreadySufficient;
+    summary.fetched = universeStats.needingBackfill;
+    summary.durationMs = Date.now() - t0;
+    console.log('[CANDLE BACKFILL] complete', {
+      ...summary,
+      failures: [],
+      per_run_budget: endPerRunBudget(),
+      plan_note: 'dry_run full-universe plan via SQL (no per-symbol iteration)',
+    });
+    return summary;
+  }
+
+  let processed = 0;
+  for (const symbol of symbols) {
+    processed++;
+    let lastStatus: 'skipped' | 'fetched' | 'failed' = 'failed';
+    try {
+      const result = await backfillOneSymbol(symbol, { minBars, maxAgeDays, dryRun });
+      lastStatus = result.status;
+
+      if (result.status === 'skipped') {
+        summary.skippedSufficient++;
+      } else if (result.status === 'fetched') {
+        summary.fetched++;
+        summary.candlesInserted += result.inserted;
+        summary.candlesUpdated += result.updated;
+        console.log(
+          `[CANDLE BACKFILL] ${symbol} fetched inserted=${result.inserted} ` +
+          `updated=${result.updated}`,
+        );
+        if (maxFetch != null && maxFetch > 0 && summary.fetched >= maxFetch) {
+          summary.deferredDueToBudget = symbols.length - processed;
+          console.warn(
+            `[CANDLE BACKFILL] max_fetch=${maxFetch} reached — stopping ` +
+            `(${summary.deferredDueToBudget} symbols remaining; re-run --resume to continue)`,
+          );
+          break;
+        }
+      } else {
+        summary.failed++;
+        summary.failures.push({ symbol, reason: result.reason ?? 'unknown' });
+        console.warn(`[CANDLE BACKFILL] ${symbol} failed: ${result.reason}`);
+        const abort = isAbortReason(result.reason);
+        if (abort === 'budget') {
+          summary.deferredDueToBudget = symbols.length - processed;
+          console.warn(
+            `[CANDLE BACKFILL] per-run budget exhausted — stopping early ` +
+            `(${summary.deferredDueToBudget} symbols deferred; ` +
+            `set INDIANAPI_PER_RUN_LIMIT≥${symbols.length} and re-run)`,
+          );
+          break;
+        }
+        if (abort === 'auth') {
+          // Per-symbol auth failure — continue queue to avoid deferring the whole batch.
+          // backfillOneSymbol already slept + retried once; skip burns no extra API quota.
+          console.warn(
+            `[CANDLE BACKFILL] ${symbol} auth rejected after retry — skipping ` +
+            `(verify INDIANAPI_API_KEY if failures cluster)`,
+          );
+        }
+      }
+    } catch (err) {
+      summary.failed++;
+      const reason = err instanceof Error ? err.message : String(err);
+      summary.failures.push({ symbol, reason });
+      console.warn(`[CANDLE BACKFILL] ${symbol} error: ${reason}`);
+    }
+
+    if (processed % 25 === 0 || processed === symbols.length) {
+      console.log(
+        `[CANDLE BACKFILL] progress ${processed}/${symbols.length} ` +
+        `skipped=${summary.skippedSufficient} fetched=${summary.fetched} ` +
+        `failed=${summary.failed} indianapi_requests=${getIndianApiCandleRequestCount()}`,
+      );
+    }
+
+    if (!dryRun && processed < symbols.length && lastStatus !== 'skipped') {
+      await sleep(requestDelayMs);
+    }
+  }
+
+  const budget = endPerRunBudget();
+  summary.indianApiRequestsUsed = getIndianApiCandleRequestCount();
+  summary.durationMs = Date.now() - t0;
+
+  console.log('[CANDLE BACKFILL] complete', {
+    ...summary,
+    failures: summary.failures.length <= 10
+      ? summary.failures
+      : [...summary.failures.slice(0, 10), { symbol: '...', reason: `+${summary.failures.length - 10} more` }],
+    per_run_budget: budget,
+  });
+
+  return summary;
+}

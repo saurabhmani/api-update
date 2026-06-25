@@ -47,6 +47,59 @@ import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 // the correct entry type and would re-introduce the Phase 1 leak.
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
+function isInsufficientCandleReason(reason: string): boolean {
+  const t = String(reason ?? '').toLowerCase();
+  return (
+    t.includes('insufficient candle')
+    || t.includes('insufficient data')
+    || t.includes('candle_invalid')
+    || t.includes('candle_no_data')
+    || (t.startsWith('error:') && t.includes('candle'))
+  );
+}
+
+export function countRejectedInsufficientCandles(
+  rejectionLog: Array<{ symbol: string; reason: string }>,
+): number {
+  return rejectionLog.filter((r) => isInsufficientCandleReason(r.reason)).length;
+}
+
+export function countRejectedProviderErrors(
+  rejectionLog: Array<{ symbol: string; reason: string }>,
+): number {
+  return rejectionLog.filter((r) => {
+    const t = String(r.reason ?? '').toLowerCase();
+    if (isInsufficientCandleReason(r.reason)) return false;
+    return (
+      t.startsWith('error:')
+      || t.includes('provider')
+      || t.includes('fetch_failed')
+      || t.includes('timeout')
+    );
+  }).length;
+}
+
+export function sampleFailedSymbols(
+  rejectionLog: Array<{ symbol: string; reason: string }>,
+  limit = 10,
+): Array<{ symbol: string; reason: string }> {
+  const out: Array<{ symbol: string; reason: string }> = [];
+  for (const r of rejectionLog) {
+    if (r.symbol === '*') continue;
+    const t = String(r.reason ?? '').toLowerCase();
+    if (
+      t.startsWith('error:')
+      || isInsufficientCandleReason(r.reason)
+      || t.includes('provider')
+      || t.includes('fetch_failed')
+    ) {
+      out.push({ symbol: r.symbol, reason: r.reason });
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
 export interface Phase4Result {
   signals: Phase4SignalEnvelope[];
   commentary: PortfolioCommentary;
@@ -62,6 +115,10 @@ export interface Phase4Result {
     approved: number;
     deferred: number;
     rejected: number;
+    rejectedInsufficientCandles: number;
+    rejectedProviderErrors: number;
+    failedSymbolsSample: Array<{ symbol: string; reason: string }>;
+    signalsSaved: number;
     scenarioTag:  string;
     marketStance: string;
   };
@@ -521,6 +578,7 @@ export async function generatePhase4Signals(
   );
   console.log(`[PIPELINE_TRACE] stage=saveSignals_called count=${enriched.length}`);
   const dbInsertStart = Date.now();
+  let signalsSaved = 0;
   try {
     // Save base signals (Phase 3 data) to get real DB IDs
     const signalIdMap = await saveSignals(enriched.map(sig => ({
@@ -596,6 +654,7 @@ export async function generatePhase4Signals(
       phase11LiveValidationReasons: sig.phase11?.live_validation_reasons ?? [],
       phase11Explanation:           sig.phase11?.explanation             ?? undefined,
     } as any)), generationSource);
+    signalsSaved = signalIdMap.size;
     // Spec "VERIFY INSERT" — saveSignals returned a row-id map. The
     // q365_signals INSERTs already committed; size of the map ==
     // number of rows persisted. If this is < enriched.length, some
@@ -824,6 +883,10 @@ export async function generatePhase4Signals(
     `persisted=${enriched.length}`,
   );
 
+  const rejectedInsufficientCandles = countRejectedInsufficientCandles(phase3.rejectionLog);
+  const rejectedProviderErrors = countRejectedProviderErrors(phase3.rejectionLog);
+  const failedSymbolsSample = sampleFailedSymbols(phase3.rejectionLog);
+
   return {
     signals: enriched,
     commentary,
@@ -837,6 +900,10 @@ export async function generatePhase4Signals(
       approved: phase3.approved,
       deferred: phase3.deferred,
       rejected: phase3.rejected,
+      rejectedInsufficientCandles,
+      rejectedProviderErrors,
+      failedSymbolsSample,
+      signalsSaved,
       scenarioTag:  scenario.scenario_tag,
       marketStance: marketStance.market_stance,
     },

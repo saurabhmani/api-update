@@ -104,17 +104,29 @@ function persist(force = false): void {
   }
 }
 
-// ── Limits ──────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+
+import { MONTHLY_PLANNING_TARGET } from '@/lib/marketData/providerRequestPolicy';
+
+// Limits ──────────────────────────────────────────────────────
 //
 // Defaults match the user-stated plan limits. Env-overridable for
 // operators on different tiers (paid plans get a higher daily ceiling).
-function resolveLimit(envName: string, fallback: number): number {
-  const raw = Number(process.env[envName]);
-  if (!Number.isFinite(raw) || raw <= 0) return fallback;
-  return Math.max(1, Math.floor(raw));
+function resolveLimitMulti(envNames: string[], fallback: number): number {
+  for (const name of envNames) {
+    const raw = Number(process.env[name]);
+    if (Number.isFinite(raw) && raw > 0) return Math.max(1, Math.floor(raw));
+  }
+  return fallback;
 }
-export const INDIANAPI_DAILY_LIMIT   = resolveLimit('INDIANAPI_DAILY_LIMIT',   2500);
-export const INDIANAPI_MONTHLY_LIMIT = resolveLimit('INDIANAPI_MONTHLY_LIMIT', 70000);
+export const INDIANAPI_DAILY_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_DAILY_LIMIT', 'INDIAN_API_DAILY_SOFT_LIMIT', 'INDIANAPI_DAILY_SOFT_LIMIT'],
+  4_000,
+);
+export const INDIANAPI_MONTHLY_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_LIMIT', 'INDIAN_API_MONTHLY_BUDGET', 'BUDGET_MONTHLY_HARD_LIMIT'],
+  100_000,
+);
 // Spec "Per-run API call limit" — a pipeline run (refreshDailyCandles +
 // Phase 4) historically consumed ~1500 IndianAPI calls. Two unbounded
 // runs exhaust the daily 2500 ceiling; the per-run cap fails fast
@@ -134,7 +146,10 @@ export const INDIANAPI_MONTHLY_LIMIT = resolveLimit('INDIANAPI_MONTHLY_LIMIT', 7
 // fetch more symbols than the chunk contains). Override via
 // INDIANAPI_PER_RUN_LIMIT env when running historical bootstrap /
 // one-shot bulk ingestion.
-export const INDIANAPI_PER_RUN_LIMIT = resolveLimit('INDIANAPI_PER_RUN_LIMIT', 100);
+export const INDIANAPI_PER_RUN_LIMIT = resolveLimitMulti(
+  ['INDIANAPI_PER_RUN_LIMIT'],
+  100,
+);
 
 // Soft warn threshold (percent of daily limit). When today's count
 // crosses this, every increment emits the [API USAGE WARN] line so
@@ -189,6 +204,12 @@ let _perRunActive       = false;
 let _perRunCount        = 0;
 let _perRunStartedAt    = 0;
 let _perRunHitLogged    = false;
+/** When set, overrides INDIANAPI_PER_RUN_LIMIT for the active window. */
+let _perRunLimitOverride: number | null = null;
+
+function effectivePerRunLimit(): number {
+  return _perRunLimitOverride ?? INDIANAPI_PER_RUN_LIMIT;
+}
 
 export function getApiUsage(): ApiUsageSnapshot {
   const b = loadOnce();
@@ -215,21 +236,27 @@ export function getApiUsage(): ApiUsageSnapshot {
     last_call_at:      b.lastAt ? new Date(b.lastAt).toISOString() : null,
     per_run_active:    _perRunActive,
     per_run_count:     _perRunCount,
-    per_run_limit:     INDIANAPI_PER_RUN_LIMIT,
-    per_run_remaining: Math.max(0, INDIANAPI_PER_RUN_LIMIT - _perRunCount),
-    per_run_exceeded:  _perRunActive && _perRunCount >= INDIANAPI_PER_RUN_LIMIT,
+    per_run_limit:     effectivePerRunLimit(),
+    per_run_remaining: Math.max(0, effectivePerRunLimit() - _perRunCount),
+    per_run_exceeded:  _perRunActive && _perRunCount >= effectivePerRunLimit(),
   };
 }
 
 /** Open a fresh per-run budget window. Idempotent: any leaked window
  *  from a prior run (e.g. a thrown finally that didn't end()) is
  *  closed and replaced. The pipeline driver MUST call this at the
- *  start of every run so the counter doesn't bleed across runs. */
-export function beginPerRunBudget(): void {
+ *  start of every run so the counter doesn't bleed across runs.
+ *
+ *  Pass `perRunLimit` to override INDIANAPI_PER_RUN_LIMIT for candle
+ *  jobs (e.g. evening update cap 1000, initial backfill cap 1500). */
+export function beginPerRunBudget(perRunLimit?: number): void {
   _perRunActive    = true;
   _perRunCount     = 0;
   _perRunStartedAt = Date.now();
   _perRunHitLogged = false;
+  _perRunLimitOverride = perRunLimit != null && perRunLimit > 0
+    ? Math.floor(perRunLimit)
+    : null;
 }
 
 /** Close the per-run window and return a summary. Safe to call when
@@ -240,16 +267,18 @@ export function endPerRunBudget(): {
   hit:        boolean;
   durationMs: number;
 } {
+  const limit = effectivePerRunLimit();
   const summary = {
     count:      _perRunCount,
-    limit:      INDIANAPI_PER_RUN_LIMIT,
-    hit:        _perRunActive && _perRunCount >= INDIANAPI_PER_RUN_LIMIT,
+    limit,
+    hit:        _perRunActive && _perRunCount >= limit,
     durationMs: _perRunStartedAt > 0 ? Date.now() - _perRunStartedAt : 0,
   };
   _perRunActive    = false;
   _perRunCount     = 0;
   _perRunStartedAt = 0;
   _perRunHitLogged = false;
+  _perRunLimitOverride = null;
   return summary;
 }
 
@@ -258,12 +287,13 @@ export function endPerRunBudget(): {
  *  on the first hit so the operator sees the switch to fallback. */
 export function checkPerRunBudget(): void {
   if (!_perRunActive) return;
-  if (_perRunCount >= INDIANAPI_PER_RUN_LIMIT) {
+  const limit = effectivePerRunLimit();
+  if (_perRunCount >= limit) {
     if (!_perRunHitLogged) {
       _perRunHitLogged = true;
       console.warn(
         `[API RUN LIMIT] reached ${_perRunCount} calls — switching to fallback ` +
-        `(limit=${INDIANAPI_PER_RUN_LIMIT}). Subsequent IndianAPI calls in this run will fast-fail; ` +
+        `(limit=${limit}). Subsequent IndianAPI calls in this run will fast-fail; ` +
         `pipeline continues on cache/stored bars.`,
       );
     }
@@ -356,12 +386,18 @@ export function incrementApiUsage(label = 'indianapi'): void {
 //   UNSAFE      — daily exceeded, OR projected monthly burn rate would
 //                 cross the monthly ceiling before month-end.
 //
-// `monthlyTarget` defaults to 70,000 (the user-stated soft target); the
-// absolute ceiling defaults to 90,000 (worst-case). Both env-tunable.
+// `monthlyTarget` defaults to 25,000 (22k–30k planning band); the
+// absolute ceiling defaults to 100,000 (paid-plan hard stop). Both env-tunable.
 export type ComplianceLabel = 'SAFE' | 'BORDERLINE' | 'UNSAFE';
 
-export const INDIANAPI_MONTHLY_TARGET = resolveLimit('INDIANAPI_MONTHLY_TARGET', 70_000);
-export const INDIANAPI_MONTHLY_CEILING = resolveLimit('INDIANAPI_MONTHLY_CEILING', 90_000);
+export const INDIANAPI_MONTHLY_TARGET = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_TARGET', 'BUDGET_MONTHLY_SOFT_CAP', 'INDIAN_API_MONTHLY_PLANNING_TARGET'],
+  MONTHLY_PLANNING_TARGET(),
+);
+export const INDIANAPI_MONTHLY_CEILING = resolveLimitMulti(
+  ['INDIANAPI_MONTHLY_CEILING', 'INDIAN_API_MONTHLY_BUDGET', 'INDIANAPI_MONTHLY_LIMIT'],
+  100_000,
+);
 
 export interface ComplianceProjection {
   label:                ComplianceLabel;

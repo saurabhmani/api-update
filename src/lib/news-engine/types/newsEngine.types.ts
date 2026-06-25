@@ -105,12 +105,32 @@ export interface NewsAdapter {
  * answer "which sources are configured? which failed? when did
  * each succeed?" without re-querying every adapter.
  */
+export type NewsSourceTier =
+  | 'always_on'
+  | 'official'
+  | 'optional_paid'
+  | 'optional_integration';
+
+export type NewsSourceHealthState =
+  | 'active'
+  | 'configured'
+  | 'optional'
+  | 'unavailable'
+  | 'not_configured';
+
 export interface NewsSourceStatus {
   source:         NewsSourceId;
   configured:     boolean;            // env key / URL present
   fetched:        number;
   error:          string | null;
   lastFetchedAt:  string | null;      // ISO timestamp when the call returned
+  /** Present when enriched by newsSourceHealth helpers. */
+  tier?:          NewsSourceTier;
+  healthState?:   NewsSourceHealthState;
+  /** Fusion-style status when enriched by newsSourceHealth helpers. */
+  status?:        'HEALTHY' | 'OPTIONAL' | 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'INSUFFICIENT_DATA';
+  healthMessage?: string;
+  displayName?:   string;
 }
 
 export interface IngestionResult {

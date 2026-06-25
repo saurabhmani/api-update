@@ -29,6 +29,7 @@ import {
   getSignalRiskReward,
   type RankableSignal,
 } from '@/lib/signals/signalRanking';
+import { getStrategyDisplayName } from '@/lib/signal-engine/strategies/strategyRegistry';
 import type {
   HistoricalCandle,
   HistoricalCandleResult,
@@ -40,6 +41,13 @@ import type {
 
 export type BacktestWindow = 'INTRADAY' | '1D' | '7D' | '30D' | '90D' | 'CUSTOM';
 export type BacktestStatus = 'COMPLETE' | 'PARTIAL' | 'INSUFFICIENT_DATA' | 'FAILED';
+
+/** Warehouse is EOD-backed (`eod`/`1day`). Intraday bars are optional. */
+export function intervalForBacktestWindow(
+  window: BacktestWindow,
+): '1day' | '5minute' {
+  return window === 'INTRADAY' ? '5minute' : '1day';
+}
 export type SignalOutcome = 'WIN' | 'LOSS' | 'NEUTRAL' | 'PENDING' | 'PARTIAL_WIN' | 'PARTIAL_LOSS' | 'INSUFFICIENT_DATA';
 export type GovernanceFlag = 'REVIEW_ONLY' | 'REVIEW_REQUIRED' | 'DO_NOT_APPLY_AUTOMATICALLY';
 
@@ -184,6 +192,8 @@ export interface BacktestResult {
    *  risk memory (q365_manipulation_symbol_risk) is proposal-only
    *  until Phase B's memory layer is wired up. */
   manipulationBacktest?:      ManipulationBacktestReview;
+  /** Per-strategy rollup using the same outcome engine as `performance`. */
+  strategyPerformance?:       BacktestStrategyPerformance[];
 }
 
 /**
@@ -216,6 +226,19 @@ export interface ManipulationBacktestSlice {
   maxDrawdownPercent: number | null;
 }
 
+export interface BacktestStrategyPerformance {
+  strategyId:             string;
+  strategyName:           string;
+  totalSignals:           number;
+  wins:                   number;
+  losses:                 number;
+  winRate:                number | null;
+  avgReturnPercent:       number | null;
+  maxDrawdownPercent:     number | null;
+  averageRiskReward:      number | null;
+  performance:            BacktestPerformance;
+}
+
 export interface BacktestPreview {
   status:                  BacktestStatus;
   window:                  BacktestWindow;
@@ -242,6 +265,7 @@ export interface SignalForBacktest extends RankableSignal {
 export interface SignalOutcomeReview {
   symbol:                   string;
   signalId:                 number | null;
+  strategyId:               string;
   tier:                     'APPROVED' | 'HIGH_POTENTIAL' | 'WATCHLIST' | 'REJECTED';
   direction:                'BUY' | 'SELL' | string | null;
   generatedAt:              string | null;
@@ -283,6 +307,15 @@ const median = (xs: number[]): number | null => {
     : Math.round(sorted[mid] * 100) / 100;
 };
 
+function resolveStrategyId(signal: SignalForBacktest): string {
+  const raw = (signal as Record<string, unknown>).strategy
+    ?? (signal as Record<string, unknown>).strategyId
+    ?? (signal as Record<string, unknown>).signal_type
+    ?? (signal as Record<string, unknown>).signalType;
+  const id = String(raw ?? '').trim();
+  return id || 'unclassified';
+}
+
 // ── Outcome calculation (per signal) ────────────────────────────
 
 export interface EvaluateOutcomeOptions {
@@ -295,6 +328,7 @@ export function evaluateSignalOutcome(
   options: EvaluateOutcomeOptions,
 ): SignalOutcomeReview {
   const tier = signal.__tier ?? 'REJECTED';
+  const strategyId = resolveStrategyId(signal);
   const direction = String(signal.direction ?? '').toUpperCase();
   const symbol = String(signal.symbol ?? signal.tradingsymbol ?? '');
   const entry  = numOrNull((signal as any).entry_price);
@@ -308,6 +342,7 @@ export function evaluateSignalOutcome(
     return {
       symbol,
       signalId:                 (signal as any).id ?? null,
+      strategyId,
       tier,
       direction:                direction || null,
       generatedAt,
@@ -333,6 +368,8 @@ export function evaluateSignalOutcome(
   if (candles.length > 0) {
     const cutoffMs = options.windowEndIso ? new Date(options.windowEndIso).getTime() : null;
     const startMs  = generatedAt ? new Date(generatedAt).getTime() : null;
+    const signalDay = generatedAt ? generatedAt.slice(0, 10) : null;
+    const useCalendarDayFilter = options.reviewWindowLabel !== 'INTRADAY';
     let exit:       number | null = null;
     let mfe = 0, mae = 0;
     let targetHit:  boolean | null = null;
@@ -343,7 +380,14 @@ export function evaluateSignalOutcome(
     for (const c of candles) {
       const t = new Date(c.ts).getTime();
       if (!Number.isFinite(t)) continue;
-      if (startMs != null && t < startMs) continue; // never use pre-signal candles
+      if (startMs != null) {
+        if (useCalendarDayFilter && signalDay) {
+          const candleDay = String(c.ts).slice(0, 10);
+          if (candleDay < signalDay) continue;
+        } else if (t < startMs) {
+          continue;
+        }
+      }
       if (cutoffMs != null && t > cutoffMs) break;  // no future-data leakage
       evaluated++;
       exit = c.close;
@@ -377,6 +421,7 @@ export function evaluateSignalOutcome(
       return {
         symbol,
         signalId:                 (signal as any).id ?? null,
+        strategyId,
         tier,
         direction:                direction || null,
         generatedAt,
@@ -425,6 +470,7 @@ export function evaluateSignalOutcome(
     return {
       symbol,
       signalId:                 (signal as any).id ?? null,
+      strategyId,
       tier,
       direction:                direction || null,
       generatedAt,
@@ -467,6 +513,7 @@ export function evaluateSignalOutcome(
     return {
       symbol,
       signalId:                 (signal as any).id ?? null,
+      strategyId,
       tier,
       direction:                direction || null,
       generatedAt,
@@ -490,6 +537,7 @@ export function evaluateSignalOutcome(
   return {
     symbol,
     signalId:                 (signal as any).id ?? null,
+    strategyId,
     tier,
     direction:                direction || null,
     generatedAt,
@@ -608,6 +656,59 @@ export function aggregatePerformance(outcomes: SignalOutcomeReview[]): BacktestP
     profitFactor,
     maxDrawdownPercent:    returns.length > 0 ? Math.round(dd * 100) / 100 : null,
   };
+}
+
+// ── Per-strategy performance (same outcome engine as overall) ───
+
+export function evaluateStrategyPerformanceBacktest(
+  outcomes: SignalOutcomeReview[],
+  signals: SignalForBacktest[],
+): BacktestStrategyPerformance[] {
+  const rrByStrategy = new Map<string, number[]>();
+  for (const s of signals) {
+    const id = resolveStrategyId(s);
+    const rr = getSignalRiskReward(s);
+    if (rr > 0) {
+      const list = rrByStrategy.get(id) ?? [];
+      list.push(rr);
+      rrByStrategy.set(id, list);
+    }
+  }
+
+  const grouped = new Map<string, SignalOutcomeReview[]>();
+  for (const o of outcomes) {
+    const list = grouped.get(o.strategyId) ?? [];
+    list.push(o);
+    grouped.set(o.strategyId, list);
+  }
+
+  const rows: BacktestStrategyPerformance[] = [];
+  for (const [strategyId, stratOutcomes] of grouped.entries()) {
+    const perf = aggregatePerformance(stratOutcomes);
+    const rrList = rrByStrategy.get(strategyId) ?? [];
+    const avgRr = rrList.length > 0
+      ? Math.round((rrList.reduce((a, b) => a + b, 0) / rrList.length) * 100) / 100
+      : null;
+    const resolved = perf.wins + perf.losses;
+    rows.push({
+      strategyId,
+      strategyName:       getStrategyDisplayName(strategyId),
+      totalSignals:       stratOutcomes.length,
+      wins:               perf.wins,
+      losses:             perf.losses,
+      winRate:            perf.winRate,
+      avgReturnPercent:   perf.avgReturnPercent,
+      maxDrawdownPercent: perf.maxDrawdownPercent,
+      averageRiskReward:  avgRr,
+      performance:        perf,
+    });
+  }
+
+  return rows.sort((a, b) => {
+    const aScore = a.performance.expectancy ?? a.totalSignals;
+    const bScore = b.performance.expectancy ?? b.totalSignals;
+    return bScore - aScore;
+  });
 }
 
 // ── Indicator backtest ──────────────────────────────────────────
@@ -1028,7 +1129,7 @@ export interface RunBacktestInput {
 export function runDailyBacktest(input: RunBacktestInput): BacktestResult {
   const warnings: string[] = [...(input.warnings ?? [])];
   const stamp = (s: SignalForBacktest, tier: BacktestTierPerformance['tier']): SignalForBacktest => {
-    const sym = String(s.symbol ?? s.tradingsymbol ?? '');
+    const sym = String(s.symbol ?? s.tradingsymbol ?? '').toUpperCase();
     return {
       ...s,
       __tier:    tier,
@@ -1081,6 +1182,7 @@ export function runDailyBacktest(input: RunBacktestInput): BacktestResult {
   const indicatorCombinations = evaluateIndicatorCombinationBacktest(allSignals, outcomesIdx);
   const thresholdSimulation   = runThresholdSimulation(allSignals, outcomesIdx);
   const marketRegimePerformance = evaluateMarketRegimeBacktest(allSignals, outcomesIdx);
+  const strategyPerformance     = evaluateStrategyPerformanceBacktest(outcomes, allSignals);
   const missedOpportunityBacktest = evaluateMissedOpportunityBacktest(
     input.marketMovers ?? [], allSignals, outcomesIdx, input.endDate,
   );
@@ -1153,6 +1255,7 @@ export function runDailyBacktest(input: RunBacktestInput): BacktestResult {
     warnings,
     recommendations,
     manipulationBacktest,
+    strategyPerformance,
   };
 }
 

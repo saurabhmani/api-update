@@ -23,12 +23,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
-import {
-  AppError,
-  AuthenticationError,
-  ForbiddenError,
-  isOperationalError,
-} from '@/lib/errors';
+import { isOperationalError, AuthenticationError, ForbiddenError } from '@/lib/errors';
+import { toClientError } from '@/lib/security/secureErrors';
 import { recordApiCall, type MonitorProvider } from '@/lib/monitor/apiMonitor';
 import { startTrace, finishTrace, addTraceStep } from '@/lib/monitor/trace';
 
@@ -188,18 +184,9 @@ export function withApiHandler(handler: HandlerFn) {
         requestId, method, path, status: 500, durationMs, traceId,
       });
 
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      finalize(500, false, 'INTERNAL_ERROR');
-      return NextResponse.json(
-        {
-          success: false,
-          requestId,
-          error: message,
-          code: 'INTERNAL_ERROR',
-          statusCode: 500,
-        },
-        { status: 500 },
-      );
+      const clientErr = toClientError(err, requestId);
+      finalize(clientErr.statusCode, false, clientErr.code);
+      return NextResponse.json(clientErr, { status: clientErr.statusCode });
     }
   };
 }

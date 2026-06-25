@@ -12,27 +12,32 @@
 //  RULE: Social signals are treated with higher manipulation
 //  sensitivity. The scoring layer automatically increases
 //  manipulation suspicion for social-origin events.
+//
+//  Premium integration — disabled until SOCIAL_SIGNALS_API_URL is set.
+//  Onboarding: docs/PREMIUM_NEWS_FEEDS.md
+//  TODO(provider): add vendor-specific auth, rate limits, and platform
+//  filters once a social signal vendor is selected.
 // ════════════════════════════════════════════════════════════════
 
 import type { NewsAdapter, RawNewsItem } from '../types/newsEngine.types';
-
-const SOCIAL_API_URL = process.env.SOCIAL_SIGNALS_API_URL ?? '';
-const SOCIAL_API_KEY = process.env.SOCIAL_SIGNALS_API_KEY ?? '';
 
 export const socialSignalsAdapter: NewsAdapter = {
   sourceId: 'social_signals',
 
   async fetch(query: string, limit = 15): Promise<RawNewsItem[]> {
-    if (!SOCIAL_API_URL) return [];
+    const socialUrl = process.env.SOCIAL_SIGNALS_API_URL?.trim();
+    if (!socialUrl) return [];
+
+    const socialApiKey = process.env.SOCIAL_SIGNALS_API_KEY?.trim() ?? '';
 
     try {
       const headers: Record<string, string> = {
         'Accept': 'application/json',
       };
-      if (SOCIAL_API_KEY) headers['Authorization'] = `Bearer ${SOCIAL_API_KEY}`;
+      if (socialApiKey) headers['Authorization'] = `Bearer ${socialApiKey}`;
 
       const res = await fetch(
-        `${SOCIAL_API_URL}?q=${encodeURIComponent(query)}&limit=${limit}`,
+        `${socialUrl}?q=${encodeURIComponent(query)}&limit=${limit}`,
         { headers, signal: AbortSignal.timeout(10_000) },
       );
       if (!res.ok) return [];

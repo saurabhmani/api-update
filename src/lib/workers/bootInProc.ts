@@ -517,6 +517,25 @@ export function bootInProcScheduler(): void {
   }, 2_000);
 
   state.bootedAt = Date.now();
+
+  // ── Daily scan schedule (dev / in-proc only) ─────────────────
+  // PM2 `workers/scheduler.ts` owns this in production. In dev the
+  // standalone scheduler is usually not running, so manipulation
+  // snapshots go stale without the 16:00 EOD + 18:30 scan crons.
+  if (process.env.Q365_INPROC_DAILY_SCAN !== '0') {
+    void import('@/lib/workers/dailyScanSchedule').then(({ startDailyScanSchedule }) => {
+      startDailyScanSchedule();
+      log.info('daily scan schedule started (in-proc — includes 18:30 manipulation scan)');
+    }).catch((err) => {
+      log.warn('daily scan schedule failed to start', { err: err?.message ?? String(err) });
+    });
+  }
+
+  // ── Stale snapshot auto-heal ─────────────────────────────────
+  void import('@/lib/workers/manipulationAutoHeal').then(({ scheduleManipulationAutoHeal }) => {
+    scheduleManipulationAutoHeal(90_000);
+  }).catch(() => { /* non-fatal */ });
+
   log.info('in-proc scheduler booted', {
     jobs: [
       '*/1 min rescore (09:20-15:30 IST)',
@@ -527,6 +546,8 @@ export function bootInProcScheduler(): void {
       '30s confirmed-snapshot lifecycle (24x7)',
       '60s signal-maturity worker (24x7)',
       '60s pipeline heartbeat (24x7)',
+      ...(process.env.Q365_INPROC_DAILY_SCAN !== '0' ? ['daily scan schedule (16:00 EOD + 18:30 manipulation)'] : []),
+      'manipulation auto-heal on stale snapshots (90s after boot)',
     ],
     regen_in_proc: regenInProc,
     hourly_scan:   true,

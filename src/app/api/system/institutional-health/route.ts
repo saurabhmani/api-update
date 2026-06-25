@@ -27,6 +27,7 @@ import {
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
+import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -52,12 +53,24 @@ async function probeCandleFreshness(marketOpen: boolean): Promise<CandleFreshnes
   } catch {
     /* table missing in fresh DB — return unknown */
   }
-  const report = classifyCandleFreshness({ latest_candle_ms: latestMs, market_open: marketOpen });
+  const report = classifyCandleFreshness({
+    latest_candle_ms: latestMs,
+    market_open:      marketOpen,
+    candle_source:    'daily',
+  });
   return {
     latest_candle_iso:  latestMs != null ? new Date(latestMs).toISOString() : null,
     candle_age_seconds: report.candle_age_seconds,
     freshness_quality:  report.freshness_quality,
-    feed_frozen:        report.feed_frozen,
+    feed_frozen:        report.feed_frozen && !isExpectedDailySessionGap({
+      freshnessMode:    report.freshness_mode,
+      staleMinutes:     report.candle_age_seconds != null
+        ? Math.round(report.candle_age_seconds / 60)
+        : null,
+      feedFrozen:       report.feed_frozen,
+      freshnessQuality: report.freshness_quality,
+      feedStaleHigh:    report.feed_frozen,
+    }),
   };
 }
 

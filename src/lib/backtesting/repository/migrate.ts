@@ -347,6 +347,46 @@ export async function migrateBacktestTables(): Promise<void> {
   // The queue worker uses these to surface progress to the UI while the
   // run is RUNNING. Old completed rows simply have NULL/0 — the UI
   // shows safe defaults for them.
+  // Canonical acceptance tables (strategy_backtests + backtest_summary)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS strategy_backtests (
+      id              INT AUTO_INCREMENT PRIMARY KEY,
+      backtest_id     VARCHAR(64)   NOT NULL UNIQUE,
+      strategy_id     VARCHAR(64)   NULL,
+      name            VARCHAR(255)  NOT NULL,
+      status          VARCHAR(20)   NOT NULL DEFAULT 'queued',
+      config_json     JSON          NOT NULL,
+      started_at      DATETIME      NOT NULL,
+      completed_at    DATETIME      NULL,
+      trade_count     INT           DEFAULT 0,
+      signal_count    INT           DEFAULT 0,
+      created_at      DATETIME      DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_sb_strategy (strategy_id),
+      INDEX idx_sb_status   (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS backtest_summary (
+      id                INT AUTO_INCREMENT PRIMARY KEY,
+      backtest_id       VARCHAR(64)   NOT NULL UNIQUE,
+      total_return_pct  DECIMAL(10,4) NULL,
+      win_rate          DECIMAL(8,4)  NULL,
+      sharpe_ratio      DECIMAL(8,4)  NULL,
+      sortino_ratio     DECIMAL(8,4)  NULL,
+      max_drawdown_pct  DECIMAL(8,4)  NULL,
+      profit_factor     DECIMAL(8,4)  NULL,
+      expectancy_r      DECIMAL(8,4)  NULL,
+      total_trades      INT           NULL,
+      total_signals     INT           NULL,
+      initial_capital   DECIMAL(14,2) NULL,
+      final_equity      DECIMAL(14,2) NULL,
+      summary_json      JSON          NULL,
+      computed_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_bsum_backtest (backtest_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   const runColumns = [
     `ALTER TABLE backtest_runs ADD COLUMN progress_percent INT NOT NULL DEFAULT 0`,
     `ALTER TABLE backtest_runs ADD COLUMN current_step VARCHAR(100) NULL`,

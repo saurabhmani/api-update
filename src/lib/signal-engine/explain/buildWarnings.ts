@@ -4,10 +4,51 @@
 
 import type { SignalFeatures, StrategyName } from '../types/signalEngine.types';
 import { round } from '../utils/math';
+import { isPriceNearFibLevel } from '../indicators/fibonacci';
+
+const FIB_WARNING_TOLERANCE_PCT = 1;
+const FIB_MIN_VOLUME_RATIO = 0.8;
+const FIB_PULLBACK_RSI_HIGH = 65;
+
+function isBelowFibLevel(close: number, level: number | undefined, tolerancePct: number): boolean {
+  if (level === undefined || !Number.isFinite(level)) return false;
+  if (level === 0) return close < 0;
+  return close < level * (1 - tolerancePct / 100);
+}
 
 export function buildWarnings(features: SignalFeatures, strategy?: StrategyName): string[] {
-  const { trend, momentum, volatility, structure } = features;
+  const { trend, momentum, volatility, structure, volume, context } = features;
   const warnings: string[] = [];
+
+  if (strategy === 'fibonacci_pullback') {
+    const { fib382, fib50, fib618, fib786 } = structure;
+    const inGoldenZone = structure.fibZoneMatched === true;
+    const nearKeyFib =
+      (fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, FIB_WARNING_TOLERANCE_PCT))
+      || (fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_WARNING_TOLERANCE_PCT))
+      || (fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, FIB_WARNING_TOLERANCE_PCT));
+
+    if (!inGoldenZone || !nearKeyFib) {
+      warnings.push('Price is below the key Fibonacci retracement zone.');
+    }
+    if (volume.volumeVs20dAvg < FIB_MIN_VOLUME_RATIO) {
+      warnings.push('Fibonacci setup is weak because volume confirmation is missing.');
+    }
+    if (
+      isBelowFibLevel(trend.close, fib618, FIB_WARNING_TOLERANCE_PCT)
+      || isBelowFibLevel(trend.close, fib786, FIB_WARNING_TOLERANCE_PCT)
+    ) {
+      warnings.push('Setup is invalid if price closes below 61.8% or 78.6% retracement.');
+    }
+    if (momentum.rsi14 > FIB_PULLBACK_RSI_HIGH) {
+      warnings.push(`RSI at ${round(momentum.rsi14)} is overbought for a Fibonacci pullback entry`);
+    }
+    if (context.marketRegime === 'Bearish' || context.marketRegime === 'High Volatility Risk') {
+      warnings.push(
+        `Market regime is ${context.marketRegime} — Fibonacci pullback confidence is reduced`,
+      );
+    }
+  }
 
   // Overextension
   if (trend.distanceFrom20EmaPct > 3) {

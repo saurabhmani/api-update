@@ -26,6 +26,7 @@ const TARGET3_R_MAP: Record<StrategyName, number> = {
   momentum_continuation:  4.0,  // momentum can run further
   gap_continuation:       4.0,  // gap setups have extended targets
   bullish_pullback:       3.0,  // pullbacks = more conservative
+  fibonacci_pullback:     3.0,  // Fibonacci pullbacks = conservative
   bearish_breakdown:      3.5,  // standard
   mean_reversion_bounce:  2.5,  // mean reversion = tighter targets
   bullish_divergence:     3.0,  // moderate
@@ -72,7 +73,7 @@ export function buildPhase3TradePlanForStrategy(
 
   const target3 = isShort
     ? round(entryRef - t3Multiple * riskPerUnit)
-    : round(entryRef + t3Multiple * riskPerUnit);
+    : resolveLongTarget3(features, strategy, basePlan, entryRef, riskPerUnit, t3Multiple);
 
   return {
     entryType: entryFor(strategy),
@@ -102,6 +103,8 @@ export function buildTradePlanForStrategy(features: SignalFeatures, strategy: St
   switch (strategy) {
     case 'bullish_pullback':
       plan = buildPullbackPlan(features); break;
+    case 'fibonacci_pullback':
+      plan = buildFibonacciPullbackPlan(features); break;
     case 'bearish_breakdown':
       plan = buildBreakdownPlan(features); break;
     case 'mean_reversion_bounce':
@@ -140,6 +143,95 @@ export function buildTradePlanForStrategy(features: SignalFeatures, strategy: St
       plan = buildTradePlan(features); break;
   }
   return { ...plan, entry: { ...plan.entry, type: entryFor(strategy) } };
+}
+
+function hasFibonacciPullbackLevels(f: SignalFeatures): boolean {
+  const { fib50, fib618, fib786 } = f.structure;
+  return fib50 != null && fib618 != null && fib786 != null;
+}
+
+function isPriceInFibGoldenZone(close: number, fib50: number, fib618: number): boolean {
+  const zoneLow = Math.min(fib50, fib618);
+  const zoneHigh = Math.max(fib50, fib618);
+  return close >= zoneLow && close <= zoneHigh;
+}
+
+/** Phase-3 target3: prefer 161.8% extension for fibonacci_pullback when available. */
+function resolveLongTarget3(
+  features: SignalFeatures,
+  strategy: StrategyName,
+  basePlan: TradePlan,
+  entryRef: number,
+  riskPerUnit: number,
+  t3Multiple: number,
+): number {
+  const rTarget3 = round(entryRef + t3Multiple * riskPerUnit);
+  if (strategy !== 'fibonacci_pullback') {
+    return rTarget3;
+  }
+
+  const fib1618 = features.structure.fib1618;
+  if (fib1618 != null && fib1618 > basePlan.targets.target2 && fib1618 > entryRef) {
+    return round(fib1618);
+  }
+
+  return round(Math.max(rTarget3, basePlan.targets.target2 + riskPerUnit * 0.25));
+}
+
+function buildFibonacciPullbackPlan(f: SignalFeatures): TradePlan {
+  if (!hasFibonacciPullbackLevels(f)) {
+    return buildPullbackPlan(f);
+  }
+
+  const close = f.trend.close;
+  const atr = f.volatility.atr14;
+  const { fib50, fib618, fib786, fib1272, recentHigh20 } = f.structure;
+  const fib50Level = fib50!;
+  const fib618Level = fib618!;
+  const fib786Level = fib786!;
+
+  const goldenZoneLow = round(Math.min(fib50Level, fib618Level));
+  const goldenZoneHigh = round(Math.max(fib50Level, fib618Level));
+
+  let entryZoneLow = goldenZoneLow;
+  let entryZoneHigh = goldenZoneHigh;
+  if (
+    f.structure.fibZoneMatched === true
+    && isPriceInFibGoldenZone(close, fib50Level, fib618Level)
+  ) {
+    entryZoneLow = round(Math.min(close, goldenZoneLow));
+    entryZoneHigh = round(close);
+  }
+
+  const entryRef = entryZoneHigh;
+
+  const useWideStop = close <= fib618Level;
+  const fibStopAnchor = useWideStop ? fib786Level : fib618Level;
+  const stopLoss = round(Math.min(
+    fibStopAnchor - STOP_ATR_MULTIPLIER * atr * 0.5,
+    close - STOP_ATR_MULTIPLIER * atr,
+  ));
+
+  const risk = Math.max(entryRef - stopLoss, atr * 0.5);
+
+  const minTarget1 = round(entryRef + TARGET1_R_MULTIPLE * risk);
+  let target1 = round(recentHigh20);
+  if (target1 <= entryRef || safeDivide(target1 - entryRef, risk) < TARGET1_R_MULTIPLE) {
+    target1 = minTarget1;
+  }
+
+  const minTarget2 = round(entryRef + TARGET2_R_MULTIPLE * risk);
+  let target2 = fib1272 != null ? round(fib1272) : minTarget2;
+  if (target2 <= target1 || target2 <= entryRef) {
+    target2 = round(Math.max(minTarget2, target1 + risk * 0.5));
+  }
+
+  return {
+    entry: { type: 'breakout_confirmation', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
+    stopLoss,
+    targets: { target1, target2 },
+    rewardRiskApprox: round(safeDivide(target1 - entryRef, risk), 1),
+  };
 }
 
 function buildPullbackPlan(f: SignalFeatures): TradePlan {

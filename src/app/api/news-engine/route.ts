@@ -27,7 +27,11 @@ import {
   getHighManipulationEvents,
 } from '@/lib/news-engine/repository/saveNewsScores';
 import { runNewsPipeline, runFullPipeline } from '@/lib/news-engine/pipeline/runNewsPipeline';
-import { getConfiguredSourcesSnapshot } from '@/lib/news-engine/ingestion/ingestAll';
+import {
+  buildConfiguredSourcesSnapshot,
+  buildProviderHealthMap,
+  mergeRunBreakdown,
+} from '@/lib/news-engine/health/newsSourceHealth';
 import { scoreUnscoredEvents } from '@/lib/news-engine/scoring/runScoringPipeline';
 import { getSymbolImpact, computeNewsImpact } from '@/lib/news-engine/impact/computeImpact';
 import { runNewsCalibration } from '@/lib/news-engine/feedback/runNewsCalibration';
@@ -83,24 +87,32 @@ export async function GET(req: NextRequest) {
     // the most recent successful run timestamps from the audit log
     // so the UI can show "last seen" per source without firing the
     // adapters again.
-    const sources = getConfiguredSourcesSnapshot();
+    const snapshot = buildConfiguredSourcesSnapshot();
     const { runAt, breakdown } = await readLatestRunInfo();
+    const health = mergeRunBreakdown(snapshot, breakdown, runAt);
     return NextResponse.json({
       ok: true,
-      sources: sources.map((s) => ({
-        ...s,
-        fetched: Number(breakdown[s.source] ?? 0),
-        lastFetchedAt: runAt,
-      })),
-      configuredCount: sources.filter((s) => s.configured).length,
-      totalCount: sources.length,
+      sources: health.sources,
+      providerHealth: buildProviderHealthMap(health.sources),
+      configuredCount: health.configuredCount,
+      activeCount: health.activeCount,
+      optionalCount: health.optionalCount,
+      unavailableCount: health.unavailableCount,
+      notConfiguredCount: health.notConfiguredCount,
+      activeSources: health.activeSources,
+      optionalSources: health.optionalSources,
+      unavailableSources: health.unavailableSources,
+      notConfiguredSources: health.notConfiguredSources,
+      integrationGaps: health.integrationGaps,
+      warnings: health.warnings,
+      totalCount: health.sources.length,
       latestPipelineRunAt: runAt,
     });
   }
 
   if (action === 'summary') {
     // Lightweight "is the engine alive?" snapshot for the UI header.
-    const sources = getConfiguredSourcesSnapshot();
+    const snapshot = buildConfiguredSourcesSnapshot();
     try {
       const { runAt: last, breakdown } = await readLatestRunInfo();
 
@@ -112,10 +124,9 @@ export async function GET(req: NextRequest) {
         latestNewsAt = recent?.[0]?.publishedAt ?? null;
       } catch { /* table may not exist yet */ }
 
-      const configured = sources.filter((s) => s.configured);
-      const fetchedRecently = configured.filter(
-        (s) => Number(breakdown[s.source] ?? 0) > 0,
-      );
+      const health = mergeRunBreakdown(snapshot, breakdown, last);
+      const configured = health.sources.filter((s) => s.configured);
+      const fetchedRecently = health.activeSources;
 
       // Pipeline status — explicit ladder so the UI never has to
       // re-derive it from raw counts:
@@ -142,10 +153,20 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         status,
-        configuredCount: configured.length,
-        totalCount: sources.length,
-        activeSources: fetchedRecently.map((s) => s.source),
-        notConfiguredSources: sources.filter((s) => !s.configured).map((s) => s.source),
+        configuredCount: health.configuredCount,
+        activeCount: health.activeCount,
+        optionalCount: health.optionalCount,
+        unavailableCount: health.unavailableCount,
+        notConfiguredCount: health.notConfiguredCount,
+        totalCount: health.sources.length,
+        activeSources: health.activeSources,
+        optionalSources: health.optionalSources,
+        unavailableSources: health.unavailableSources,
+        notConfiguredSources: health.notConfiguredSources,
+        integrationGaps: health.integrationGaps,
+        providerHealth: buildProviderHealthMap(health.sources),
+        sources: health.sources,
+        warnings: health.warnings,
         latestNewsPublishedAt: latestNewsAt,
         latestPipelineRunAt:   last,
       });
@@ -164,14 +185,23 @@ export async function GET(req: NextRequest) {
         message: e.message,
         stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
       });
+      const health = mergeRunBreakdown(snapshot, {}, null);
       return NextResponse.json({
         ok:       true,
         degraded: true,
         status:   'NO_DATA' as const,
-        configuredCount: sources.filter((s) => s.configured).length,
-        totalCount: sources.length,
+        configuredCount: health.configuredCount,
+        activeCount: 0,
+        optionalCount: health.optionalCount,
+        unavailableCount: health.unavailableCount,
+        notConfiguredCount: health.notConfiguredCount,
+        totalCount: health.sources.length,
         activeSources: [],
-        notConfiguredSources: sources.filter((s) => !s.configured).map((s) => s.source),
+        optionalSources: health.optionalSources,
+        unavailableSources: health.unavailableSources,
+        notConfiguredSources: health.notConfiguredSources,
+        sources: health.sources,
+        warnings: health.warnings,
         latestNewsPublishedAt: null,
         latestPipelineRunAt:   null,
         error: e.message,

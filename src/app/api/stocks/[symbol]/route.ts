@@ -41,13 +41,14 @@ const VALID_INTERVALS = new Set(['1minute','5minute','15minute','30minute','60mi
 
 export async function GET(
   req:     NextRequest,
-  context: { params: { symbol: string } }
+  context: { params: Promise<{ symbol: string }> }
 ) {
+  const params = await context.params;
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
 
   // ── Params ────────────────────────────────────────────────────
-  const rawSymbol  = decodeURIComponent(context.params.symbol ?? '').trim().toUpperCase();
+  const rawSymbol  = decodeURIComponent(params.symbol ?? '').trim().toUpperCase();
   const rawInterval = req.nextUrl.searchParams.get('interval') ?? '1minute';
   const rawLimit    = parseInt(req.nextUrl.searchParams.get('limit') ?? '100', 10);
 

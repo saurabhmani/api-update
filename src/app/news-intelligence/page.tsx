@@ -76,9 +76,15 @@ type PipelineStatus = 'FRESH' | 'PARTIAL' | 'STALE' | 'NO_DATA';
 interface NewsSummary {
   status:                PipelineStatus;
   configuredCount:       number;
+  activeCount?:          number;
+  optionalCount?:        number;
+  unavailableCount?:     number;
   totalCount:            number;
   activeSources:         string[];
+  optionalSources?:      string[];
+  unavailableSources?:   string[];
   notConfiguredSources:  string[];
+  warnings?:             string[];
   latestNewsPublishedAt: string | null;
   latestPipelineRunAt:   string | null;
 }
@@ -389,8 +395,20 @@ export default function NewsIntelligencePage() {
               fontSize: 11, fontWeight: 600,
               padding: '3px 10px', borderRadius: 99,
               background: '#F8FAFC', color: '#475569', border: '1px solid #E2E8F0',
-            }} title={`Configured: ${summary.configuredCount}/${summary.totalCount}. Not configured: ${summary.notConfiguredSources.join(', ') || '—'}`}>
-              Sources · {summary.configuredCount}/{summary.totalCount}
+            }} title={[
+              `Active: ${summary.activeSources.join(', ') || '—'}`,
+              `Configured: ${summary.configuredCount}/${summary.totalCount}`,
+              summary.optionalSources?.length
+                ? `Optional: ${summary.optionalSources.join(', ')}`
+                : null,
+              summary.unavailableSources?.length
+                ? `Unavailable: ${summary.unavailableSources.join(', ')}`
+                : null,
+              summary.notConfiguredSources.length
+                ? `Not configured: ${summary.notConfiguredSources.join(', ')}`
+                : null,
+            ].filter(Boolean).join(' · ')}>
+              Sources · {summary.activeCount ?? summary.activeSources.length}/{summary.configuredCount}
             </span>
           )}
           <style jsx global>{`

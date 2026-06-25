@@ -80,7 +80,8 @@ export function generateStaticParams() {
   return ALL_ARTICLES.map(a => ({ slug: a.slug }));
 }
 
-export default function InsightArticle({ params }: { params: { slug: string } }) {
+export default async function InsightArticle(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const article = ALL_ARTICLES.find(a => a.slug === params.slug);
 
   if (!article) {

@@ -36,11 +36,21 @@ import {
   type EngineHealthContext,
   type EngineHealthMap,
 }                                      from '@/lib/signals/engineHealthMap';
+import { probeLearningPersistence }    from '@/lib/learning/learningPersistenceProbe';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
 
 const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
+
+function parseCandleCoverageFromWarnings(warnings: unknown): number | null {
+  if (!Array.isArray(warnings)) return null;
+  for (const w of warnings) {
+    const m = String(w).match(/Historical candle data available for (\d+)\//);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
 
 // ── Per-upstream timeout budgets ──────────────────────────────
 //
@@ -48,11 +58,80 @@ const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
 // Keeping them tight ensures the health map itself never appears to
 // hang from the operator's perspective.
 const TIMEOUT = {
-  signals:      10_000,
-  dailyReport:   6_000,
-  backtest:      6_000,
+  // /api/signals is heavy — lite=true keeps health aggregation under budget.
+  signals:      30_000,
+  dailyReport:   8_000,
+  backtest:      8_000,
   candleProbe:   3_000,
+  learningProbe: 3_000,
 } as const;
+
+/** Minimal context when the signals envelope is unavailable or the
+ *  handler throws — still renders a usable health map from DB probes. */
+function buildFallbackHealthContext(
+  candleCoverage: {
+    latestCandleDate: string | null;
+    candleCount:      number;
+    distinctSymbols:  number;
+  },
+  market = getMarketStatus(),
+): EngineHealthContext {
+  return {
+    generatedAt: new Date().toISOString(),
+    marketStatus: {
+      isOpen: market.isOpen,
+      label:  market.label,
+      state:  market.state,
+    },
+    feed: {
+      provider:         candleCoverage.candleCount > 0 ? 'candles_warehouse' : null,
+      lastSuccessAt:    null,
+      lastApiRequestAt: null,
+      isBootstrap:      false,
+      isFallback:       false,
+      staleMinutes:     null,
+      freshnessLabel:   null,
+      coveragePercent:  null,
+      symbolsRequested: null,
+      symbolsReturned:  null,
+      candleAgeHours:   null,
+      candleCoverage,
+    },
+    transport: {
+      signalsAvailable:     false,
+      signalsTimedOut:      true,
+      signalsErrorMessage:  'signals envelope unavailable',
+      dailyReportAvailable: false,
+      backtestAvailable:    false,
+    },
+    pipeline: {
+      lastPipelineRunAt:     null,
+      lastConfirmedSignalAt: null,
+      latestBatchId:         null,
+      latestBatchEngineKind: null,
+      scanCoveragePercent:   null,
+      totalScanned:          null,
+      totalPersisted:        null,
+      universeSize:          null,
+      inProgressCount:       null,
+      validationStatus:      null,
+    },
+    signals: {
+      approved: [], highPotential: [], watchlist: [], developing: [],
+      scannerCandidates: [], riskRestricted: [], rejected: [],
+    },
+    counters: {
+      approvedTotal: 0, approvedBuy: 0, approvedSell: 0,
+      highPotentialTotal: 0, watchlistTotal: 0, rejectedTotal: 0, candidateTotal: 0,
+    },
+    dueDiligenceSummary: null,
+    dailyReport:  { available: false },
+    backtest:     { available: false },
+    learningPersistence: {
+      tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
+    },
+  };
+}
 
 /** Direct DB probe — used as a fallback when /api/signals is unavailable
  *  so the Data Feed Engine card can show the real warehouse state.
@@ -143,19 +222,18 @@ export async function GET(req: NextRequest) {
 
   // Fan-out — every upstream is independent so we run them in parallel
   // and tolerate individual failures via Promise.allSettled.
-  const [signalsRes, dailyRes, backtestRes, candleProbeSettled] = await Promise.allSettled([
-    internalFetch<any>(req, `/api/signals?action=all&limit=20&request_id=health-${Date.now()}`, {
-      cookieHeader, timeoutMs: TIMEOUT.signals,
-    }),
+  const [signalsRes, dailyRes, backtestRes, candleProbeSettled, learningProbeSettled] = await Promise.allSettled([
+    internalFetch<any>(
+      req,
+      `/api/signals?action=all&limit=10&lite=true&request_id=health-${Date.now()}`,
+      { cookieHeader, timeoutMs: TIMEOUT.signals },
+    ),
     internalFetch<any>(req, `/api/signals/daily-report`, {
       cookieHeader, timeoutMs: TIMEOUT.dailyReport,
     }),
-    internalFetch<any>(req, `/api/signals/backtest?window=1D`, {
+    internalFetch<any>(req, `/api/signals/backtest?window=7D`, {
       cookieHeader, timeoutMs: TIMEOUT.backtest,
     }),
-    // The candle probe never throws (it returns a zero-shape on
-    // failure) but we still budget it via Promise.race so a hung DB
-    // can't pin the health route.
     Promise.race([
       probeCandleWarehouse(),
       new Promise<{ latestCandleDate: null; candleCount: 0; distinctSymbols: 0 }>(
@@ -164,6 +242,10 @@ export async function GET(req: NextRequest) {
           TIMEOUT.candleProbe,
         ),
       ),
+    ]),
+    Promise.race([
+      probeLearningPersistence(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TIMEOUT.learningProbe)),
     ]),
   ]);
 
@@ -176,6 +258,9 @@ export async function GET(req: NextRequest) {
   const candleCoverage = candleProbeSettled.status === 'fulfilled'
     ? candleProbeSettled.value
     : { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
+  const learningPersistence = learningProbeSettled.status === 'fulfilled'
+    ? learningProbeSettled.value
+    : null;
 
   // Operator-facing warnings — these become the "Open Issues" + the
   // banner under the overall summary card. We deliberately convert
@@ -224,9 +309,15 @@ export async function GET(req: NextRequest) {
       isFallback:         payload?.isFallback  === true,
       staleMinutes:       payload?.dataFreshness?.ageMinutes ?? null,
       freshnessLabel:     payload?.dataFreshness?.label ?? null,
-      coveragePercent:    payload?.freshness?.scan_coverage_percent ?? null,
-      symbolsRequested:   payload?.freshness?.latest_batch_symbols ?? null,
-      symbolsReturned:    typeof payload?.main_signals_count === 'number' ? payload.main_signals_count : null,
+      coveragePercent:    typeof payload?.coverage_percent === 'number'
+                            ? payload.coverage_percent
+                            : null,
+      symbolsRequested:   payload?.freshness?.universe_size
+                            ?? payload?.freshness?.total_scanned
+                            ?? null,
+      symbolsReturned:    payload?.freshness?.total_persisted
+                            ?? payload?.freshness?.latest_batch_symbols
+                            ?? null,
       candleAgeHours:     payload?.freshness?.candle_age_hours ?? null,
       candleCoverage,
     },
@@ -263,6 +354,9 @@ export async function GET(req: NextRequest) {
       highPotentialTotal: 0, watchlistTotal: 0, rejectedTotal: 0, candidateTotal: 0,
     },
     dueDiligenceSummary: payload?.dueDiligenceSummary ?? null,
+    manipulationGateImpact: payload?.manipulationGateImpact ?? null,
+    manipulationRiskMeta:   payload?.manipulationRiskMeta ?? null,
+    learningPersistence,
   };
 
   if (daily.ok && daily.data) {
@@ -279,14 +373,21 @@ export async function GET(req: NextRequest) {
 
   if (backtest.ok && backtest.data) {
     const bt = backtest.data?.backtest;
+    const meta = backtest.data?.meta as {
+      symbolsWithCandles?: number;
+      symbolsQueried?: number;
+      outcomesAvailable?: number;
+      outcomesTotal?: number;
+    } | undefined;
     ctx.backtest = bt
       ? {
           available:        true,
           status:           bt.status,
           window:           bt.window,
           generatedAt:      bt.generatedAt,
-          symbolsWithData:  bt.universe?.symbolsTested ?? null,
-          totalSymbols:     bt.universe?.symbolsTested ?? null,
+          symbolsWithData:  meta?.symbolsWithCandles
+            ?? parseCandleCoverageFromWarnings(bt.warnings),
+          totalSymbols:     meta?.symbolsQueried ?? bt.universe?.symbolsTested ?? null,
           warnings:         Array.isArray(bt.warnings) ? bt.warnings : [],
         }
       : { available: false };
@@ -313,20 +414,35 @@ export async function GET(req: NextRequest) {
     { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
   );
   } catch (err) {
-    // MODULE-API-RESILIENCE-2026-05 — any unhandled throw in the body
-    // above lands here. Returning a structured 200 with `degraded: true`
-    // keeps the dashboard's engine-health card alive (it renders a
-    // "degraded" badge instead of "fetch failed").
+    // MODULE-API-RESILIENCE-2026-05 — never return health:null on throws.
+    // Build a probe-based map so /signals/engine-health always renders.
     logModuleFail('GET-handler', err);
+    let candleCoverage = { latestCandleDate: null as string | null, candleCount: 0, distinctSymbols: 0 };
+    let learningPersistence = {
+      tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
+    };
+    try {
+      candleCoverage = await probeCandleWarehouse();
+    } catch { /* keep zero-shape */ }
+    try {
+      learningPersistence = await probeLearningPersistence();
+    } catch { /* keep zero-shape */ }
+    const fallbackHealth = buildEngineHealthMap({
+      ...buildFallbackHealthContext(candleCoverage),
+      learningPersistence,
+    });
+    const errMsg = err instanceof Error ? err.message : 'internal error';
     return NextResponse.json(
       {
-        ...FALLBACK_HEALTH_PAYLOAD,
-        generatedAt: new Date().toISOString(),
-        warnings:    [
-          err instanceof Error
-            ? `Engine Health degraded: ${err.message}`
-            : 'Engine Health degraded (internal error)',
+        ok:           true,
+        generatedAt:  fallbackHealth.generatedAt,
+        health:       fallbackHealth,
+        warnings:     [
+          `Engine health built from fallback probes (${errMsg}).`,
+          'Signal Engine summary was unavailable for this refresh — retry or open Signal Engine.',
         ],
+        sourceStatus: { candleProbe: candleCoverage },
+        degraded:     true,
       },
       { status: 200, headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
     );

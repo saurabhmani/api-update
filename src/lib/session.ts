@@ -2,12 +2,15 @@ import { cookies } from 'next/headers';
 import { db } from './db';
 import { cacheGet, cacheSet } from './redis';
 import { AuthenticationError, ForbiddenError } from './errors';
+import { getPermissionsForRole, hasPermission } from './security/rbac';
+import type { Permission } from './security/types';
 
 export interface SessionUser {
   id: number;
   email: string;
   name: string | null;
   role: 'user' | 'admin';
+  permissions?: string[];
 }
 
 /** Call inside any route.ts to get the logged-in user or null */
@@ -30,7 +33,13 @@ export async function getSession(): Promise<SessionUser | null> {
   );
 
   if (!rows.length) return null;
-  const user = { id: rows[0].id, email: rows[0].email, name: rows[0].name, role: rows[0].role };
+  const user = {
+    id: rows[0].id,
+    email: rows[0].email,
+    name: rows[0].name,
+    role: rows[0].role,
+    permissions: getPermissionsForRole(rows[0].role),
+  };
   await cacheSet(`session:${token}`, user, 300);
   return user;
 }
@@ -58,5 +67,14 @@ export async function requireSession(): Promise<SessionUser> {
 export async function requireAdmin(): Promise<SessionUser> {
   const user = await requireSession();
   if (user.role !== 'admin') throw new ForbiddenError('Forbidden');
+  return user;
+}
+
+/** Require specific RBAC permission */
+export async function requirePermission(permission: Permission): Promise<SessionUser> {
+  const user = await requireSession();
+  if (!hasPermission(user.role, permission)) {
+    throw new ForbiddenError(`Missing permission: ${permission}`);
+  }
   return user;
 }

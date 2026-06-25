@@ -104,6 +104,18 @@ export interface StructureFeatures {
   rangeCompressionRatio: number;
   consecutiveHigherLows: number;
   consecutiveLowerHighs: number;
+  fib236?: number;
+  fib382?: number;
+  fib50?: number;
+  fib618?: number;
+  fib786?: number;
+  fib100?: number;
+  fib1272?: number;
+  fib1618?: number;
+  fibNearestLevel?: number;
+  fibNearestLevelName?: string;
+  fibDistancePct?: number;
+  fibZoneMatched?: boolean;
 }
 
 export interface ContextFeatures {
@@ -245,6 +257,7 @@ export type StrategyName =
   // ── Phase 1: original 13 ─────────────────────────────────
   | 'bullish_breakout'
   | 'bullish_pullback'
+  | 'fibonacci_pullback'
   | 'bearish_breakdown'
   | 'mean_reversion_bounce'
   | 'momentum_continuation'
@@ -311,7 +324,7 @@ export interface StrategyCandidate {
 
 export type SignalType =
   // Phase 1:
-  | 'bullish_breakout' | 'bullish_pullback' | 'bearish_breakdown' | 'mean_reversion_bounce'
+  | 'bullish_breakout' | 'bullish_pullback' | 'fibonacci_pullback' | 'bearish_breakdown' | 'mean_reversion_bounce'
   | 'momentum_continuation' | 'bullish_divergence' | 'volume_climax_reversal' | 'gap_continuation'
   | 'range_breakout' | 'ema_crossover' | 'oversold_bounce' | 'overbought_reversal'
   | 'weak_trend_breakdown'
@@ -322,7 +335,7 @@ export type SignalType =
 
 export type SignalSubtype =
   // Phase 1:
-  | 'fresh_breakout' | 'continuation' | 'pullback_entry' | 'reversal_bounce' | 'breakdown'
+  | 'fresh_breakout' | 'continuation' | 'pullback_entry' | 'fib_retracement_entry' | 'reversal_bounce' | 'breakdown'
   | 'momentum_ride' | 'divergence_reversal' | 'climax_reversal' | 'gap_and_go'
   | 'range_expansion' | 'ema_cross' | 'oversold_reversal' | 'overbought_reversal_entry'
   | 'weak_trend_entry'

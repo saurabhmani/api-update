@@ -1,13 +1,16 @@
-import { db } from '@/lib/db';
 import { cacheGet, cacheSet } from '@/lib/redis';
 import type { SessionUser } from '@/types';
 import { FREE_DAILY_SIGNAL_LIMIT } from '@/lib/constants/features';
+import { checkPremiumAccess, getPremiumSummary } from '@/lib/billing';
+import { getOrCreateSubscription } from '@/lib/billing/repository/billingRepository';
+import { normalizePlan } from '@/lib/billing/constants/plans';
 
 export interface EntitlementResult {
   allowed:          boolean;
   plan:             string;
   upgrade_required: boolean;
   reason?:          string;
+  credits_remaining?: number;
 }
 
 // ── Get user's current plan ───────────────────────────────────────
@@ -16,11 +19,9 @@ export async function getUserPlan(userId: number): Promise<string> {
   const cached   = await cacheGet<string>(cacheKey);
   if (cached) return cached;
 
-  const { rows } = await db.query(
-    `SELECT plan FROM user_plans WHERE user_id=?`, [userId]
-  );
-  const plan = rows[0]?.plan ?? 'free';
-  await cacheSet(cacheKey, plan, 600); // cache 10 min
+  const sub = await getOrCreateSubscription(userId);
+  const plan = normalizePlan(sub.plan);
+  await cacheSet(cacheKey, plan, 600);
   return plan;
 }
 
@@ -28,27 +29,15 @@ export async function getUserPlan(userId: number): Promise<string> {
 export async function checkFeature(
   userId: number,
   featureKey: string,
-  role: 'user' | 'admin' = 'user'
+  role: 'user' | 'admin' = 'user',
 ): Promise<EntitlementResult> {
-  // Admins always get everything
-  if (role === 'admin') return { allowed: true, plan: 'admin', upgrade_required: false };
-
-  const plan = await getUserPlan(userId);
-
-  // Check entitlement
-  const { rows } = await db.query(
-    `SELECT enabled FROM feature_entitlements WHERE plan=? AND feature_key=?`,
-    [plan, featureKey]
-  );
-
-  if (!rows.length) return { allowed: true, plan, upgrade_required: false }; // unknown feature = allow
-  if (rows[0].enabled) return { allowed: true, plan, upgrade_required: false };
-
+  const result = await checkPremiumAccess(userId, featureKey, { role });
   return {
-    allowed:          false,
-    plan,
-    upgrade_required: true,
-    reason:           `This feature requires a higher plan. You are on ${plan}.`,
+    allowed: result.allowed,
+    plan: result.plan,
+    upgrade_required: result.upgradeRequired,
+    reason: result.reason,
+    credits_remaining: result.creditsRemaining,
   };
 }
 
@@ -79,7 +68,6 @@ export async function incrementSignalUsage(userId: number): Promise<void> {
   const today    = new Date().toISOString().split('T')[0];
   const redisKey = `signals:daily:${userId}:${today}`;
   const current  = (await cacheGet<number>(redisKey)) ?? 0;
-  // TTL = seconds until midnight
   const now   = new Date();
   const midnight = new Date(now); midnight.setHours(24, 0, 0, 0);
   const ttl   = Math.floor((midnight.getTime() - now.getTime()) / 1000);
@@ -90,20 +78,27 @@ export async function incrementSignalUsage(userId: number): Promise<void> {
 export async function getAllUserFeatures(user: SessionUser): Promise<{
   plan: string; features: Record<string, boolean>;
   signals_used_today: number; signals_limit: number;
+  wallets?: Awaited<ReturnType<typeof getPremiumSummary>>['wallets'];
+  credits?: Record<string, number>;
 }> {
   if (user.role === 'admin') {
-    return { plan: 'admin', features: { __all: true }, signals_used_today: 0, signals_limit: 999 };
+    return { plan: 'enterprise', features: { __all: true }, signals_used_today: 0, signals_limit: 999 };
   }
 
-  const plan = await getUserPlan(user.id);
-  const { rows } = await db.query(
-    `SELECT feature_key, enabled FROM feature_entitlements WHERE plan=?`, [plan]
-  );
-
+  const summary = await getPremiumSummary(user.id, user.role);
   const features: Record<string, boolean> = {};
-  for (const row of rows) features[row.feature_key] = row.enabled;
+  for (const f of summary.features) features[f] = true;
 
   const { used, limit } = await checkSignalDailyLimit(user.id);
+  const credits: Record<string, number> = {};
+  for (const w of summary.wallets) credits[w.creditType] = w.balance;
 
-  return { plan, features, signals_used_today: used, signals_limit: limit };
+  return {
+    plan: summary.plan,
+    features,
+    signals_used_today: used,
+    signals_limit: limit,
+    wallets: summary.wallets,
+    credits,
+  };
 }

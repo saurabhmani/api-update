@@ -3,6 +3,11 @@
  *
  * Phase 1 cutover adapter.
  *
+ * Run modes (?mode=):
+ *   scan (default)        — read market_data_daily only; zero IndianAPI during scan
+ *   backfill              — upstream candle refresh only; no strategy evaluation
+ *   refresh-and-scan      — refresh stale symbols then DB-only scan
+ *
  * Historically this route ran the legacy src/services/signalPipeline
  * generator. It now forwards to the phase-based engine
  * (generatePhase4Signals) so the visible app flow produces new-engine
@@ -29,7 +34,7 @@ import {
 } from '@/lib/signal-engine';
 import type { CandleProvider, PortfolioSnapshot, Candle } from '@/lib/signal-engine';
 import { checkCandleFreshness } from '@/lib/signal-engine/live/candleFreshnessGuard';
-import { refreshDailyCandles } from '@/lib/marketData/candleIngest';
+import { refreshDailyCandles, type RefreshCandlesResult } from '@/lib/marketData/candleIngest';
 import {
   fetchDailyCandlesWithFallback,
   resetCandleSourceCounters,
@@ -80,6 +85,12 @@ import {
 } from '@/providers/adapters/IndianAPIAdapter';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { getRunCount, incrementRunCount } from '@/lib/scanner/runCounter';
+import {
+  beginSignalEngineRun,
+  completeSignalEngineRun,
+  failSignalEngineRun,
+  buildSignalEngineStatus,
+} from '@/lib/signal-engine/runSignalEngineStatus';
 
 // Spec "SMART ROTATION" — per-run universe cap with runCount-based
 // chunk rotation. Each run scans CHUNK_SIZE = SIGNAL_RUN_UNIVERSE_CAP
@@ -128,6 +139,46 @@ function computeThrottledCap(baseCap: number, dailyUsed: number, dailyLimit: num
   if (pct >= 80) return { cap: Math.max(40, Math.floor(baseCap * 0.5)),  band: 'throttle', pct };
   if (pct >= 60) return { cap: Math.max(60, Math.floor(baseCap * 0.75)), band: 'warn',     pct };
   return { cap: baseCap, band: 'normal', pct };
+}
+
+export type SignalEngineRunMode = 'scan' | 'backfill' | 'refresh-and-scan';
+
+function parseSignalEngineMode(req: NextRequest): SignalEngineRunMode {
+  const raw = req.nextUrl.searchParams.get('mode')?.trim().toLowerCase();
+  if (raw === 'backfill') return 'backfill';
+  if (raw === 'refresh-and-scan' || raw === 'refresh_and_scan') return 'refresh-and-scan';
+  if (raw === 'scan') return 'scan';
+  // Legacy: explicit skipCandleRefresh=false without mode → refresh then scan.
+  if (req.nextUrl.searchParams.get('skipCandleRefresh') === 'false') {
+    return 'refresh-and-scan';
+  }
+  return 'scan';
+}
+
+function resolveRunMode(opts: {
+  mode?: SignalEngineRunMode;
+  skipCandleRefresh?: boolean;
+}): SignalEngineRunMode {
+  if (opts.mode) return opts.mode;
+  if (opts.skipCandleRefresh === false) return 'refresh-and-scan';
+  return 'scan';
+}
+
+function shouldRefreshCandles(mode: SignalEngineRunMode): boolean {
+  return mode === 'backfill' || mode === 'refresh-and-scan';
+}
+
+function shouldRunSignalScan(mode: SignalEngineRunMode): boolean {
+  return mode === 'scan' || mode === 'refresh-and-scan';
+}
+
+function resolveDataSourceUsed(
+  mode: SignalEngineRunMode,
+  indianApiRequests: number,
+): 'db' | 'db+indianapi' | 'indianapi' {
+  if (mode === 'scan') return 'db';
+  if (mode === 'backfill') return indianApiRequests > 0 ? 'indianapi' : 'db';
+  return indianApiRequests > 0 ? 'db+indianapi' : 'db';
 }
 
 /**
@@ -335,7 +386,42 @@ let migrated = false;
 // /api/run-signal-engine click and an auto-recovery can never run
 // simultaneously, and either path's 409/skip envelope can read the
 // other's running batch.
-let inFlight: { batchId: string; startedAt: string } | null = null;
+let inFlight: { batchId: string; startedAt: string; mode: string } | null = null;
+
+function recordSuccessfulSignalEngineRun(opts: {
+  jobId: string;
+  mode: string;
+  startedAt: string;
+  durationMs: number;
+  totalSymbols: number;
+  scannedSymbols: number;
+  rejectedInsufficientCandles: number;
+  rejectedProviderError: number;
+  signalsGenerated: number;
+  signalsSaved: number;
+  indianApiRequestsUsed: number;
+  dataSource: string;
+  failedSymbolsSample: Array<{ symbol: string; reason: string }>;
+}): void {
+  completeSignalEngineRun({
+    jobId: opts.jobId,
+    mode: opts.mode,
+    success: true,
+    startedAt: opts.startedAt,
+    finishedAt: new Date().toISOString(),
+    durationMs: opts.durationMs,
+    totalSymbols: opts.totalSymbols,
+    scannedSymbols: opts.scannedSymbols,
+    rejectedInsufficientCandles: opts.rejectedInsufficientCandles,
+    rejectedProviderError: opts.rejectedProviderError,
+    signalsGenerated: opts.signalsGenerated,
+    signalsSaved: opts.signalsSaved,
+    indianApiRequestsUsed: opts.indianApiRequestsUsed,
+    dataSource: opts.dataSource,
+    lastError: null,
+    failedSymbolsSample: opts.failedSymbolsSample,
+  });
+}
 
 // Spec "FIX PIPELINE CONCURRENCY" §1+§8 — single source of truth for
 // the progress envelope shipped on the 409 (and on GET ?status=true).
@@ -419,60 +505,54 @@ function buildRunningEnvelope(opts: {
   };
 }
 
-// Candle provider — walks the unified fallback chain (DB-fast →
-// IndianAPI live → NSE direct → DB-thin → throw) so a symbol with
-// any source returning data flows into Phase 3.
-//
-// Spec "ALLOW MARKET CLOSED FETCH" + "FORCE MIN DATA GUARANTEE":
-// the legacy `if (market.isOpen && refreshAgeMs > STALE_SKIP_AGE_MS) return []`
-// branch was deleted. Returning an empty array silently turned every
-// symbol into a Phase-3 rejection during market hours when a candle
-// refresh was lagging — exactly the failure the user reported.
-// Stale data is now passed through; Phase 3's own validateCandleSeries
-// gate decides whether the bars are usable.
-//
-// `STALE_SKIP_AGE_MS` is no longer referenced from the read path; it
-// remains in scope as documentation of the historical threshold and
-// is still consumed by upstream freshness reporting.
+// Candle providers — scan modes read market_data_daily only. Upstream
+// ingest (IndianAPI) runs only in backfill / refresh-and-scan BEFORE
+// strategy evaluation, never during the per-symbol scan loop.
 void STALE_SKIP_AGE_MS;
-const dbCandleProvider: CandleProvider = {
-  async fetchDailyCandles(symbol: string): Promise<Candle[]> {
-    const result = await fetchDailyCandlesWithFallback(symbol);
-    const rows = result.candles;
-    const latest = rows[rows.length - 1] ?? null;
-    const latestTs = latest?.ts ? new Date(latest.ts).getTime() : null;
 
-    // "ageMinutes" is measured against the candle scheduler's last
-    // refresh wall clock, NOT the daily bar's `ts`. Yahoo's daily bar
-    // is stamped at market open so its ts age is always multi-hour
-    // during the session — measuring refresh age is the honest
-    // "how fresh is the data we wrote?" metric.
-    const refreshAgeMs = getCandleRefreshAgeMs();
-    const ageMinutes =
-      refreshAgeMs != null ? Math.round((refreshAgeMs / 60_000) * 10) / 10 : null;
+function logCandleProviderDebug(
+  symbol: string,
+  rows: Candle[],
+  result: { source: string; hitUpstream: boolean; latencyMs: number },
+): void {
+  const latest = rows[rows.length - 1] ?? null;
+  const latestTs = latest?.ts ? new Date(latest.ts).getTime() : null;
+  const refreshAgeMs = getCandleRefreshAgeMs();
+  const ageMinutes =
+    refreshAgeMs != null ? Math.round((refreshAgeMs / 60_000) * 10) / 10 : null;
 
-    console.log('CANDLE DEBUG:', {
-      symbol,
-      latest: latest
-        ? {
-            time:   latestTs ? new Date(latestTs).toISOString() : null,
-            open:   latest.open,
-            high:   latest.high,
-            low:    latest.low,
-            close:  latest.close,
-            volume: latest.volume,
-          }
-        : null,
-      ageMinutes,
-      bars:        rows.length,
-      source:      result.source,
-      hit_upstream: result.hitUpstream,
-      latency_ms:  result.latencyMs,
-    });
+  console.log('CANDLE DEBUG:', {
+    symbol,
+    latest: latest
+      ? {
+          time:   latestTs ? new Date(latestTs).toISOString() : null,
+          open:   latest.open,
+          high:   latest.high,
+          low:    latest.low,
+          close:  latest.close,
+          volume: latest.volume,
+        }
+      : null,
+    ageMinutes,
+    bars:         rows.length,
+    source:       result.source,
+    hit_upstream: result.hitUpstream,
+    latency_ms:   result.latencyMs,
+  });
+}
 
-    return rows;
-  },
-};
+function createDbOnlyCandleProvider(): CandleProvider {
+  return {
+    async fetchDailyCandles(symbol: string): Promise<Candle[]> {
+      const result = await fetchDailyCandlesWithFallback(symbol, {
+        dbOnly: true,
+        evaluationRead: true,
+      });
+      logCandleProviderDebug(symbol, result.candles, result);
+      return result.candles;
+    },
+  };
+}
 
 // Portfolio snapshot loader — mirrors /api/signal-engine route.
 async function loadPortfolioSnapshot(userId: number): Promise<PortfolioSnapshot> {
@@ -531,8 +611,9 @@ async function runScanInner(
   user: { id: number },
   batchId: string,
   start: number,
-  opts: { skipCandleRefresh?: boolean } = {},
+  opts: { mode?: SignalEngineRunMode; skipCandleRefresh?: boolean } = {},
 ): Promise<any> {
+  const mode = resolveRunMode(opts);
   // [PIPELINE START] — single-line greppable trace tag emitted at the
   // top of every run-signal-engine invocation. Held in lock-step with
   // the matching marker emitted by /api/signals' runAutoScanRecovery
@@ -542,7 +623,7 @@ async function runScanInner(
   console.log(
     `[PIPELINE START] reason="api:run-signal-engine" batch=${batchId} ` +
     `started_at=${new Date(start).toISOString()} ` +
-    `skip_candle_refresh=${!!opts.skipCandleRefresh}`,
+    `mode=${mode} skip_candle_refresh=${!shouldRefreshCandles(mode)}`,
   );
   // Spec "TRACK USAGE" — single greppable budget snapshot at PIPELINE
   // START so an operator can correlate this run with what's already
@@ -656,6 +737,15 @@ async function runScanInner(
     `chunk_used=${fullUniverseScan ? 'no (full-scan mode)' : 'yes (legacy mode)'} ` +
     `api_per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
   );
+  const runStartedAtIso = new Date(start).toISOString();
+  beginSignalEngineRun({
+    jobId: batchId,
+    mode,
+    startedAt: runStartedAtIso,
+    totalSymbols: runUniverse.length,
+  });
+
+  try {
   // Single-grep carve-point trace. When `out` < `in`, the bottleneck is
   // either fullUniverseScan=false (prefilter slice in effect) or the
   // universe itself is short (q365_universe(is_active=1) row count).
@@ -707,35 +797,100 @@ async function runScanInner(
   // handles IndianAPI's daily/monthly counter slice.
   resetCandleSourceCounters();
   const candleStartedAt = Date.now();
-  if (opts.skipCandleRefresh) {
-    console.log('[RunSignalEngine] skipCandleRefresh=true — running Phase 4 against existing market_data_daily bars');
-  } else {
+  let refreshResult: RefreshCandlesResult | null = null;
+  if (shouldRefreshCandles(mode)) {
     try {
-      const refresh = await refreshDailyCandles({
+      refreshResult = await refreshDailyCandles({
         symbols: runUniverse,
-        // Spec "OPTIMIZE API USAGE PER RUN" §1+§2 — drop force=true.
-        // The freshness window in candleIngest skips per-symbol when
-        // stored bars are <10 min old, which on a typical day means
-        // the second run of the day touches ~0 candles. force=true
-        // would burn the entire universe regardless. CANDLE_FRESH_IF_WITHIN_MIN
-        // overrides the default 10-min window.
         force: false,
       });
       console.log(
-        `[RunSignalEngine] refresh done  refreshed=${refresh.refreshed}/${refresh.staleCount}  ` +
-        `bars=${refresh.barsIngested}  failed=${refresh.failed.length}  ` +
-        `before=${refresh.latestTsBefore} (${refresh.ageHoursBefore}h)  ` +
-        `after=${refresh.latestTsAfter} (${refresh.ageHoursAfter}h)`
+        `[RunSignalEngine] refresh done mode=${mode} ` +
+        `refreshed=${refreshResult.refreshed}/${refreshResult.staleCount}  ` +
+        `bars=${refreshResult.barsIngested}  failed=${refreshResult.failed.length}  ` +
+        `indianapi_requests=${refreshResult.indianApiRequests}  ` +
+        `before=${refreshResult.latestTsBefore} (${refreshResult.ageHoursBefore}h)  ` +
+        `after=${refreshResult.latestTsAfter} (${refreshResult.ageHoursAfter}h)`,
       );
     } catch (err) {
       console.error(
-        '[RunSignalEngine] refresh failed (continuing on DB bars):',
+        `[RunSignalEngine] refresh failed mode=${mode} (continuing on DB bars):`,
         (err as Error)?.message,
       );
     }
+  } else {
+    console.log(
+      `[RunSignalEngine] mode=${mode} — DB-only scan, skipping upstream candle refresh`,
+    );
   }
   const candleElapsedMs = Date.now() - candleStartedAt;
-  console.log(`[PERF] run-signal-engine candle_refresh_ms=${candleElapsedMs} skipped=${!!opts.skipCandleRefresh}`);
+  console.log(
+    `[PERF] run-signal-engine candle_refresh_ms=${candleElapsedMs} mode=${mode}`,
+  );
+
+  if (mode === 'backfill') {
+    const usageAfterBackfill = getApiUsage();
+    const sources = getCandleSourceCounters();
+    const indianApiRequests = Math.max(
+      sources.indianapi_requests,
+      refreshResult?.indianApiRequests ?? 0,
+      usageAfterBackfill.daily - usageBeforeRun.daily,
+    );
+    const totalElapsedMs = Date.now() - start;
+    console.log(
+      `[PIPELINE END] status=success mode=backfill batch=${batchId} ` +
+      `elapsed_ms=${totalElapsedMs} indianapi_requests=${indianApiRequests}`,
+    );
+    try {
+      await markPipelineHeartbeat('api:run-signal-engine:backfill');
+    } catch (err) {
+      console.warn(
+        '[RunSignalEngine] markPipelineHeartbeat failed (non-fatal):',
+        (err as Error)?.message,
+      );
+    }
+    const failedSample = (refreshResult?.failed ?? []).slice(0, 10);
+    recordSuccessfulSignalEngineRun({
+      jobId: batchId,
+      mode: 'backfill',
+      startedAt: runStartedAtIso,
+      durationMs: totalElapsedMs,
+      totalSymbols: runUniverse.length,
+      scannedSymbols: 0,
+      rejectedInsufficientCandles: 0,
+      rejectedProviderError: refreshResult?.failed?.length ?? 0,
+      signalsGenerated: 0,
+      signalsSaved: 0,
+      indianApiRequestsUsed: indianApiRequests,
+      dataSource: resolveDataSourceUsed('backfill', indianApiRequests),
+      failedSymbolsSample: failedSample,
+    });
+    return {
+      success: true,
+      mode: 'backfill',
+      batch_id: batchId,
+      summary: {
+        mode: 'backfill',
+        total_symbols: runUniverse.length,
+        scanned_symbols: 0,
+        rejected_insufficient_candles: 0,
+        signals_generated: 0,
+        signals_saved: 0,
+        data_source_used: resolveDataSourceUsed('backfill', indianApiRequests),
+        indianapi_requests_used: indianApiRequests,
+      },
+      backfill: refreshResult,
+      duration_ms: totalElapsedMs,
+      timings: {
+        candle_refresh_ms: candleElapsedMs,
+        total_ms: totalElapsedMs,
+      },
+    };
+  }
+
+  if (!shouldRunSignalScan(mode)) {
+    throw new Error(`Unsupported signal-engine mode: ${mode}`);
+  }
 
   const freshness = await checkCandleFreshness();
   console.log(
@@ -785,8 +940,9 @@ async function runScanInner(
     universe: runUniverse,
   };
   const phase4StartedAt = Date.now();
+  const candleProvider = createDbOnlyCandleProvider();
   const result = await generatePhase4Signals(
-    dbCandleProvider,
+    candleProvider,
     portfolio,
     undefined, undefined,
     phase1ConfigForRun,
@@ -975,7 +1131,7 @@ async function runScanInner(
   console.log(
     `[PERF] run-signal-engine total_ms=${totalElapsedMs} ` +
     `candle_refresh_ms=${candleElapsedMs} phase4_ms=${phase4ElapsedMs} ` +
-    `skipCandleRefresh=${!!opts.skipCandleRefresh}`,
+    `mode=${mode}`,
   );
 
   // Spec "FIX PIPELINE NOT COMPLETING" §5 — heartbeat MUST be stamped
@@ -1059,9 +1215,46 @@ async function runScanInner(
     0,
     usageAfterRun.daily - usageBeforeRun.daily,
   );
+  const indianApiRequests = Math.max(
+    sources.indianapi_requests,
+    apiCallsUsed,
+    refreshResult?.indianApiRequests ?? 0,
+  );
+  const rejectedInsufficient = result.meta.rejectedInsufficientCandles;
+  const rejectedProviderError = result.meta.rejectedProviderErrors;
+  const scannedSymbols = Math.max(0, result.meta.scanned - rejectedInsufficient);
+  const runSummary = {
+    mode,
+    total_symbols: runUniverse.length,
+    scanned_symbols: scannedSymbols,
+    rejected_insufficient_candles: rejectedInsufficient,
+    rejected_provider_errors: rejectedProviderError,
+    signals_generated: result.signals.length,
+    signals_saved: result.meta.signalsSaved,
+    data_source_used: resolveDataSourceUsed(mode, indianApiRequests),
+    indianapi_requests_used: indianApiRequests,
+  };
+  console.log('[RUN SUMMARY]', runSummary);
+  recordSuccessfulSignalEngineRun({
+    jobId: batchId,
+    mode,
+    startedAt: runStartedAtIso,
+    durationMs: totalElapsedMs,
+    totalSymbols: runUniverse.length,
+    scannedSymbols,
+    rejectedInsufficientCandles: rejectedInsufficient,
+    rejectedProviderError,
+    signalsGenerated: result.signals.length,
+    signalsSaved: result.meta.signalsSaved,
+    indianApiRequestsUsed: indianApiRequests,
+    dataSource: resolveDataSourceUsed(mode, indianApiRequests),
+    failedSymbolsSample: result.meta.failedSymbolsSample,
+  });
   return {
     success: true,
+    mode,
     batch_id: batchId,
+    summary: runSummary,
     total_scanned: result.meta.scanned,
     total_approved: approved,
     total_rejected: result.meta.rejected + deferred,
@@ -1093,7 +1286,7 @@ async function runScanInner(
       candle_refresh_ms: candleElapsedMs,
       phase4_ms:         phase4ElapsedMs,
       total_ms:          totalElapsedMs,
-      skip_candle_refresh: !!opts.skipCandleRefresh,
+      mode,
     },
     engine: {
       path: 'signal-engine:phase4',
@@ -1125,6 +1318,20 @@ async function runScanInner(
       failed:   failedCount,
     },
   };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const progress = getScannerProgress();
+    failSignalEngineRun({
+      jobId: batchId,
+      mode,
+      startedAt: runStartedAtIso,
+      error: msg,
+      durationMs: Date.now() - start,
+      totalSymbols: runUniverse.length,
+      scannedSymbols: progress?.done ?? 0,
+    });
+    throw err;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -1343,6 +1550,9 @@ export async function POST(req: NextRequest) {
   // ensures exactly one executor owns the pipe.
   const batchId = `batch_${Date.now()}`;
   const lockAcquired = await tryAcquireExecutionLock(batchId).catch(() => false);
+  const releaseDistributedLock = async () => {
+    await releaseExecutionLock().catch(() => {});
+  };
   
   if (!lockAcquired && !forceRun) {
     const lockRow = await getLockRow('system', '2000-01-01');
@@ -1374,23 +1584,25 @@ export async function POST(req: NextRequest) {
   }
 
   const start = Date.now();
+  const runMode = parseSignalEngineMode(req);
+  console.log(`[ENGINE] run mode=${runMode}`);
   // ── API-usage budget gate ──────────────────────────────────────
   // Spec "OPTIMIZE API USAGE" §5 — refuse a manual run when today's
-  // IndianAPI budget is already used up. Each pipeline run dispatches
-  // ~503 candle + ~503 quote calls = ~1000-1500 IndianAPI hits; firing
-  // one at the budget ceiling either fails immediately at the adapter
-  // (every call throws API_BUDGET_EXCEEDED) or, on a paid plan with
-  // headroom, silently runs and exhausts tomorrow's budget too. The
-  // 409 response carries the live counters so the operator sees the
-  // exact ceiling that was hit.
+  // IndianAPI budget is already used up. Scan mode is DB-only and
+  // never calls IndianAPI, so it is allowed even when the budget is
+  // exhausted. Backfill and refresh-and-scan may call upstream.
   const usage = getApiUsage();
-  if (usage.daily_exceeded || usage.monthly_exceeded) {
+  if (
+    runMode !== 'scan'
+    && (usage.daily_exceeded || usage.monthly_exceeded)
+  ) {
     const which = usage.daily_exceeded ? 'daily' : 'monthly';
     console.warn(
       `[PIPELINE BLOCKED] api_budget_exhausted bucket=${which} ` +
       `daily=${usage.daily}/${usage.daily_limit} ` +
       `monthly=${usage.monthly}/${usage.monthly_limit}`,
     );
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         error:        'API budget exhausted — refusing to run',
@@ -1463,6 +1675,7 @@ export async function POST(req: NextRequest) {
       overrideReason: override ? effectiveReason : null,
     });
   } catch (err: any) {
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         error:  'run lock unavailable; refusing to run unbounded',
@@ -1488,6 +1701,7 @@ export async function POST(req: NextRequest) {
       cooldown:        true,
       next_allowed_at: claim.nextAllowedAt,
     });
+    await releaseDistributedLock();
     return NextResponse.json(
       {
         blocked:         true,
@@ -1518,15 +1732,11 @@ export async function POST(req: NextRequest) {
   // the legacy synchronous behaviour (cron jobs / admin tools that read
   // the response body).
   const wantsSync = req.nextUrl.searchParams.get('sync') === 'true';
-  // Spec — let operators skip the slow IndianAPI candle fan-out and
-  // run Phase 4 against existing market_data_daily bars. Drops sync
-  // total_ms from ~2-5min to ~10-30s when DB candles are recent
-  // (e.g. the in-proc 10-min regen tick just ran). Use this for fast
-  // iteration during testing; default behaviour (full refresh) is
-  // unchanged.
-  const skipCandleRefresh =
-    req.nextUrl.searchParams.get('skipCandleRefresh') === 'true';
-  const innerOpts = { skipCandleRefresh };
+  // mode=scan (default) — DB-only strategy evaluation; no upstream refresh.
+  // mode=backfill — refresh stale symbols only; no strategy scan.
+  // mode=refresh-and-scan — upstream refresh then DB-only scan.
+  // Legacy skipCandleRefresh=true|false is mapped in parseSignalEngineMode.
+  const innerOpts = { mode: runMode };
 
   // Spec "FIX PIPELINE CONCURRENCY" §2 — claim BOTH the route-scope
   // metadata AND the global scannerState flag synchronously, before
@@ -1548,15 +1758,20 @@ export async function POST(req: NextRequest) {
     return 60_000;
   })();
 
-  const claimLock = async () => {
-    // Spec "FIX PIPELINE CONCURRENCY" §2 — acquire the distributed execution
-    // lock first. This is the global guard across all instances.
-    const acquired = await tryAcquireExecutionLock(batchId);
-    if (!acquired) {
-      throw new Error('EXECUTION_LOCK_HELD');
+  const claimLock = async (mode: string) => {
+    // The route may have already acquired the distributed lock above.
+    // Re-acquiring here would always fail and wedge the lock in DB.
+    const existing = await getLockRow('system', '2000-01-01');
+    const alreadyOwned =
+      existing?.status === 'started' && existing?.request_source === batchId;
+    if (!alreadyOwned) {
+      const acquired = await tryAcquireExecutionLock(batchId);
+      if (!acquired) {
+        throw new Error('EXECUTION_LOCK_HELD');
+      }
     }
 
-    inFlight = { batchId, startedAt: new Date(start).toISOString() };
+    inFlight = { batchId, startedAt: new Date(start).toISOString(), mode };
     setScannerInFlight(true);
     // Spec "Per-run API call limit" — open a fresh per-run window
     // BEFORE any IndianAPI call lands so the counter starts at 0.
@@ -1616,11 +1831,12 @@ export async function POST(req: NextRequest) {
     // bubble out of the route AFTER setScannerInFlight(true) had run,
     // leaking a permanent inFlight=true.
     try {
-      await claimLock();
+      await claimLock(runMode);
     } catch (err: any) {
       const msg = err?.message ?? String(err);
       if (msg === 'EXECUTION_LOCK_HELD') {
         console.warn(`[ENGINE_LOCK_SKIPPED] reason=execution_lock_held batch=${batchId}`);
+        await releaseDistributedLock();
         return NextResponse.json(
           buildRunningEnvelope({ batchId: null, startedAtMs: null }),
           { status: 409 },
@@ -1665,7 +1881,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         status:    'started',
-        mode:      'async',
+        mode:      runMode,
+        jobId:     batchId,
         batch_id:  batchId,
         startedAt: new Date(start).toISOString(),
         // Spec "FIX PIPELINE CONCURRENCY" §8 — frontend-friendly
@@ -1697,7 +1914,7 @@ export async function POST(req: NextRequest) {
   // still routes through `finally → releaseLock` instead of leaking a
   // half-claimed flag.
   try {
-    await claimLock();
+    await claimLock(runMode);
     // Spec "FAIL FAST IF NO EXECUTION" — explicit "we got past the
     // lock, about to invoke" trace tag. Pairs with [PIPELINE START]
     // emitted at the top of runScanInner; missing the latter while
@@ -1742,10 +1959,9 @@ export async function POST(req: NextRequest) {
  *   - otherwise → trigger a run (legacy URL-paste convenience).
  *     Same session + lock guards as POST.
  *
- * Spec "FIX PIPELINE CONCURRENCY" §3+§8 — `?status=true` now ships
- * a frontend-friendly running envelope: { running, batch_id,
- * percent_complete, eta_seconds, progress: { scanned, total, ... } }.
- * When no run is active, `running=false` and `progress=null`.
+ * Spec "FIX PIPELINE CONCURRENCY" §3+§8 — `?status=true` ships
+ * a frontend-friendly running envelope plus persistent lastCompletedRun.
+ * When idle, top-level counters mirror the last completed run.
  */
 export async function GET(req: NextRequest): Promise<Response> {
   if (req.nextUrl.searchParams.get('status') === 'true') {
@@ -1760,7 +1976,19 @@ export async function GET(req: NextRequest): Promise<Response> {
     };
     const globalRunning = isScannerInFlight();
     const startedAtMs   = inFlight ? (Date.parse(inFlight.startedAt) || Date.now()) : null;
-    if (inFlight || globalRunning) {
+    const running       = Boolean(inFlight || globalRunning);
+    const progress      = running
+      ? buildPipelineProgress({ startedAtMs })
+      : null;
+    const runStatus     = buildSignalEngineStatus({
+      running,
+      jobId: inFlight?.batchId ?? null,
+      mode: inFlight?.mode ?? null,
+      startedAtMs: running ? startedAtMs : null,
+      progressScanned: progress?.scanned ?? null,
+      progressTotal: progress?.total ?? null,
+    });
+    if (running) {
       const env = buildRunningEnvelope({
         batchId:     inFlight?.batchId ?? null,
         startedAtMs,
@@ -1769,6 +1997,9 @@ export async function GET(req: NextRequest): Promise<Response> {
         {
           ...lockEnvelope,
           ...env,
+          ...runStatus,
+          batch_id:  runStatus.jobId ?? env.batch_id,
+          started_at: runStatus.startedAt ?? env.started_at,
           source:    inFlight ? 'manual' : 'auto-recovery',
           api_usage: getApiUsage(),
         },
@@ -1778,11 +2009,11 @@ export async function GET(req: NextRequest): Promise<Response> {
     return NextResponse.json(
       {
         ...lockEnvelope,
-        running:          false,
+        ...runStatus,
         status:           'idle' as const,
-        batch_id:         null,
-        started_at:       null,
-        elapsed_ms:       null,
+        batch_id:         runStatus.jobId,
+        started_at:       runStatus.startedAt,
+        elapsed_ms:       runStatus.durationMs,
         percent_complete: 0,
         eta_seconds:      null,
         progress:         null,

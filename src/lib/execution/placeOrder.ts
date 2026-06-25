@@ -1,10 +1,9 @@
 // ════════════════════════════════════════════════════════════════
-//  placeOrder — NEUTRALIZED STUB
+//  placeOrder — routes through Broker Integration Layer
 //
-//  Broker execution removed. This module used to wrap Kite REST for
-//  POST /orders/regular. Signal-only mode never places orders; every
-//  call returns ok:false / dryRun:true so any leftover caller fails
-//  safely and visibly instead of hitting a broker.
+//  EXECUTION_MODE=live  → live order engine (gated)
+//  EXECUTION_MODE=paper → paper adapter
+//  default (signal-only)→ dry-run stub (safe no-op)
 // ════════════════════════════════════════════════════════════════
 
 export interface PlaceOrderParams {
@@ -16,6 +15,8 @@ export interface PlaceOrderParams {
   price?:        number;
   triggerPrice?: number;
   exchange?:    'NSE' | 'BSE';
+  userId?:       number;
+  strategyId?:   string;
 }
 
 export interface PlaceOrderResult {
@@ -26,10 +27,40 @@ export interface PlaceOrderResult {
   raw?:     unknown;
 }
 
-export async function placeOrder(_params: PlaceOrderParams): Promise<PlaceOrderResult> {
+const EXECUTION_MODE = process.env.EXECUTION_MODE ?? 'signal-only';
+
+export async function placeOrder(params: PlaceOrderParams): Promise<PlaceOrderResult> {
+  if (EXECUTION_MODE === 'signal-only') {
+    return {
+      ok:     false,
+      dryRun: true,
+      error:  'signal-only mode — set EXECUTION_MODE=live or paper to enable',
+    };
+  }
+
+  const userId = params.userId ?? Number(process.env.EXECUTION_USER_ID ?? 0);
+  if (!userId) {
+    return { ok: false, dryRun: true, error: 'userId required for broker orders' };
+  }
+
+  const { placeLiveOrder } = await import('@/lib/broker');
+  const result = await placeLiveOrder(userId, {
+    symbol: params.symbol,
+    side: params.type,
+    quantity: params.quantity,
+    orderType: params.orderType ?? 'MARKET',
+    price: params.price,
+    triggerPrice: params.triggerPrice,
+    product: params.product,
+    exchange: params.exchange,
+    strategyId: params.strategyId,
+  });
+
   return {
-    ok:     false,
-    dryRun: true,
-    error:  'execution_removed — signal-only mode',
+    ok: result.ok,
+    orderId: result.orderId ?? result.brokerOrderId,
+    dryRun: result.dryRun ?? false,
+    error: result.error,
+    raw: result,
   };
 }

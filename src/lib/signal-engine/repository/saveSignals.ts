@@ -83,6 +83,7 @@ const SELL_MAX_UP_PCT   =  3;
 const STRATEGY_TO_SCENARIO: Record<StrategyName, string> = {
   bullish_breakout:       'BREAKOUT_CONTINUATION',
   bullish_pullback:       'PULLBACK_IN_TREND',
+  fibonacci_pullback:     'PULLBACK_IN_TREND',
   bearish_breakdown:      'BREAKOUT_CONTINUATION',
   mean_reversion_bounce:  'MEAN_REVERSION',
   momentum_continuation:  'MOMENTUM_EXPANSION',

@@ -42,7 +42,7 @@ export interface RunDailyScanOptions {
   limit?:          number;
   /** Skip the scanner step (ingestion only). */
   skipScan?:       boolean;
-  /** Skip the ingestion step (scan only — legacy path). */
+  /** Skip the ingestion step (scan only — used by 18:30 dailyScanSchedule after 16:00 EOD update). */
   skipIngestion?:  boolean;
   /** Skip the retroactive-penalty backfill inside the scanner. */
   skipPenalties?:  boolean;
@@ -237,3 +237,6 @@ export async function runDailyManipulationScan(
     warnings,
   };
 }
+
+/** Alias for scheduler / operator docs. */
+export const runDailyScan = runDailyManipulationScan;

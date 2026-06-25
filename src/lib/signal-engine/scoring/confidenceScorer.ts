@@ -4,6 +4,7 @@
 
 import type { SignalFeatures, ConfidenceBreakdown, ConfidenceBand, StrategyName, RelativeStrengthFeatures } from '../types/signalEngine.types';
 import { clamp, round } from '../utils/math';
+import { isPriceNearFibLevel } from '../indicators/fibonacci';
 import {
   CONFIDENCE_HIGH_CONVICTION,
   CONFIDENCE_ACTIONABLE,
@@ -16,6 +17,19 @@ import {
 const RSI_OVERBOUGHT = 76;
 const RSI_IDEAL_LOW = 55;
 const RSI_IDEAL_HIGH = 72;
+
+/** Matches fibonacci_pullback strategy golden-zone tolerance. */
+const FIB_CONFIDENCE_TOLERANCE_PCT = 1;
+const FIB_PULLBACK_RSI_LOW = 42;
+const FIB_PULLBACK_RSI_HIGH = 65;
+const FIB_MIN_VOLUME_RATIO = 0.8;
+const FIB_HEALTHY_VOLUME_RATIO = 1.0;
+
+function isBelowFibLevel(close: number, level: number | undefined, tolerancePct: number): boolean {
+  if (level === undefined || !Number.isFinite(level)) return false;
+  if (level === 0) return close < 0;
+  return close < level * (1 - tolerancePct / 100);
+}
 
 export function scoreConfidence(features: SignalFeatures): ConfidenceBreakdown {
   const trendScore = scoreTrend(features);
@@ -230,6 +244,45 @@ export function scoreConfidenceForStrategy(
       if (features.structure.breakoutDistancePct > 0 && features.structure.breakoutDistancePct <= 2) adjustment += 3;
       if (rs.rsVsIndex > 2) adjustment += 2;
       break;
+
+    case 'fibonacci_pullback': {
+      const { trend, momentum, volume, structure, context } = features;
+      const close = trend.close;
+      const { fib382, fib50, fib618, fib786 } = structure;
+      const near382 = fib382 !== undefined && isPriceNearFibLevel(close, fib382, FIB_CONFIDENCE_TOLERANCE_PCT);
+      const near50 = fib50 !== undefined && isPriceNearFibLevel(close, fib50, FIB_CONFIDENCE_TOLERANCE_PCT);
+      const near618 = fib618 !== undefined && isPriceNearFibLevel(close, fib618, FIB_CONFIDENCE_TOLERANCE_PCT);
+      const nearKeyFib = near382 || near50 || near618;
+      const trendBullish = trend.ema20Above50 && trend.closeAbove200Ema;
+      const emaSupport = trend.closeAbove20Ema || trend.closeAbove50Ema;
+      const rsiInPullbackBand =
+        momentum.rsi14 >= FIB_PULLBACK_RSI_LOW && momentum.rsi14 <= FIB_PULLBACK_RSI_HIGH;
+      const volumeAcceptable = volume.volumeVs20dAvg >= FIB_MIN_VOLUME_RATIO;
+      const volumeHealthy = volume.volumeVs20dAvg >= FIB_HEALTHY_VOLUME_RATIO;
+      const regimeSupportive =
+        context.marketRegime === 'Bullish' || context.marketRegime === 'Strong Bullish';
+
+      // Bonus only when Fibonacci aligns with trend, RSI, and volume — not Fib alone.
+      if (nearKeyFib && trendBullish && emaSupport && rsiInPullbackBand && volumeAcceptable && regimeSupportive) {
+        if (near382 || near50 || near618) adjustment += 2;
+        adjustment += 2; // bullish trend structure
+        if (trend.closeAbove20Ema && trend.closeAbove50Ema) adjustment += 1;
+        adjustment += 2; // RSI in constructive pullback band
+        if (volumeHealthy) adjustment += 2;
+        else adjustment += 1;
+        if (context.marketRegime === 'Strong Bullish') adjustment += 2;
+        else adjustment += 1;
+      }
+
+      // Penalties — Fibonacci-specific risk factors
+      if (isBelowFibLevel(close, fib618, FIB_CONFIDENCE_TOLERANCE_PCT)) adjustment -= 5;
+      else if (isBelowFibLevel(close, fib786, FIB_CONFIDENCE_TOLERANCE_PCT)) adjustment -= 4;
+      if (momentum.rsi14 > FIB_PULLBACK_RSI_HIGH) adjustment -= 4;
+      if (!volumeAcceptable) adjustment -= 3;
+      if (context.marketRegime === 'Bearish') adjustment -= 5;
+      if (context.marketRegime === 'High Volatility Risk') adjustment -= 4;
+      break;
+    }
   }
 
   // RS context bonus/penalty

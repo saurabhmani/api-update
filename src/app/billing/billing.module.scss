@@ -1,0 +1,87 @@
+.tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid #E2E8F0;
+  padding-bottom: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border-radius: 6px;
+  color: #64748B;
+  &:hover { color: #1E40AF; }
+}
+
+.tabActive {
+  composes: tab;
+  background: #EFF6FF;
+  color: #1E40AF;
+  font-weight: 600;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat {
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  padding: 14px 16px;
+  small { display: block; color: #64748B; font-size: 0.75rem; margin-bottom: 4px; }
+  strong { font-size: 1.1rem; color: #0F172A; }
+}
+
+.planGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.planCard {
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  padding: 20px;
+  background: #fff;
+  &.current { border-color: #1E40AF; box-shadow: 0 0 0 1px #1E40AF; }
+}
+
+.planPrice {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0F172A;
+  margin: 8px 0;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #E2E8F0; }
+  th { color: #64748B; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+}
+
+.positive { color: #16A34A; }
+.negative { color: #DC2626; }
+
+.creditBar {
+  height: 6px;
+  background: #E2E8F0;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.creditFill {
+  height: 100%;
+  background: #1E40AF;
+  border-radius: 3px;
+}

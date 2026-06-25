@@ -1,40 +1,32 @@
 // ════════════════════════════════════════════════════════════════
-//  Candle Fallback Chain — DB → NSE primary → IndianAPI fallback
+//  Candle Fallback Chain — DB → IndianAPI → NSE (opt-in)
 //
-//  Spec "HYBRID NSE + INDIANAPI" — single shared helper that any
-//  caller (Phase-3 candle provider, debug script, ad-hoc tools) can
-//  use to obtain daily OHLCV bars for a symbol with a strict
-//  failover chain. Performance-aware: in production the bulk
-//  `refreshDailyCandles` pre-populates `market_data_daily`, so the
-//  DB-fast-path covers the common case in <5 ms; live upstream is
-//  only hit when the DB row count is below `MIN_BAR_THRESHOLD`
-//  (default 100).
+//  Provider priority for daily OHLCV:
+//    1. DB cache (market_data_daily) — always first; during an active
+//       pipeline scan (`isInFlight()`), evaluation reads are DB-only
+//       so strategy evaluation never burns IndianAPI quota.
+//    2. IndianAPI (`getHistorical`) — primary upstream for backfill /
+//       incremental refresh (candle ingest path only).
+//    3. NSE direct historical — fallback ONLY when
+//       NSE_HISTORICAL_FETCH_ENABLED=true.
+//    4. DB thin — return whatever rows exist.
+//    5. Throw `CANDLE_NO_DATA`.
 //
-//  Order is intentional (NSE before IndianAPI per the hybrid spec —
-//  NSE is free and uncapped against our IndianAPI plan, so we lean
-//  on it first and only spend IndianAPI budget when NSE is tripped /
-//  rate-limited / disabled):
-//    1. DB fast-path (≥ MIN_BAR bars in market_data_daily)
-//    2. NSE direct historical — PRIMARY upstream (free)
-//    3. IndianAPI live (`getHistorical`) — FALLBACK, bounded by the
-//       per-run budget (INDIANAPI_PER_RUN_LIMIT, default 100)
-//    4. DB second-pass — return whatever rows exist, even if thin
-//    5. Throw `CANDLE_NO_DATA` so the caller fails loud
-//
-//  Spec "NEVER return empty candle array / if no data: throw" —
-//  the function returns Candle[] with length ≥ 1 OR throws. Phase 3
-//  catches the throw and records a per-symbol rejection.
-//
-//  Per-run counters (`nse_used`, `api_used`, `failed`) are tracked
-//  module-scope so the route handler can surface a single-run debug
-//  envelope without re-instrumenting every call site. Reset by the
-//  pipeline driver at run start via `resetCandleSourceCounters()`.
+//  `refreshDailyCandles` → `getCandles` uses the IndianAPI ingest path.
+//  Phase 3/4 `fetchDailyCandlesWithFallback` uses DB-only while a scan
+//  is in flight.
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
 import type { Candle } from '@/lib/signal-engine';
 import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
-import { fetchNseHistoricalCandles } from '@/lib/marketData/providers/nseHistoricalProvider';
+import {
+  fetchNseHistoricalCandles,
+  isNseHistoricalFetchEnabled,
+} from '@/lib/marketData/providers/nseHistoricalProvider';
+import type { HistoricalRange } from '@/types/market';
+import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
+import { isInFlight } from '@/lib/scanner/scannerState';
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -44,66 +36,95 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
   return Math.max(lo, Math.min(hi, raw));
 }
 
-/** Minimum bar count to consider the DB fast-path "sufficient". The
- *  signal engine's strictest indicator (sma200/ema200) needs 200
- *  bars; we use 100 as the threshold for "the fast-path is good
- *  enough" — under that we burn an upstream call to top up. Tunable
- *  via CANDLE_MIN_BAR_THRESHOLD. */
+/** Minimum bar count for the DB fast-path during strategy evaluation. */
 const MIN_BAR_THRESHOLD = () => envNum('CANDLE_MIN_BAR_THRESHOLD', 30, 500, 100);
 
-/** Max bars to read from DB per call. Same shape as the existing
- *  dbCandleProvider in run-signal-engine. */
+/** Bar depth above which ingest skips IndianAPI unless incremental refresh. */
+export const SUFFICIENT_BAR_DEPTH = () =>
+  envNum('CANDLE_SUFFICIENT_DEPTH', 30, 500, 100);
+
 const DB_BARS_LIMIT = 300;
 
 // ── Per-run source counters ────────────────────────────────────────
-//
-// Module-scope so a single pipeline run can read totals at the end
-// without threading a context through every call site. The pipeline
-// driver MUST call `resetCandleSourceCounters()` before each run;
-// outside a run they accumulate harmlessly until the next reset.
 
 let _nseUsed = 0;
 let _apiUsed = 0;
 let _dbUsed  = 0;
 let _failed  = 0;
+let _indianApiRequestCount = 0;
 
 export function resetCandleSourceCounters(): void {
   _nseUsed = 0;
   _apiUsed = 0;
   _dbUsed  = 0;
   _failed  = 0;
+  _indianApiRequestCount = 0;
 }
 
 export function getCandleSourceCounters(): {
   nse_used: number;
   api_used: number;
-  db_used:  number;
-  failed:   number;
+  db_used: number;
+  failed: number;
+  indianapi_requests: number;
 } {
   return {
     nse_used: _nseUsed,
     api_used: _apiUsed,
-    db_used:  _dbUsed,
-    failed:   _failed,
+    db_used: _dbUsed,
+    failed: _failed,
+    indianapi_requests: _indianApiRequestCount,
   };
 }
 
-// ── Public envelope ────────────────────────────────────────────────
+export function getIndianApiCandleRequestCount(): number {
+  return _indianApiRequestCount;
+}
+
+// ── Public types ───────────────────────────────────────────────────
 
 export type CandleSource = 'db' | 'indianapi' | 'nse' | 'db-thin';
 
+export type IndianApiCandleErrorCode =
+  | 'API_KEY_MISSING'
+  | 'API_KEY_INVALID'
+  | 'RATE_LIMITED'
+  | 'UPSTREAM_5XX'
+  | 'UPSTREAM_ERROR'
+  | 'EMPTY_RESPONSE'
+  | 'MALFORMED_RESPONSE'
+  | 'BUDGET_EXCEEDED'
+  | 'MARKET_CLOSED'
+  | 'BUDGET_THROTTLED';
+
 export interface CandleFetchResult {
-  candles:   Candle[];
-  source:    CandleSource;
-  /** Whether we hit at least one upstream provider during this call.
-   *  False on the DB fast-path; useful for budget telemetry. */
+  candles: Candle[];
+  source: CandleSource;
   hitUpstream: boolean;
   latencyMs: number;
 }
 
-// ── DB read ────────────────────────────────────────────────────────
+export interface DailyCandleFetchOptions {
+  /** When true, allow IndianAPI even if DB already has sufficient depth. */
+  incrementalRefresh?: boolean;
+  /** When true, never call upstream (DB-only). Overrides scan detection. */
+  dbOnly?: boolean;
+  /** When true, treat as pipeline scan read — DB-only if in flight. */
+  evaluationRead?: boolean;
+}
 
-async function readFromDb(symbol: string): Promise<Candle[]> {
+export interface IndianApiCandleFetchResult {
+  ok: boolean;
+  candles: Candle[];
+  errorCode: IndianApiCandleErrorCode | string | null;
+  errorMessage: string | null;
+  rawBarCount: number;
+  validBarCount: number;
+}
+
+// ── DB helpers ─────────────────────────────────────────────────────
+
+export async function readDailyCandlesFromDb(symbol: string): Promise<Candle[]> {
   const result = await db.query(
     `SELECT ts, open, high, low, close, volume FROM (
        SELECT ts, open, high, low, close, volume
@@ -113,66 +134,197 @@ async function readFromDb(symbol: string): Promise<Candle[]> {
        LIMIT ?
      ) t
      ORDER BY ts ASC`,
-    [symbol, DB_BARS_LIMIT],
+    [symbol.toUpperCase(), DB_BARS_LIMIT],
   );
   return (result.rows as any[]).map((r) => ({
     ts: r.ts,
     open: Number(r.open),
     high: Number(r.high),
-    low:  Number(r.low),
+    low: Number(r.low),
     close: Number(r.close),
     volume: Number(r.volume),
   }));
 }
 
-// ── IndianAPI live fetch ───────────────────────────────────────────
-
-async function fetchFromIndianApi(symbol: string): Promise<Candle[] | { err: string }> {
+export async function getDbBarCount(symbol: string): Promise<number> {
   try {
-    const inv = await getIndianApiHistorical(symbol, '1y');
-    if (inv.status !== 'success' || !inv.data) {
-      return { err: inv.errorCode ?? `status:${inv.status}` };
-    }
-    const series = inv.data;
-    const out: Candle[] = [];
-    for (const c of series.candles) {
-      if (
-        !Number.isFinite(c.t) || !Number.isFinite(c.o) || !Number.isFinite(c.h)
-        || !Number.isFinite(c.l) || !Number.isFinite(c.c)
-      ) continue;
-      if (c.o <= 0 || c.h <= 0 || c.l <= 0 || c.c <= 0) continue;
-      out.push({
-        ts:    new Date(c.t).toISOString(),
-        open:  c.o,
-        high:  c.h,
-        low:   c.l,
-        close: c.c,
-        volume: Number.isFinite(c.v) ? c.v : 0,
-      });
-    }
-    out.sort((a, b) => new Date(a.ts as any).getTime() - new Date(b.ts as any).getTime());
-    return out;
-  } catch (err) {
-    return { err: err instanceof Error ? err.message : String(err) };
+    const { rows } = await db.query<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM market_data_daily WHERE symbol = ?`,
+      [symbol.toUpperCase()],
+    );
+    return Number((rows[0] as any)?.cnt) || 0;
+  } catch {
+    return 0;
   }
 }
 
-// ── DB upsert (so a successful upstream call repopulates DB and
-//    future scans hit the fast-path) ──────────────────────────────
+function logIndianApiCandleRequest(symbol: string, endpoint: string): void {
+  _indianApiRequestCount += 1;
+  console.log(
+    `[INDIANAPI REQUEST] endpoint=${endpoint} symbol=${symbol} ` +
+    `request_count=${_indianApiRequestCount}`,
+  );
+}
+
+function mapProviderErrorCode(
+  errorCode: string | null | undefined,
+  status?: number,
+): IndianApiCandleErrorCode | string {
+  const code = (errorCode ?? '').toUpperCase();
+  if (code === 'API_KEY_MISSING' || code.includes('NOT_CONFIGURED')) return 'API_KEY_MISSING';
+  if (
+    code === 'API_KEY_INVALID' || code === 'HTTP_403' || code === 'HTTP_401'
+    || code.includes('AUTH')
+  ) return 'API_KEY_INVALID';
+  if (code === 'HTTP_429' || code.includes('RATE') || code.includes('429')) return 'RATE_LIMITED';
+  if (code === 'BUDGET_EXHAUSTED' || code === 'API_BUDGET_EXCEEDED') return 'BUDGET_EXCEEDED';
+  if (code.includes('PER_RUN') || code.includes('PER_RUN_LIMIT')) return 'BUDGET_EXCEEDED';
+  if (code === 'BUDGET_THROTTLED') return 'BUDGET_THROTTLED';
+  if (code === 'MARKET_CLOSED') return 'MARKET_CLOSED';
+  if (code === 'EMPTY_RESPONSE' || code === 'UPSTREAM_NULL') return 'EMPTY_RESPONSE';
+  if (code === 'MALFORMED_RESPONSE') return 'MALFORMED_RESPONSE';
+  if (status != null && status >= 500 && status < 600) return 'UPSTREAM_5XX';
+  if (code.startsWith('HTTP_5')) return 'UPSTREAM_5XX';
+  return errorCode ?? 'UPSTREAM_ERROR';
+}
+
+function normalizeHistoricalCandles(
+  raw: Array<{ t: number; o: number; h: number; l: number; c: number; v?: number }>,
+): { candles: Candle[]; rawBarCount: number; validBarCount: number } {
+  const rawBarCount = raw.length;
+  const candles: Candle[] = [];
+  for (const c of raw) {
+    if (
+      !Number.isFinite(c.t) || !Number.isFinite(c.o) || !Number.isFinite(c.h)
+      || !Number.isFinite(c.l) || !Number.isFinite(c.c)
+    ) continue;
+    if (c.o <= 0 || c.h <= 0 || c.l <= 0 || c.c <= 0) continue;
+    candles.push({
+      ts: new Date(c.t).toISOString(),
+      open: c.o,
+      high: c.h,
+      low: c.l,
+      close: c.c,
+      volume: Number.isFinite(c.v) ? (c.v as number) : 0,
+    });
+  }
+  candles.sort(
+    (a, b) => new Date(a.ts as string).getTime() - new Date(b.ts as string).getTime(),
+  );
+  return { candles, rawBarCount, validBarCount: candles.length };
+}
+
+/**
+ * Fetch daily bars from IndianAPI for ingest/backfill. Never used from
+ * strategy evaluation — callers must gate on `isInFlight()` / `dbOnly`.
+ */
+export async function fetchIndianApiDailyCandles(
+  symbol: string,
+  range: HistoricalRange = '1y',
+): Promise<IndianApiCandleFetchResult> {
+  const sym = symbol.toUpperCase();
+  const endpoint = `historical_data:${range}`;
+
+  const { apiKey } = getIndianApiConfig();
+  if (!apiKey) {
+    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} reason=API_KEY_MISSING`);
+    return {
+      ok: false,
+      candles: [],
+      errorCode: 'API_KEY_MISSING',
+      errorMessage: 'INDIANAPI_API_KEY (or INDIANAPI_KEY / INDIAN_API_KEY) is not set',
+      rawBarCount: 0,
+      validBarCount: 0,
+    };
+  }
+
+  logIndianApiCandleRequest(sym, endpoint);
+
+  try {
+    const inv = await getIndianApiHistorical(sym, range);
+    const mappedCode = mapProviderErrorCode(inv.errorCode ?? undefined);
+
+    if (inv.status !== 'success' && inv.status !== 'partial') {
+      const msg = inv.errorMessage ?? `provider status=${inv.status}`;
+      console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=${mappedCode} reason="${msg}"`);
+      return {
+        ok: false,
+        candles: [],
+        errorCode: mappedCode,
+        errorMessage: msg,
+        rawBarCount: 0,
+        validBarCount: 0,
+      };
+    }
+
+    const series = inv.data;
+    const raw = series?.candles ?? [];
+    if (raw.length === 0) {
+      console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=EMPTY_RESPONSE`);
+      return {
+        ok: false,
+        candles: [],
+        errorCode: 'EMPTY_RESPONSE',
+        errorMessage: 'IndianAPI returned zero candles',
+        rawBarCount: 0,
+        validBarCount: 0,
+      };
+    }
+
+    const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(raw);
+    if (validBarCount === 0) {
+      console.warn(
+        `[INDIANAPI FETCH FAIL] symbol=${sym} code=MALFORMED_RESPONSE ` +
+        `raw_bars=${rawBarCount}`,
+      );
+      return {
+        ok: false,
+        candles: [],
+        errorCode: 'MALFORMED_RESPONSE',
+        errorMessage: `All ${rawBarCount} upstream bars failed validation`,
+        rawBarCount,
+        validBarCount: 0,
+      };
+    }
+
+    _apiUsed++;
+    console.log(
+      `[INDIANAPI FETCH OK] symbol=${sym} bars=${validBarCount} ` +
+      `raw_bars=${rawBarCount}`,
+    );
+    return {
+      ok: true,
+      candles,
+      errorCode: null,
+      errorMessage: null,
+      rawBarCount,
+      validBarCount,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=UPSTREAM_ERROR reason="${msg}"`);
+    return {
+      ok: false,
+      candles: [],
+      errorCode: 'UPSTREAM_ERROR',
+      errorMessage: msg,
+      rawBarCount: 0,
+      validBarCount: 0,
+    };
+  }
+}
+
+// ── DB upsert ──────────────────────────────────────────────────────
 
 async function upsertToDb(symbol: string, candles: Candle[]): Promise<void> {
   if (candles.length === 0) return;
-  // Best-effort write — never block the read path on a slow insert.
-  // Schema for market_data_daily uses (symbol, ts) UNIQUE; ON DUPLICATE
-  // KEY UPDATE keeps the latest values.
   try {
-    const values: any[] = [];
+    const values: unknown[] = [];
     const placeholders: string[] = [];
     for (const c of candles) {
       placeholders.push('(?, ?, ?, ?, ?, ?, ?)');
-      values.push(symbol, c.ts, c.open, c.high, c.low, c.close, c.volume);
+      values.push(symbol.toUpperCase(), c.ts, c.open, c.high, c.low, c.close, c.volume);
     }
-    if (placeholders.length === 0) return;
     await db.query(
       `INSERT INTO market_data_daily (symbol, ts, open, high, low, close, volume)
        VALUES ${placeholders.join(',')}
@@ -189,118 +341,123 @@ async function upsertToDb(symbol: string, candles: Candle[]): Promise<void> {
   }
 }
 
-// ── Public API ─────────────────────────────────────────────────────
+function shouldUseDbOnly(opts: DailyCandleFetchOptions): boolean {
+  if (opts.dbOnly) return true;
+  if (opts.evaluationRead !== false && isInFlight()) return true;
+  return false;
+}
+
+// ── Strategy evaluation read path ──────────────────────────────────
 
 /**
- * Fetch daily OHLCV bars for `symbol`, walking the IndianAPI → NSE
- * → DB chain. Returns Candle[] with length ≥ 1, or throws.
- *
- * Spec "FORCE MIN DATA GUARANTEE" — when the DB has < MIN_BAR_THRESHOLD
- * bars, we attempt upstream sources to top up before falling back to
- * "DB-thin" (whatever rows exist). Throwing is reserved for the case
- * where NO source returned any data at all.
- *
- * `[CANDLE ERROR]` is emitted whenever the chain has to walk past the
- * DB fast-path; `[CANDLE FALLBACK SOURCE]` records which source won.
+ * Fetch daily OHLCV for strategy evaluation. While a scan is running,
+ * returns DB cache only — never calls IndianAPI or NSE.
  */
-export async function fetchDailyCandlesWithFallback(symbol: string): Promise<CandleFetchResult> {
-  const t0  = Date.now();
+export async function fetchDailyCandlesWithFallback(
+  symbol: string,
+  opts: DailyCandleFetchOptions = {},
+): Promise<CandleFetchResult> {
+  const t0 = Date.now();
   const min = MIN_BAR_THRESHOLD();
+  const sym = symbol.toUpperCase();
 
-  // 1) DB fast-path. Hit DB FIRST in production: refreshDailyCandles
-  //    already populated it from IndianAPI. Cheap (<5 ms), no upstream
-  //    burn. Only walk the chain when the row count is thin.
-  let dbRows = await readFromDb(symbol).catch((err) => {
+  let dbRows = await readDailyCandlesFromDb(sym).catch((err) => {
     console.warn(
-      `[CANDLE ERROR] db read failed for ${symbol}: ${(err as Error)?.message ?? String(err)}`,
+      `[CANDLE ERROR] db read failed for ${sym}: ${(err as Error)?.message ?? String(err)}`,
     );
     return [] as Candle[];
   });
-  if (dbRows.length >= min) {
-    // Spec "ADD LOG" — single canonical [CANDLE SOURCE] marker per
-    // symbol so an operator can grep one token and see what served
-    // every row. The longer [CANDLE FALLBACK SOURCE] line stays for
-    // upstream-fetch paths that carry extra context.
-    _dbUsed++;
-    console.log(`[CANDLE SOURCE] symbol=${symbol} source=db bars=${dbRows.length}`);
-    return {
-      candles: dbRows, source: 'db',
-      hitUpstream: false, latencyMs: Date.now() - t0,
-    };
+
+  const dbOnly = shouldUseDbOnly({ ...opts, evaluationRead: true });
+
+  if (dbOnly) {
+    if (dbRows.length >= min) {
+      _dbUsed++;
+      console.log(`[CANDLE SOURCE] symbol=${sym} source=db bars=${dbRows.length} mode=scan_db_only`);
+      return { candles: dbRows, source: 'db', hitUpstream: false, latencyMs: Date.now() - t0 };
+    }
+    if (dbRows.length > 0) {
+      _dbUsed++;
+      console.log(`[CANDLE SOURCE] symbol=${sym} source=db-thin bars=${dbRows.length} mode=scan_db_only`);
+      return { candles: dbRows, source: 'db-thin', hitUpstream: false, latencyMs: Date.now() - t0 };
+    }
+    _failed++;
+    throw new Error(
+      `CANDLE_NO_DATA symbol=${sym} mode=scan_db_only db_bars=0 ` +
+      `(upstream suppressed during active scan — run candle ingest first)`,
+    );
   }
 
-  // 2) NSE direct — PRIMARY upstream per the hybrid spec. Free to
-  //    call against our IndianAPI plan, self-gated via env / daily
-  //    cap / cooldown / trip state, so it's safe to attempt before
-  //    burning paid quota.
+  if (dbRows.length >= min) {
+    _dbUsed++;
+    console.log(`[CANDLE SOURCE] symbol=${sym} source=db bars=${dbRows.length}`);
+    return { candles: dbRows, source: 'db', hitUpstream: false, latencyMs: Date.now() - t0 };
+  }
+
   if (dbRows.length < min) {
     console.warn(
-      `[CANDLE ERROR] insufficient data symbol=${symbol} db_bars=${dbRows.length} ` +
-      `min=${min} — trying NSE primary`,
+      `[CANDLE ERROR] insufficient data symbol=${sym} db_bars=${dbRows.length} ` +
+      `min=${min} — trying IndianAPI primary`,
     );
   }
-  const nse = await fetchNseHistoricalCandles(symbol);
-  if (nse.ok && nse.candles.length > 0) {
-    await upsertToDb(symbol, nse.candles);
-    _nseUsed++;
-    console.log(`[CANDLE SOURCE] symbol=${symbol} source=nse bars=${nse.candles.length}`);
+
+  // 2) IndianAPI — primary upstream for backfill
+  const ia = await fetchIndianApiDailyCandles(sym);
+  if (ia.ok && ia.candles.length > 0) {
+    await upsertToDb(sym, ia.candles);
     console.log(
-      `[CANDLE FALLBACK SOURCE] nse symbol=${symbol} bars=${nse.candles.length} ` +
+      `[CANDLE FALLBACK SOURCE] indianapi symbol=${sym} bars=${ia.candles.length} ` +
       `latency_ms=${Date.now() - t0}`,
     );
     return {
-      candles: nse.candles, source: 'nse',
-      hitUpstream: true, latencyMs: Date.now() - t0,
+      candles: ia.candles,
+      source: 'indianapi',
+      hitUpstream: true,
+      latencyMs: Date.now() - t0,
     };
   }
-  const nseErr = nse.errorCode ?? 'unknown';
-  console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${nseErr}" — falling back to IndianAPI`);
+  const iaErr = ia.errorCode ?? 'unknown';
+  console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} reason="${iaErr}"`);
 
-  // 3) IndianAPI live — FALLBACK. The per-run budget guard inside
-  //    fetchFromIndianApi will fast-fail with API_BUDGET_EXCEEDED
-  //    once MAX_API_CALLS_PER_RUN (INDIANAPI_PER_RUN_LIMIT, default
-  //    100) is reached, and the chain falls cleanly to DB-thin or a
-  //    structured throw for that symbol.
-  const ia = await fetchFromIndianApi(symbol);
-  if (Array.isArray(ia) && ia.length > 0) {
-    await upsertToDb(symbol, ia);
-    _apiUsed++;
-    console.log(`[CANDLE SOURCE] symbol=${symbol} source=indianapi bars=${ia.length}`);
-    console.log(
-      `[CANDLE FALLBACK SOURCE] indianapi symbol=${symbol} bars=${ia.length} ` +
-      `latency_ms=${Date.now() - t0}`,
-    );
-    return {
-      candles: ia, source: 'indianapi',
-      hitUpstream: true, latencyMs: Date.now() - t0,
-    };
+  // 3) NSE — opt-in fallback only
+  if (isNseHistoricalFetchEnabled()) {
+    const nse = await fetchNseHistoricalCandles(sym);
+    if (nse.ok && nse.candles.length > 0) {
+      await upsertToDb(sym, nse.candles);
+      _nseUsed++;
+      console.log(`[CANDLE SOURCE] symbol=${sym} source=nse bars=${nse.candles.length}`);
+      console.log(
+        `[CANDLE FALLBACK SOURCE] nse symbol=${sym} bars=${nse.candles.length} ` +
+        `latency_ms=${Date.now() - t0}`,
+      );
+      return {
+        candles: nse.candles,
+        source: 'nse',
+        hitUpstream: true,
+        latencyMs: Date.now() - t0,
+      };
+    }
+    const nseErr = nse.errorCode ?? 'unknown';
+    console.warn(`[NSE FETCH FAIL] symbol=${sym} reason="${nseErr}"`);
+  } else {
+    console.log(`[NSE FETCH SKIP] symbol=${sym} reason=NSE_HISTORICAL_FETCH_ENABLED!=true`);
   }
-  const iaErr = Array.isArray(ia) ? 'empty_payload' : ia.err;
-  console.warn(`[INDIANAPI FETCH FAIL] symbol=${symbol} reason="${iaErr}"`);
 
-  // 4) DB second-pass — accept the thin row count rather than throw.
-  //    The engine's per-symbol candle gate (validateCandleSeries)
-  //    will reject anything below `minCandleCount`, and the symbol
-  //    drops cleanly without halting the universe scan.
+  // 4) DB thin
   if (dbRows.length > 0) {
     _dbUsed++;
-    console.log(`[CANDLE SOURCE] symbol=${symbol} source=db-thin bars=${dbRows.length}`);
-    console.log(
-      `[CANDLE FALLBACK SOURCE] db-thin symbol=${symbol} bars=${dbRows.length} ` +
-      `latency_ms=${Date.now() - t0} ` +
-      `(NSE: ${nseErr}, IndianAPI: ${iaErr})`,
-    );
+    console.log(`[CANDLE SOURCE] symbol=${sym} source=db-thin bars=${dbRows.length}`);
     return {
-      candles: dbRows, source: 'db-thin',
-      hitUpstream: true, latencyMs: Date.now() - t0,
+      candles: dbRows,
+      source: 'db-thin',
+      hitUpstream: true,
+      latencyMs: Date.now() - t0,
     };
   }
 
-  // 5) Total failure — throw with a structured reason so callers can
-  //    distinguish "candle fetch failed" from "engine logic failed".
   _failed++;
   throw new Error(
-    `CANDLE_NO_DATA symbol=${symbol} nse_code="${nse.errorCode ?? 'n/a'}" ` +
-    `nse_msg="${nse.errorMessage ?? 'n/a'}" indianapi="${iaErr}" db_bars=0`,
+    `CANDLE_NO_DATA symbol=${sym} indianapi="${iaErr}" ` +
+    `nse_enabled=${isNseHistoricalFetchEnabled()} db_bars=0`,
   );
 }

@@ -145,83 +145,94 @@ export function useLivePrices(): UseLivePricesResult {
   const attemptRef   = useRef(0);
   const closedByEffect = useRef(false);
 
-  const connect = useCallback(() => {
-    if (closedByEffect.current) return;
-    // Kill-switch: signal-only mode has no stream server running, so
-    // attempting `new WebSocket(...)` just produces an endless stream
-    // of "connection failed" errors in the console. Bail out cleanly.
-    if (WS_DISABLED) return;
-    const url = resolveWsUrl();
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (err) {
-      void err;
-      scheduleReconnect();
-      return;
-    }
-    socketRef.current = ws;
+  // `connect` and `scheduleReconnect` call each other, forming a circular
+  // dependency that useCallback cannot express without an eslint-disable.
+  // Storing both as stable refs breaks the cycle: refs never change identity
+  // so they don't need to appear in any dependency array.
+  const connectRef        = useRef<() => void>(() => {});
+  const scheduleReconnectRef = useRef<() => void>(() => {});
 
-    ws.onopen = () => {
-      attemptRef.current = 0;
-      setConnected(true);
-    };
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        // Two frame types from streamServer:
-        //   'prices'      — per-batch delta, fires every ~1s (MERGE)
-        //   'FULL_UPDATE' — end-of-sweep snapshot with every symbol
-        //                   (REPLACE, authoritative)
-        const isFull  = msg?.type === 'FULL_UPDATE';
-        const isDelta = msg?.type === 'prices';
-        if (!isFull && !isDelta) return;
-        if (!Array.isArray(msg.data)) return;
-
-        const frames = msg.data as LivePrice[];
-        const now = Date.now();
-
-        setPrices((prev) => {
-          // FULL_UPDATE is authoritative → rebuild from scratch so we
-          // never carry stale symbols across sweeps. Delta frames
-          // merge into the existing Map so incremental batches
-          // accumulate until the next FULL_UPDATE arrives.
-          const next = isFull ? new Map<string, LivePrice>() : new Map(prev);
-          for (const f of frames) {
-            if (!f?.symbol) continue;
-            next.set(f.symbol.toUpperCase(), f);
-          }
-          return next;
-        });
-        setLastAt(now);
-      } catch { /* swallow malformed frame */ }
-    };
-
-    ws.onerror = () => {
-      // onerror fires right before onclose; no need to log both.
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      socketRef.current = null;
-      scheduleReconnect();
-    };
-  }, []);
-
-  const scheduleReconnect = useCallback(() => {
-    if (closedByEffect.current) return;
-    if (WS_DISABLED) return;
-    if (reconnectRef.current) clearTimeout(reconnectRef.current);
-    const n = ++attemptRef.current;
-    // 1s, 2s, 4s, 8s … capped at 15s
-    const delay = Math.min(15_000, 1_000 * 2 ** Math.min(4, n - 1));
-    reconnectRef.current = setTimeout(() => connect(), delay);
-  }, [connect]);
-
+  // Initialise once, reading from the refs so each function always calls
+  // the current version of the other.
   useEffect(() => {
+    scheduleReconnectRef.current = () => {
+      if (closedByEffect.current) return;
+      if (WS_DISABLED) return;
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      const n = ++attemptRef.current;
+      // 1s, 2s, 4s, 8s … capped at 15s
+      const delay = Math.min(15_000, 1_000 * 2 ** Math.min(4, n - 1));
+      reconnectRef.current = setTimeout(() => connectRef.current(), delay);
+    };
+
+    connectRef.current = () => {
+      if (closedByEffect.current) return;
+      // Kill-switch: signal-only mode has no stream server running, so
+      // attempting `new WebSocket(...)` just produces an endless stream
+      // of "connection failed" errors in the console. Bail out cleanly.
+      if (WS_DISABLED) return;
+      const url = resolveWsUrl();
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url);
+      } catch (err) {
+        void err;
+        scheduleReconnectRef.current();
+        return;
+      }
+      socketRef.current = ws;
+
+      ws.onopen = () => {
+        attemptRef.current = 0;
+        setConnected(true);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          // Two frame types from streamServer:
+          //   'prices'      — per-batch delta, fires every ~1s (MERGE)
+          //   'FULL_UPDATE' — end-of-sweep snapshot with every symbol
+          //                   (REPLACE, authoritative)
+          const isFull  = msg?.type === 'FULL_UPDATE';
+          const isDelta = msg?.type === 'prices';
+          if (!isFull && !isDelta) return;
+          if (!Array.isArray(msg.data)) return;
+
+          const frames = msg.data as LivePrice[];
+          const now = Date.now();
+
+          setPrices((prev) => {
+            // FULL_UPDATE is authoritative → rebuild from scratch so we
+            // never carry stale symbols across sweeps. Delta frames
+            // merge into the existing Map so incremental batches
+            // accumulate until the next FULL_UPDATE arrives.
+            const next = isFull ? new Map<string, LivePrice>() : new Map(prev);
+            for (const f of frames) {
+              if (!f?.symbol) continue;
+              next.set(f.symbol.toUpperCase(), f);
+            }
+            return next;
+          });
+          setLastAt(now);
+        } catch { /* swallow malformed frame */ }
+      };
+
+      ws.onerror = () => {
+        // onerror fires right before onclose; no need to log both.
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        socketRef.current = null;
+        scheduleReconnectRef.current();
+      };
+    };
+
+    // Kick off the initial connection now that both refs are populated.
     closedByEffect.current = false;
-    connect();
+    connectRef.current();
+
     return () => {
       closedByEffect.current = true;
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
@@ -231,7 +242,7 @@ export function useLivePrices(): UseLivePricesResult {
       }
       socketRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Health poll: market open/closed + active feed source ─────
