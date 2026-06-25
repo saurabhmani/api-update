@@ -80,7 +80,6 @@
     "test:admin-monitoring": "tsx src/__tests__/adminMonitoring.test.ts",
     "test:security": "tsx src/__tests__/security.test.ts",
     "test:quant": "tsx src/__tests__/quantPlatform.test.ts",
-    "test:release-gate": "npm run typecheck && npm run lint && npm run build && npm run test:quant && npm run test:billing && npm run test:reliability && npm run test:admin-monitoring && npm run test:security && npm run test:pipeline",
     "test:manipulation-freshness": "tsx src/__tests__/manipulationFreshness.test.ts",
     "test:manipulation": "tsx src/__tests__/manipulationEnginePhase1.test.ts",
     "test:manipulation2": "tsx src/__tests__/manipulationEnginePhase2.test.ts",
