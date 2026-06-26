@@ -12,7 +12,7 @@
  *   sync_instruments_nse — instrument master sync
  */
 import { NextRequest, NextResponse }    from 'next/server';
-import { requireSession }               from '@/lib/session';
+import { requireAdmin } from '@/lib/session';
 import { db }                           from '@/lib/db';
 import { syncInstrumentsFromCdn, syncRankingsFromNse } from '@/services/dataSync';
 import { generateSignal,
@@ -30,14 +30,92 @@ export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
 
 async function checkAdmin(req: NextRequest) {
-  const user = await requireSession();
-  if ((user as any).role !== 'admin') throw new Error('Admin required');
+  const user = await requireAdmin();
   return user;
+}
+
+function mapUserRow(r: Record<string, unknown>) {
+  return {
+    id:            Number(r.id),
+    email:         r.email,
+    name:          r.name ?? null,
+    role:          r.role,
+    is_active:     Boolean(r.is_active),
+    totp_enabled:  Boolean(r.totp_enabled),
+    last_login_at: r.last_login_at ? new Date(String(r.last_login_at)).toISOString() : null,
+    created_at:    r.created_at ? new Date(String(r.created_at)).toISOString() : null,
+  };
 }
 
 export async function GET(req: NextRequest) {
   try { await checkAdmin(req); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+
+  const resource = req.nextUrl.searchParams.get('resource');
+
+  if (resource === 'users') {
+    try {
+      const { rows } = await db.query(
+        `SELECT id, email, name, role, is_active, totp_enabled, last_login_at, created_at
+           FROM users
+          ORDER BY created_at DESC`,
+      );
+      return NextResponse.json({ users: (rows as Record<string, unknown>[]).map(mapUserRow) });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to load users';
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+  }
+
+  if (resource === 'audit') {
+    const limit = Math.min(Number(req.nextUrl.searchParams.get('limit') ?? 100), 500);
+    try {
+      const { rows } = await db.query(
+        `SELECT a.id, a.user_id, a.action, a.resource_type, a.resource_id,
+                a.metadata, a.ip_address, a.created_at,
+                u.email AS user_email
+           FROM audit_logs a
+           LEFT JOIN users u ON u.id = a.user_id
+          ORDER BY a.created_at DESC
+          LIMIT ?`,
+        [limit],
+      );
+      return NextResponse.json({ logs: rows });
+    } catch {
+      return NextResponse.json({ logs: [] });
+    }
+  }
+
+  if (resource === 'usage') {
+    const safeCount = async (sql: string) => {
+      try {
+        const { rows } = await db.query(sql);
+        return Number((rows[0] as { c?: number })?.c ?? 0);
+      } catch {
+        return 0;
+      }
+    };
+    try {
+      const [totalUsers, activeUsers, signalRows, instrumentRows] = await Promise.all([
+        safeCount(`SELECT COUNT(*) AS c FROM users`),
+        safeCount(`SELECT COUNT(*) AS c FROM users WHERE is_active = 1`),
+        safeCount(`SELECT COUNT(*) AS c FROM q365_signals`),
+        safeCount(`SELECT COUNT(*) AS c FROM instruments`),
+      ]);
+      return NextResponse.json({
+        total_users:       totalUsers,
+        active_users:      activeUsers,
+        total_signals:     signalRows,
+        total_instruments: instrumentRows,
+      });
+    } catch {
+      return NextResponse.json({ total_users: 0, active_users: 0 });
+    }
+  }
+
+  if (resource === 'flags') {
+    return NextResponse.json({ flags: [] });
+  }
 
   const action = req.nextUrl.searchParams.get('action') || 'stats';
 
@@ -92,6 +170,66 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+}
+
+export async function PUT(req: NextRequest) {
+  let admin;
+  try { admin = await checkAdmin(req); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+
+  const resource = req.nextUrl.searchParams.get('resource');
+  if (resource !== 'user') {
+    return NextResponse.json({ error: 'Unknown resource' }, { status: 400 });
+  }
+
+  let body: Record<string, unknown> = {};
+  try { body = await req.json(); } catch { /* empty */ }
+
+  const id = Number(body.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    return NextResponse.json({ error: 'Valid user id required' }, { status: 400 });
+  }
+
+  if (id === admin.id) {
+    if (body.is_active === false) {
+      return NextResponse.json({ error: 'Cannot disable your own account' }, { status: 400 });
+    }
+    if (body.role === 'user') {
+      return NextResponse.json({ error: 'Cannot demote your own admin role' }, { status: 400 });
+    }
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+
+  if (body.role !== undefined) {
+    const role = String(body.role);
+    if (role !== 'user' && role !== 'admin') {
+      return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
+    }
+    sets.push('role = ?');
+    params.push(role);
+  }
+
+  if (body.is_active !== undefined) {
+    sets.push('is_active = ?');
+    params.push(body.is_active ? 1 : 0);
+  }
+
+  if (sets.length === 0) {
+    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+  }
+
+  params.push(id);
+  await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+
+  const { rows } = await db.query(
+    `SELECT id, email, name, role, is_active, totp_enabled, last_login_at, created_at
+       FROM users WHERE id = ?`,
+    [id],
+  );
+  const updated = (rows as Record<string, unknown>[])[0];
+  return NextResponse.json({ ok: true, user: updated ? mapUserRow(updated) : null });
 }
 
 export async function POST(req: NextRequest) {
