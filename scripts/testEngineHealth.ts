@@ -11,8 +11,8 @@
  *
  * Env:
  *   ENGINE_BASE_URL / UI_BASE_URL  — default tries 127.0.0.1:5000 then localhost:3000
- *   ENGINE_AUTH_COOKIE             — q200_session=… (skips login)
- *   UI_EMAIL / UI_PASSWORD         — login when cookie not set
+ *   ENGINE_AUTH_COOKIE             — q200_session=… (explicit override; skips login)
+ *   UI_EMAIL / UI_PASSWORD         — always used for remote hosts; preferred over local DB session
  *
  * Exit 0 = HEALTHY or WARNING overall · Exit 1 = DEGRADED/BROKEN/transport failure
  */
@@ -49,10 +49,23 @@ function mapDashboardFusionStatus(overall: string | undefined): string {
   return 'UNKNOWN';
 }
 
-async function resolveAuthCookie(): Promise<string | null> {
-  if (process.env.ENGINE_AUTH_COOKIE?.trim()) {
-    return process.env.ENGINE_AUTH_COOKIE.trim();
+function isLoopbackBase(base: string): boolean {
+  try {
+    const { hostname } = new URL(base);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
   }
+}
+
+function hasLoginCredentials(): boolean {
+  return Boolean(
+    process.env.UI_PASSWORD?.trim()
+    || process.env.SEED_ADMIN_PASSWORD?.trim(),
+  );
+}
+
+async function readDbSessionCookie(): Promise<string | null> {
   try {
     const { rows } = await db.query<{ token: string }>(
       `SELECT token FROM user_sessions WHERE expires_at > NOW() ORDER BY expires_at DESC LIMIT 1`,
@@ -62,6 +75,46 @@ async function resolveAuthCookie(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+async function validateCookie(base: string, cookie: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/api/auth`, {
+      headers: { Cookie: cookie, Accept: 'application/json' },
+      signal: AbortSignal.timeout(8_000),
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a session valid for `base`. Never reuses a local DB token against a remote host. */
+async function resolveSessionCookie(base: string): Promise<{ cookie: string; via: string }> {
+  const explicit = process.env.ENGINE_AUTH_COOKIE?.trim();
+  if (explicit) {
+    return { cookie: explicit, via: 'ENGINE_AUTH_COOKIE' };
+  }
+
+  const remote = !isLoopbackBase(base);
+  if (remote || hasLoginCredentials()) {
+    const cookie = await login(base);
+    return { cookie, via: remote ? 'login (remote host)' : 'login (UI_PASSWORD set)' };
+  }
+
+  const dbCookie = await readDbSessionCookie();
+  if (dbCookie && await validateCookie(base, dbCookie)) {
+    return { cookie: dbCookie, via: 'local DB session' };
+  }
+
+  if (hasLoginCredentials()) {
+    const cookie = await login(base);
+    return { cookie, via: 'login (DB session invalid)' };
+  }
+
+  throw new Error(
+    'No valid session. Set UI_PASSWORD for remote hosts, or ENGINE_AUTH_COOKIE=q200_session=…',
+  );
 }
 
 async function login(base: string): Promise<string> {
@@ -151,26 +204,34 @@ async function runLive(): Promise<void> {
     process.exit(1);
   }
 
-  let cookie = await resolveAuthCookie();
-  if (!cookie) {
-    try {
-      cookie = await login(base);
-      record('auth', 'OK', 'Logged in via /api/auth');
-    } catch (e) {
-      record('auth', 'FAIL', e instanceof Error ? e.message : String(e));
-      printReport(base);
-      process.exit(1);
-    }
-  } else {
-    record('auth', 'OK', 'Using ENGINE_AUTH_COOKIE or DB session');
+  let cookie: string;
+  try {
+    const session = await resolveSessionCookie(base);
+    cookie = session.cookie;
+    record('auth', 'OK', session.via);
+  } catch (e) {
+    record('auth', 'FAIL', e instanceof Error ? e.message : String(e));
+    printReport(base);
+    process.exit(1);
   }
 
   // ── Engine Health API ─────────────────────────────────────────
   const healthPath = '/api/signals/engine-health';
-  const health = await fetchJson(base, healthPath, cookie);
+  let health = await fetchJson(base, healthPath, cookie);
+
+  if ((health.status === 401 || health.status === 403) && hasLoginCredentials()
+      && !process.env.ENGINE_AUTH_COOKIE?.trim()) {
+    try {
+      cookie = await login(base);
+      record('auth_retry', 'OK', 'Re-logged in after 401');
+      health = await fetchJson(base, healthPath, cookie);
+    } catch (e) {
+      record('auth_retry', 'FAIL', e instanceof Error ? e.message : String(e));
+    }
+  }
 
   if (health.status === 401 || health.status === 403) {
-    record('engine_health_http', 'FAIL', `HTTP ${health.status} — session expired`);
+    record('engine_health_http', 'FAIL', `HTTP ${health.status} — unauthorized (check UI_PASSWORD)`);
     printReport(base);
     process.exit(1);
   }
