@@ -33,6 +33,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
 import { getMarketStatus }           from '@/lib/marketData/marketHours';
+import {
+  internalFetch,
+  type InternalFetchResult,
+}                                    from '@/lib/api/internalFetch';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -116,57 +120,11 @@ const str = (v: unknown): string | null => {
 
 const arr = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
-async function fetchInternal<T = any>(
-  origin: string,
-  path: string,
-  cookieHeader: string,
-  timeoutMs = 8_000,
-): Promise<FetchResult<T>> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const t0 = Date.now();
-  try {
-    const res = await fetch(`${origin}${path}`, {
-      cache: 'no-store',
-      headers: cookieHeader ? { cookie: cookieHeader } : {},
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    const elapsedMs = Date.now() - t0;
-    if (!res.ok) {
-      // Still try to parse JSON body for richer error context.
-      let bodyErr: string | null = null;
-      try {
-        const body = await res.clone().json();
-        bodyErr = body?.error ?? body?.message ?? null;
-      } catch { /* non-JSON error body */ }
-      return {
-        ok: false, status: res.status, data: null,
-        error: bodyErr ?? `HTTP ${res.status}`,
-        timedOut: false, elapsedMs, timeoutMs,
-      };
-    }
-    const data = (await res.json()) as T;
-    return {
-      ok: true, status: res.status, data, error: null,
-      timedOut: false, elapsedMs, timeoutMs,
-    };
-  } catch (e) {
-    clearTimeout(timer);
-    const elapsedMs = Date.now() - t0;
-    const raw = e instanceof Error ? e.message : String(e);
-    // AbortController surfaces a few different messages depending on
-    // runtime — match the common shapes so we can flip `timedOut`.
-    const timedOut =
-      controller.signal.aborted ||
-      raw.toLowerCase().includes('aborted') ||
-      raw.toLowerCase().includes('operation was aborted');
-    return {
-      ok: false, status: 0, data: null,
-      error: timedOut ? 'TIMEOUT' : raw,
-      timedOut, elapsedMs, timeoutMs,
-    };
-  }
+function toFetchResult<T>(r: InternalFetchResult<T>): FetchResult<T> {
+  return {
+    ok: r.ok, status: r.status, data: r.data, error: r.error,
+    timedOut: r.timedOut, elapsedMs: r.elapsedMs, timeoutMs: r.timeoutMs,
+  };
 }
 
 /**
@@ -212,8 +170,6 @@ export async function GET(req: NextRequest) {
   try { await requireSession(); }
   catch { return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }); }
 
-  const url           = new URL(req.url);
-  const origin        = `${url.protocol}//${url.host}`;
   const cookieHeader  = req.headers.get('cookie') ?? '';
   const warnings: string[] = [];
   const sourceStatus: Record<string, {
@@ -251,14 +207,14 @@ export async function GET(req: NextRequest) {
     optionsRes,
     backtestsListRes,
   ] = await Promise.allSettled([
-    fetchInternal<any>(origin, `/api/signals?action=top&limit=20&request_id=dash-${Date.now()}`, cookieHeader, TIMEOUT.signals),
-    fetchInternal<any>(origin, `/api/signals/engine-health`,                                     cookieHeader, TIMEOUT.engineHealth),
-    fetchInternal<any>(origin, `/api/signals/daily-report`,                                      cookieHeader, TIMEOUT.dailyReport),
-    fetchInternal<any>(origin, `/api/signals/backtest?window=1D`,                                cookieHeader, TIMEOUT.backtestPrev),
-    fetchInternal<any>(origin, `/api/news-engine?action=summary`,                                cookieHeader, TIMEOUT.newsSummary),
-    fetchInternal<any>(origin, `/api/manipulation?action=health`,                                cookieHeader, TIMEOUT.manipulation),
-    fetchInternal<any>(origin, `/api/options/intelligence?symbol=NIFTY`,                         cookieHeader, TIMEOUT.options),
-    fetchInternal<any>(origin, `/api/backtests`,                                                 cookieHeader, TIMEOUT.backtestsList),
+    internalFetch<any>(req, `/api/signals?action=top&limit=20&request_id=dash-${Date.now()}`, { cookieHeader, timeoutMs: TIMEOUT.signals }).then(toFetchResult),
+    internalFetch<any>(req, `/api/signals/engine-health`,                                     { cookieHeader, timeoutMs: TIMEOUT.engineHealth }).then(toFetchResult),
+    internalFetch<any>(req, `/api/signals/daily-report`,                                      { cookieHeader, timeoutMs: TIMEOUT.dailyReport }).then(toFetchResult),
+    internalFetch<any>(req, `/api/signals/backtest?window=1D`,                                { cookieHeader, timeoutMs: TIMEOUT.backtestPrev }).then(toFetchResult),
+    internalFetch<any>(req, `/api/news-engine?action=summary`,                                { cookieHeader, timeoutMs: TIMEOUT.newsSummary }).then(toFetchResult),
+    internalFetch<any>(req, `/api/manipulation?action=health`,                                { cookieHeader, timeoutMs: TIMEOUT.manipulation }).then(toFetchResult),
+    internalFetch<any>(req, `/api/options/intelligence?symbol=NIFTY`,                         { cookieHeader, timeoutMs: TIMEOUT.options }).then(toFetchResult),
+    internalFetch<any>(req, `/api/backtests`,                                                 { cookieHeader, timeoutMs: TIMEOUT.backtestsList }).then(toFetchResult),
   ]);
 
   const rejectedShim: FetchResult<any> = {

@@ -1,10 +1,16 @@
 # Quantorus365 — Institutional Intelligence Architecture
 
+**Version:** 2.1.0  
+**Last updated:** 2026-06-26
+
+---
+
 ## Philosophy
 
 This is an **Institutional Decision Engine**, not a retail signal app.
 
 Five non-negotiable principles:
+
 1. **Risk-first** — Risk is a gatekeeper, not a display number
 2. **Portfolio awareness** — Trade quality = stock quality × portfolio fit
 3. **Scenario-driven** — Market conditions control which strategies are allowed
@@ -15,19 +21,19 @@ Five non-negotiable principles:
 
 ## Architecture Freeze (Priority 0 — authoritative)
 
-The following is the target architecture. Every code path, doc, and
-env var in this repo converges on these rules. Contradictions are
-bugs.
+The following is the target architecture. Every code path, doc, and env var in this repo converges on these rules. Contradictions are bugs.
 
 | Concern | Truth |
 |---|---|
 | **Market-data PRIMARY** | IndianAPI (`src/providers/adapters/IndianAPIAdapter.ts`) |
-| **Market-data CACHE**   | In-memory `Cache` interface (`src/lib/cache.ts`) — Redis-swappable |
+| **Market-data CACHE** | In-memory `Cache` interface (`src/lib/cache.ts`) — Redis-swappable |
 | **Market-data FALLBACK** | Yahoo Finance — delayed (~15 min), policy-controlled via `YAHOO_ENABLED` |
 | **Market-data STALE tier** | PostgreSQL last-known snapshot (`market.snapshots_current`) |
-| **Runtime database** | **PostgreSQL only.** MySQL survives only as a one-way migration source for the Phase-2 backfill |
+| **Runtime database (target)** | **PostgreSQL only.** MySQL survives as the one-way migration source for Phase-2 backfill |
+| **Runtime database (v2.1 operational)** | **MySQL** via `src/lib/db.ts` for live app state (auth, signals, candles, news, manipulation). PostgreSQL schemas in `migrations/postgres/` are the canonical warehouse path — adoption is in progress |
 | **Kite / Zerodha** | Broker / order-execution ONLY. **Never** a market-data truth source |
 | **Single provider entry point** | `src/providers/MarketDataProvider.ts`. Every engine/route/service reads through it |
+| **Same-app API calls** | **Never** derive fetch origin from `req.url`. Use `internalFetch` (`src/lib/api/internalFetch.ts`) → loopback |
 
 ### Canonical fallback chain (strict order)
 
@@ -44,14 +50,11 @@ bugs.
    4. PostgreSQL (last-known snapshot)         source='db'      quality='stale'
 ```
 
-Signal-critical callers pass `{ signalCritical: true }`; stale
-(`source='db'`) responses then throw `StaleDataError` rather than
-silently degrading decisions.
+Signal-critical callers pass `{ signalCritical: true }`; stale (`source='db'`) responses then throw `StaleDataError` rather than silently degrading decisions.
 
 ### Canonical response envelope
 
-Every call through `MarketDataProvider` returns a `ProviderResponse<T>`
-that carries:
+Every call through `MarketDataProvider` returns a `ProviderResponse<T>` that carries:
 
 - `provider_name` — `'IndianAPI' | 'Cache' | 'Yahoo Finance' | 'PostgreSQL'`
 - `source_type` — `'primary' | 'cache' | 'fallback' | 'stale'`
@@ -60,6 +63,103 @@ that carries:
 - `freshness_ms` — `fetched_at - vendor_timestamp`, clamped to ≥ 0
 - `fallback_reason` — `null` when primary served, else a short summary of the upstream failures
 - `data_quality` — retained legacy field; see quality labels above
+
+---
+
+## Runtime Topology
+
+Production runs as a **single PM2-managed Node process** (`server.js`), not bare `next start`.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    nginx (HTTPS) → dev.quantorus.in                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  server.js  (quantorus365-app, PM2)                                          │
+│  ├── Next.js HTTP server              → PORT 5000 (default)                  │
+│  ├── WebSocket stream server          → STREAM_WS_PORT 5001                  │
+│  │     (tickBus fan-out via instrumentation.ts)                              │
+│  └── Child worker processes (supervised, isolated crashes)                   │
+│        ├── scheduler.ts              — market data, signal regen, maturity │
+│        ├── manipulationScannerCli    — daily manipulation scan (18:30 IST) │
+│        └── learningScheduler.ts      — outcome grading / calibration         │
+└─────────────────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+      MySQL (operational)   Redis (streams)    IndianAPI (primary)
+      PostgreSQL (target)   in-memory cache    Yahoo (fallback)
+```
+
+| Mode | Entry | Port |
+|------|-------|------|
+| **Production** | `node server.js` via PM2 (`ecosystem.config.js`) | 5000 / 5001 |
+| **Local dev** | `npm run dev` (`next dev`) | 3000 |
+
+nginx terminates TLS and proxies to `127.0.0.1:5000`. The Node process **cannot** reliably HTTP-call its own public hostname (hairpin NAT) — see **internalFetch** below.
+
+---
+
+## Server-to-Server API Calls — `internalFetch`
+
+When one API route needs data from another route in the **same deployment**, never build the URL from the inbound request:
+
+```typescript
+// ❌ WRONG — fails behind nginx on VPS (fetch status 0, ~10ms)
+const origin = `${new URL(req.url).protocol}//${new URL(req.url).host}`;
+await fetch(`${origin}/api/signals?...`);
+
+// ✅ CORRECT
+import { internalFetch } from '@/lib/api/internalFetch';
+
+const r = await internalFetch(req, '/api/signals?action=all&limit=20', {
+  cookieHeader: req.headers.get('cookie') ?? '',
+  timeoutMs: 12_000,
+});
+```
+
+**Origin resolution** (`resolveInternalOrigin`) — never uses `req.url`:
+
+```
+INTERNAL_APP_URL  →  loopback APP_URL  →  http://127.0.0.1:${PORT}
+```
+
+| Environment | Default loopback |
+|-------------|------------------|
+| Production | `http://127.0.0.1:5000` |
+| Development | `http://127.0.0.1:3000` |
+
+**Recommended production env:**
+
+```env
+INTERNAL_APP_URL=http://127.0.0.1:5000
+PORT=5000
+```
+
+**Routes that use `internalFetch` today:**
+
+| Route | Calls |
+|-------|-------|
+| `GET /api/dashboard` | signals, engine-health, daily-report, backtest, news-engine, manipulation, options, backtests |
+| `GET /api/signals/engine-health` | signals, daily-report, backtest |
+| `GET /api/signals/daily-report` | signals, backtest preview |
+| `GET /api/signals/backtest` | signals pool |
+
+Browser/client code may use relative paths (`fetch('/api/signals')`) — the browser talks to nginx, which works. Only **server-side** aggregators need loopback.
+
+---
+
+## Application Layer — Command Center & Dashboards
+
+Two dashboard surfaces serve different audiences:
+
+| Surface | Page | API | Data path |
+|---------|------|-----|-----------|
+| **Command Center** | `/dashboard` | `GET /api/dashboard` | Server-side aggregation via `internalFetch` → all intelligence modules |
+| **Engine Health** | `/signals/engine-health` | `GET /api/signals/engine-health` | Same modules, direct loopback fan-out |
+| **Admin Dashboard** | `/admin/dashboard` | `GET /api/admin/dashboard` | Direct DB/service reads (`buildAdminDashboard`) — no HTTP self-call |
+
+`/api/dashboard` is a **pure aggregator** — it never runs scoring logic, never fabricates data, and degrades gracefully when any upstream module fails. Failures are classified as `HEALTHY | WARNING | STALE | DEGRADED | TIMEOUT | BROKEN | …` so the UI never surfaces raw `AbortController` strings.
+
+Individual module pages (`/signals`, `/news-intelligence`, `/manipulation`) call their APIs **from the browser** and remain healthy even when an aggregator misconfigured its origin.
 
 ---
 
@@ -114,19 +214,33 @@ Market Data → Features → Factor Scores
                                  │  + quality_events log
 ```
 
+### Intelligence Modules (parallel engines)
+
+| Module | Location | API entry |
+|--------|----------|-----------|
+| Signal Engine (4-phase pipeline) | `src/lib/signal-engine/` | `/api/signals`, `/api/run-signal-engine` |
+| Backtesting | `src/lib/backtesting/` | `/api/backtests`, `/api/signals/backtest` |
+| Manipulation surveillance | `src/lib/manipulation-engine/` | `/api/manipulation`, `/api/manipulation-engine` |
+| News intelligence | `src/lib/news-engine/` | `/api/news-engine` |
+| Trust layer | `src/lib/trust-layer/` | `/api/trust/*` |
+| Strategy hub / lab | `src/lib/strategy-hub/`, `src/lib/strategy-lab/` | `/api/strategies/*` |
+| Paper / live trading | `src/lib/paper-trading/`, `src/lib/broker/` | `/api/paper/*`, `/api/broker/*` |
+| Quant platform | `src/lib/quant-platform/` | `/api/quant/*` |
+
 ---
 
 ## System Config Service (`systemConfigService.ts`)
 
 **Single source of truth for all 25 operational thresholds.**
 
-- Loads from `system_thresholds` PostgreSQL table
+- Loads from `system_thresholds` table (MySQL operational / PostgreSQL target)
 - Caches in Redis (TTL 300s) + in-memory (300s)
 - `applyStanceOverrides(cfg, stance)` merges stance adjustments on top
 - `invalidateConfig()` flushes all caches after admin update
 - No service hardcodes threshold values
 
 Threshold keys:
+
 ```
 MIN_RR_SWING, MIN_RR_POSITIONAL
 MIN_CONFIDENCE, MIN_COMPOSITE_SCORE, MAX_RISK_SCORE
@@ -181,6 +295,7 @@ confidence_score =
 Weights are DB-configurable via `system_thresholds` table.
 
 Conviction bands:
+
 - `high_conviction` — score ≥ 85
 - `actionable`      — score 70–84
 - `watchlist`       — score 55–69
@@ -214,7 +329,7 @@ Portfolio fit score (0–100) deducts for:
 | Capital at risk (≥20%) | 15 pts |
 | High correlation (avg >0.75) | 20 pts |
 
-Correlation is computed from **rolling 60-day returns in `candles` table** — not approximated.
+Correlation is computed from **rolling 60-day returns in the `candles` table** — not approximated.
 
 ---
 
@@ -230,6 +345,7 @@ The signal engine runs as a single sequential pipeline: Phase 1 → 2 → 3 → 
 | **Phase 4** | AI explanation, news enrichment, Dexter narratives, feedback loop | `generatePhase4Signals.ts` | `q365_signal_explanations`, `q365_decision_memory` |
 
 **Phase 3 is the single authoritative approval gate.** It runs:
+
 - R:R and stop-width checks
 - Position sizing with exposure limits
 - Portfolio fit with real correlation from DB
@@ -242,6 +358,7 @@ The signal engine runs as a single sequential pipeline: Phase 1 → 2 → 3 → 
 ### Canonical Rejection Engine (`core/runRejectionEngine.ts`)
 
 Runs 8 sequential gates, each producing a traced result:
+
 1. Strategy match
 2. Scenario gating (strategy blocked in current scenario)
 3. Market stance restriction
@@ -256,6 +373,7 @@ Every gate produces a `RejectionGateResult` with audit snapshots.
 ### Canonical Signal Type (`types/canonicalSignal.ts`)
 
 Central type definitions for persistence and API responses:
+
 - `CanonicalSignalRecord` — DB schema shape
 - `CanonicalSignalApiResponse` — API output shape
 - `CanonicalSignalDecisionTrace` — full gate audit
@@ -271,8 +389,25 @@ Adapters (9 sources: official, media, deals, social)
     → Phase 4 enrichment → Dexter AI narratives
 ```
 
-All news enriched fields use **0-1 scale** (no mixed scales).
-Real scorecard dimensions from DB — no heuristic fallbacks.
+All news enriched fields use **0-1 scale** (no mixed scales). Real scorecard dimensions from DB — no heuristic fallbacks.
+
+---
+
+## Workers & Daily Scan Schedule
+
+Scheduled jobs run inside the worker process (`npm run scheduler` / `scheduler.ts` child). Full IST schedule: [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md).
+
+| Job (IST) | Purpose |
+|-----------|---------|
+| 08:30 Morning Scan | Pre-market signals from last EOD candle (DB-only) |
+| 16:00 Evening Update | IndianAPI EOD refresh → `candles` warehouse |
+| 16:30 Evening Scan | Fresh EOD signals after candle update |
+| 18:30 Manipulation Scan | Surveillance scan (reads candles; no duplicate ingestion) |
+
+Additional cron children from `server.js`:
+
+- **Learning scheduler** — outcome grading, calibration (~20:30 IST)
+- **Manipulation scanner CLI** — standalone daily scan path
 
 ---
 
@@ -281,20 +416,54 @@ Real scorecard dimensions from DB — no heuristic fallbacks.
 | Source | Role | Used for | Auth |
 |--------|------|----------|------|
 | IndianAPI | PRIMARY | Live quotes, historical OHLCV, movers, corporate intel, fundamentals | `X-Api-Key` header (`INDIAN_API_KEY`) |
-| Cache     | CACHE   | Hot reads between primary fetches | In-memory (Redis-swappable) |
+| Cache | CACHE | Hot reads between primary fetches | In-memory (Redis-swappable) |
 | Yahoo Finance | FALLBACK | Delayed quotes + historical candles when primary fails | None |
-| PostgreSQL | STALE tier | Last-known snapshots, candles, and all app state | Internal |
+| PostgreSQL | STALE tier | Last-known snapshots, canonical warehouse schemas | Internal |
+| MySQL | OPERATIONAL | Live app tables (auth, signals, candles, news, ops) | Internal |
 | Kite / Zerodha | BROKER | Order placement, order status, broker callbacks | API key + session (execution only) |
 
-**Kite is deliberately excluded from market-data truth.** The
-`KiteAdapter` file remains in the repo for the execution module but
-is not referenced by `MarketDataProvider`.
+**Kite is deliberately excluded from market-data truth.** The `KiteAdapter` file remains in the repo for the execution module but is not referenced by `MarketDataProvider`.
 
 ---
 
-## PostgreSQL Tables
+## Database
 
-### Quantorus365 operational tables
+### Operational (MySQL — v2.1 runtime)
+
+Boot-time DDL: `src/lib/db/ensureAllSchemas.ts` (idempotent `CREATE TABLE IF NOT EXISTS`).
+
+| Area | Key tables |
+|------|------------|
+| Auth | `users`, `user_sessions` |
+| Signals | `q365_signals`, `q365_signal_lifecycle`, `q365_strategy_breakdowns` |
+| Market warehouse | `candles`, `market_data_daily`, EOD ingestion logs |
+| News | `news_events`, `news_scores` |
+| Manipulation | manipulation events, scan snapshots |
+| Ops | `system_thresholds`, `signal_rejections`, scheduler run logs |
+
+Access: `import { db } from '@/lib/db'` — parameterized SQL, no ORM.
+
+### Canonical PostgreSQL (target warehouse)
+
+Versioned migrations: `migrations/postgres/001` – `031` (auth, master, market, intel, app, ops, trust, strategy, billing, broker, security, quant platform, …).
+
+| Schema | Purpose |
+|--------|---------|
+| `auth.*` | users, sessions, audit |
+| `master.*` | instruments, aliases, sectors |
+| `market.*` | snapshots_current, snapshots_intraday, candles, historical_stats |
+| `intel.*` | news, corporate_events, forecasts, target_prices |
+| `app.*` | watchlists, portfolios, alerts, reports |
+| `ops.*` | scheduler_runs, provider_health_logs, dead_letter_events |
+
+Run: `npm run db:migrate:pg`  
+Validate: `npm run db:check:pg:insert`  
+Backfill from MySQL: `npm run db:backfill:pg`
+
+Full inventory: [`docs/database-inventory.md`](docs/database-inventory.md)
+
+### Quantorus365 operational tables (threshold / audit)
+
 | Table | Purpose |
 |-------|---------|
 | `system_thresholds` | All 25 configurable gate values |
@@ -308,13 +477,45 @@ is not referenced by `MarketDataProvider`.
 | `strategy_performance` | Win rate by strategy × regime × conviction |
 | `signal_quality_events` | Rejection event log |
 
-### Canonical schemas (migrations 001–008 under `migrations/postgres/`)
-- `auth.*` — users, sessions, audit
-- `master.*` — instruments, aliases, sectors
-- `market.*` — snapshots_current, snapshots_intraday (partitioned), candles, historical_stats
-- `intel.*` — news, corporate_events, forecasts, target_prices
-- `app.*` — watchlists, portfolios, alerts, reports
-- `ops.*` — scheduler_runs, provider_health_logs, dead_letter_events
+---
+
+## Code Organization
+
+```
+src/
+├── app/              # Next.js App Router — pages + ~174 API routes
+├── components/       # React UI (dashboard, signals, stock detail, layout)
+├── lib/              # Core engines (signal, backtest, manipulation, news, market data)
+│   └── api/
+│       └── internalFetch.ts   # ← mandatory for same-app server-side fetch
+├── services/         # Application service layer
+├── providers/        # Market data adapters (IndianAPI, Yahoo)
+├── hooks/            # React hooks
+├── types/            # Shared TypeScript types
+├── instrumentation.ts
+└── middleware.ts     # Cookie-presence auth gate (q200_session)
+
+services/             # Microservice scaffolds (identity, market-ingestion, …)
+packages/             # Shared contracts, eventbus, RPC
+scripts/              # CLI ops, validation, backfill
+migrations/postgres/  # Versioned PostgreSQL DDL
+docs/                 # Detailed inventories and runbooks
+server.js             # Production unified entry (HTTP + WS + workers)
+ecosystem.config.js   # PM2 config
+```
+
+---
+
+## Document Suite
+
+| Document | Scope |
+|----------|-------|
+| [`docs/architecture-audit.md`](docs/architecture-audit.md) | Full enterprise audit, module map, gaps |
+| [`docs/api-inventory.md`](docs/api-inventory.md) | All API routes with auth classification |
+| [`docs/database-inventory.md`](docs/database-inventory.md) | Schemas, tables, migrations |
+| [`docs/signal-engine-flow.md`](docs/signal-engine-flow.md) | 4-phase pipeline, lifecycle |
+| [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md) | IST cron jobs, dependency graph |
+| [`docs/PROVIDER_REQUEST_POLICY.md`](docs/PROVIDER_REQUEST_POLICY.md) | IndianAPI budget policy |
 
 ---
 
@@ -322,15 +523,34 @@ is not referenced by `MarketDataProvider`.
 
 ```bash
 npm install
-cp .env.example .env.local          # fill in PG + IndianAPI + session secrets
-npm run db:migrate:pg               # authoritative PostgreSQL migrations 001–008
-npm run db:check:pg:insert          # UPSERT + JSONB + TIMESTAMPTZ smoke test
+cp .env.example .env.local          # fill in MYSQL + IndianAPI + session secrets
+npm run db:ensure                     # boot-time MySQL DDL (or db:migrate-all)
+npm run db:migrate:pg                 # PostgreSQL canonical migrations
 npm run build
 pm2 start ecosystem.config.js --env production
 pm2 save && pm2 startup
 ```
 
+### Production env (minimum)
+
+```env
+NODE_ENV=production
+PORT=5000
+STREAM_WS_PORT=5001
+INTERNAL_APP_URL=http://127.0.0.1:5000
+
+MYSQL_HOST=...
+MYSQL_DATABASE=...
+MYSQL_USER=...
+MYSQL_PASSWORD=...
+
+SESSION_SECRET=...                    # 32+ chars
+INDIAN_API_KEY=...
+NEXT_PUBLIC_APP_URL=https://dev.quantorus.in
+```
+
 ### First-run after deploy
+
 ```bash
 # 1. Seed thresholds (if db:migrate-q365 ran, already done)
 POST /api/admin  body: { action: "seed_thresholds" }
@@ -353,17 +573,15 @@ GET /api/admin?action=get_stance
 
 ## Final Validation Checklist
 
-- [ ] `grep -rn "from '@/providers/adapters/\(Yahoo\|IndianAPI\|Kite\)Adapter'" src/ --include="*.ts"`
-      → only results are inside `src/providers/` itself
-- [ ] `grep -rn "from '@/lib/db'" src/ --include="*.ts"` → zero runtime imports
-      (migration tooling under `scripts/` may keep it temporarily)
+- [ ] No server route builds internal fetch origin from `req.url` — all use `internalFetch`
+- [ ] `INTERNAL_APP_URL` set on VPS (or defaults to `127.0.0.1:5000`)
+- [ ] `grep -rn "from '@/providers/adapters/\(Yahoo\|IndianAPI\|Kite\)Adapter'" src/ --include="*.ts"` → only inside `src/providers/`
 - [ ] `system_thresholds` table has 25 rows after migration
 - [ ] All engines import from `systemConfigService`, not hardcoding values
 - [ ] `signal_rejections.approved=0` rows accumulate during market hours
-- [ ] Dashboard shows `market_stance`, `scenario_tag`, `conviction_band`
+- [ ] Command Center `/dashboard` module statuses match `/signals/engine-health`
 - [ ] `ops.scheduler_runs` shows a row per 10-minute cycle during 09:30–15:30 IST
-- [ ] Provider response envelope includes `provider_name`, `source_type`,
-      `vendor_timestamp`, `freshness_ms`, and `fallback_reason` on every return path
+- [ ] Provider response envelope includes `provider_name`, `source_type`, `vendor_timestamp`, `freshness_ms`, and `fallback_reason` on every return path
 
 ## Verifying IndianAPI connectivity
 
@@ -374,5 +592,4 @@ curl -H "X-Api-Key: $INDIAN_API_KEY" "https://stock.indianapi.in/trending"
 curl -H "X-Api-Key: $INDIAN_API_KEY" "https://stock.indianapi.in/NSE_most_active"
 ```
 
-Keys must never land in source control. See `.env.example` for the full
-list of env vars read by the provider and adapters.
+Keys must never land in source control. See `.env.example` for the full list of env vars read by the provider and adapters.

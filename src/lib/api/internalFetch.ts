@@ -10,9 +10,9 @@
 //    enough to surface as "fetch failed" / 504 in the UI.
 //
 //  Contract:
-//    - Origin: prefer the inbound request's protocol+host (NextRequest
-//      has `nextUrl` for this); fall back to NEXT_PUBLIC_APP_URL,
-//      then APP_URL, then `http://localhost:${PORT || 3000}`.
+//    - Origin: NEVER derived from the inbound request URL (public
+//      hostnames are unreachable from Node behind nginx). Always
+//      loop back: INTERNAL_APP_URL → loopback APP_URL → 127.0.0.1:PORT.
 //    - Timeout: every call has an AbortController budget (default 8s).
 //    - Cookies: caller can forward the inbound `cookie` header so
 //      session-protected routes keep working.
@@ -52,49 +52,28 @@ export interface InternalFetchOptions {
 }
 
 /**
- * Resolve the absolute origin for server-to-server API calls.
+ * Resolve the absolute origin for server-to-server API calls within
+ * this deployment. Never uses the inbound request URL — the public
+ * HTTPS origin (e.g. https://dev.quantorus.in) is not reachable from
+ * Node behind nginx (hairpin NAT → fetch status 0).
  *
- * Production (nginx → Node on :5000):
- *   The public HTTPS origin (e.g. https://dev.quantorus.in) is NOT
- *   reachable from the Node process — hairpin NAT / firewall → fetch
- *   status 0 ("network"). Always loop back to the local Next listener.
- *   Order: INTERNAL_APP_URL → APP_URL → http://127.0.0.1:${PORT||5000}
- *
- * Development:
- *   Prefer the inbound request origin (next dev on the same host).
- *   Fall back to NEXT_PUBLIC_APP_URL / APP_URL / localhost.
+ * Order: INTERNAL_APP_URL → loopback APP_URL → http://127.0.0.1:PORT
  *
  * Never throws.
  */
-export function resolveInternalOrigin(req?: NextRequest | Request): string {
+export function resolveInternalOrigin(_req?: NextRequest | Request): string {
   const strip = (s: string) => s.replace(/\/+$/, '');
   const isLoopback = (origin: string): boolean =>
     /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/i.test(strip(origin));
 
-  if (process.env.NODE_ENV === 'production') {
-    const internal = process.env.INTERNAL_APP_URL?.trim();
-    if (internal) return strip(internal);
-    const priv = process.env.APP_URL?.trim();
-    if (priv && isLoopback(priv)) return strip(priv);
-    const port = process.env.PORT?.trim() || '5000';
-    return `http://127.0.0.1:${port}`;
-  }
+  const internal = process.env.INTERNAL_APP_URL?.trim();
+  if (internal) return strip(internal);
 
-  // Dev — inbound request origin is accurate on the same machine.
-  if (req && 'nextUrl' in req && (req as NextRequest).nextUrl?.origin) {
-    return (req as NextRequest).nextUrl.origin;
-  }
-  if (req?.url) {
-    try {
-      const u = new URL(req.url);
-      if (u.origin && u.origin !== 'null') return u.origin;
-    } catch { /* fall through */ }
-  }
-  const pub = process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (pub) return strip(pub);
-  const priv = process.env.APP_URL?.trim();
-  if (priv) return strip(priv);
-  const port = process.env.PORT?.trim() || '3000';
+  const appUrl = process.env.APP_URL?.trim();
+  if (appUrl && isLoopback(appUrl)) return strip(appUrl);
+
+  const defaultPort = process.env.NODE_ENV === 'production' ? '5000' : '3000';
+  const port = process.env.PORT?.trim() || defaultPort;
   return `http://127.0.0.1:${port}`;
 }
 

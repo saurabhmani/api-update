@@ -49,12 +49,16 @@ describe('resolveInternalOrigin', () => {
     expect(resolveInternalOrigin(fakeReq)).toBe('http://127.0.0.1:5000');
   });
 
-  it('uses request origin in development', () => {
+  it('uses loopback in development and ignores request origin', () => {
     process.env = {
       ...ORIGINAL_ENV,
       NODE_ENV: 'development',
     };
+    delete process.env.INTERNAL_APP_URL;
+    delete process.env.APP_URL;
+    delete process.env.PORT;
+
     const fakeReq = { nextUrl: { origin: 'http://localhost:3000' } } as never;
-    expect(resolveInternalOrigin(fakeReq)).toBe('http://localhost:3000');
+    expect(resolveInternalOrigin(fakeReq)).toBe('http://127.0.0.1:3000');
   });
 });

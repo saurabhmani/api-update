@@ -19,6 +19,7 @@
 
 import { NextRequest, NextResponse }    from 'next/server';
 import { requireSession }               from '@/lib/session';
+import { internalFetch }                  from '@/lib/api/internalFetch';
 import {
   runDailyBacktest,
   intervalForBacktestWindow,
@@ -95,18 +96,18 @@ export async function GET(req: NextRequest) {
   // Pull today's signal pools from the dashboard's own endpoint so
   // the backtest evaluates EXACTLY what the live system surfaced.
   let payload: any = null;
-  try {
-    const origin = `${url.protocol}//${url.host}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const res = await fetch(
-      `${origin}/api/signals?action=all&limit=20&request_id=backtest-${Date.now()}`,
-      { cache: 'no-store', headers: cookieHeader ? { cookie: cookieHeader } : {} },
-    );
-    if (res.ok) payload = await res.json();
-    else warnings.push(`Internal /api/signals returned ${res.status}.`);
-  } catch (e) {
-    warnings.push(`Failed to read /api/signals internally: ${(e as Error).message ?? 'unknown error'}.`);
-  }
+  const cookieHeader = req.headers.get('cookie') ?? '';
+  const signalsFetch = await internalFetch<any>(
+    req,
+    `/api/signals?action=all&limit=20&request_id=backtest-${Date.now()}`,
+    { cookieHeader, timeoutMs: 12_000 },
+  );
+  if (signalsFetch.ok) payload = signalsFetch.data;
+  else warnings.push(
+    signalsFetch.timedOut
+      ? 'Internal /api/signals timed out.'
+      : `Internal /api/signals returned ${signalsFetch.status || signalsFetch.error}.`,
+  );
 
   if (!payload) {
     return NextResponse.json(

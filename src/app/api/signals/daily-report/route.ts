@@ -20,6 +20,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
+import { internalFetch }             from '@/lib/api/internalFetch';
 import { getMarketStatus, toIstCalendarDate } from '@/lib/marketData/marketHours';
 import {
   buildDailySignalReport,
@@ -73,19 +74,18 @@ export async function GET(req: NextRequest) {
   // computed off the exact production state. This keeps the report
   // honest — no separate query path that could drift from the page.
   let payload: any = null;
-  try {
-    const origin = `${url.protocol}//${url.host}`;
-    const internalUrl = `${origin}/api/signals?action=all&limit=20&request_id=daily-report-${Date.now()}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const res = await fetch(internalUrl, {
-      cache:   'no-store',
-      headers: cookieHeader ? { cookie: cookieHeader } : {},
-    });
-    if (res.ok) payload = await res.json();
-    else warnings.push(`Internal /api/signals returned ${res.status}.`);
-  } catch (e) {
-    warnings.push(`Failed to read /api/signals internally: ${(e as Error).message ?? 'unknown error'}.`);
-  }
+  const cookieHeader = req.headers.get('cookie') ?? '';
+  const signalsFetch = await internalFetch<any>(
+    req,
+    `/api/signals?action=all&limit=20&request_id=daily-report-${Date.now()}`,
+    { cookieHeader, timeoutMs: 12_000 },
+  );
+  if (signalsFetch.ok) payload = signalsFetch.data;
+  else warnings.push(
+    signalsFetch.timedOut
+      ? 'Internal /api/signals timed out.'
+      : `Internal /api/signals returned ${signalsFetch.status || signalsFetch.error}.`,
+  );
 
   if (!payload) {
     // Emit an explicit empty / partial report rather than a 500.
@@ -161,15 +161,11 @@ export async function GET(req: NextRequest) {
   // Fire-and-forget — a backtest failure must NEVER block the daily
   // report. The route catches everything and surfaces a warning.
   try {
-    const origin = `${url.protocol}//${url.host}`;
-    const cookieHeader = req.headers.get('cookie') ?? '';
-    const btRes = await fetch(`${origin}/api/signals/backtest?window=1D`, {
-      cache: 'no-store',
-      headers: cookieHeader ? { cookie: cookieHeader } : {},
+    const btRes = await internalFetch<any>(req, `/api/signals/backtest?window=1D`, {
+      cookieHeader, timeoutMs: 8_000,
     });
     if (btRes.ok) {
-      const btPayload = await btRes.json();
-      const bt = btPayload?.backtest;
+      const bt = btRes.data?.backtest;
       if (bt) {
         report.backtestPreview = {
           status:                  bt.status,
@@ -189,7 +185,11 @@ export async function GET(req: NextRequest) {
         warnings.push('Backtest preview unavailable — no backtest result returned.');
       }
     } else {
-      warnings.push(`Backtest preview unavailable — /api/signals/backtest returned ${btRes.status}.`);
+      warnings.push(
+        btRes.timedOut
+          ? 'Backtest preview unavailable — /api/signals/backtest timed out.'
+          : `Backtest preview unavailable — /api/signals/backtest returned ${btRes.status || btRes.error}.`,
+      );
     }
   } catch (e) {
     warnings.push(`Backtest preview unavailable — ${(e as Error).message ?? 'unknown error'}.`);
