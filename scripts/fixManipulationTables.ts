@@ -37,14 +37,11 @@
  *    pm2 restart quantorus365
  */
 
-// Load env from .env.local (the codebase convention — server.js does
-// the same). Plain `dotenv/config` only reads `.env`, which this repo
-// doesn't use, so MySQL config wasn't being picked up.
+// Load env from .env (production) or .env.local (local dev).
 import * as path from 'node:path';
 import * as dotenv from 'dotenv';
-dotenv.config({
-  path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local'),
-});
+import { resolveEnvFilePath } from '../src/lib/envPath';
+dotenv.config({ path: resolveEnvFilePath() });
 
 import { db } from '../src/lib/db';
 import { migrateManipulationEngineTables } from '../src/lib/manipulation-engine/repository/migrate';

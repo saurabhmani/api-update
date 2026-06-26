@@ -27,9 +27,10 @@
  *   3 — script error (env / DB connection)
  */
 
-import path from 'path';
+import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local') });
+import { resolveEnvFilePath } from '../src/lib/envPath';
+loadEnv({ path: resolveEnvFilePath() });
 
 import { db } from '../src/lib/db';
 

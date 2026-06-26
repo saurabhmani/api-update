@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/checkProductionEnv.sh
 #
-# Production-readiness audit. Reads /var/www/api-update/.env.local
+# Production-readiness audit. Reads /var/www/api-update/.env
 # (or path from $ENV_FILE), checks every important variable, and
 # reports problems without printing secret values.
 #
@@ -11,10 +11,10 @@
 
 set -uo pipefail
 
-ENV_FILE="${ENV_FILE:-./.env.local}"
+ENV_FILE="${ENV_FILE:-./.env}"
 if [ ! -f "$ENV_FILE" ]; then
   echo "✗ FATAL  $ENV_FILE not found"
-  echo "  Copy the template:  cp .env.production.example .env.local"
+  echo "  Copy the template:  cp .env.example .env"
   exit 2
 fi
 
@@ -185,9 +185,31 @@ case "$(num "$CSV" 60 120)" in
   *) fail 'CONFIRMED_SNAPSHOT_VALIDITY_MINUTES non-numeric' ;;
 esac
 
-# ── 8. Session ────────────────────────────────────────────────────
+# ── 8. Internal API loopback (engine-health self-fetch) ───────────
 echo
-echo '[8] Session'
+echo '[8] Internal API loopback (engine-health / dashboard aggregators)'
+IURL="${E[INTERNAL_APP_URL]:-}"
+AURL="${E[APP_URL]:-}"
+if [ -n "$IURL" ]; then
+  case "$IURL" in
+    http://127.0.0.1:*|http://localhost:*) ok "INTERNAL_APP_URL=$IURL" ;;
+    *) warn "INTERNAL_APP_URL=$IURL should be loopback (http://127.0.0.1:5000) — public URLs fail from Node self-fetch" ;;
+  esac
+elif [ -n "$AURL" ]; then
+  case "$AURL" in
+    http://127.0.0.1:*|http://localhost:*) ok "APP_URL=$AURL (loopback for server-side fetch)" ;;
+    https://*|http://*.*)
+      fail "APP_URL=$AURL is a public URL — engine-health internalFetch will get status network. Set APP_URL=http://127.0.0.1:5000"
+      ;;
+    *) warn "APP_URL=$AURL unusual — prefer http://127.0.0.1:5000 for prod" ;;
+  esac
+else
+  ok 'APP_URL unset — code defaults to http://127.0.0.1:5000 in production (correct)'
+fi
+
+# ── 9. Session ────────────────────────────────────────────────────
+echo
+echo '[9] Session'
 SMA="${E[SESSION_MAX_AGE]:-}"
 case "$(num "$SMA" 600 2592000)" in
   ok) ok "SESSION_MAX_AGE=$SMA (~$((SMA/3600))h)" ;;
@@ -197,9 +219,9 @@ case "$(num "$SMA" 600 2592000)" in
   *) fail 'SESSION_MAX_AGE non-numeric' ;;
 esac
 
-# ── 9. Process state ──────────────────────────────────────────────
+# ── 10. Process state ─────────────────────────────────────────────
 echo
-echo '[9] Live process state (read from running OS)'
+echo '[10] Live process state (read from running OS)'
 LOAD=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo '?')
 LOAD_INT=${LOAD%.*}
 if [ -n "$LOAD_INT" ] && [ "$LOAD_INT" != '?' ]; then

@@ -30,15 +30,13 @@
 // 1. Register tsconfig path aliases so `@/...` resolves under tsx.
 require('tsconfig-paths/register');
 
-// 2. Load .env.local synchronously. PM2 runs this as a standalone tsx
-//    process, so Next.js's automatic env loader never fires and
-//    DATABASE_URL would otherwise be undefined when db.ts initializes.
-//    Prefers DOTENV_CONFIG_PATH (set by ecosystem.config.js) over cwd
-//    because PM2's saved cwd can drift from the deploy path after a
-//    dump/restore cycle.
+// 2. Load project env synchronously. PM2 runs this as a standalone tsx
+//    process, so Next.js's automatic env loader never fires.
+//    Production uses `.env`; local dev prefers `.env.local` when present.
 const fs = require('fs') as typeof import('fs');
 const pathMod = require('path') as typeof import('path');
-const envPath = process.env.DOTENV_CONFIG_PATH || pathMod.resolve(process.cwd(), '.env.local');
+const { resolveEnvFilePath } = require('../envPath') as typeof import('../envPath');
+const envPath = resolveEnvFilePath();
 try {
   const envFile = fs.readFileSync(envPath, 'utf-8');
   for (const line of envFile.split('\n')) {

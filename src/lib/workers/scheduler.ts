@@ -35,12 +35,10 @@
  * PM2:    pm2 start src/lib/workers/scheduler.ts --name quantorus365-scheduler
  */
 
-// ── Load .env.local in non-production only (PM2/System provides prod env) ─
-import path from 'path';
+// ── Load project env (`.env` on prod, `.env.local` in dev when present) ─
 import { config as dotenvConfig } from 'dotenv';
-if (process.env.NODE_ENV !== 'production') {
-  dotenvConfig({ path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local') });
-}
+import { resolveEnvFilePath } from '@/lib/envPath';
+dotenvConfig({ path: resolveEnvFilePath() });
 
 // ── Bootstrap path aliases (ts-node doesn't support @/ by default) ─
 import 'tsconfig-paths/register';

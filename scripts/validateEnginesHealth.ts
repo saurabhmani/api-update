@@ -11,10 +11,8 @@
  */
 
 import path from 'node:path';
-import { config as loadEnv } from 'dotenv';
-
-loadEnv({ path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local') });
-loadEnv({ path: path.resolve(process.cwd(), '.env') });
+import { loadProjectEnv } from './loadProjectEnv';
+loadProjectEnv();
 
 import { db } from '@/lib/db';
 import { getMarketStatus } from '@/lib/marketData/marketHours';

@@ -52,36 +52,50 @@ export interface InternalFetchOptions {
 }
 
 /**
- * Resolve the absolute origin we should hit. Order:
- *   1. The inbound NextRequest's nextUrl.origin (cheapest, most accurate).
- *   2. process.env.NEXT_PUBLIC_APP_URL (public canonical URL).
- *   3. process.env.APP_URL (private canonical URL).
- *   4. http://localhost:${PORT||3000} (dev fallback).
+ * Resolve the absolute origin for server-to-server API calls.
  *
- * Never throws — returns the localhost fallback as a last resort so
- * the caller can still attempt the request rather than failing fast.
+ * Production (nginx → Node on :5000):
+ *   The public HTTPS origin (e.g. https://dev.quantorus.in) is NOT
+ *   reachable from the Node process — hairpin NAT / firewall → fetch
+ *   status 0 ("network"). Always loop back to the local Next listener.
+ *   Order: INTERNAL_APP_URL → APP_URL → http://127.0.0.1:${PORT||5000}
+ *
+ * Development:
+ *   Prefer the inbound request origin (next dev on the same host).
+ *   Fall back to NEXT_PUBLIC_APP_URL / APP_URL / localhost.
+ *
+ * Never throws.
  */
 export function resolveInternalOrigin(req?: NextRequest | Request): string {
-  // 1. Inbound request — preferred. NextRequest exposes `nextUrl`.
+  const strip = (s: string) => s.replace(/\/+$/, '');
+  const isLoopback = (origin: string): boolean =>
+    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/i.test(strip(origin));
+
+  if (process.env.NODE_ENV === 'production') {
+    const internal = process.env.INTERNAL_APP_URL?.trim();
+    if (internal) return strip(internal);
+    const priv = process.env.APP_URL?.trim();
+    if (priv && isLoopback(priv)) return strip(priv);
+    const port = process.env.PORT?.trim() || '5000';
+    return `http://127.0.0.1:${port}`;
+  }
+
+  // Dev — inbound request origin is accurate on the same machine.
   if (req && 'nextUrl' in req && (req as NextRequest).nextUrl?.origin) {
     return (req as NextRequest).nextUrl.origin;
   }
-  // Plain Request still has `url` so URL() can parse it.
   if (req?.url) {
     try {
       const u = new URL(req.url);
       if (u.origin && u.origin !== 'null') return u.origin;
     } catch { /* fall through */ }
   }
-  // 2. Public URL env.
   const pub = process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (pub) return pub.replace(/\/+$/, '');
-  // 3. Private URL env.
+  if (pub) return strip(pub);
   const priv = process.env.APP_URL?.trim();
-  if (priv) return priv.replace(/\/+$/, '');
-  // 4. Dev fallback.
+  if (priv) return strip(priv);
   const port = process.env.PORT?.trim() || '3000';
-  return `http://localhost:${port}`;
+  return `http://127.0.0.1:${port}`;
 }
 
 /**

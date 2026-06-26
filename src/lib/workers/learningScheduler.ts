@@ -33,16 +33,14 @@
 //               you need an on-demand "rebuild learning state" button.
 // ════════════════════════════════════════════════════════════════
 
-// ── Bootstrap: load .env.local + path aliases before any @/ import ──
+// ── Bootstrap: load project env + path aliases before any @/ import ──
 // PM2 launches this worker as a standalone tsx process, so Next.js's
-// automatic env loader never runs. Without this, DATABASE_URL comes up
-// undefined and the very first db.query() throws. Prefers the absolute
-// DOTENV_CONFIG_PATH (set by ecosystem.config.js) over cwd, because
-// PM2's saved cwd can drift from the deploy path after a dump/restore.
+// automatic env loader never runs. Prefers DOTENV_CONFIG_PATH (set by
+// ecosystem.config.js) → `.env` on prod → `.env.local` in dev.
 import 'tsconfig-paths/register';
 import * as fs from 'fs';
-import * as path from 'path';
-const envPath = process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local');
+import { resolveEnvFilePath } from '@/lib/envPath';
+const envPath = resolveEnvFilePath();
 try {
   const envFile = fs.readFileSync(envPath, 'utf-8');
   for (const line of envFile.split('\n')) {

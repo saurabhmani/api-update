@@ -3,14 +3,15 @@
 //
 //  Hand-rolled to avoid a dotenv dep, identical to the pattern used
 //  by src/lib/db/postgres/migrate.ts and friends. Keep this tiny and
-//  side-effect-only: importing it loads .env.local into process.env.
+//  side-effect-only: importing it loads the project env into process.env.
+//  Production uses `.env`; local dev prefers `.env.local` when present.
 // ════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';
-import path from 'node:path';
+import { resolveEnvFilePath } from '../../src/lib/envPath';
 
 try {
-  const envFile = fs.readFileSync(path.resolve(process.cwd(), '.env.local'), 'utf-8');
+  const envFile = fs.readFileSync(resolveEnvFilePath(), 'utf-8');
   for (const line of envFile.split('\n')) {
     const t = line.trim();
     if (!t || t.startsWith('#')) continue;
@@ -21,4 +22,4 @@ try {
       if (!process.env[k]) process.env[k] = v;
     }
   }
-} catch { /* .env.local optional */ }
+} catch { /* env file optional */ }
