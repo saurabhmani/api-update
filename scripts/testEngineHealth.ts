@@ -323,15 +323,19 @@ async function runLive(): Promise<void> {
       );
     }
 
-    const source = dash.body.sourceStatus as Record<string, { ok?: boolean; error?: string }> | undefined;
+    const source = dash.body.sourceStatus as Record<string, {
+      ok?: boolean; error?: string | null; timedOut?: boolean; elapsedMs?: number; timeoutMs?: number;
+    }> | undefined;
     if (source?.engineHealth?.ok === false) {
-      record(
-        'dashboard_internal_fetch',
-        'FAIL',
-        `Dashboard aggregator engineHealth fetch failed: ${source.engineHealth.error ?? 'unknown'} — set INTERNAL_APP_URL=http://127.0.0.1:5000`,
-      );
+      const eh = source.engineHealth;
+      const hint = eh.timedOut || eh.error === 'TIMEOUT'
+        ? `timed out after ${eh.elapsedMs ?? '?'}ms (budget ${eh.timeoutMs ?? '?'}ms) — deploy latest dashboard route (engineHealth timeout 18s) or reduce parallel load`
+        : eh.error === 'fetch failed' || (eh.error && eh.error.includes('fetch'))
+          ? 'loopback unreachable — set INTERNAL_APP_URL=http://127.0.0.1:5000 on the VPS'
+          : (eh.error ?? 'unknown');
+      record('dashboard_internal_fetch', eh.timedOut ? 'WARN' : 'FAIL', `Dashboard engine-health internal fetch: ${hint}`);
     } else if (source?.engineHealth?.ok === true) {
-      record('dashboard_internal_fetch', 'OK', 'Dashboard internal engine-health fetch succeeded');
+      record('dashboard_internal_fetch', 'OK', `Dashboard internal engine-health fetch succeeded (${source.engineHealth.elapsedMs ?? '?'}ms)`);
     }
   }
 
