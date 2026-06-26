@@ -30,7 +30,7 @@
 //  Validity window:
 //    - 90 minutes default.
 //    - Override via CONFIRMED_SNAPSHOT_VALIDITY_MINUTES env, clamped
-//      to [60, 120].
+//      to [60, 1440].
 //
 //  This file deliberately has zero coupling to QuantSignal — it
 //  takes the fields it needs as inputs so saveSignals can call it
@@ -52,7 +52,7 @@ import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12
 // The MAX ceiling was raised 120 → 1440 (24h) per spec "FIX ZERO
 // SIGNALS" §3 so operators on slower cadences (manual review,
 // off-hours backtesting harness) can extend via
-// CONFIRMED_SNAPSHOT_VALIDITY_MINUTES. **Setting this above 120 in
+// CONFIRMED_SNAPSHOT_VALIDITY_MINUTES. **Setting this above 480 in
 // production is a trading decision** — long validity means the row
 // stays "ACTIVE" through price moves the original setup didn't
 // anticipate. The default is unchanged so this only kicks in when

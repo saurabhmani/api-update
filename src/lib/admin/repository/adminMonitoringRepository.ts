@@ -4,6 +4,14 @@ import { db } from '@/lib/db';
 
 let migrated = false;
 
+/** MySQL DATETIME columns reject ISO-8601 (`2026-06-26T17:13:03.000Z`). */
+function toMysqlDateTime(input: string | Date | null | undefined): string | null {
+  if (input == null || input === '') return null;
+  const iso = input instanceof Date ? input.toISOString() : String(input);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso)) return iso;
+  return iso.slice(0, 19).replace('T', ' ');
+}
+
 export async function ensureAdminMonitoringTables(): Promise<void> {
   if (migrated) return;
   try {
@@ -108,8 +116,8 @@ export async function logCronJob(input: {
       input.durationMs ?? null,
       input.errorMessage ?? null,
       input.metadata ? JSON.stringify(input.metadata) : null,
-      input.startedAt ?? new Date(),
-      input.finishedAt ?? null,
+      toMysqlDateTime(input.startedAt ?? new Date()),
+      toMysqlDateTime(input.finishedAt),
     ],
   );
 }
@@ -212,6 +220,22 @@ export async function upsertAlert(input: {
       input.source ?? 'admin_monitor',
       input.context ? JSON.stringify(input.context) : null,
     ],
+  );
+}
+
+export async function resolveAlertsExcept(activeKeys: string[]): Promise<void> {
+  await ensureAdminMonitoringTables();
+  if (activeKeys.length === 0) {
+    await db.query(
+      `UPDATE system_alerts SET status = 'resolved', resolved_at = NOW() WHERE status = 'active'`,
+    );
+    return;
+  }
+  const placeholders = activeKeys.map(() => '?').join(', ');
+  await db.query(
+    `UPDATE system_alerts SET status = 'resolved', resolved_at = NOW()
+      WHERE status = 'active' AND alert_key NOT IN (${placeholders})`,
+    activeKeys,
   );
 }
 

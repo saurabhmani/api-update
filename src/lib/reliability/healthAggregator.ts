@@ -4,7 +4,7 @@ import { getMonitorSnapshot } from '@/lib/monitor/apiMonitor';
 import { getQuotaReport } from '@/lib/monitor/apiQuota';
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
-import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
+import { classifyCandleFreshness, type CandleSource } from '@/lib/marketData/candleFreshness';
 import { isGlobalLiveKillSwitchActive } from '@/lib/broker/killSwitch';
 import { db } from '@/lib/db';
 import { CRON_REGISTRY } from './constants/cronRegistry';
@@ -208,19 +208,55 @@ async function buildStrategyMonitor(): Promise<StrategyMonitorSummary> {
   };
 }
 
+/** Warnings that reflect real platform impairment. Informational rules
+ *  (scan coverage off-hours, maturity-layer approval ratios) stay in
+ *  the alerts panel but do not downgrade overall status. */
+const DEGRADING_WARNING_IDS = new Set([
+  'breaker_open',
+  'no_full_scan',
+  'invalid_payload_spike',
+]);
+
+function resolveDashboardCandleSource(): CandleSource {
+  const env = (process.env.CANDLE_FEED_SOURCE ?? '').trim().toLowerCase();
+  if (
+    env === 'daily' || env === 'fallback_daily' || env === 'cached_daily'
+    || env === 'live_tick' || env === 'intraday'
+  ) {
+    return env as CandleSource;
+  }
+  // market_data_daily stores session bars — use daily-tolerant thresholds
+  // so yesterday's close is "aging", not "stale", when the market is closed.
+  return 'daily';
+}
+
 function deriveOverallStatus(
   metrics: HealthMetrics,
-  alertCritical: number,
-  alertWarning: number,
+  alerts: Array<{ id: string; severity: string }>,
   apiSystemStatus: string,
+  marketOpen: boolean,
 ): ReliabilityStatus {
-  if (alertCritical > 0 || metrics.brokerDownCount > 0 || apiSystemStatus === 'CRITICAL') return 'critical';
+  const criticalCount = alerts.filter((a) => a.severity === 'critical').length;
+  if (criticalCount > 0 || metrics.brokerDownCount > 0 || apiSystemStatus === 'CRITICAL') {
+    return 'critical';
+  }
+
+  const degradingWarnings = alerts.filter(
+    (a) => a.severity === 'warning' && DEGRADING_WARNING_IDS.has(a.id),
+  ).length;
+
+  const candleDegraded =
+    metrics.dataFreshnessQuality === 'frozen'
+    || (metrics.dataFreshnessQuality === 'stale' && marketOpen);
+
   if (
-    alertWarning > 0
+    degradingWarnings > 0
     || metrics.cronFailureCount24h > 0
-    || metrics.dataFreshnessQuality === 'STALE'
+    || candleDegraded
     || apiSystemStatus === 'DEGRADED'
-  ) return 'degraded';
+  ) {
+    return 'degraded';
+  }
   return 'healthy';
 }
 
@@ -230,7 +266,11 @@ export async function collectReliabilityDashboard(): Promise<ReliabilityDashboar
   const market = getMarketStatus();
   const inst = getInstitutionalHealthSnapshot();
   const latestMs = await probeLatestCandleMs();
-  const candle = classifyCandleFreshness({ latest_candle_ms: latestMs, market_open: market.isOpen });
+  const candle = classifyCandleFreshness({
+    latest_candle_ms: latestMs,
+    market_open: market.isOpen,
+    candle_source: resolveDashboardCandleSource(),
+  });
 
   const [
     learningRuns,
@@ -306,9 +346,9 @@ export async function collectReliabilityDashboard(): Promise<ReliabilityDashboar
 
   const overallStatus = deriveOverallStatus(
     metrics,
-    alertEval.summary.critical,
-    alertEval.summary.warning,
+    alertEval.alerts,
     systemStatus,
+    market.isOpen,
   );
 
   const dashboard: ReliabilityDashboard = {

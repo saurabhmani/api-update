@@ -118,6 +118,15 @@ describe('alertRules', () => {
     expect(evaluateAlerts(i).find((a) => a.id === 'scan_coverage_below_floor')?.severity).toBe('warning');
   });
 
+  it('scan_coverage_below_floor suppressed when market closed', () => {
+    recordFullScanStart({ universe_size: 503 });
+    recordFullScanComplete({ ok: true, scanned: 400, approved: 3, rejected: 397, provider_coverage_pct: 79.5 });
+    const i = inputBase();
+    i.candle = { ...i.candle!, market_open: false };
+    i.snapshot = getInstitutionalHealthSnapshot();
+    expect(evaluateAlerts(i).find((a) => a.id === 'scan_coverage_below_floor')).toBeUndefined();
+  });
+
   it('elite_zero_output_anomaly fires only past min sample size', () => {
     // Below sample size: no anomaly yet.
     recordEliteGateRun({ approved: 0, rejected: 50, market_open: true });

@@ -193,7 +193,11 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
   }
 
   // ── scan_coverage_below_floor ────────────────────────────────
-  if (input.snapshot.full_scan.last_provider_coverage_pct != null
+  // Only during market hours — off-hours / manual dev scans routinely
+  // skip symbols with no fresh intraday data; sub-90% coverage there
+  // is expected and must not degrade the admin dashboard.
+  if (input.candle?.market_open === true
+      && input.snapshot.full_scan.last_provider_coverage_pct != null
       && input.snapshot.full_scan.last_provider_coverage_pct < cfg.scan_coverage_floor_pct) {
     alerts.push({
       id:        'scan_coverage_below_floor',

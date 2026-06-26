@@ -14,6 +14,7 @@ import {
   listSystemHealthLogs,
   syncCronLogsFromSources,
   upsertAlert,
+  resolveAlertsExcept,
 } from '../repository/adminMonitoringRepository';
 
 export async function buildAdminDashboard(actor?: { id: number; email: string }) {
@@ -52,6 +53,7 @@ export async function buildAdminDashboard(actor?: { id: number; email: string })
       context: a.context,
     });
   }
+  await resolveAlertsExcept(alerts.map((a) => a.id));
 
   if (actor) {
     await logAdminAction({
@@ -172,6 +174,7 @@ export async function getAlertCenter() {
       context: a.context,
     });
   }
+  await resolveAlertsExcept(alerts.map((a) => a.id));
   const stored = await listActiveAlerts(100);
   return {
     summary,
