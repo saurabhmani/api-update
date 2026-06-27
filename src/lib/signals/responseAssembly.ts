@@ -85,6 +85,7 @@ import {
   type SignalTierContext,
   type ReviewedSignalGroup,
 } from '@/lib/signals/signalDueDiligence';
+import { attachOutcomeExcursionsToMany } from '@/lib/signals/outcome/attachSignalOutcomeExcursions';
 import {
   buildLightweightDailyReportPreview,
   type DailyReportPreview,
@@ -1171,6 +1172,22 @@ export async function buildSignalsResponsePayload(
     candleAgeMinutes:  Math.round(candleAgeMins),
   };
 
+  const [
+    withOutcomesApproved,
+    withOutcomesHighPotential,
+    withOutcomesWatchlist,
+    withOutcomesDeveloping,
+    withOutcomesScanner,
+    withOutcomesRisk,
+  ] = await attachOutcomeExcursionsToMany([
+    rankedApproved as Array<{ id?: number | null }>,
+    liteHighPotential as Array<{ id?: number | null }>,
+    liteWatchlist as Array<{ id?: number | null }>,
+    liteDeveloping as Array<{ id?: number | null }>,
+    liteScannerCandidates as Array<{ id?: number | null }>,
+    liteRiskRestricted as Array<{ id?: number | null }>,
+  ]);
+
   const enrichRowsWithDiligence = <T extends { symbol?: string | null; tradingsymbol?: string | null }>(
     rows: readonly T[],
     tier: SignalTierContext,
@@ -1184,12 +1201,12 @@ export async function buildSignalsResponsePayload(
     });
   };
 
-  let enrichedApproved          = enrichRowsWithDiligence(rankedApproved as any[], 'approved');
-  let enrichedHighPotential     = enrichRowsWithDiligence(liteHighPotential as any[], 'high_potential');
-  let enrichedWatchlist         = enrichRowsWithDiligence(liteWatchlist as any[], 'watchlist');
-  let enrichedDeveloping        = enrichRowsWithDiligence(liteDeveloping as any[], 'developing');
-  let enrichedScannerCandidates = enrichRowsWithDiligence(liteScannerCandidates as any[], 'scanner_candidate');
-  let enrichedRiskRestricted    = enrichRowsWithDiligence(liteRiskRestricted as any[], 'risk_restricted');
+  let enrichedApproved          = enrichRowsWithDiligence(withOutcomesApproved as any[], 'approved');
+  let enrichedHighPotential     = enrichRowsWithDiligence(withOutcomesHighPotential as any[], 'high_potential');
+  let enrichedWatchlist         = enrichRowsWithDiligence(withOutcomesWatchlist as any[], 'watchlist');
+  let enrichedDeveloping        = enrichRowsWithDiligence(withOutcomesDeveloping as any[], 'developing');
+  let enrichedScannerCandidates = enrichRowsWithDiligence(withOutcomesScanner as any[], 'scanner_candidate');
+  let enrichedRiskRestricted    = enrichRowsWithDiligence(withOutcomesRisk as any[], 'risk_restricted');
 
   // ── Phase 3 + 5 + 6 intelligence enrichment ─────────────────────
   //

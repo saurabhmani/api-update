@@ -3,7 +3,7 @@ import {
   getIntelligenceMode,
   resolveEngineHealthCheck,
 } from '@/types/dashboard';
-import { buildLightweightEngineHealthPreview, buildIndicatorHealthNode, buildDataFeedHealthNode, buildScannerHealthNode, buildDueDiligenceHealthNode, buildManipulationHealthNode, buildPipelineReadiness } from '@/lib/signals/engineHealthMap';
+import { buildLightweightEngineHealthPreview, buildIndicatorHealthNode, buildDataFeedHealthNode, buildScannerHealthNode, buildDueDiligenceHealthNode, buildManipulationHealthNode, buildBacktestingHealthNode, buildPipelineReadiness } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthContext } from '@/lib/signals/engineHealthMap';
 
 const baseFeedCtx = (feed: Partial<EngineHealthContext['feed']>, marketOpen = true): EngineHealthContext => ({
@@ -256,6 +256,66 @@ describe('buildDueDiligenceHealthNode — pipeline readiness', () => {
       dueDiligenceSummary: null,
     });
     expect(node.status).toBe('HEALTHY');
+  });
+});
+
+describe('buildBacktestingHealthNode — warehouse EOD lag', () => {
+  it('softens warehouse lag warning for COMPLETE backtests', () => {
+    const node = buildBacktestingHealthNode({
+      ...baseFeedCtx({ staleMinutes: 10, candleAgeHours: 1 }),
+      backtest: {
+        available:       true,
+        status:          'COMPLETE',
+        window:          '1D',
+        generatedAt:     new Date().toISOString(),
+        symbolsWithData: 18,
+        totalSymbols:    20,
+        warnings:        [
+          'Backtest end clipped to latest warehouse EOD session 2026-06-24 (requested 2026-06-27 not available yet).',
+        ],
+      },
+    });
+    expect(node.status).toBe('HEALTHY');
+    expect(node.diagnostics.warnings.some((w) => w.includes('candles:daily'))).toBe(true);
+    expect(node.diagnostics.warnings.some((w) => w.includes('2026-06-27'))).toBe(false);
+  });
+
+  it('recognizes legacy warehouse lag warning text', () => {
+    const node = buildBacktestingHealthNode({
+      ...baseFeedCtx({ staleMinutes: 10, candleAgeHours: 1 }),
+      backtest: {
+        available:       true,
+        status:          'COMPLETE',
+        window:          '1D',
+        generatedAt:     new Date().toISOString(),
+        symbolsWithData: 18,
+        totalSymbols:    20,
+        warnings:        [
+          'Backtest end 2026-06-27 has no EOD bars yet — using latest warehouse session 2026-06-24.',
+        ],
+      },
+    });
+    expect(node.status).toBe('HEALTHY');
+    expect(node.diagnostics.warnings.some((w) => w.includes('candles:daily'))).toBe(true);
+  });
+
+  it('downgrades to WARNING for PARTIAL with real outcome gaps', () => {
+    const node = buildBacktestingHealthNode({
+      ...baseFeedCtx({ staleMinutes: 10, candleAgeHours: 1 }),
+      backtest: {
+        available:       true,
+        status:          'PARTIAL',
+        window:          '7D',
+        generatedAt:     new Date().toISOString(),
+        symbolsWithData: 4,
+        totalSymbols:    20,
+        warnings:        [
+          'Backtest end clipped to latest warehouse EOD session 2026-06-24 (requested 2026-06-27 not available yet).',
+          'Historical candle data available for 4/20 symbols.',
+        ],
+      },
+    });
+    expect(node.status).toBe('WARNING');
   });
 });
 

@@ -239,6 +239,23 @@ export async function getIntradayCandles(
   return getHistoricalCandles(symbol, start, end, interval);
 }
 
+/** Backtest clipped end date because today's EOD is not in the warehouse yet. */
+export function buildBacktestEodWarehouseLagWarning(
+  requestedEnd: string,
+  latestEod:    string,
+): string {
+  return (
+    `Backtest end clipped to latest warehouse EOD session ${latestEod} ` +
+    `(requested ${requestedEnd} not available yet).`
+  );
+}
+
+export function isExpectedBacktestWarehouseLagWarning(message: string): boolean {
+  return /has no EOD bars yet — using latest warehouse session|Backtest end clipped to latest warehouse EOD session/i.test(
+    message,
+  );
+}
+
 /** Latest trade date with any EOD bar in the warehouse. */
 export async function getLatestEodTradeDateInWarehouse(): Promise<string | null> {
   try {

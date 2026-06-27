@@ -36,6 +36,9 @@ import { summarizeManipulationImpact as summarizeManipulationImpactSync } from '
 import type {
   DueDiligenceSummary,
 } from '@/lib/signals/signalDueDiligence';
+import {
+  INTRADAY_TAPE_GAP_REASON,
+} from '@/lib/signals/outcome/attachSignalOutcomeExcursions';
 
 // ── Public contract ─────────────────────────────────────────────
 
@@ -446,8 +449,20 @@ export function buildSignalPerformanceSummary(
     reasons.push('rejected outcome data unavailable');
   }
 
-  // Persistent reasons section — note the systemic absence.
-  reasons.push('per-signal price history not persisted yet (intraday MFE/MAE and time-to-target unavailable)');
+  // Note the systemic absence only when no row carries persisted
+  // excursion data (daily outcomes from q365_signal_outcomes count).
+  const poolsForMfe = [...approved, ...highPotential, ...watchlist, ...developing, ...scannerCandidates, ...riskRestricted, ...rejected];
+  const hasPersistedExcursions = poolsForMfe.some((s) => {
+    const pr = (s as { performanceReview?: { maxFavorableMovePercent?: number | null } }).performanceReview;
+    return numOrNull(pr?.maxFavorableMovePercent)
+      ?? numOrNull((s as { max_fav_excursion_pct?: number | null }).max_fav_excursion_pct)
+      ?? numOrNull((s as { mfe_pct?: number | null }).mfe_pct)
+      ?? numOrNull((s as { max_gain_pct?: number | null }).max_gain_pct)
+      != null;
+  });
+  if (!hasPersistedExcursions) {
+    reasons.push(INTRADAY_TAPE_GAP_REASON);
+  }
 
   return {
     approvedTotal:               approved.length,

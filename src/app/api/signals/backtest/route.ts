@@ -30,6 +30,7 @@ import {
 }                                       from '@/lib/signals/dailyBacktestEngine';
 import { toIstCalendarDate }            from '@/lib/marketData/marketHours';
 import {
+  buildBacktestEodWarehouseLagWarning,
   getHistoricalCandles,
   getLatestEodTradeDateInWarehouse,
   getMarketMovers,
@@ -84,9 +85,7 @@ export async function GET(req: NextRequest) {
 
   const latestEod = await getLatestEodTradeDateInWarehouse();
   if (latestEod && endDate > latestEod) {
-    warnings.push(
-      `Backtest end ${endDate} has no EOD bars yet — using latest warehouse session ${latestEod}.`,
-    );
+    warnings.push(buildBacktestEodWarehouseLagWarning(endDate, latestEod));
     if (window === '1D' || window === 'INTRADAY') {
       startDate = latestEod;
     }

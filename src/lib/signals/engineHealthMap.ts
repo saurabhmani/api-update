@@ -24,6 +24,8 @@
 
 import type { RankableSignal } from '@/lib/signals/signalRanking';
 import type { DueDiligenceSummary } from '@/lib/signals/signalDueDiligence';
+import { isExpectedPlatformGapWarning } from '@/lib/signals/outcome/attachSignalOutcomeExcursions';
+import { isExpectedBacktestWarehouseLagWarning } from '@/lib/signals/historicalMarketData';
 import type { ManipulationGateImpact } from '@/lib/signals/responseAssembly';
 import type { ManipulationRiskMeta } from '@/lib/signals/manipulationRiskFetch';
 import { evaluateLearningPersistenceHealth } from '@/lib/learning/learningPersistenceProbe';
@@ -1046,12 +1048,19 @@ export function buildDueDiligenceHealthNode(ctx: EngineHealthContext): EngineHea
 export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const dr = ctx.dailyReport;
+  const allWarnings = dr?.warnings ?? [];
+  const actionableWarnings = allWarnings.filter((w) => !isExpectedPlatformGapWarning(w));
+  const expectedGapWarnings = allWarnings.filter(isExpectedPlatformGapWarning);
+
   let status: EngineStatus;
   if (!dr || !dr.available) {
     status = 'NOT_CONFIGURED';
     diag.warnings.push('Daily report not available on this request.');
     diag.recommendedActions.push('Run report after signal validation');
   } else if (dr.reportStatus === 'COMPLETE') {
+    status = 'HEALTHY';
+  } else if (dr.reportStatus === 'PARTIAL' && actionableWarnings.length === 0) {
+    // Partial only because of the known intraday-tape gap — daily outcomes still run.
     status = 'HEALTHY';
   } else if (dr.reportStatus === 'PARTIAL') {
     status = 'WARNING';
@@ -1062,7 +1071,13 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
   } else {
     status = 'UNKNOWN';
   }
-  if (dr?.warnings && dr.warnings.length > 0) diag.warnings.push(...dr.warnings.slice(0, 3));
+
+  if (expectedGapWarnings.length > 0) {
+    diag.warnings.push(
+      'Intraday tick tape not stored — daily-candle MFE/MAE populate after outcome evaluation runs.',
+    );
+  }
+  if (actionableWarnings.length > 0) diag.warnings.push(...actionableWarnings.slice(0, 3));
   return {
     id:                'daily_report',
     name:              'Daily Report Engine',
@@ -1090,6 +1105,10 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
 export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const bt = ctx.backtest;
+  const allWarnings = bt?.warnings ?? [];
+  const warehouseLagWarnings = allWarnings.filter(isExpectedBacktestWarehouseLagWarning);
+  const actionableWarnings = allWarnings.filter((w) => !isExpectedBacktestWarehouseLagWarning(w));
+
   let status: EngineStatus;
   if (!bt || !bt.available) {
     status = 'NOT_CONFIGURED';
@@ -1099,7 +1118,11 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
     status = 'HEALTHY';
   } else if (bt.status === 'PARTIAL') {
     status = 'WARNING';
-    diag.primaryIssue = 'Backtest partial — outcome data unavailable for some symbols.';
+    if (actionableWarnings.length > 0) {
+      diag.primaryIssue = 'Backtest partial — outcome data unavailable for some symbols.';
+    } else {
+      diag.primaryIssue = 'Backtest partial — window clipped to latest warehouse EOD session.';
+    }
   } else if (bt.status === 'INSUFFICIENT_DATA') {
     status = 'INSUFFICIENT_DATA';
     diag.primaryIssue = 'Historical price data not available for any symbol.';
@@ -1110,7 +1133,14 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
   } else {
     status = 'UNKNOWN';
   }
-  if (bt?.warnings && bt.warnings.length > 0) diag.warnings.push(...bt.warnings.slice(0, 3));
+
+  if (warehouseLagWarnings.length > 0) {
+    diag.warnings.push(
+      'Backtest window clipped to latest warehouse EOD session — run candles:daily after market close to refresh.',
+    );
+  }
+  if (actionableWarnings.length > 0) diag.warnings.push(...actionableWarnings.slice(0, 3));
+
   const candlePct = bt?.symbolsWithData != null && bt?.totalSymbols
     ? Math.round((bt.symbolsWithData / bt.totalSymbols) * 100)
     : null;

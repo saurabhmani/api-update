@@ -28,6 +28,7 @@ import {
   getSignalRiskReward,
   type RankableSignal,
 } from '@/lib/signals/signalRanking';
+import { INTRADAY_TAPE_GAP_REASON } from '@/lib/signals/outcome/attachSignalOutcomeExcursions';
 
 // ── Public contract ─────────────────────────────────────────────
 
@@ -539,9 +540,23 @@ export function buildPerformanceReview(
     if (stop == null)    insufficient.push('stop loss missing');
   }
 
-  // MFE/MAE require per-signal price history — not persisted yet.
-  // Surface as INSUFFICIENT_DATA rather than fabricating values.
-  insufficient.push('per-signal price history not persisted yet (MFE/MAE/time-to-target unavailable)');
+  // MFE/MAE from persisted outcomes (daily candle walk) when attached
+  // to the row; intraday tick tape is still a future enhancement.
+  const maxFavorableMovePercent = numOrNull(
+    (signal as { maxFavorableMovePercent?: number | null }).maxFavorableMovePercent
+    ?? (signal as { max_fav_excursion_pct?: number | null }).max_fav_excursion_pct
+    ?? (signal as { mfe_pct?: number | null }).mfe_pct
+    ?? (signal as { max_gain_pct?: number | null }).max_gain_pct,
+  );
+  const maxAdverseMovePercent = numOrNull(
+    (signal as { maxAdverseMovePercent?: number | null }).maxAdverseMovePercent
+    ?? (signal as { max_adv_excursion_pct?: number | null }).max_adv_excursion_pct
+    ?? (signal as { mae_pct?: number | null }).mae_pct,
+  );
+  const hasDailyExcursions = maxFavorableMovePercent != null || maxAdverseMovePercent != null;
+  if (!hasDailyExcursions) {
+    insufficient.push(INTRADAY_TAPE_GAP_REASON);
+  }
 
   // Determine review status + outcome from what we DO have.
   let reviewStatus: PerformanceReviewStatus = 'INSUFFICIENT_DATA';
@@ -573,8 +588,8 @@ export function buildPerformanceReview(
     targetPrice:              target,
     stopLoss:                 stop,
     movePercent,
-    maxFavorableMovePercent:  null,
-    maxAdverseMovePercent:    null,
+    maxFavorableMovePercent,
+    maxAdverseMovePercent,
     targetHit,
     stopLossHit,
     timeToTargetMinutes:      null,
