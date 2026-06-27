@@ -1,7 +1,26 @@
-// Public Signal Ledger — outcome row types (Postgres migration 032)
+// Public Signal Ledger — outcome row types (MySQL migration 032)
 
-/** Valid outcome values enforced by chk_q365_signal_outcomes_outcome. */
+/** Canonical resolution outcomes for the Outcome Resolution Engine. */
+export type SignalResolutionOutcome = 'T1_HIT' | 'SL_HIT' | 'EXPIRED' | 'ACTIVE';
+
+export const SIGNAL_RESOLUTION_OUTCOMES: readonly SignalResolutionOutcome[] = [
+  'T1_HIT',
+  'SL_HIT',
+  'EXPIRED',
+  'ACTIVE',
+] as const;
+
+/** Terminal outcomes — rows must not be updated once set. */
+export const TERMINAL_SIGNAL_OUTCOMES: readonly string[] = [
+  'T1_HIT',
+  'SL_HIT',
+  'EXPIRED',
+  'WIN',
+  'LOSS',
+] as const;
+
 export type SignalOutcomeLedgerStatus =
+  | SignalResolutionOutcome
   | 'WIN'
   | 'LOSS'
   | 'PARTIAL_WIN'
@@ -9,28 +28,12 @@ export type SignalOutcomeLedgerStatus =
   | 'NEUTRAL'
   | 'OPEN'
   | 'PENDING'
-  | 'EXPIRED'
   | 'INVALIDATED'
   | 'INSUFFICIENT_DATA';
 
-export const SIGNAL_OUTCOME_LEDGER_STATUSES: readonly SignalOutcomeLedgerStatus[] = [
-  'WIN',
-  'LOSS',
-  'PARTIAL_WIN',
-  'PARTIAL_LOSS',
-  'NEUTRAL',
-  'OPEN',
-  'PENDING',
-  'EXPIRED',
-  'INVALIDATED',
-  'INSUFFICIENT_DATA',
-] as const;
+export const SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS = 15;
 
-export function isSignalOutcomeLedgerStatus(v: string): v is SignalOutcomeLedgerStatus {
-  return (SIGNAL_OUTCOME_LEDGER_STATUSES as readonly string[]).includes(v);
-}
-
-/** Persisted row in q365_signal_outcomes (MySQL, migration 032). */
+/** Persisted row in q365_signal_outcomes (MySQL). */
 export interface SignalOutcomeLedgerRow {
   id: number;
   signalId: number;
@@ -44,7 +47,6 @@ export interface SignalOutcomeLedgerRow {
   resolvedAt: string;
 }
 
-/** Input for inserting a new ledger outcome. */
 export interface SignalOutcomeLedgerInsert {
   signalId: number;
   strategyId: string;
@@ -54,7 +56,6 @@ export interface SignalOutcomeLedgerInsert {
   daysHeld: number;
   maxGainPct?: number | null;
   candleCheckCount?: number;
-  resolvedAt?: string | Date;
 }
 
 export interface SignalOutcomeLedgerListFilter {
@@ -70,4 +71,8 @@ export interface SignalOutcomeCoverage {
   withOutcome: number;
   withoutOutcome: number;
   coveragePct: number | null;
+}
+
+export function isTerminalOutcome(outcome: string): boolean {
+  return (TERMINAL_SIGNAL_OUTCOMES as readonly string[]).includes(outcome);
 }

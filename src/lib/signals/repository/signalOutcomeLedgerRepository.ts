@@ -1,8 +1,5 @@
 // ════════════════════════════════════════════════════════════════
 //  Public Signal Ledger — MySQL repository (migration 032)
-//
-//  Read/write q365_signal_outcomes public-ledger columns. Never
-//  modifies q365_signals — source signals remain immutable.
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
@@ -13,6 +10,7 @@ import type {
   SignalOutcomeLedgerRow,
   SignalOutcomeLedgerStatus,
 } from '../types/signalOutcomeLedger.types';
+import { isTerminalOutcome } from '../types/signalOutcomeLedger.types';
 
 function mapRow(r: Record<string, unknown>): SignalOutcomeLedgerRow {
   return {
@@ -30,30 +28,75 @@ function mapRow(r: Record<string, unknown>): SignalOutcomeLedgerRow {
 }
 
 function toMysqlDatetime(v: string | Date): string {
-  const d = v instanceof Date ? v : new Date(v);
-  if (!Number.isFinite(d.getTime())) {
-    return new Date().toISOString().slice(0, 19).replace('T', ' ');
-  }
+  const raw = v instanceof Date ? v.toISOString().slice(0, 19).replace('T', ' ') : String(v);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) return raw;
+  const d = new Date(v);
+  if (!Number.isFinite(d.getTime())) return new Date().toISOString().slice(0, 19).replace('T', ' ');
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-/** Rows with public-ledger columns populated (excludes legacy-only rows). */
 const LEDGER_WHERE = `signal_id IS NOT NULL AND strategy_id IS NOT NULL AND outcome IS NOT NULL AND outcome_at IS NOT NULL`;
 
-export async function insertSignalOutcome(
+export async function getOutcomeRowBySignalId(
+  signalId: number,
+): Promise<{ id: number; outcome: string } | null> {
+  const { rows } = await db.query<{ id: number; outcome: string }>(
+    `SELECT id, outcome FROM q365_signal_outcomes WHERE signal_id = ? LIMIT 1`,
+    [signalId],
+  );
+  return rows.length ? rows[0] : null;
+}
+
+/**
+ * Step 6 — INSERT new row, or UPDATE only when existing outcome is ACTIVE.
+ * Terminal outcomes (T1_HIT, SL_HIT, EXPIRED, legacy WIN/LOSS) are never modified.
+ */
+export async function saveResolvedOutcome(
   input: SignalOutcomeLedgerInsert,
-): Promise<{ inserted: boolean; row: SignalOutcomeLedgerRow | null }> {
+): Promise<{ inserted: boolean; updated: boolean; skippedTerminal: boolean; row: SignalOutcomeLedgerRow | null }> {
   const outcomeAt = toMysqlDatetime(input.outcomeAt);
-  const resolvedAt = input.resolvedAt != null ? toMysqlDatetime(input.resolvedAt) : outcomeAt;
+  const existing = await getOutcomeRowBySignalId(input.signalId);
 
-  const existing = await getSignalOutcomeBySignalId(input.signalId);
-  if (existing) return { inserted: false, row: existing };
+  if (existing) {
+    if (isTerminalOutcome(existing.outcome)) {
+      return { inserted: false, updated: false, skippedTerminal: true, row: await getSignalOutcomeBySignalId(input.signalId) };
+    }
 
-  const result = await db.query(
+    const mutable = new Set(['ACTIVE', 'OPEN']);
+    if (!mutable.has(String(existing.outcome).toUpperCase())) {
+      return { inserted: false, updated: false, skippedTerminal: false, row: await getSignalOutcomeBySignalId(input.signalId) };
+    }
+
+    await db.query(
+      `UPDATE q365_signal_outcomes
+       SET outcome = ?,
+           outcome_at = ?,
+           days_held = ?,
+           max_gain_pct = ?,
+           candle_check_count = ?,
+           resolved_at = CURRENT_TIMESTAMP,
+           strategy_id = COALESCE(?, strategy_id),
+           symbol = COALESCE(?, symbol)
+       WHERE signal_id = ?`,
+      [
+        input.outcome,
+        outcomeAt,
+        input.daysHeld,
+        input.maxGainPct ?? null,
+        input.candleCheckCount ?? 0,
+        input.strategyId,
+        input.symbol,
+        input.signalId,
+      ],
+    );
+    return { inserted: false, updated: true, skippedTerminal: false, row: await getSignalOutcomeBySignalId(input.signalId) };
+  }
+
+  await db.query(
     `INSERT INTO q365_signal_outcomes
        (signal_id, strategy_id, symbol, outcome, outcome_at,
         days_held, max_gain_pct, candle_check_count, resolved_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     [
       input.signalId,
       input.strategyId,
@@ -63,15 +106,17 @@ export async function insertSignalOutcome(
       input.daysHeld,
       input.maxGainPct ?? null,
       input.candleCheckCount ?? 0,
-      resolvedAt,
     ],
   );
 
-  const affected = Number(result.affectedRows ?? 0);
-  if (affected === 0) return { inserted: false, row: null };
+  return { inserted: true, updated: false, skippedTerminal: false, row: await getSignalOutcomeBySignalId(input.signalId) };
+}
 
-  const row = await getSignalOutcomeBySignalId(input.signalId);
-  return { inserted: true, row };
+export async function insertSignalOutcome(
+  input: SignalOutcomeLedgerInsert,
+): Promise<{ inserted: boolean; row: SignalOutcomeLedgerRow | null }> {
+  const saved = await saveResolvedOutcome(input);
+  return { inserted: saved.inserted, row: saved.row };
 }
 
 export async function getSignalOutcomeBySignalId(
@@ -141,7 +186,7 @@ export async function getSignalOutcomeCoverage(
   const params: unknown[] = [];
   let sinceClause = '';
   if (since) {
-    sinceClause = 'AND s.generated_at >= ?';
+    sinceClause = 'AND s.created_at >= ?';
     params.push(toMysqlDatetime(since));
   }
 

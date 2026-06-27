@@ -37,6 +37,7 @@
     "db:migrate-q365": "ts-node -P tsconfig.node.json -r tsconfig-paths/register src/lib/db/migrateQ365.ts",
     "db:migrate-learning": "tsx scripts/applyLearningPersistenceMigration.ts",
     "db:migrate-signal-outcomes": "tsx scripts/applySignalOutcomesPublicMigration.ts",
+    "resolve:signal-outcomes": "tsx scripts/resolveSignalOutcomes.ts",
     "validate:learning-health": "tsx scripts/validateLearningEngineHealth.ts",
     "db:seed-users": "tsx src/lib/db/seedUsers.ts",
     "verify:sell-fix": "tsx scripts/verifySellFix.ts",
