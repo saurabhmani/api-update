@@ -11,6 +11,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { Candle } from '@/lib/signal-engine/types/signalEngine.types';
+import { toIstCalendarDate } from '@/lib/marketData/marketHours';
 import type { SignalResolutionOutcome } from '../types/signalOutcomeLedger.types';
 import { SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS } from '../types/signalOutcomeLedger.types';
 
@@ -44,12 +45,12 @@ function num(v: unknown): number | null {
 
 function candleDay(ts: string | Date): string {
   if (ts instanceof Date) {
-    return Number.isFinite(ts.getTime()) ? ts.toISOString().slice(0, 10) : '';
+    return Number.isFinite(ts.getTime()) ? toIstCalendarDate(ts) : '';
   }
   const s = String(ts);
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
   const d = new Date(s);
-  return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : s.slice(0, 10);
+  return Number.isFinite(d.getTime()) ? toIstCalendarDate(d) : s.slice(0, 10);
 }
 
 function toMysqlDatetime(ts: string | Date): string {
@@ -65,7 +66,7 @@ function toMysqlDatetime(ts: string | Date): string {
 }
 
 function todayDay(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toIstCalendarDate(new Date());
 }
 
 /** Candles from signal created_at through today (inclusive), ascending. */
@@ -117,9 +118,10 @@ export function evaluateOutcomeResolution(
   }
 
   const isSell = signal.direction.toUpperCase() === 'SELL';
+  const signalDay = candleDay(signal.createdAt);
   const windowCandles = filterCandlesForSignalWindow(candles, signal.createdAt, throughDay);
 
-  let highestPrice = entry;
+  let bestPrice = entry;
   let candleCheckCount = 0;
   let outcome: SignalResolutionOutcome = 'ACTIVE';
   let outcomeAt = toMysqlDatetime(signal.createdAt);
@@ -130,7 +132,11 @@ export function evaluateOutcomeResolution(
     const high = num(c.high) ?? 0;
     const low = num(c.low) ?? 0;
 
-    if (high > highestPrice) highestPrice = high;
+    if (isSell) {
+      if (low < bestPrice) bestPrice = low;
+    } else if (high > bestPrice) {
+      bestPrice = high;
+    }
 
     const targetHit = isSell ? low <= target : high >= target;
     const stopHit = isSell ? high >= stop : low <= stop;
@@ -157,13 +163,15 @@ export function evaluateOutcomeResolution(
     outcomeAt = toMysqlDatetime(c.ts);
     resolutionDay = candleDay(c.ts);
 
-    if (candleCheckCount >= expireTradingDays) {
+    if (tradingDaysBetween(signalDay, resolutionDay) >= expireTradingDays) {
       outcome = 'EXPIRED';
       break;
     }
   }
 
-  const maxGainPct = round4(((highestPrice - entry) / entry) * 100);
+  const maxGainPct = isSell
+    ? round4(((entry - bestPrice) / entry) * 100)
+    : round4(((bestPrice - entry) / entry) * 100);
   const daysHeld = Math.max(0, tradingDaysBetween(candleDay(signal.createdAt), resolutionDay));
 
   return {

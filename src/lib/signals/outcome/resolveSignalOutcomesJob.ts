@@ -13,8 +13,10 @@
 
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { istCalendarDate } from '@/lib/pipeline/runLockRepo';
 import { logCronJob } from '@/lib/admin/repository/adminMonitoringRepository';
 import { invalidateStreamSignalsCache } from '@/lib/signals/streamSignalsCache';
+import { invalidatePublicSignalsCache } from '@/lib/signals/public/publicSignalsService';
 import {
   resolveSignalOutcomes,
   refreshActiveSignalOutcomes,
@@ -104,14 +106,15 @@ function formatError(err: unknown): { message: string; stack: string } {
 export async function hasSuccessfulRunToday(
   jobName: string = RESOLVE_SIGNAL_OUTCOMES_JOB_NAME,
 ): Promise<boolean> {
+  const todayIst = istCalendarDate();
   const { rows } = await db.query<{ id: number }>(
     `SELECT id
        FROM cron_job_logs
       WHERE job_name = ?
         AND status = 'success'
-        AND DATE(started_at) = CURDATE()
+        AND DATE(CONVERT_TZ(started_at, '+00:00', '+05:30')) = ?
       LIMIT 1`,
-    [jobName],
+    [jobName, todayIst],
   );
   return rows.length > 0;
 }
@@ -119,9 +122,10 @@ export async function hasSuccessfulRunToday(
 export function clearOutcomeResolutionCaches(): void {
   try {
     invalidateStreamSignalsCache();
+    void invalidatePublicSignalsCache();
     log.info('outcome resolution caches cleared');
   } catch (err) {
-    log.warn('stream signals cache invalidation failed (non-fatal)', {
+    log.warn('cache invalidation failed (non-fatal)', {
       err: err instanceof Error ? err.message : String(err),
     });
   }

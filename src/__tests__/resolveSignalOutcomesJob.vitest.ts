@@ -5,6 +5,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const logCronJob = vi.fn(async (..._args: unknown[]) => {});
 const invalidateStreamSignalsCache = vi.fn();
+const invalidatePublicSignalsCache = vi.fn(async () => 0);
 const resolveSignalOutcomes = vi.fn();
 const refreshActiveSignalOutcomes = vi.fn();
 const dbQuery = vi.fn();
@@ -19,6 +20,10 @@ vi.mock('@/lib/admin/repository/adminMonitoringRepository', () => ({
 
 vi.mock('@/lib/signals/streamSignalsCache', () => ({
   invalidateStreamSignalsCache: () => invalidateStreamSignalsCache(),
+}));
+
+vi.mock('@/lib/signals/public/publicSignalsService', () => ({
+  invalidatePublicSignalsCache: () => invalidatePublicSignalsCache(),
 }));
 
 vi.mock('@/lib/signals/outcome/resolveSignalOutcomes', () => ({
@@ -88,6 +93,7 @@ describe('resolveSignalOutcomesJob acceptance', () => {
       }),
     );
     expect(invalidateStreamSignalsCache).toHaveBeenCalledTimes(1);
+    expect(invalidatePublicSignalsCache).toHaveBeenCalledTimes(1);
   });
 
   it('prevents duplicate successful runs on the same IST day', async () => {
@@ -140,17 +146,18 @@ describe('resolveSignalOutcomesJob acceptance', () => {
     expect(invalidateStreamSignalsCache).not.toHaveBeenCalled();
   });
 
-  it('clearOutcomeResolutionCaches invalidates stream cache', () => {
+  it('clearOutcomeResolutionCaches invalidates stream and public caches', () => {
     clearOutcomeResolutionCaches();
     expect(invalidateStreamSignalsCache).toHaveBeenCalledTimes(1);
+    expect(invalidatePublicSignalsCache).toHaveBeenCalledTimes(1);
   });
 
-  it('hasSuccessfulRunToday queries cron_job_logs', async () => {
+  it('hasSuccessfulRunToday queries cron_job_logs with IST calendar date', async () => {
     dbQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
     await expect(hasSuccessfulRunToday()).resolves.toBe(true);
     expect(dbQuery).toHaveBeenCalledWith(
-      expect.stringContaining('cron_job_logs'),
-      [RESOLVE_SIGNAL_OUTCOMES_JOB_NAME],
+      expect.stringContaining('CONVERT_TZ'),
+      expect.arrayContaining([RESOLVE_SIGNAL_OUTCOMES_JOB_NAME, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)]),
     );
   });
 });

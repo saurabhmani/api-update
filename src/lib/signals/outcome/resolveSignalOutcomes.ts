@@ -51,7 +51,7 @@ function resolveStrategyId(row: PendingSignalRow): string {
   return String(row.signal_type ?? '').trim() || 'unclassified';
 }
 
-/** Step 1 — pending signals (unresolved or ACTIVE only). */
+/** Step 1 — signals without an outcome row (new pending only). */
 export async function fetchPendingSignals(
   limit: number,
   sinceDays?: number,
@@ -76,10 +76,7 @@ export async function fetchPendingSignals(
        s.created_at
      FROM q365_signals s
      LEFT JOIN q365_signal_outcomes o ON s.id = o.signal_id
-     WHERE (
-       o.signal_id IS NULL
-       OR o.outcome = 'ACTIVE'
-     )
+     WHERE o.signal_id IS NULL
      AND s.entry_price IS NOT NULL
      AND s.stop_loss IS NOT NULL
      AND s.target1 IS NOT NULL
@@ -264,8 +261,13 @@ async function evaluateSignalRows(
       if (saved.inserted) result.inserted++;
       else if (saved.updated) result.updated++;
       else if (saved.skippedTerminal) result.skippedTerminal++;
-    } catch {
+    } catch (err) {
       result.errors++;
+      console.error('[OutcomeResolution] signal evaluation failed', {
+        signalId,
+        symbol: row.symbol,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

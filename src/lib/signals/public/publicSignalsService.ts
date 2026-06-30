@@ -2,6 +2,7 @@
 
 import type { NextRequest } from 'next/server';
 import { NotFoundError, ValidationError } from '@/lib/errors';
+import { cacheDelByPrefix } from '@/lib/redis';
 import {
   aggregatePublicSignalsSummary,
   countPublicSignals,
@@ -15,6 +16,8 @@ import type {
 import { PUBLIC_SIGNAL_OUTCOMES, PUBLIC_SIGNAL_SORT_FIELDS } from './publicSignalsTypes';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const SYMBOL_RE = /^[A-Z0-9&._-]{1,32}$/;
+const STRATEGY_RE = /^[a-z0-9_]{1,64}$/i;
 
 function clampInt(raw: string | null, lo: number, hi: number, fallback: number): number {
   if (raw == null || raw.trim() === '') return fallback;
@@ -57,6 +60,12 @@ export function parsePublicSignalsQuery(req: NextRequest): PublicSignalsQuery {
 
   const strategy = sp.get('strategy')?.trim() || undefined;
   const symbol = sp.get('symbol')?.trim().toUpperCase() || undefined;
+  if (symbol && !SYMBOL_RE.test(symbol)) {
+    throw new ValidationError('symbol must be 1-32 alphanumeric characters (A-Z, 0-9, &, ., _, -)');
+  }
+  if (strategy && !STRATEGY_RE.test(strategy)) {
+    throw new ValidationError('strategy must be 1-64 letters, numbers, or underscores');
+  }
   const { sort, sortDir } = parseSort(sp.get('sort'));
 
   return {
@@ -84,6 +93,11 @@ export function buildPublicSignalsCacheKey(query: PublicSignalsQuery): string {
     `to:${query.toDate ?? ''}`,
     `sort:${query.sort}:${query.sortDir}`,
   ].join(':');
+}
+
+/** Clear all cached public signal feed pages after outcome resolution. */
+export async function invalidatePublicSignalsCache(): Promise<number> {
+  return cacheDelByPrefix('public:signals');
 }
 
 export async function getPublicSignalsFeed(

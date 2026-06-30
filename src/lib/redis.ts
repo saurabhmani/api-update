@@ -109,6 +109,35 @@ export async function cacheDel(key: string) {
   }
 }
 
+/** Delete all cache keys matching a prefix (in-process + Redis SCAN). */
+export async function cacheDelByPrefix(prefix: string): Promise<number> {
+  let deleted = 0;
+  for (const key of [..._mem.keys()]) {
+    if (key.startsWith(prefix)) {
+      memDel(key);
+      deleted++;
+    }
+  }
+
+  const r = getRedis();
+  if (!r) return deleted;
+
+  try {
+    let cursor = '0';
+    do {
+      const [next, keys] = await r.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) {
+        await r.del(...keys);
+        deleted += keys.length;
+      }
+    } while (cursor !== '0');
+  } catch {
+    redisFailed = true;
+  }
+  return deleted;
+}
+
 export async function setTick(instrumentKey: string, data: unknown, ttl = 60) {
   await cacheSet(`tick:${instrumentKey}`, data, ttl);
 }

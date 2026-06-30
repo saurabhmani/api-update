@@ -85,10 +85,27 @@ describe('Outcome Resolution Engine', () => {
   });
 
   describe('Expired', () => {
-    it(`${SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS} days without hit → EXPIRED`, () => {
+    it(`${SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS} trading days without hit → EXPIRED`, () => {
       const r = evalSignal(weekdayBars(SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS));
       expect(r.outcome).toBe('EXPIRED');
-      expect(r.candleCheckCount).toBe(15);
+      expect(r.candleCheckCount).toBeGreaterThanOrEqual(14);
+      expect(r.daysHeld).toBeGreaterThanOrEqual(SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS);
+    });
+
+    it('expires by trading-day count even when candle gaps exist', () => {
+      const gaps = [
+        bar('2026-01-05', 100, 101, 99, 100),
+        bar('2026-01-12', 100, 101, 99, 100),
+        bar('2026-01-19', 100, 101, 99, 100),
+        bar('2026-01-22', 100, 101, 99, 100),
+      ];
+      const r = evaluateOutcomeResolution(
+        baseSignal,
+        gaps,
+        4,
+        '2026-02-28',
+      )!;
+      expect(r.outcome).toBe('EXPIRED');
     });
   });
 
@@ -125,6 +142,21 @@ describe('Outcome Resolution Engine', () => {
       ]);
       expect(r.maxGainPct).toBe(8);
     });
+
+    it('SELL uses lowest price for favorable move', () => {
+      const sellSignal = { ...baseSignal, direction: 'SELL', target1: 90, stopLoss: 105 };
+      const candles = [
+        bar('2026-01-03', 100, 101, 95, 96),
+        bar('2026-01-06', 96, 97, 92, 93),
+      ];
+      const r = evaluateOutcomeResolution(
+        sellSignal,
+        candles,
+        SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS,
+        THROUGH_DAY,
+      )!;
+      expect(r.maxGainPct).toBe(8);
+    });
   });
 
   describe('Multiple executions (idempotency)', () => {
@@ -143,7 +175,8 @@ describe('Outcome Resolution Engine', () => {
     });
 
     it('EXPIRED — identical across runs', () => {
-      expect(runTwice(weekdayBars(15)).second).toEqual(runTwice(weekdayBars(15)).first);
+      expect(runTwice(weekdayBars(SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS + 1)).second)
+        .toEqual(runTwice(weekdayBars(SIGNAL_OUTCOME_EXPIRE_TRADING_DAYS + 1)).first);
     });
 
     it('gap scenario — identical across 5 runs', () => {

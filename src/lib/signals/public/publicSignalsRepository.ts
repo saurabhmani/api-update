@@ -109,6 +109,30 @@ function sortClause(query: PublicSignalsQuery): string {
   return `ORDER BY ${field} ${dir}, s.id DESC`;
 }
 
+/** Format a DB timestamp as IST ISO-8601 (+05:30). */
+export function formatPublicTimestamp(v: unknown): string {
+  if (v == null) return '';
+  if (v instanceof Date) {
+    return formatIstFromUtcMs(v.getTime());
+  }
+  const s = String(v).trim();
+  const mysqlWall = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(s);
+  if (mysqlWall) {
+    return `${mysqlWall[1]}T${mysqlWall[2]}+05:30`;
+  }
+  const d = new Date(s);
+  if (!Number.isFinite(d.getTime())) return s;
+  return formatIstFromUtcMs(d.getTime());
+}
+
+function formatIstFromUtcMs(utcMs: number): string {
+  const istMs = utcMs + 5.5 * 3_600_000;
+  const ist = new Date(istMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${ist.getUTCFullYear()}-${pad(ist.getUTCMonth() + 1)}-${pad(ist.getUTCDate())}T`
+    + `${pad(ist.getUTCHours())}:${pad(ist.getUTCMinutes())}:${pad(ist.getUTCSeconds())}+05:30`;
+}
+
 function mapRow(r: Record<string, unknown>): PublicSignalRow {
   return {
     id: Number(r.id),
@@ -121,13 +145,9 @@ function mapRow(r: Record<string, unknown>): PublicSignalRow {
     target_2: r.target_2 != null ? Number(r.target_2) : null,
     target_3: r.target_3 != null ? Number(r.target_3) : null,
     confidence_score: r.confidence_score != null ? Number(r.confidence_score) : null,
-    created_at: r.created_at instanceof Date
-      ? r.created_at.toISOString()
-      : String(r.created_at ?? ''),
+    created_at: formatPublicTimestamp(r.created_at),
     outcome: r.outcome != null ? String(r.outcome) : null,
-    outcome_at: r.outcome_at != null
-      ? (r.outcome_at instanceof Date ? r.outcome_at.toISOString() : String(r.outcome_at))
-      : null,
+    outcome_at: r.outcome_at != null ? formatPublicTimestamp(r.outcome_at) : null,
     days_held: r.days_held != null ? Number(r.days_held) : null,
     max_gain_pct: r.max_gain_pct != null ? Number(r.max_gain_pct) : null,
   };
@@ -172,14 +192,21 @@ export async function aggregatePublicSignalsSummary(
     avg_confidence: number | null;
   }>(
     `SELECT
-       COUNT(DISTINCT s.id) AS total_signals,
-       SUM(CASE WHEN o.outcome = 'ACTIVE' OR o.outcome IS NULL THEN 1 ELSE 0 END) AS active_signals,
-       SUM(CASE WHEN s.created_at >= DATE_FORMAT(NOW(), '%Y-%m-01') THEN 1 ELSE 0 END) AS signals_this_month,
-       SUM(CASE WHEN o.outcome IN ('T1_HIT', 'WIN') THEN 1 ELSE 0 END) AS wins,
-       SUM(CASE WHEN o.outcome IN ('T1_HIT', 'SL_HIT', 'WIN', 'LOSS') THEN 1 ELSE 0 END) AS losses,
-       AVG(s.confidence_score) AS avg_confidence
-     ${BASE_FROM}
-     ${where}`,
+       COUNT(*) AS total_signals,
+       SUM(CASE WHEN outcome = 'ACTIVE' OR outcome IS NULL THEN 1 ELSE 0 END) AS active_signals,
+       SUM(CASE WHEN created_at >= DATE_FORMAT(CONVERT_TZ(NOW(), '+00:00', '+05:30'), '%Y-%m-01') THEN 1 ELSE 0 END) AS signals_this_month,
+       SUM(CASE WHEN outcome IN ('T1_HIT', 'WIN') THEN 1 ELSE 0 END) AS wins,
+       SUM(CASE WHEN outcome IN ('T1_HIT', 'SL_HIT', 'WIN', 'LOSS') THEN 1 ELSE 0 END) AS losses,
+       AVG(confidence_score) AS avg_confidence
+     FROM (
+       SELECT DISTINCT
+         s.id,
+         s.created_at,
+         s.confidence_score,
+         o.outcome
+       ${BASE_FROM}
+       ${where}
+     ) agg`,
     params,
   );
 

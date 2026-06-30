@@ -59,7 +59,7 @@ Invalid API keys return `401`. Rate limit exceeded returns `429`.
       "target_2": 2800,
       "target_3": 2900,
       "confidence_score": 72,
-      "created_at": "2026-06-01T10:00:00.000Z",
+      "created_at": "2026-06-01T15:30:00+05:30",
       "outcome": "T1_HIT",
       "outcome_at": "2026-06-10T10:00:00.000Z",
       "days_held": 7,
@@ -88,7 +88,7 @@ Invalid API keys return `401`. Rate limit exceeded returns `429`.
 | `win_rate` | Wins (`T1_HIT`, `WIN`) / resolved (`T1_HIT`, `SL_HIT`, `WIN`, `LOSS`) × 100 |
 | `total_signals` | Count of published signals matching filters |
 | `active_signals` | `outcome = 'ACTIVE'` or no outcome row |
-| `signals_this_month` | `created_at` in current calendar month |
+| `signals_this_month` | `created_at` in current IST calendar month |
 | `best_strategy` | Highest win-rate strategy (min 5 samples) |
 | `average_confidence` | `AVG(confidence_score)` |
 
@@ -110,6 +110,8 @@ Invalid API keys return `401`. Rate limit exceeded returns `429`.
 ## Caching
 
 - **Application cache:** Redis key `public:signals:page:…:filters:…`, TTL **300 seconds**
+- **Invalidation:** Cleared automatically after the daily `resolveSignalOutcomesJob` completes successfully
+- **Timestamps:** `created_at` and `outcome_at` are returned in **IST** (`+05:30`)
 - **HTTP header:** `Cache-Control: public, max-age=300`
 - Cached requests skip database queries; target response time **< 1 second**
 

@@ -111,6 +111,14 @@ describe('publicSignalsService', () => {
     expect(() => parsePublicSignalsQuery(req('/api/public/v1/signals?outcome=FOO'))).toThrow(ValidationError);
   });
 
+  it('rejects invalid symbol characters', () => {
+    expect(() => parsePublicSignalsQuery(req('/api/public/v1/signals?symbol=RELIANCE;DROP'))).toThrow(ValidationError);
+  });
+
+  it('rejects invalid strategy characters', () => {
+    expect(() => parsePublicSignalsQuery(req('/api/public/v1/signals?strategy=bad-strategy!'))).toThrow(ValidationError);
+  });
+
   it('builds cache key from filters', () => {
     const key = buildPublicSignalsCacheKey({
       page: 2,

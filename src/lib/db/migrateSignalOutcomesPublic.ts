@@ -29,6 +29,8 @@ const PUBLIC_LEDGER_INDEXES: Array<{ name: string; columns: string }> = [
 
 const UNIQUE_SIGNAL = 'uq_q365_signal_outcomes_signal';
 
+const PUBLIC_SIGNALS_FEED_INDEX = 'idx_q365_signals_public_feed';
+
 const CREATE_GREENFIELD_SQL = `
   CREATE TABLE IF NOT EXISTS ${SIGNAL_OUTCOMES_TABLE} (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -143,6 +145,7 @@ export async function migrateSignalOutcomesPublic(): Promise<void> {
     await ensureIndex(SIGNAL_OUTCOMES_TABLE, idx.name, idx.columns);
   }
   await ensureForeignKey(SIGNAL_OUTCOMES_TABLE);
+  await ensureIndex('q365_signals', PUBLIC_SIGNALS_FEED_INDEX, 'signal_status, created_at');
 
   console.log('[SignalOutcomesPublic] Schema ready.');
 }
