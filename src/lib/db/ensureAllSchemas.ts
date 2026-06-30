@@ -516,6 +516,23 @@ const ALL_TABLES: string[] = [
     INDEX idx_universe_active (is_active)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
+  // NSE EQUITY_L master — SERIES=EQ symbols before liquidity ranking.
+  `CREATE TABLE IF NOT EXISTS securities_master (
+    symbol           VARCHAR(32) NOT NULL,
+    company_name     VARCHAR(255) NOT NULL,
+    series           VARCHAR(8) NOT NULL DEFAULT 'EQ',
+    isin             VARCHAR(16) DEFAULT NULL,
+    date_of_listing  VARCHAR(32) DEFAULT NULL,
+    market_lot       INT DEFAULT NULL,
+    face_value       DECIMAL(12,4) DEFAULT NULL,
+    is_active        TINYINT(1) NOT NULL DEFAULT 1,
+    source           VARCHAR(32) NOT NULL DEFAULT 'EQUITY_L',
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (symbol),
+    INDEX idx_securities_series_active (series, is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
   // Override table for IndianAPI symbol mapping. Populate ONLY when
   // the upstream rejects a default-mapped symbol; see symbolMapper.ts.
   `CREATE TABLE IF NOT EXISTS q365_symbol_mapping_override (

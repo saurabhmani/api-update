@@ -1400,8 +1400,9 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signals]);
 
-  // ── 5-min auto-scan ────────────────────────────────────────────
+  // ── 5-min auto-scan (disabled by default — use controlled schedule) ──
   useEffect(() => {
+    if (process.env.NEXT_PUBLIC_SIGNALS_CLIENT_AUTO_SCAN !== 'true') return;
     const AUTO_SCAN_INTERVAL_MS = 5 * 60_000;
     const id = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;

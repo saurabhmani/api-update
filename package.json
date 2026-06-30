@@ -109,6 +109,8 @@
     "db:fix": "tsx scripts/fix-db.ts",
     "engine:run-loop": "tsx scripts/run-engine.ts",
     "fix:manipulation": "tsx scripts/fixManipulationTables.ts",
+    "load:securities-master": "tsx scripts/loadSecuritiesMaster.ts",
+    "build:nse1000-universe": "tsx scripts/buildNse1000Universe.ts",
     "db:perf-indexes": "tsx scripts/addPerfIndexes.ts"
   },
   "dependencies": {

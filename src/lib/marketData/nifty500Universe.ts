@@ -41,13 +41,28 @@ import { resolve as resolvePath } from 'node:path';
 
 const log = logger.child({ component: 'nifty500Universe' });
 
-/** Lower bound from the production audit contract — anything below
- *  this is considered "DB unpopulated / corrupted" and the loader
- *  refuses to boot rather than scan a degraded universe. */
+/** Lower bound — NSE1000 default (950); NIFTY500 legacy mode uses 480. */
+export function getUniverseMinSize(): number {
+  const raw = Number(process.env.UNIVERSE_MIN_SIZE);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return resolveUniverseMode() === 'NIFTY500' ? 480 : 950;
+}
+
+/** Upper bound — NSE1000 default (1050); NIFTY500 legacy mode uses 550. */
+export function getUniverseMaxSize(): number {
+  const raw = Number(process.env.UNIVERSE_MAX_SIZE);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return resolveUniverseMode() === 'NIFTY500' ? 550 : 1050;
+}
+
+function resolveUniverseMode(): 'NIFTY500' | 'NSE1000' {
+  const mode = String(process.env.UNIVERSE_MODE ?? 'NSE1000').trim().toUpperCase();
+  return mode === 'NIFTY500' ? 'NIFTY500' : 'NSE1000';
+}
+
+/** @deprecated use getUniverseMinSize() */
 export const NIFTY500_MIN_SIZE = 480;
-/** Upper bound. NIFTY 500 reconstitutes semi-annually and briefly
- *  drifts to 498/501 during transitions; 550 absorbs that without
- *  letting a duplicated/leaked universe through. */
+/** @deprecated use getUniverseMaxSize() */
 export const NIFTY500_MAX_SIZE = 550;
 
 interface LoadResult {
@@ -145,8 +160,8 @@ export async function initOnce(): Promise<LoadResult> {
   const initStartMs = Date.now();
   console.log(
     `[UNIVERSE_INIT_START] source=q365_universe(is_active=1) ` +
-    `min_size=${NIFTY500_MIN_SIZE} max_size=${NIFTY500_MAX_SIZE} ` +
-    `auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
+    `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()} ` +
+    `mode=${resolveUniverseMode()} auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
   );
 
   initPromise = (async () => {
@@ -154,8 +169,8 @@ export async function initOnce(): Promise<LoadResult> {
       // Spec INSTITUTIONAL §C — single greppable load marker.
       console.log(
         `[UNIVERSE_LOAD] source=q365_universe(is_active=1) ` +
-        `min_size=${NIFTY500_MIN_SIZE} max_size=${NIFTY500_MAX_SIZE} ` +
-        `auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
+        `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()} ` +
+        `mode=${resolveUniverseMode()} auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
       );
       let result: LoadResult;
       try {
@@ -345,10 +360,10 @@ async function seedFromCsvIfPossible(originalErrorMsg: string): Promise<boolean>
     return false;
   }
   console.log(`[UNIVERSE_PARSE] parsed_symbols=${seedRows.length}`);
-  if (seedRows.length < NIFTY500_MIN_SIZE) {
+  if (seedRows.length < getUniverseMinSize()) {
     console.error(
       `[UNIVERSE_PARSE] auto-seed ABORTED — CSV produced ${seedRows.length} rows ` +
-      `(< ${NIFTY500_MIN_SIZE}). Refusing to seed a degraded universe.`,
+      `(< ${getUniverseMinSize()}). Refusing to seed a degraded universe.`,
     );
     return false;
   }
@@ -389,7 +404,7 @@ async function seedFromCsvIfPossible(originalErrorMsg: string): Promise<boolean>
     `[UNIVERSE_PARSE] auto-seed complete  ` +
     `parsed=${seedRows.length} inserted=${inserted} updated=${updated} failed=${failed}`,
   );
-  return inserted + updated >= NIFTY500_MIN_SIZE;
+  return inserted + updated >= getUniverseMinSize();
 }
 
 /** Internal DB load + validation. Always queries — call `initOnce()`
@@ -430,18 +445,18 @@ async function loadFromDb(): Promise<LoadResult> {
     );
   }
 
-  if (symbols.length < NIFTY500_MIN_SIZE) {
+  if (symbols.length < getUniverseMinSize()) {
     throw new Error(
       `[nifty500Universe] q365_universe(is_active=1) returned ${symbols.length} symbols, ` +
-      `minimum required is ${NIFTY500_MIN_SIZE}. ` +
+      `minimum required is ${getUniverseMinSize()}. ` +
       `Refusing to boot with a degraded universe. ` +
-      `To fix: run \`npx tsx scripts/loadNifty500.ts\` to seed the table from ind_nifty500list.csv, then restart.`,
+      `To fix: run \`npx tsx scripts/buildNse1000Universe.ts\` or \`npx tsx scripts/loadNifty500.ts\`, then restart.`,
     );
   }
-  if (symbols.length > NIFTY500_MAX_SIZE) {
+  if (symbols.length > getUniverseMaxSize()) {
     throw new Error(
       `[nifty500Universe] q365_universe(is_active=1) returned ${symbols.length} symbols, ` +
-      `maximum allowed is ${NIFTY500_MAX_SIZE}. ` +
+      `maximum allowed is ${getUniverseMaxSize()}. ` +
       `Investigate q365_universe for stale or duplicated rows before booting.`,
     );
   }
@@ -449,7 +464,7 @@ async function loadFromDb(): Promise<LoadResult> {
   // Spec INSTITUTIONAL §C — single greppable final-count marker.
   console.log(
     `[UNIVERSE_FINAL] count=${symbols.length} ` +
-    `min=${NIFTY500_MIN_SIZE} max=${NIFTY500_MAX_SIZE} ` +
+    `min=${getUniverseMinSize()} max=${getUniverseMaxSize()} ` +
     `placeholders_dropped=${droppedPlaceholders} ` +
     `source=q365_universe(is_active=1)`,
   );

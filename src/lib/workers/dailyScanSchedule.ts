@@ -1,34 +1,21 @@
 // ════════════════════════════════════════════════════════════════
-//  Daily scan schedule — morning DB scan, evening candle update,
-//  evening DB scan, manipulation surveillance scan (IST, Mon–Fri).
+//  Daily scan schedule — controlled IST signal cadence (Mon–Fri).
 //
 //  EXECUTION ORDER (wall-clock IST, Mon–Fri):
-//    08:30  Morning Scan        — DB-only Phase 4 signals (prior close)
-//    16:00  Evening Update     — IndianAPI incremental EOD candle fetch
-//                                 └─► populates `candles` warehouse
-//    16:30  Evening Scan        — DB-only Phase 4 signals (fresh EOD)
-//    18:30  Manipulation Scan   — runDailyScan({ skipIngestion: true })
-//                                 └─► reads candles refreshed at 16:00;
-//                                     NEVER re-runs EOD ingestion here
+//    08:30  Readiness check     — universe + candle coverage only (no signals)
+//    09:20  First morning scan  — DB-only Phase 4 full universe
+//    09:45  Main morning scan   — DB-only Phase 4 full universe
+//    12:30  Midday rescore      — active signal rescore only
+//    14:45  Late rescore        — active signal rescore / light confirmation
+//    16:00  Evening update      — IndianAPI incremental EOD candle fetch
+//    16:30  Evening scan        — DB-only Phase 4 post-EOD signals
+//    18:30  Manipulation scan   — runDailyScan({ skipIngestion: true })
 //
-//  Manipulation scan DEPENDS on the 16:00 Evening Update completing
-//  first. The 2h30m gap (16:00 → 18:30) is deliberate slack for the
-//  ~1,000-symbol IndianAPI fetch. If Evening Update overruns, the
-//  manipulation job still runs (warning-only against last warehouse
-//  state) — it does not stack a second ingestion pass.
-//
-//  OVERLAP / RACE GUARDS:
-//    • guardJob()            — one in-flight run per signal job name
-//    • manipulationDailyScanInFlight — skips duplicate 18:30 ticks
-//    • Cron callbacks catch errors — a failed job never stops tasks[]
-//
-//  Cron overrides (env):
-//    MORNING_SCAN_CRON=30 8 * * 1-5
-//    EVENING_UPDATE_CRON=0 16 * * 1-5
-//    EVENING_SCAN_CRON=30 16 * * 1-5
-//    MANIPULATION_DAILY_SCAN_CRON=30 18 * * 1-5
+//  Env:
 //    DAILY_SCAN_SCHEDULE_ENABLED=true|false
-//    SIGNAL_LEGACY_EVENING_SCAN_1830=true  — optional 18:30 duplicate scan
+//    SIGNAL_INTRADAY_REGEN_ENABLED=false (10-min regen in scheduler.ts)
+//    SIGNALS_AUTO_RECOVERY_ENABLED=false
+//    READINESS_CHECK_CRON, FIRST_MORNING_SCAN_CRON, MAIN_MORNING_SCAN_CRON, ...
 //
 //  Docs: docs/DAILY_SCAN_SCHEDULE.md
 // ════════════════════════════════════════════════════════════════
@@ -59,16 +46,29 @@ import {
   runDailyScan,
   type DailyScanResult,
 } from '@/lib/manipulation-engine/pipeline/runDailyScan';
+import { rescoreActiveSignals } from '@/lib/signal-engine/rescore/rescoreActiveSignals';
+import { runScanReadinessCheck } from '@/lib/signal-engine/schedule/scanReadinessCheck';
+import {
+  isDailyScanScheduleEnabled,
+  resolveControlledSignalCrons,
+  SIGNAL_SCHEDULE_TIMEZONE,
+} from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 
 const log = logger.child({ component: 'dailyScanSchedule' });
-export const DAILY_SCAN_TIMEZONE = 'Asia/Kolkata';
+export const DAILY_SCAN_TIMEZONE = SIGNAL_SCHEDULE_TIMEZONE;
 
 /** Default cron expressions — minute hour dom month dow (IST). */
 export const DAILY_SCHEDULE_CRONS = {
-  morningScan:           '30 8 * * 1-5',
+  readinessCheck:        '30 8 * * 1-5',
+  firstMorningScan:      '20 9 * * 1-5',
+  mainMorningScan:       '45 9 * * 1-5',
+  middayRescore:         '30 12 * * 1-5',
+  lateRescore:           '45 14 * * 1-5',
   eveningUpdate:         '0 16 * * 1-5',
   eveningScan:           '30 16 * * 1-5',
   manipulationDailyScan: '30 18 * * 1-5',
+  /** @deprecated use firstMorningScan */
+  morningScan:           '20 9 * * 1-5',
 } as const;
 
 /** Parse `minute hour * * *` cron into minutes-from-midnight (IST wall clock). */
@@ -99,7 +99,7 @@ export function isManipulationScheduledAfterEodUpdate(
   return eveningScanMinutes > eodMinutes && manipulationMinutes > eodMinutes;
 }
 
-export type DailyJobMode = 'scan' | 'incremental-update';
+export type DailyJobMode = 'scan' | 'incremental-update' | 'readiness' | 'rescore';
 export type DailyJobDataSource = 'db' | 'indianapi';
 
 export interface DailyJobLogEntry {
@@ -137,8 +137,77 @@ function envCron(name: string, fallback: string): string {
 }
 
 function envEnabled(name: string, defaultOn = true): boolean {
+  if (name === 'DAILY_SCAN_SCHEDULE_ENABLED') {
+    return isDailyScanScheduleEnabled();
+  }
   const raw = (process.env[name] ?? (defaultOn ? 'true' : 'false')).trim().toLowerCase();
   return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+async function runRescoreJob(opts: {
+  jobName: string;
+  generationSource: string;
+}): Promise<DailyScanJobResult> {
+  const startMs = Date.now();
+  const startTime = new Date(startMs).toISOString();
+  logDailyJobStart({
+    job_name: opts.jobName,
+    mode: 'rescore',
+    data_source: 'db',
+    start_time: startTime,
+  });
+
+  const result = await rescoreActiveSignals();
+  const endMs = Date.now();
+  const entry: DailyScanJobResult = {
+    job_name: opts.jobName,
+    mode: 'rescore',
+    data_source: 'db',
+    start_time: startTime,
+    end_time: new Date(endMs).toISOString(),
+    duration_ms: endMs - startMs,
+    total_symbols: result.scanned,
+    scanned_symbols: result.scanned,
+    requests_used: 0,
+    signals_generated: result.updated,
+    failed_symbols: result.failedFetches,
+    ok: true,
+    generation_source: opts.generationSource,
+  };
+  logDailyJobComplete(entry);
+  return entry;
+}
+
+async function runReadinessJob(): Promise<DailyScanJobResult> {
+  const startMs = Date.now();
+  const startTime = new Date(startMs).toISOString();
+  logDailyJobStart({
+    job_name: 'readiness-check',
+    mode: 'readiness',
+    data_source: 'db',
+    start_time: startTime,
+  });
+
+  const check = await runScanReadinessCheck();
+  const endMs = Date.now();
+  const entry: DailyScanJobResult = {
+    job_name: 'readiness-check',
+    mode: 'readiness',
+    data_source: 'db',
+    start_time: startTime,
+    end_time: new Date(endMs).toISOString(),
+    duration_ms: endMs - startMs,
+    total_symbols: check.universeActive,
+    scanned_symbols: check.universeActive,
+    requests_used: 0,
+    signals_generated: 0,
+    failed_symbols: check.blockers.length,
+    ok: check.ok,
+    generation_source: 'cron:readiness-check',
+    error: check.ok ? undefined : check.blockers.join('; '),
+  };
+  logDailyJobComplete(entry);
+  return entry;
 }
 
 function logDailyJobStart(entry: Pick<DailyJobLogEntry, 'job_name' | 'mode' | 'data_source' | 'start_time'>): void {
@@ -326,14 +395,54 @@ function guardJob<T extends DailyScanJobResult>(
   return promise;
 }
 
-/** Morning Scan — 08:30 IST, DB-only pre-market signals. */
-export function runMorningScanJob(): Promise<DailyScanJobResult> {
-  return guardJob('morning-scan', () =>
+/** 08:30 IST — readiness check only (no signal generation). */
+export function runReadinessCheckJob(): Promise<DailyScanJobResult> {
+  return guardJob('readiness-check', runReadinessJob);
+}
+
+/** 09:20 IST — first controlled full DB-only scan. */
+export function runFirstMorningScanJob(): Promise<DailyScanJobResult> {
+  return guardJob('first-morning-scan', () =>
     runDbScanJob({
-      jobName: 'morning-scan',
-      generationSource: 'cron:morning-scan',
+      jobName: 'first-morning-scan',
+      generationSource: 'cron:first-morning-scan',
     }),
   );
+}
+
+/** 09:45 IST — main morning DB-only scan. */
+export function runMainMorningScanJob(): Promise<DailyScanJobResult> {
+  return guardJob('main-morning-scan', () =>
+    runDbScanJob({
+      jobName: 'main-morning-scan',
+      generationSource: 'cron:main-morning-scan',
+    }),
+  );
+}
+
+/** 12:30 IST — rescore active signals only. */
+export function runMiddayRescoreJob(): Promise<DailyScanJobResult> {
+  return guardJob('midday-rescore', () =>
+    runRescoreJob({
+      jobName: 'midday-rescore',
+      generationSource: 'cron:midday-rescore',
+    }),
+  );
+}
+
+/** 14:45 IST — late-day rescore / light confirmation. */
+export function runLateRescoreJob(): Promise<DailyScanJobResult> {
+  return guardJob('late-rescore', () =>
+    runRescoreJob({
+      jobName: 'late-rescore',
+      generationSource: 'cron:late-rescore',
+    }),
+  );
+}
+
+/** @deprecated alias — use runFirstMorningScanJob */
+export function runMorningScanJob(): Promise<DailyScanJobResult> {
+  return runFirstMorningScanJob();
 }
 
 /** Evening Update — 16:00 IST, incremental IndianAPI EOD candle fetch. */
@@ -431,12 +540,7 @@ export function startDailyScanSchedule(): void {
     return;
   }
 
-  const morningCron = envCron('MORNING_SCAN_CRON', DAILY_SCHEDULE_CRONS.morningScan);
-  const eveningUpdateCron = envCron(
-    'EVENING_UPDATE_CRON',
-    process.env.CANDLE_DAILY_UPDATE_CRON?.trim() || DAILY_SCHEDULE_CRONS.eveningUpdate,
-  );
-  const eveningScanCron = envCron('EVENING_SCAN_CRON', DAILY_SCHEDULE_CRONS.eveningScan);
+  const crons = resolveControlledSignalCrons();
   const manipulationDailyScanCron = envCron(
     'MANIPULATION_DAILY_SCAN_CRON',
     DAILY_SCHEDULE_CRONS.manipulationDailyScan,
@@ -444,37 +548,60 @@ export function startDailyScanSchedule(): void {
   const legacy1830Cron = envCron('SIGNAL_LEGACY_EVENING_SCAN_CRON', DAILY_SCHEDULE_CRONS.manipulationDailyScan);
 
   if (!isManipulationScheduledAfterEodUpdate({
-    eveningUpdate: eveningUpdateCron,
-    eveningScan: eveningScanCron,
+    eveningUpdate: crons.eveningUpdate,
+    eveningScan: crons.eveningScan,
     manipulationDailyScan: manipulationDailyScanCron,
   })) {
-    log.warn('manipulation daily scan cron is not after evening EOD update — check MANIPULATION_DAILY_SCAN_CRON / EVENING_UPDATE_CRON', {
-      evening_update: eveningUpdateCron,
-      evening_scan: eveningScanCron,
+    log.warn('manipulation daily scan cron is not after evening EOD update', {
+      evening_update: crons.eveningUpdate,
+      evening_scan: crons.eveningScan,
       manipulation_daily_scan: manipulationDailyScanCron,
     });
   }
 
-  tasks.push(cron.schedule(morningCron, () => {
-    void runMorningScanJob().catch((err) => {
-      log.error('morning scan failed', { err: String(err) });
+  tasks.push(cron.schedule(crons.readinessCheck, () => {
+    void runReadinessCheckJob().catch((err) => {
+      log.error('readiness check failed', { err: String(err) });
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
-  tasks.push(cron.schedule(eveningUpdateCron, () => {
+  tasks.push(cron.schedule(crons.firstMorningScan, () => {
+    void runFirstMorningScanJob().catch((err) => {
+      log.error('first morning scan failed', { err: String(err) });
+    });
+  }, { timezone: DAILY_SCAN_TIMEZONE }));
+
+  tasks.push(cron.schedule(crons.mainMorningScan, () => {
+    void runMainMorningScanJob().catch((err) => {
+      log.error('main morning scan failed', { err: String(err) });
+    });
+  }, { timezone: DAILY_SCAN_TIMEZONE }));
+
+  tasks.push(cron.schedule(crons.middayRescore, () => {
+    void runMiddayRescoreJob().catch((err) => {
+      log.error('midday rescore failed', { err: String(err) });
+    });
+  }, { timezone: DAILY_SCAN_TIMEZONE }));
+
+  tasks.push(cron.schedule(crons.lateRescore, () => {
+    void runLateRescoreJob().catch((err) => {
+      log.error('late rescore failed', { err: String(err) });
+    });
+  }, { timezone: DAILY_SCAN_TIMEZONE }));
+
+  tasks.push(cron.schedule(crons.eveningUpdate, () => {
     void runEveningUpdateJob().catch((err) => {
       log.error('evening update failed', { err: String(err) });
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
-  tasks.push(cron.schedule(eveningScanCron, () => {
+  tasks.push(cron.schedule(crons.eveningScan, () => {
     void runEveningScanJob().catch((err) => {
       log.error('evening scan failed', { err: String(err) });
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
   tasks.push(cron.schedule(manipulationDailyScanCron, () => {
-    // Scheduled 2h30m after Evening Update — relies on 16:00 candle refresh.
     void runManipulationDailyScanJob().catch((err) => {
       log.error('manipulation daily scan cron failed', { err: String(err) });
     });
@@ -490,9 +617,13 @@ export function startDailyScanSchedule(): void {
 
   log.info('daily scan schedule started', {
     timezone: DAILY_SCAN_TIMEZONE,
-    morning_scan: morningCron,
-    evening_update: eveningUpdateCron,
-    evening_scan: eveningScanCron,
+    readiness_check: crons.readinessCheck,
+    first_morning_scan: crons.firstMorningScan,
+    main_morning_scan: crons.mainMorningScan,
+    midday_rescore: crons.middayRescore,
+    late_rescore: crons.lateRescore,
+    evening_update: crons.eveningUpdate,
+    evening_scan: crons.eveningScan,
     manipulation_daily_scan: manipulationDailyScanCron,
     legacy_1830: envEnabled('SIGNAL_LEGACY_EVENING_SCAN_1830', false) ? legacy1830Cron : 'disabled',
     jobs: tasks.length,

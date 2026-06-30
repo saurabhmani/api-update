@@ -63,6 +63,7 @@ import {
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { processQueuedBacktestRuns } from '@/lib/backtesting/runner/backtestQueue';
 import { rescoreActiveSignals } from '@/lib/signal-engine/rescore/rescoreActiveSignals';
+import { isSignalIntradayRegenEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 
 const log = logger.child({ component: 'worker-scheduler' });
 const IST = 'Asia/Kolkata';
@@ -333,64 +334,47 @@ cron.schedule('30 19 * * 1-5', async () => {
   }
 }, { timezone: IST });
 
-// 4. Dynamic ranking rescore — every 1 min, 09:20–15:30 IST, Mon–Fri.
+// 4. Dynamic ranking rescore — DISABLED by default.
 //
-// This is the loop that turns the signal board from a frozen
-// snapshot into a live ranking. It walks every active/watchlist/
-// flagged row, pulls a live LTP (Kite primary, Yahoo fallback), // @deprecated marker
-// recomputes freshness + validator + final_score, and persists in
-// one chunked UPDATE. An in-flight guard inside
-// rescoreActiveSignals() prevents overlap when a run takes longer
-// than the 1-min tick.
-//
-// Cadence is deliberately tight inside the session — a trader
-// looking at the dashboard mid-morning should see ranks that
-// reflect the last minute of tape, not yesterday's close. LUPIN
-// running past target at 10:03 drops out of the top by 10:04.
-// Step 8 of the budget-fix PR: rescore cron is */5, not every minute.
-// The original `*` matched every minute (~360 ticks/day), wasting
-// IndianAPI calls on per-row LTPs that barely move minute-to-minute.
-// The file's own header comment said "5-minute" — the cron string
-// was the bug. */5 = ~72 ticks/day during the window.
-cron.schedule('*/5 9-15 * * 1-5', () => {
-  // Confine to 09:20–15:30 IST without a second cron line.
-  const now = new Date();
-  const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 5 * 60 + 30) % (24 * 60);
-  if (istMinutes < 9 * 60 + 20 || istMinutes > 15 * 60 + 30) return;
+// Controlled schedule runs rescore at 12:30 and 14:45 IST via
+// dailyScanSchedule.ts. Enable legacy */5 intraday rescore only when
+// SIGNAL_INTRADAY_REGEN_ENABLED=true (not recommended for prod).
+if (isSignalIntradayRegenEnabled()) {
+  cron.schedule('*/5 9-15 * * 1-5', () => {
+    const now = new Date();
+    const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 5 * 60 + 30) % (24 * 60);
+    if (istMinutes < 9 * 60 + 20 || istMinutes > 15 * 60 + 30) return;
 
-  rescoreActiveSignals()
-    .then(r => log.info('[RESCORE] complete', {
-      scanned: r.scanned, updated: r.updated,
-      invalidated: r.invalidated, downgraded: r.downgraded,
-      skippedNoPrice: r.skippedNoPrice,
-      kiteHits: r.kiteHits, yahooHits: r.yahooHits, otherHits: r.otherHits, // @deprecated marker
-      failedFetches: r.failedFetches, elapsedMs: r.elapsedMs,
-    }))
-    .catch(err => log.error('[RESCORE] failed', { err: (err as Error).message }));
-}, { timezone: IST });
+    rescoreActiveSignals()
+      .then(r => log.info('[RESCORE] complete', {
+        scanned: r.scanned, updated: r.updated,
+        invalidated: r.invalidated, downgraded: r.downgraded,
+        skippedNoPrice: r.skippedNoPrice,
+        kiteHits: r.kiteHits, yahooHits: r.yahooHits, otherHits: r.otherHits,
+        failedFetches: r.failedFetches, elapsedMs: r.elapsedMs,
+      }))
+      .catch(err => log.error('[RESCORE] failed', { err: (err as Error).message }));
+  }, { timezone: IST });
+} else {
+  log.info('[RESCORE] legacy */5 cron disabled — use controlled 12:30/14:45 schedule');
+}
 
-// 5. Intraday signal regeneration — every 10 min, 09:30–15:30 IST, Mon–Fri.
+// 5. Intraday signal regeneration — OFF by default (SIGNAL_INTRADAY_REGEN_ENABLED=false).
 //
-// Full Phase 1–4 pipeline: re-scans the universe, recomputes
-// features from the latest daily candles (refreshed by the 10-min
-// market-data loop), produces fresh signals, INSERTs new rows and
-// expires same-symbol actives. This is the loop that introduces
-// NEW symbols into the top 50 during the session — without it the
-// only new signals you'd see are at 18:30 post-close.
-//
-// 10 min matches the market-data refresh cadence: every time a
-// fresh candle batch lands, we get a chance to re-evaluate every
-// symbol against it. The in-flight guard in runSignalGeneration
-// ensures overlapping ticks skip rather than queue — on a slow
-// VPS you may see one or two skipped ticks per hour; that's safe.
-cron.schedule('*/10 9-15 * * 1-5', () => {
-  const now = new Date();
-  const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 5 * 60 + 30) % (24 * 60);
-  if (istMinutes < 9 * 60 + 30 || istMinutes > 15 * 60 + 30) return;
+// Full Phase 1–4 every 10 min is replaced by the controlled daily scan
+// schedule (09:20 / 09:45 / 16:30). Opt in only for debugging.
+if (isSignalIntradayRegenEnabled()) {
+  cron.schedule('*/10 9-15 * * 1-5', () => {
+    const now = new Date();
+    const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 5 * 60 + 30) % (24 * 60);
+    if (istMinutes < 9 * 60 + 30 || istMinutes > 15 * 60 + 30) return;
 
-  runSignalGeneration()
-    .catch(err => log.error('[REGEN] intraday generation failed', { err: (err as Error).message }));
-}, { timezone: IST });
+    runSignalGeneration()
+      .catch(err => log.error('[REGEN] intraday generation failed', { err: (err as Error).message }));
+  }, { timezone: IST });
+} else {
+  log.info('[REGEN] 10-min intraday Phase-4 regen disabled (SIGNAL_INTRADAY_REGEN_ENABLED=false)');
+}
 
 // 6. Confirmed-snapshot lifecycle — every 30 s, 24x7.
 //

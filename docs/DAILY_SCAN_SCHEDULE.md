@@ -6,12 +6,23 @@ Four scheduled jobs run on weekdays when `DAILY_SCAN_SCHEDULE_ENABLED=true` (def
 
 ## Schedule
 
-| Job | Window | Cron (default) | Mode | Data source | IndianAPI historical |
-|-----|--------|----------------|------|-------------|----------------------|
-| **Morning Scan** | 08:30–09:00 | `30 8 * * 1-5` | `scan` | `market_data_daily` (DB) | **0** |
-| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | IndianAPI | **≤ 1,000** (~1 req/symbol behind target day) |
-| **Evening Scan** | 16:30–17:00 | `30 16 * * 1-5` | `scan` | `market_data_daily` (DB) | **0** |
-| **Manipulation Scan** | 18:30 | `30 18 * * 1-5` | `scan-only` | `candles` warehouse (DB) | **0** |
+| Job | Window | Cron (default) | Mode | Data source |
+|-----|--------|----------------|------|-------------|
+| **Readiness check** | 08:30 | `30 8 * * 1-5` | `readiness` | DB probes only — **no signals** |
+| **First morning scan** | 09:20 | `20 9 * * 1-5` | `scan` | DB-only Phase 4 |
+| **Main morning scan** | 09:45 | `45 9 * * 1-5` | `scan` | DB-only Phase 4 |
+| **Midday rescore** | 12:30 | `30 12 * * 1-5` | `rescore` | Active signals only |
+| **Late rescore** | 14:45 | `45 14 * * 1-5` | `rescore` | Active signals only |
+| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | IndianAPI EOD |
+| **Evening Scan** | 16:30 | `30 16 * * 1-5` | `scan` | DB-only Phase 4 |
+| **Manipulation Scan** | 18:30 | `30 18 * * 1-5` | `scan-only` | `candles` warehouse |
+
+Legacy **10-min Phase-4 regen** and **poll-driven auto-recovery** are **off by default**:
+
+```
+SIGNAL_INTRADAY_REGEN_ENABLED=false
+SIGNALS_AUTO_RECOVERY_ENABLED=false
+```
 
 ### Purpose
 
