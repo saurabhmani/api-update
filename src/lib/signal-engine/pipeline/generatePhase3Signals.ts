@@ -36,7 +36,10 @@ import { validateCandleSeries } from '../utils/candles';
 import { validateFeatures } from '../utils/validation';
 import type { CandleProvider } from './generatePhase1Signals';
 import { runRejectionEngine, type RejectionInput, type RejectionDecision } from '../core/runRejectionEngine';
-import { runPhase4Scoring } from '../scoring/phase4FactorAdapter';
+import {
+  runPhase4Scoring,
+  normalizeConfidenceBreakdownForPhase4,
+} from '../scoring/phase4FactorAdapter';
 import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
 
 export interface Phase3Result {
@@ -279,8 +282,8 @@ export async function generatePhase3Signals(
   // symbol with the canonical fields the operator greps for. For
   // a 500-symbol universe this is ~500 lines per scan, which is
   // intentional during debugging but expensive in steady state.
-  // Default ON; set LOG_PHASE3_VERBOSE=false to silence.
-  const PHASE3_VERBOSE = process.env.LOG_PHASE3_VERBOSE !== 'false';
+  // Off by default; set LOG_PHASE3_VERBOSE=true for per-symbol traces.
+  const PHASE3_VERBOSE = process.env.LOG_PHASE3_VERBOSE === 'true';
 
   // ── Per-stage data-flow trace ─────────────────────────────
   // Spec "TRACE PIPELINE ENTRY / CANDLE / FEATURES / STRATEGY"
@@ -296,6 +299,10 @@ export async function generatePhase3Signals(
   let phase3WithConf = 0;
   let phase3WithRr   = 0;
   let phase3SkippedNoData = 0;
+  const phase4InputTotals = {
+    trendAlignment: 0, momentum: 0, volumeConfirmation: 0,
+    marketRegime: 0, finalScore: 0, n: 0,
+  };
   // Spec "LOG ALL REJECTION REASONS" + "TOP 3 FILTERS" — bucket
   // every non-approved decision by canonical reason key. Keyed on
   // the leading token before the first colon so noisy per-symbol
@@ -340,8 +347,6 @@ export async function generatePhase3Signals(
   // with no diagnostic trail. Degrade to a 'Sideways' regime instead;
   // every per-symbol scan and stage-attrition log still fires.
   console.log('🔥 Phase3 START');
-  console.log('[DEBUG] symbols length:', p1Config.universe.length);
-  console.log('[DEBUG] entering Phase3 loop');
   let benchmarkCandles: Candle[] = [];
   let regime: EnhancedMarketRegime;
   try {
@@ -594,13 +599,6 @@ export async function generatePhase3Signals(
         // marker so operators can see whether the universe is reaching
         // Phase 3 with usable bars (vs. an empty / short series from a
         // failed candle refresh).
-        console.warn('[CANDLE INVALID]', {
-          symbol,
-          length: candles?.length ?? 0,
-          min_required: p1Config.minCandleCount,
-          latest_ts: candles?.[candles.length - 1]?.ts ?? null,
-          reason: candleCheck.reason,
-        });
         rejectionLog.push({ symbol, reason: candleCheck.reason! });
         logPhase3({
           symbol, confidence: null, final_score: null, risk_reward: null,
@@ -633,16 +631,6 @@ export async function generatePhase3Signals(
           const overSoftLimit    = ageMs > STALE_CANDLE_MAX_AGE_MS;
           const overHardCeiling  = ageDaysNum > STALE_HARD_CEILING_DAYS;
           const willReject       = overHardCeiling || (overSoftLimit && !isLastTradingDay);
-          if (process.env.LOG_STALE_CHECK !== 'false') {
-            console.log('[STALE CHECK]', {
-              symbol,
-              ageDays: Math.round(ageDaysNum * 10) / 10,
-              isLastTradingDay,
-              overSoftLimit,
-              overHardCeiling,
-              rejected: willReject,
-            });
-          }
           if (willReject) {
             const ageDays = ageDaysNum.toFixed(1);
             const reason = overHardCeiling
@@ -1117,13 +1105,14 @@ export async function generatePhase3Signals(
       // outputs (liquidity score, factor scores, classification)
       // are available to the rejection engine's Phase-5 numeric
       // gates (liquidity_score < 50, manipulation_risk > 60, etc.).
+      const phase4Factors = normalizeConfidenceBreakdownForPhase4(best.confidence);
       const phase4 = runPhase4Scoring({
         strategyQuality:    best.confidence.finalScore,
-        trendAlignment:     best.confidence.trendScore,
-        momentum:           best.confidence.momentumScore,
-        volumeConfirmation: best.confidence.volumeScore,
+        trendAlignment:     phase4Factors.trendAlignment,
+        momentum:           phase4Factors.momentum,
+        volumeConfirmation: phase4Factors.volumeConfirmation,
         liquidity:          null,                                  // derived below
-        marketRegime:       best.confidence.contextScore ?? null,
+        marketRegime:       phase4Factors.marketRegime,
         portfolioFit:       portfolioFit.fitScore,
         riskRewardRatio:    tradePlan.rrTarget1,
         volumeVs20dAvg:     features.volume.volumeVs20dAvg ?? null,
@@ -1367,6 +1356,13 @@ export async function generatePhase3Signals(
       // phase4 was computed BEFORE the rejection engine (Phase-5
       // order). phase4Classification was overridden above based on
       // the rejection result, so the band reflects the final decision.
+      phase4InputTotals.trendAlignment     += phase4Factors.trendAlignment     ?? 0;
+      phase4InputTotals.momentum           += phase4Factors.momentum           ?? 0;
+      phase4InputTotals.volumeConfirmation += phase4Factors.volumeConfirmation ?? 0;
+      phase4InputTotals.marketRegime       += phase4Factors.marketRegime       ?? 0;
+      phase4InputTotals.finalScore         += phase4.final_score;
+      phase4InputTotals.n++;
+
       signals.push({
         symbol,
         signalType: best.strategy,
@@ -1646,49 +1642,28 @@ export async function generatePhase3Signals(
       'Healthy BUY/SELL mix at generation.',
   });
 
-  // Spec INSTITUTIONAL §H — classification-band distribution + factor
-  // visibility. When every row lands in WATCHLIST_ONLY / DEVELOPING_SETUP
-  // the operator needs to see WHICH factor is dragging the final_score
-  // below 65. The roll-up lists per-band counts; the per-factor average
-  // tells you the dominant lever.
+  // Phase-4 scoring roll-up — normalized factor inputs + band distribution.
   if (signals.length > 0) {
     const bandCounts = new Map<string, number>();
-    const factorTotals = {
-      strategy_quality: 0, trend_alignment: 0, momentum: 0,
-      volume_confirmation: 0, risk_reward: 0, liquidity: 0,
-      market_regime: 0, portfolio_fit: 0,
-    };
-    let finalScoreTotal = 0;
     for (const s of signals) {
       const cls = String((s as any).classification ?? 'UNKNOWN');
       bandCounts.set(cls, (bandCounts.get(cls) ?? 0) + 1);
-      const fs = (s as any).factor_scores;
-      if (fs) {
-        for (const k of Object.keys(factorTotals) as Array<keyof typeof factorTotals>) {
-          factorTotals[k] += Number(fs[k] ?? 0);
-        }
-      }
-      finalScoreTotal += Number((s as any).final_score ?? 0);
     }
-    const avg = (n: number) => Math.round((n / signals.length) * 10) / 10;
+    const avg = (n: number, d: number) => Math.round((n / Math.max(1, d)) * 10) / 10;
     const bandLine = [...bandCounts.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `${k}=${v}`)
       .join(' ');
+    const n = phase4InputTotals.n || signals.length;
     console.log(
-      `[PHASE4_BANDS] ${bandLine} (avg_final_score=${avg(finalScoreTotal)})`,
+      `[PHASE4_SCORE_SUMMARY] signals=${signals.length} ` +
+      `avg_trendAlignment=${avg(phase4InputTotals.trendAlignment, n)} ` +
+      `avg_momentum=${avg(phase4InputTotals.momentum, n)} ` +
+      `avg_volumeConfirmation=${avg(phase4InputTotals.volumeConfirmation, n)} ` +
+      `avg_marketRegime=${avg(phase4InputTotals.marketRegime, n)} ` +
+      `avg_finalScore=${avg(phase4InputTotals.finalScore, n)}`,
     );
-    console.log(
-      `[PHASE4_FACTORS] avg over ${signals.length} signals — ` +
-      `strategy=${avg(factorTotals.strategy_quality)} ` +
-      `trend=${avg(factorTotals.trend_alignment)} ` +
-      `momentum=${avg(factorTotals.momentum)} ` +
-      `volume=${avg(factorTotals.volume_confirmation)} ` +
-      `rr=${avg(factorTotals.risk_reward)} ` +
-      `liquidity=${avg(factorTotals.liquidity)} ` +
-      `regime=${avg(factorTotals.market_regime)} ` +
-      `pfit=${avg(factorTotals.portfolio_fit)}`,
-    );
+    console.log(`[PHASE4_BANDS] ${bandLine}`);
     // If everything bottomed at WATCHLIST_ONLY (35-49 band) or below,
     // surface the diagnostic hint so the operator doesn't have to
     // remember which factor weights to inspect.
@@ -1701,7 +1676,7 @@ export async function generatePhase3Signals(
       console.warn(
         `[PHASE4_BANDS] WARN — no HIGH_CONVICTION rows produced, ` +
         `${watchlistOnly} WATCHLIST_ONLY + ${devSetup} DEVELOPING_SETUP + ${validSignal} VALID_SIGNAL. ` +
-        `Check the [PHASE4_FACTORS] line above — the lowest-average factor is the bottleneck. ` +
+        `Check the [PHASE4_SCORE_SUMMARY] line above — the lowest-average normalized factor is the bottleneck. ` +
         `Common causes: (a) Phase-1 strategy confidence too low (most signals at conf 50-60 → ` +
         `strategyQuality factor capped at ~55), (b) atrPct > 4% triggering volatility-shock penalty ` +
         `(up to -30 points), (c) marketRegime context score low for current market.`,

@@ -43,6 +43,11 @@ export { saveOutcome, saveExplanation, saveDecisionMemory, loadFeedbackState, mi
 
 // Shared
 export { rankSignals } from './pipeline/rankSignals';
+export {
+  normalizeScore,
+  normalizeConfidenceBreakdownForPhase4,
+  CONFIDENCE_COMPONENT_MAX,
+} from './scoring/phase4FactorAdapter';
 export { detectMarketRegime } from './regime/detectMarketRegime';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';
