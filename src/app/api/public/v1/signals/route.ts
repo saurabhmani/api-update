@@ -1,37 +1,46 @@
-// GET /api/public/v1/signals — public API (Bearer API key)
+// GET /api/public/v1/signals — public signal feed with outcomes
 
 import { NextRequest } from 'next/server';
 import { withApiHandler } from '@/lib/apiHandler';
-import { requireApiKey } from '@/lib/quant-platform';
-import { db } from '@/lib/db';
+import { cacheGet, cacheSet } from '@/lib/redis';
+import { enforcePublicSignalsAccess } from '@/lib/signals/public/publicSignalsAccess';
+import {
+  buildPublicSignalsCacheKey,
+  getPublicSignalsFeed,
+  parsePublicSignalsQuery,
+} from '@/lib/signals/public/publicSignalsService';
 
 export const dynamic = 'force-dynamic';
 
-export const GET = withApiHandler(async (req: NextRequest) => {
-  await requireApiKey(req, 'read');
+const CACHE_TTL_SEC = 300;
 
-  const limit = Math.min(50, Math.max(1, Number(req.nextUrl.searchParams.get('limit') ?? 10)));
-  const symbol = req.nextUrl.searchParams.get('symbol');
+const innerGet = withApiHandler(async (req: NextRequest) => {
+  await enforcePublicSignalsAccess(req);
 
-  const params: unknown[] = [];
-  let where = `WHERE status IN ('active','watchlist')`;
-  if (symbol) {
-    where += ` AND symbol = ?`;
-    params.push(symbol.toUpperCase());
+  const query = parsePublicSignalsQuery(req);
+  const cacheKey = buildPublicSignalsCacheKey(query);
+  const cached = await cacheGet<Record<string, unknown>>(cacheKey);
+  if (cached) {
+    return { version: 'v1', ...cached, cached: true };
   }
-  params.push(limit);
 
-  const { rows } = await db.query(
-    `SELECT symbol, direction, confidence_score, strategy_group, market_regime,
-            risk_score, risk_reward, updated_at
-       FROM q365_signals ${where}
-       ORDER BY confidence_score DESC LIMIT ?`,
-    params,
-  );
-
-  return {
-    version: 'v1',
-    count: rows.length,
-    signals: rows,
+  const result = await getPublicSignalsFeed(query);
+  const payload = {
+    data: result.data,
+    page: result.page,
+    total: result.total,
+    summary: result.summary,
+    win_rate: result.win_rate,
+    cached: false,
   };
+
+  await cacheSet(cacheKey, payload, CACHE_TTL_SEC);
+
+  return { version: 'v1', ...payload };
 });
+
+export async function GET(req: NextRequest, ctx?: unknown) {
+  const res = await innerGet(req, ctx);
+  res.headers.set('Cache-Control', 'public, max-age=300');
+  return res;
+}

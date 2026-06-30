@@ -27,6 +27,7 @@ const PUBLIC_PREFIXES = [
   '/favicon',
   '/images',
   '/fonts',
+  '/api/public',
 ];
 
 // Check if path is public

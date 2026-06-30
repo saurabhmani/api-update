@@ -73,4 +73,6 @@ export const RATE_LIMITS = {
   api: { windowMs: 60_000, max: 60, keyPrefix: 'api' },
   pipeline: { windowMs: 60_000, max: 3, keyPrefix: 'pipeline' },
   security: { windowMs: 60_000, max: 30, keyPrefix: 'security' },
+  publicSignals: { windowMs: 60_000, max: 30, keyPrefix: 'public:signals' },
+  publicSignalsKey: { windowMs: 60_000, max: 120, keyPrefix: 'public:signals:key' },
 } as const;

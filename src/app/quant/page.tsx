@@ -313,7 +313,9 @@ export default function QuantPage() {
             <code>/api/public/v1/market-regime</code>
           </p>
           <p style={{ fontSize: '0.8rem', color: '#64748B' }}>
-            Authorization: <code>Bearer q365_...</code>
+            <code>/api/public/v1/signals</code> — no auth required (30 req/min IP).
+            Optional <code>Authorization: Bearer q365_...</code> for higher limits.
+            See <code>docs/PUBLIC_SIGNALS_API.md</code>.
           </p>
           {(data?.clients ?? []).length > 0 && (
             <table className={styles.table} style={{ marginTop: 16 }}>
