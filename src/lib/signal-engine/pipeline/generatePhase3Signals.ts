@@ -40,6 +40,16 @@ import {
   runPhase4Scoring,
   normalizeConfidenceBreakdownForPhase4,
 } from '../scoring/phase4FactorAdapter';
+import {
+  createDiscoveryGateCounters,
+  deriveSignalQualityStatus,
+  deriveSignalExecutionStatus,
+  executionStatusReason,
+  recordDiscoveryGateCounters,
+  formatDiscoveryGateCounters,
+  qualityToPersistedSignalStatus,
+  type DiscoveryGateCounters,
+} from '../discovery/signalDiscoveryStatus';
 import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
 
 export interface Phase3Result {
@@ -50,6 +60,7 @@ export interface Phase3Result {
   deferred: number;
   rejected: number;
   rejectionLog: { symbol: string; reason: string }[];
+  discoveryGateCounters?: import('../discovery/signalDiscoveryStatus').DiscoveryGateCounters;
 }
 
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
@@ -303,6 +314,7 @@ export async function generatePhase3Signals(
     trendAlignment: 0, momentum: 0, volumeConfirmation: 0,
     marketRegime: 0, finalScore: 0, n: 0,
   };
+  const discoveryGateCounters: DiscoveryGateCounters = createDiscoveryGateCounters();
   // Spec "LOG ALL REJECTION REASONS" + "TOP 3 FILTERS" — bucket
   // every non-approved decision by canonical reason key. Keyed on
   // the leading token before the first colon so noisy per-symbol
@@ -1165,6 +1177,7 @@ export async function generatePhase3Signals(
         liveInvalidated:  false,    // applyLiveSanity runs at API read time
         currentPrice:     null,     // not available in batch generation
         direction:        tradeDirection,
+        discoveryMode:    true,
       };
       // Spec "FAIL LOUD" — increment BEFORE the engine call so a
       // throw inside runRejectionEngine still counts as "reached
@@ -1315,23 +1328,57 @@ export async function generatePhase3Signals(
         sellTrace.after_canonical_reject++;
       }
 
-      // Override execution approval if rejection engine says no
-      if (rejectionDecision.finalDecision === 'rejected' && execution.approvalDecision !== 'rejected') {
+      const technicalRejected = rejectionDecision.finalDecision === 'rejected';
+      const signalQualityStatus = deriveSignalQualityStatus({
+        phase4Classification,
+        technicalRejected,
+        finalScore: phase4.final_score,
+      });
+      const executionStatusInput = {
+        signalQualityStatus,
+        sizing,
+        portfolioFit,
+        riskBreakdown,
+        rrTarget1:         tradePlan.rrTarget1,
+        minRewardRisk:     effectiveMinRR,
+        technicalRejected,
+      };
+      const executionStatus = deriveSignalExecutionStatus(executionStatusInput);
+      const executionBlockReason = executionStatusReason(executionStatus, executionStatusInput);
+
+      recordDiscoveryGateCounters(
+        discoveryGateCounters,
+        signalQualityStatus,
+        executionStatus,
+        technicalRejected,
+      );
+
+      // Technical rejection still blocks execution — portfolio/sizing
+      // do not downgrade signalQualityStatus.
+      if (technicalRejected && execution.approvalDecision !== 'rejected') {
         execution.approvalDecision = 'rejected';
         execution.status = rejectionDecision.rejectionCode?.includes('manipulation')
-          ? 'rejected_due_to_risk' as any
-          : 'rejected_due_to_risk' as any;
-        execution.reasons = [...execution.reasons, rejectionDecision.rejectionMessage ?? 'Rejection engine'];
-      } else if (rejectionDecision.finalDecision === 'deferred' && execution.approvalDecision === 'approved') {
+          ? 'rejected_due_to_risk' as typeof execution.status
+          : 'rejected_due_to_risk' as typeof execution.status;
+        execution.reasons = [
+          ...execution.reasons,
+          rejectionDecision.rejectionMessage ?? 'Technical rejection',
+        ];
+      } else if (executionStatus !== 'EXECUTABLE' && executionBlockReason) {
         execution.approvalDecision = 'deferred';
+        execution.status = 'deferred_due_to_portfolio';
+        execution.reasons = [
+          ...execution.reasons.filter((r) => !r.startsWith('Execution:')),
+          `Execution: ${executionBlockReason}`,
+        ];
       }
 
       // ── Step 11: Lifecycle ──────────────────────────────────
       const { state, reason } = resolveInitialState(execution.approvalDecision, execution.status);
       const lifecycle = createLifecycle(state, reason);
 
-      // ── Step 12: Track allocation ───────────────────────────
-      if (execution.approvalDecision === 'approved') {
+      // ── Step 12: Track allocation (executable only) ─────────
+      if (executionStatus === 'EXECUTABLE' && !technicalRejected) {
         approved++;
         runPortfolio.openPositions.push({
           symbol, side: direction, sector: getSector(symbol),
@@ -1339,10 +1386,10 @@ export async function generatePhase3Signals(
           riskAllocated: sizing.riskBudgetAmount,
         });
         runPortfolio.cashAvailable -= sizing.grossPositionValue;
-      } else if (execution.approvalDecision === 'deferred') {
-        deferred++;
-      } else {
+      } else if (technicalRejected) {
         rejected++;
+      } else {
+        deferred++;
       }
 
       // Max approved per run
@@ -1385,8 +1432,16 @@ export async function generatePhase3Signals(
         classification:    phase4Classification,
         factor_scores:     phase4.factor_scores,
         scoringFinalScore: phase4.final_score,        // legacy alias
+        signalQualityStatus,
+        executionStatus,
+        executionBlockReason,
         reasons: best.reasons,
-        warnings: [...best.warnings, ...sizing.warnings, ...portfolioFit.penalties],
+        warnings: [
+          ...best.warnings,
+          ...sizing.warnings,
+          ...portfolioFit.penalties,
+          ...(executionBlockReason ? [`Execution: ${executionBlockReason}`] : []),
+        ],
         generatedAt: now,
       });
 
@@ -1664,6 +1719,7 @@ export async function generatePhase3Signals(
       `avg_finalScore=${avg(phase4InputTotals.finalScore, n)}`,
     );
     console.log(`[PHASE4_BANDS] ${bandLine}`);
+    console.log(`[DISCOVERY_GATES] ${formatDiscoveryGateCounters(discoveryGateCounters)}`);
     // If everything bottomed at WATCHLIST_ONLY (35-49 band) or below,
     // surface the diagnostic hint so the operator doesn't have to
     // remember which factor weights to inspect.
@@ -1760,5 +1816,8 @@ export async function generatePhase3Signals(
   // for-loop ran. When benchmark fetch threw upstream, scanned was
   // claimed = N but the loop never executed. Return scannedCount so
   // result.meta.scanned = symbols actually iterated.
-  return { regime, signals, scanned: scannedCount, approved, deferred, rejected, rejectionLog };
+  return {
+    regime, signals, scanned: scannedCount, approved, deferred, rejected,
+    rejectionLog, discoveryGateCounters,
+  };
 }

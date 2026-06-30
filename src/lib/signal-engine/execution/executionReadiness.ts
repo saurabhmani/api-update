@@ -115,29 +115,31 @@ export function evaluateExecutionReadiness(
   APPROVAL_FUNNEL.matched++;
   const reasons: string[] = [];
 
-  // ── Hard rejections ───────────────────────────────────────
-  if (sizing.validationStatus === 'invalid') {
-    reasons.push(`Position sizing invalid: ${sizing.warnings[0] || 'zero size'}`);
-    APPROVAL_FUNNEL.rejected_position_sizing++;
-    return { status: 'rejected_due_to_risk', actionTag: 'avoid', priorityRank: null, approvalDecision: 'rejected', reasons };
-  }
-
+  // ── Hard rejections (technical / trade-plan only) ─────────
+  // Portfolio capacity and position sizing are tracked as execution
+  // status downstream — they must not delete discovery rows.
   if (rrTarget1 < config.minRewardRisk) {
     reasons.push(`Reward:Risk ${rrTarget1.toFixed(1)} below minimum ${config.minRewardRisk}`);
     APPROVAL_FUNNEL.rejected_rr++;
     return { status: 'rejected_due_to_reward_risk', actionTag: 'avoid', priorityRank: null, approvalDecision: 'rejected', reasons };
   }
 
+  if (sizing.validationStatus === 'invalid') {
+    reasons.push(`Position sizing invalid: ${sizing.warnings[0] || 'zero size'}`);
+    APPROVAL_FUNNEL.rejected_position_sizing++;
+    return { status: 'deferred_due_to_portfolio', actionTag: 'watch_only', priorityRank: null, approvalDecision: 'deferred', reasons };
+  }
+
   if (portfolioFit.portfolioDecision === 'rejected') {
-    reasons.push(`Portfolio rejected: ${portfolioFit.penalties[0] || 'fit too low'}`);
+    reasons.push(`Portfolio blocked: ${portfolioFit.penalties[0] || 'fit too low'}`);
     APPROVAL_FUNNEL.rejected_portfolio_rejected++;
-    return { status: 'rejected_due_to_correlation', actionTag: 'avoid', priorityRank: null, approvalDecision: 'rejected', reasons };
+    return { status: 'deferred_due_to_portfolio', actionTag: 'watch_only', priorityRank: null, approvalDecision: 'deferred', reasons };
   }
 
   if (risk.totalRiskScore > 75) {
     reasons.push(`Total risk ${risk.totalRiskScore} exceeds threshold`);
     APPROVAL_FUNNEL.rejected_risk_too_high++;
-    return { status: 'rejected_due_to_risk', actionTag: 'avoid', priorityRank: null, approvalDecision: 'rejected', reasons };
+    return { status: 'deferred_due_to_portfolio', actionTag: 'watch_only', priorityRank: null, approvalDecision: 'deferred', reasons };
   }
 
   // ── Deferrals ─────────────────────────────────────────────

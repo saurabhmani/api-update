@@ -253,6 +253,11 @@ export interface RejectionInput {
   currentPrice?: number | null;
   /** Trade direction, required for the stop-violated check. */
   direction?: 'BUY' | 'SELL' | null;
+  /**
+   * Discovery mode — portfolio-fit gates are advisory only; execution
+   * blocking is tracked separately via signalDiscoveryStatus.
+   */
+  discoveryMode?: boolean;
 }
 
 /** Default staleness cutoff — matches postSignalValidator's structure-
@@ -612,43 +617,56 @@ export function runRejectionEngine(input: RejectionInput): RejectionDecision {
   // rejects when fitScore is below the explicit numeric floor
   // (default 50), even if the upstream evaluator marked the row
   // as 'acceptable'. Two fail conditions, one combined gate.
+  //
+  // Discovery mode: portfolio gates are advisory — they do NOT
+  // reject or defer the technical quality path. Execution blocking
+  // is derived downstream in signalDiscoveryStatus.
   {
     const pf = input.portfolioFit;
-    // Recalibrated 2026-05: 50 → 40. evaluatePortfolioFit already maps
-    // <30→rejected and <50→deferred; the 50 floor here was a third
-    // reject layer that disqualified rows the upstream evaluator only
-    // marked as 'approved_with_penalty'. 40 keeps the structural reject
-    // (correlation cluster, capital exhausted) intact while letting
-    // mildly-penalised setups through.
     const minFit = input.minPortfolioFit ?? 40;
     let pfRejected = false;
-    if (pf.portfolioDecision === 'rejected') {
-      recordFailure(
-        'portfolio_fit', 'portfolio_fit_rejected',
-        `Portfolio fit rejected: score ${pf.fitScore} — ${pf.penalties.join(', ')}`,
-        'portfolio_fit', { fitScore: pf.fitScore, decision: pf.portfolioDecision },
-      );
-      pfRejected = true;
-    }
-    if (pf.fitScore < minFit) {
-      recordFailure(
-        'portfolio_fit_score', 'portfolio_fit_rejected',
-        `Portfolio fit score ${pf.fitScore} below floor ${minFit}`,
-        'portfolio_fit', { fitScore: pf.fitScore, minFit },
-      );
-      pfRejected = true;
-    }
-    if (!pfRejected) {
-      if (pf.portfolioDecision === 'deferred') {
-        gates.push({ gate: 'portfolio_fit', passed: true,
-          snapshot: { fitScore: pf.fitScore, decision: 'deferred' } });
-        if (finalDecision === 'approved') finalDecision = 'deferred';
-      } else {
-        gates.push({ gate: 'portfolio_fit', passed: true,
-          snapshot: { fitScore: pf.fitScore, decision: pf.portfolioDecision } });
+    if (!input.discoveryMode) {
+      if (pf.portfolioDecision === 'rejected') {
+        recordFailure(
+          'portfolio_fit', 'portfolio_fit_rejected',
+          `Portfolio fit rejected: score ${pf.fitScore} — ${pf.penalties.join(', ')}`,
+          'portfolio_fit', { fitScore: pf.fitScore, decision: pf.portfolioDecision },
+        );
+        pfRejected = true;
       }
+      if (pf.fitScore < minFit) {
+        recordFailure(
+          'portfolio_fit_score', 'portfolio_fit_rejected',
+          `Portfolio fit score ${pf.fitScore} below floor ${minFit}`,
+          'portfolio_fit', { fitScore: pf.fitScore, minFit },
+        );
+        pfRejected = true;
+      }
+      if (!pfRejected) {
+        if (pf.portfolioDecision === 'deferred') {
+          gates.push({ gate: 'portfolio_fit', passed: true,
+            snapshot: { fitScore: pf.fitScore, decision: 'deferred' } });
+          if (finalDecision === 'approved') finalDecision = 'deferred';
+        } else {
+          gates.push({ gate: 'portfolio_fit', passed: true,
+            snapshot: { fitScore: pf.fitScore, decision: pf.portfolioDecision } });
+        }
+      }
+    } else {
+      gates.push({
+        gate: 'portfolio_fit',
+        passed: true,
+        snapshot: {
+          fitScore: pf.fitScore,
+          decision: pf.portfolioDecision,
+          discoveryAdvisory: true,
+        },
+      });
     }
-    trace.push(`portfolioFit=${pf.fitScore} min=${minFit} decision=${pf.portfolioDecision}`);
+    trace.push(
+      `portfolioFit=${pf.fitScore} min=${minFit} decision=${pf.portfolioDecision}` +
+      (input.discoveryMode ? ' discovery=advisory' : ''),
+    );
   }
 
   // ── Gate 11: Manipulation penalty/rejection (+ Phase-5 floor) ─

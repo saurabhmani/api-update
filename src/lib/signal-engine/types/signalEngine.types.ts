@@ -446,6 +446,12 @@ export interface QuantSignal {
     rejection_explanation:      string;
     final_decision_explanation: string;
   };
+
+  /** Discovery-layer quality (technical only). */
+  signalQualityStatus?: import('../discovery/signalDiscoveryStatus').SignalQualityStatus;
+  /** Portfolio / sizing / risk execution fitness. */
+  executionStatus?: import('../discovery/signalDiscoveryStatus').SignalExecutionStatus;
+  executionBlockReason?: string | null;
 }
 
 // ── Pipeline Config ──────────────────────────────────────────

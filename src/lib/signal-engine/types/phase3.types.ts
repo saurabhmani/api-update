@@ -252,6 +252,13 @@ export interface ExecutableSignal {
   reasons: string[];
   warnings: string[];
   generatedAt: string;
+
+  /** Technical quality — independent of portfolio / sizing. */
+  signalQualityStatus?: import('../discovery/signalDiscoveryStatus').SignalQualityStatus;
+  /** Whether the portfolio can execute today. */
+  executionStatus?: import('../discovery/signalDiscoveryStatus').SignalExecutionStatus;
+  /** Human-readable execution block reason when not EXECUTABLE. */
+  executionBlockReason?: string | null;
 }
 
 // ── Phase 3 Config ──────────────────────────────────────────

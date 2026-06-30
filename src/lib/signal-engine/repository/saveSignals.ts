@@ -20,6 +20,7 @@ import { validatePostSignal } from '../validation/postSignalValidator';
 import { computeFinalScore } from '../ranking/dynamicRanker';
 import { upsertTrackerOnDetection } from './maturityTracker';
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
+import { qualityToPersistedSignalStatus } from '../discovery/signalDiscoveryStatus';
 
 // Maximum acceptable gap between the strategy-derived entry price
 // (built from daily candles, possibly hours stale) and the live
@@ -528,10 +529,14 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
   // upstream in generatePhase3Signals). readSignals derives the
   // same tri-state on the fly for historical rows whose column is
   // still NULL.
-  const sigStatus: 'APPROVED_SIGNAL' | 'DEVELOPING_SETUP' =
-    s.status === 'watchlist'             ? 'DEVELOPING_SETUP'
-    : (s.confidenceScore ?? 0) < 55      ? 'DEVELOPING_SETUP'
-    :                                      'APPROVED_SIGNAL';
+  const sigStatus: 'APPROVED_SIGNAL' | 'DEVELOPING_SETUP' | 'NO_TRADE' =
+    s.signalQualityStatus
+      ? qualityToPersistedSignalStatus(s.signalQualityStatus)
+      : s.status === 'watchlist'
+        ? 'DEVELOPING_SETUP'
+        : (s.confidenceScore ?? 0) < 55
+          ? 'DEVELOPING_SETUP'
+          : 'APPROVED_SIGNAL';
 
   // ── Phase-4 scoring values (calculateFinalScore + 6-band) ─────
   // Threaded from ExecutableSignal via generatePhase4Signals. When
@@ -563,10 +568,15 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
     s.phase11RejectionCodes && s.phase11RejectionCodes.length > 0
       ? JSON.stringify(s.phase11RejectionCodes)
       : null;
-  const rejectionReasonsJson =
-    s.phase11RejectionReasons && s.phase11RejectionReasons.length > 0
-      ? JSON.stringify(s.phase11RejectionReasons)
-      : null;
+  const rejectionReasonsJson = (() => {
+    const reasons: string[] = [
+      ...(s.phase11RejectionReasons ?? []),
+    ];
+    if (s.executionBlockReason && s.executionStatus && s.executionStatus !== 'EXECUTABLE') {
+      reasons.push(`[${s.executionStatus}] ${s.executionBlockReason}`);
+    }
+    return reasons.length > 0 ? JSON.stringify(reasons) : null;
+  })();
   const liveValidationReasonsJson =
     s.phase11LiveValidationReasons && s.phase11LiveValidationReasons.length > 0
       ? JSON.stringify(s.phase11LiveValidationReasons)

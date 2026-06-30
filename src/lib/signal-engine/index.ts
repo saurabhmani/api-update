@@ -48,6 +48,21 @@ export {
   normalizeConfidenceBreakdownForPhase4,
   CONFIDENCE_COMPONENT_MAX,
 } from './scoring/phase4FactorAdapter';
+export {
+  createDiscoveryGateCounters,
+  deriveSignalQualityStatus,
+  deriveSignalExecutionStatus,
+  executionStatusReason,
+  recordDiscoveryGateCounters,
+  formatDiscoveryGateCounters,
+  qualityToPersistedSignalStatus,
+  qualityToRowStatus,
+} from './discovery/signalDiscoveryStatus';
+export type {
+  SignalQualityStatus,
+  SignalExecutionStatus,
+  DiscoveryGateCounters,
+} from './discovery/signalDiscoveryStatus';
 export { detectMarketRegime } from './regime/detectMarketRegime';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';
