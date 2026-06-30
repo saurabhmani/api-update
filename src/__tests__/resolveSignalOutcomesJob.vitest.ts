@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
-const logCronJob = vi.fn(async () => {});
+const logCronJob = vi.fn(async (..._args: unknown[]) => {});
 const invalidateStreamSignalsCache = vi.fn();
 const resolveSignalOutcomes = vi.fn();
 const refreshActiveSignalOutcomes = vi.fn();
