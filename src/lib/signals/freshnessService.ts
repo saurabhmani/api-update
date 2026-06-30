@@ -132,7 +132,7 @@ export interface BuildFreshnessOutput {
 
 /** Probe `market_data_daily` for the latest candle ts (epoch ms),
  *  null on error. Cheap; non-blocking on failure. */
-async function probeLatestCandleMs(): Promise<number | null> {
+export async function probeLatestCandleMs(): Promise<number | null> {
   try {
     const r = await db.query(
       `SELECT UNIX_TIMESTAMP(MAX(ts)) AS ts FROM market_data_daily`,

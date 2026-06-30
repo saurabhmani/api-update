@@ -49,6 +49,7 @@ import {
   buildFreshness,
   resolveSyntheticBatchId,
   logSignalFunnel,
+  probeLatestCandleMs,
   probeScannerBatch,
   loadUniverseSize,
   type SnapshotFreshnessRaw,
@@ -1765,6 +1766,23 @@ export async function GET(req: NextRequest) {
           const ageHours   = latestSnapshotMs
             ? Math.round((Date.now() - latestSnapshotMs) / 3_600_000 * 10) / 10 : null;
 
+          // Candle warehouse age — distinct from the market-close snapshot
+          // table. Snapshots can lag for days while market_data_daily stays
+          // current; healthPreview must reflect candle freshness, not
+          // snapshot staleness (otherwise off-hours shows false DEGRADED).
+          const latestCandleMs = await probeLatestCandleMs().catch(() => null);
+          const candleAgeMinutes = latestCandleMs != null
+            ? Math.round((Date.now() - latestCandleMs) / 60_000)
+            : null;
+          const candleAgeHours = latestCandleMs != null
+            ? Math.round((Date.now() - latestCandleMs) / 3_600_000 * 10) / 10
+            : null;
+          const closedCandleFreshness = classifyCandleFreshness({
+            latest_candle_ms: latestCandleMs,
+            market_open:      false,
+            candle_source:    'daily',
+          });
+
           // ── Scanner-batch / coverage probe (Bucket 2 fix) ────────
           // Off-hours we still want the freshness envelope to surface
           // the most recent scanner batch metadata (latest_batch_id /
@@ -2014,7 +2032,7 @@ export async function GET(req: NextRequest) {
             isBootstrap: bootstrap,
             isFallback:  false,
             freshnessMode: 'NORMAL_OPERATION',
-            candleAgeMinutes: ageMinutes,
+            candleAgeMinutes: candleAgeMinutes ?? ageMinutes,
           };
           const closedEnrich = <T extends { symbol?: string | null; tradingsymbol?: string | null }>(
             rows: readonly T[], tier: SignalTierContext,
@@ -2077,19 +2095,14 @@ export async function GET(req: NextRequest) {
             marketOpen:             false,
             isBootstrap:            bootstrap,
             isFallback:             false,
-            staleMinutes:           ageMinutes,
+            staleMinutes:           candleAgeMinutes ?? 0,
           });
           // PHASE_5_HEALTH_OBSERVABILITY_2026-05 — closed-market preview.
-          const closedCandleFreshness = classifyCandleFreshness({
-            latest_candle_ms: latestSnapshotMs,
-            market_open:      false,
-            candle_source:    'daily',
-          });
           const closedHealthPreview = buildLightweightEngineHealthPreview({
             marketOpen:         false,
             isBootstrap:        false,
             isFallback:         false,
-            staleMinutes:       ageMinutes,
+            staleMinutes:       candleAgeMinutes ?? 0,
             freshnessMode:      closedCandleFreshness.freshness_mode,
             feedFrozen:         closedCandleFreshness.feed_frozen,
             freshnessQuality:   closedCandleFreshness.freshness_quality,
@@ -2202,9 +2215,13 @@ export async function GET(req: NextRequest) {
               active_count:             closedSignalRows.length,
               total_lifetime:           closedSignalRows.length,
               total_stored_signals:     totalStoredCount,
-              candle_latest_ts:         latestSnapshotIso,
-              candle_age_hours:         ageHours,
-              candle_max_ts:            latestSnapshotIso,
+              candle_latest_ts:         latestCandleMs
+                                            ? new Date(latestCandleMs).toISOString()
+                                            : null,
+              candle_age_hours:         candleAgeHours,
+              candle_max_ts:            latestCandleMs
+                                            ? new Date(latestCandleMs).toISOString()
+                                            : null,
               market_open:              false,
               market_state:             status.state,
               market_label:             status.label,
@@ -2246,9 +2263,10 @@ export async function GET(req: NextRequest) {
               state:  status.state,
             },
             dataFreshness: {
-              isStale:    (ageMinutes ?? 0) > 30,
-              ageMinutes: ageMinutes,
-              label:      ageMinutes != null ? `${ageMinutes}m ago` : 'Unknown',
+              isStale:    closedCandleFreshness.freshness_quality === 'stale'
+                       || closedCandleFreshness.freshness_quality === 'frozen',
+              ageMinutes: candleAgeMinutes,
+              label:      closedCandleFreshness.freshness_quality,
             },
             provider:             'market_close_snapshot',
             isBootstrap:          bootstrap,
