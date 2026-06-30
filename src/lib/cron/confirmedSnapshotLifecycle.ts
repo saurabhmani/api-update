@@ -33,7 +33,12 @@
 import { db } from '@/lib/db';
 import { resolvePrices } from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
+import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { markTerminated } from '@/lib/signal-engine/repository/maturityTracker';
+
+const MAIN_TABLE_CLASSIFICATION_SQL_IN = [...MAIN_TABLE_CLASSIFICATIONS]
+  .map((c) => `'${c}'`)
+  .join(', ');
 
 interface ActiveSnapshotRow {
   id:           number;
@@ -131,12 +136,58 @@ function decideTransition(
   return null;
 }
 
+/**
+ * ACTIVE snapshots carrying a non-institutional classification are
+ * zombie rows: the reader filters them out so the strict gate never
+ * runs, but they block re-promotion via duplicate_active. Invalidate
+ * them so the maturity worker can retry when classification improves.
+ */
+async function invalidateMisclassifiedActiveSnapshots(): Promise<number> {
+  try {
+    const findRes = await db.query<{ id: number }>(
+      `SELECT id FROM q365_confirmed_signal_snapshots
+        WHERE status = 'ACTIVE'
+          AND valid_until > NOW()
+          AND UPPER(classification) NOT IN (${MAIN_TABLE_CLASSIFICATION_SQL_IN})
+        LIMIT 500`,
+    );
+    const ids = (findRes.rows as { id: number }[]).map((r) => Number(r.id)).filter(Number.isFinite);
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => '?').join(',');
+    const now = new Date();
+    await db.query(
+      `UPDATE q365_confirmed_signal_snapshots
+          SET status              = 'INVALIDATED',
+              status_changed_at   = ?,
+              invalidation_reason = 'non_institutional_classification'
+        WHERE id IN (${placeholders})
+          AND status = 'ACTIVE'`,
+      [toMysqlDateTime(now), ...ids],
+    );
+    for (const sid of ids) {
+      try { await markTerminated(sid); }
+      catch (e: any) { console.warn(`[snapshotLifecycle] markTerminated ${sid}:`, e?.message); }
+    }
+    console.log('[SNAPSHOT_CLASSIFICATION_INVALIDATE]', {
+      count: ids.length,
+      reason: 'non_institutional_classification',
+    });
+    return ids.length;
+  } catch (err: any) {
+    if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return 0;
+    console.warn('[snapshotLifecycle] misclassified invalidate failed:', err?.message);
+    return 0;
+  }
+}
+
 export async function runConfirmedSnapshotLifecycle(): Promise<LifecycleRunResult> {
   const t0 = Date.now();
   const result: LifecycleRunResult = {
     scanned: 0, expired: 0, target_hit: 0, stop_loss_hit: 0,
     invalidated: 0, unchanged: 0, failedFetches: 0, elapsedMs: 0,
   };
+
+  result.invalidated += await invalidateMisclassifiedActiveSnapshots();
 
   let rows: ActiveSnapshotRow[];
   try {

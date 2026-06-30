@@ -5,24 +5,26 @@
 // ═══════════════════════════════════════════════════════════════════
 @use '@/styles/variables' as *;
 @use '@/styles/mixins'    as *;
+@use 'sass:map';
 
 // ── Tonal map shared by chips, cards, dots ─────────────────────────
 // Local to this module because the dashboard's tone palette is broader
 // than the generic Badge palette in components/ui (it adds purple for
 // analytics/backtesting per spec colour language).
+// Keys are quoted strings so Sass doesn't treat them as color literals.
 $tones: (
-  green : (bg: #E8F8F0, border: #BCEBD0, fg: #047857, dot: #10B981),
-  red   : (bg: #FEECEC, border: #F5C2C2, fg: #B91C1C, dot: #DC2626),
-  amber : (bg: #FEF4E1, border: #F8DDA1, fg: #92400E, dot: #D97706),
-  blue  : (bg: #E7F0FF, border: #C1D5F5, fg: #1D4ED8, dot: #2563EB),
-  grey  : (bg: #F1F4F8, border: #D8DFE8, fg: #475569, dot: #94A3B8),
-  purple: (bg: #F1ECFE, border: #D8C9FB, fg: #6D28D9, dot: #8B5CF6),
+  "green" : (bg: #E8F8F0, border: #BCEBD0, fg: #047857, dot: #10B981),
+  "red"   : (bg: #FEECEC, border: #F5C2C2, fg: #B91C1C, dot: #DC2626),
+  "amber" : (bg: #FEF4E1, border: #F8DDA1, fg: #92400E, dot: #D97706),
+  "blue"  : (bg: #E7F0FF, border: #C1D5F5, fg: #1D4ED8, dot: #2563EB),
+  "grey"  : (bg: #F1F4F8, border: #D8DFE8, fg: #475569, dot: #94A3B8),
+  "purple": (bg: #F1ECFE, border: #D8C9FB, fg: #6D28D9, dot: #8B5CF6),
 );
 
-@mixin tone-bg($name)     { background: map-get(map-get($tones, $name), bg); }
-@mixin tone-border($name) { border-color: map-get(map-get($tones, $name), border); }
-@mixin tone-fg($name)     { color: map-get(map-get($tones, $name), fg); }
-@mixin tone-dot($name)    { background: map-get(map-get($tones, $name), dot); }
+@mixin tone-bg($name)     { background: map.get(map.get($tones, $name), bg); }
+@mixin tone-border($name) { border-color: map.get(map.get($tones, $name), border); }
+@mixin tone-fg($name)     { color: map.get(map.get($tones, $name), fg); }
+@mixin tone-dot($name)    { background: map.get(map.get($tones, $name), dot); }
 
 // ── Spin (refresh button) ──────────────────────────────────────────
 .spin { animation: spin 0.9s linear infinite; }
@@ -127,7 +129,7 @@ $tones: (
     &--#{$name} {
       @include tone-bg($name);
       @include tone-fg($name);
-      border-color: map-get(map-get($tones, $name), border);
+      border-color: map.get(map.get($tones, $name), border);
     }
   }
 }
@@ -227,7 +229,7 @@ $tones: (
   box-shadow: $shadow-xs;
 
   @each $name, $_ in $tones {
-    &--#{$name} { border-left-color: map-get(map-get($tones, $name), dot); }
+    &--#{$name} { border-left-color: map.get(map.get($tones, $name), dot); }
   }
 
   @media (max-width: $bp-lg) {
@@ -504,7 +506,7 @@ $tones: (
   &:hover { box-shadow: $shadow-md; transform: translateY(-1px); }
 
   @each $name, $_ in $tones {
-    &--#{$name} { border-left-color: map-get(map-get($tones, $name), dot); }
+    &--#{$name} { border-left-color: map.get(map.get($tones, $name), dot); }
   }
 }
 
@@ -617,7 +619,7 @@ $tones: (
   // the dashboard in amber.
   @each $name, $_ in $tones {
     &--#{$name} {
-      border-top-color: map-get(map-get($tones, $name), dot);
+      border-top-color: map.get(map.get($tones, $name), dot);
     }
   }
 }
@@ -926,7 +928,7 @@ $tones: (
   // blockers never looks like an error stack.
   @each $name, $_ in $tones {
     &--#{$name} {
-      border-left-color: map-get(map-get($tones, $name), dot);
+      border-left-color: map.get(map.get($tones, $name), dot);
     }
   }
 }
@@ -1006,7 +1008,7 @@ $tones: (
   @each $name, $_ in $tones {
     &--#{$name} {
       @include tone-border($name);
-      background: map-get(map-get($tones, $name), bg);
+      background: map.get(map.get($tones, $name), bg);
     }
   }
 }
@@ -1059,7 +1061,7 @@ $tones: (
     &--#{$name} {
       &:hover {
         @include tone-border($name);
-        background: map-get(map-get($tones, $name), bg);
+        background: map.get(map.get($tones, $name), bg);
       }
     }
   }

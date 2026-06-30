@@ -4,6 +4,7 @@
 //  Dark trading-terminal theme. Class names are prefixed `sh-` so
 //  they don't collide with anything else in the app's global CSS.
 // ════════════════════════════════════════════════════════════════
+@use 'sass:color';
 
 // ── Theme tokens ──────────────────────────────────────────────────
 $sh-bg:         #0B0F14;
@@ -324,7 +325,7 @@ $sh-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
 .sh-log-msg   { color: $sh-text; word-break: break-word; }
 
 .sh-log-error   .sh-log-level { color: $sh-red;    }
-.sh-log-error   .sh-log-msg   { color: lighten($sh-red, 8%); }
+.sh-log-error   .sh-log-msg   { color: color.adjust($sh-red, $lightness: 8%); }
 .sh-log-warn    .sh-log-level { color: $sh-yellow; }
 .sh-log-info    .sh-log-level { color: $sh-cyan;   }
 

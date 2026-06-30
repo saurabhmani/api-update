@@ -25,6 +25,7 @@ import { getMarketStatus }            from '@/lib/marketData/marketHours';
 
 import {
   getActiveConfirmedSnapshots,
+  getActiveSnapshotReaderDiagnostics,
   getConfirmedSnapshotFreshness,
 }                                     from '@/lib/signal-engine/repository/readConfirmedSnapshots';
 import {
@@ -241,7 +242,7 @@ export interface ConfirmedSignalsBundle {
    *  without parsing logs. Always populated; `cause === 'none'` means
    *  the cycle produced approvals. */
   approvalBottleneck: {
-    stage:           'pipeline' | 'strict_gate' | 'freshness_gate' | 'sector_cap' | 'none';
+    stage:           'pipeline' | 'strict_gate' | 'freshness_gate' | 'sector_cap' | 'reader_classification_filter' | 'none';
     cause:           string;
     blocked_rows:    number;
     total_input:     number;
@@ -273,12 +274,15 @@ export interface LoadConfirmedSignalsOpts {
 export async function loadConfirmedSignalsBundle(
   opts: LoadConfirmedSignalsOpts,
 ): Promise<ConfirmedSignalsBundle> {
-  const [snapshots, inProgress, freshnessRaw, trackerCounts] = await Promise.all([
+  const [snapshots, inProgress, freshnessRaw, trackerCounts, readerDiag] = await Promise.all([
     getActiveConfirmedSnapshots({ limit: opts.limit }),
     getInProgressTrackers(50).catch(() => []),
     getConfirmedSnapshotFreshness(),
     getTrackerCounts().catch(
       () => ({ candidate: 0, developing: 0, mature: 0, promoted: 0, terminated: 0, total: 0 }),
+    ),
+    getActiveSnapshotReaderDiagnostics().catch(
+      () => ({ totalActive: 0, readerEligible: 0, excludedByClassification: 0, breakdown: [] as Array<{ classification: string; count: number }> }),
     ),
   ]);
 
@@ -489,14 +493,27 @@ export async function loadConfirmedSignalsBundle(
   let approvalBottleneck: Bottleneck;
 
   if (enriched.length === 0) {
-    approvalBottleneck = {
-      stage:        'pipeline',
-      cause:        'no_candidates_from_pipeline',
-      blocked_rows: 0,
-      total_input:  0,
-      detail:       'q365_confirmed_signal_snapshots returned 0 ACTIVE rows. The bottleneck is UPSTREAM of the strict gate — Phase 4 / maturity tracker is not promoting candidates this cycle.',
-      suggested_env: 'check Phase 4 cron + maturity-tracker writer; gate-tuning will not help when the engine ships zero candidates.',
-    };
+    if (readerDiag.excludedByClassification > 0) {
+      const topCls = readerDiag.breakdown[0]?.classification ?? 'unknown';
+      approvalBottleneck = {
+        stage:         'reader_classification_filter',
+        cause:         'non_institutional_classification',
+        blocked_rows:  readerDiag.excludedByClassification,
+        total_input:   readerDiag.totalActive,
+        detail:        `${readerDiag.totalActive} ACTIVE snapshots exist but ${readerDiag.excludedByClassification} carry non-institutional classifications (e.g. ${topCls}) and are filtered before the strict gate. Only ${readerDiag.readerEligible} are reader-eligible.`,
+        suggested_env: 'Phase 4 must emit INSTITUTIONAL_HIGH_CONVICTION / HIGH_CONVICTION / VALID_SIGNAL before promotion. Lifecycle invalidates misclassified ACTIVE snapshots each tick.',
+        ranked_causes: readerDiag.breakdown.map((b) => [b.classification, b.count] as [string, number]),
+      };
+    } else {
+      approvalBottleneck = {
+        stage:        'pipeline',
+        cause:        'no_candidates_from_pipeline',
+        blocked_rows: 0,
+        total_input:  0,
+        detail:       'q365_confirmed_signal_snapshots returned 0 ACTIVE rows. The bottleneck is UPSTREAM of the strict gate — Phase 4 / maturity tracker is not promoting candidates this cycle.',
+        suggested_env: 'check Phase 4 cron + maturity-tracker writer; gate-tuning will not help when the engine ships zero candidates.',
+      };
+    }
     console.log('[APPROVAL_BOTTLENECK]', approvalBottleneck);
   } else if (strictPassed.length === 0) {
     // Recompute the cause histogram from strictDropped (already

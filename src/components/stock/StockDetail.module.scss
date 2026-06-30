@@ -1,5 +1,6 @@
 @use '@/styles/variables' as *;
 @use '@/styles/mixins'    as *;
+@use 'sass:color';
 
 // ── Hero header ───────────────────────────────────────────────────
 .hero {
@@ -251,7 +252,7 @@
   font-weight: 800;
   letter-spacing: 0.3px;
 
-  &BUY  { background: $color-accent-light;   color: darken(#16A34A, 10%); border: 1px solid #BBF7D0; }
+  &BUY  { background: $color-accent-light;   color: color.adjust(#16A34A, $lightness: -10%); border: 1px solid #BBF7D0; }
   &SELL { background: $color-danger-light;   color: $color-danger;        border: 1px solid #FECACA; }
   &HOLD { background: #F1F5F9;               color: $color-muted;         border: 1px solid $color-border; }
 }
@@ -303,7 +304,7 @@
   &--entry  .levelBoxValue { color: $color-primary; }
   &--sl     .levelBoxValue { color: $color-danger; }
   &--t1     .levelBoxValue { color: $color-accent; }
-  &--t2     .levelBoxValue { color: darken(#16A34A, 8%); }
+  &--t2     .levelBoxValue { color: color.adjust(#16A34A, $lightness: -8%); }
 }
 
 .reasons {
@@ -548,7 +549,7 @@
   padding: 2px 7px;
   border-radius: $r-full;
 
-  &Positive { background: $color-accent-light;  color: darken(#16A34A, 8%); }
+  &Positive { background: $color-accent-light;  color: color.adjust(#16A34A, $lightness: -8%); }
   &Negative { background: $color-danger-light;  color: $color-danger; }
   &Neutral  { background: #F1F5F9;              color: $color-muted; }
 }
@@ -623,7 +624,7 @@
   padding: 2px 8px;
   border-radius: $r-full;
 
-  &Buy    { background: $color-accent-light;  color: darken(#16A34A, 8%); }
+  &Buy    { background: $color-accent-light;  color: color.adjust(#16A34A, $lightness: -8%); }
   &Sell   { background: $color-danger-light;  color: $color-danger; }
   &Hold   { background: #F1F5F9;              color: $color-muted; }
 }

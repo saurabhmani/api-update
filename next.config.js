@@ -77,6 +77,13 @@ const nextConfig = {
   // guard short-circuits before any stubbed code is ever called.
   // The nodejs runtime bundle gets the real modules as normal.
   webpack: (config, { nextRuntime, webpack }) => {
+    // pg's optional native driver — pure-JS pg client never needs it.
+    config.resolve = config.resolve || {};
+    config.resolve.alias = {
+      ...(config.resolve.alias || {}),
+      'pg-native': false,
+    };
+
     if (nextRuntime === 'edge') {
       // (a) Externals — webpack will NOT try to bundle these for edge.
       // Must be expressed as a function so it matches exact specifiers

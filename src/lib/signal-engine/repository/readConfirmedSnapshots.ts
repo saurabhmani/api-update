@@ -23,7 +23,13 @@
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
+import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { normalizeWinProbability } from '@/lib/signals/signalsResponseMapper';
+
+/** SQL IN-list mirroring the reader WHERE clause classification filter. */
+const READER_CLASSIFICATION_SQL_IN = [...MAIN_TABLE_CLASSIFICATIONS]
+  .map((c) => `'${c}'`)
+  .join(', ');
 
 export type SnapshotStatus =
   | 'ACTIVE'
@@ -604,6 +610,57 @@ export async function getLatestActiveSnapshotBySymbol(
     return row ? shapeRow(row) : null;
   } catch (err: any) {
     if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return null;
+    throw err;
+  }
+}
+
+/**
+ * Diagnostics for the reader classification filter — how many ACTIVE
+ * snapshots exist vs how many the strict reader will actually return.
+ */
+export async function getActiveSnapshotReaderDiagnostics(): Promise<{
+  totalActive:              number;
+  readerEligible:           number;
+  excludedByClassification: number;
+  breakdown:                Array<{ classification: string; count: number }>;
+}> {
+  const empty = {
+    totalActive: 0, readerEligible: 0, excludedByClassification: 0, breakdown: [],
+  };
+  try {
+    const [totalRes, eligibleRes, breakdownRes] = await Promise.all([
+      db.query<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM q365_confirmed_signal_snapshots
+          WHERE status = 'ACTIVE' AND valid_until > NOW()`,
+      ),
+      db.query<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM q365_confirmed_signal_snapshots s
+          WHERE s.status = 'ACTIVE' AND s.valid_until > NOW()
+            AND UPPER(s.classification) IN (${READER_CLASSIFICATION_SQL_IN})`,
+      ),
+      db.query<{ classification: string; count: number }>(
+        `SELECT UPPER(s.classification) AS classification, COUNT(*) AS count
+           FROM q365_confirmed_signal_snapshots s
+          WHERE s.status = 'ACTIVE' AND s.valid_until > NOW()
+            AND UPPER(s.classification) NOT IN (${READER_CLASSIFICATION_SQL_IN})
+          GROUP BY UPPER(s.classification)
+          ORDER BY count DESC
+          LIMIT 10`,
+      ),
+    ]);
+    const totalActive    = Number(totalRes.rows[0]?.c ?? 0);
+    const readerEligible = Number(eligibleRes.rows[0]?.c ?? 0);
+    return {
+      totalActive,
+      readerEligible,
+      excludedByClassification: Math.max(0, totalActive - readerEligible),
+      breakdown: (breakdownRes.rows as Array<{ classification: string; count: number }>).map((r) => ({
+        classification: String(r.classification ?? 'UNKNOWN'),
+        count:          Number(r.count ?? 0),
+      })),
+    };
+  } catch (err: any) {
+    if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return empty;
     throw err;
   }
 }

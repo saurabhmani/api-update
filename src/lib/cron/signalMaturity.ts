@@ -32,6 +32,7 @@ import {
   type TrackerRow,
 } from '@/lib/signal-engine/repository/maturityTracker';
 import { insertConfirmedSnapshotIfEligible } from '@/lib/signal-engine/repository/confirmedSnapshots';
+import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 // Step 8 note: this worker must NEVER call resolveBatch /
 // resolvePrices. Data-quality gating is done by reading the
@@ -74,6 +75,8 @@ export interface MaturityRunResult {
   candidate:   number;
   /** Rejected by the hard market-regime gate even though scoring qualified. */
   regime_blocked: number;
+  /** Rejected because Phase-4 classification is outside the institutional whitelist. */
+  classification_blocked: number;
   failed:      number;
   elapsedMs:   number;
 }
@@ -229,7 +232,7 @@ function pushMaturityAudit(row: MaturityAuditRow): void {
  */
 async function processTracker(
   tracker: TrackerRow,
-): Promise<'promoted' | 'matured' | 'developing' | 'candidate' | 'skipped' | 'regime_blocked'> {
+): Promise<'promoted' | 'matured' | 'developing' | 'candidate' | 'skipped' | 'regime_blocked' | 'classification_blocked'> {
   const current = await fetchCurrentSignalRow(tracker.symbol, tracker.direction);
   if (!current) {
     // Scanner expired the underlying signal between detection and
@@ -452,6 +455,21 @@ async function processTracker(
       `rejected="counter-regime trade"`,
     );
     return 'regime_blocked';
+  }
+
+  // Classification gate — mirror insertConfirmedSnapshotIfEligible and
+  // the reader WHERE clause. Mature trackers whose underlying signal is
+  // still DEVELOPING_SETUP / WATCHLIST_ONLY must not reach the writer;
+  // they were creating zombie ACTIVE snapshots that the reader silently
+  // filtered, starving the strict/elite gate chain.
+  const promotionCls = String(current.classification ?? '').toUpperCase();
+  if (!MAIN_TABLE_CLASSIFICATIONS.has(promotionCls)) {
+    console.warn(
+      `[CLASSIFICATION_VETO] symbol=${tracker.symbol} dir=${tracker.direction} ` +
+      `classification=${promotionCls || '(empty)'} ` +
+      `allowed={${[...MAIN_TABLE_CLASSIFICATIONS].join(', ')}}`,
+    );
+    return 'classification_blocked';
   }
 
   // Eligible — try to insert the confirmed snapshot. The writer has
@@ -725,7 +743,7 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   const t0 = Date.now();
   const result: MaturityRunResult = {
     scanned: 0, promoted: 0, matured: 0,
-    developing: 0, candidate: 0, regime_blocked: 0,
+    developing: 0, candidate: 0, regime_blocked: 0, classification_blocked: 0,
     failed: 0, elapsedMs: 0,
   };
 
@@ -829,7 +847,8 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
       else if (outcome === 'matured')         result.matured++;
       else if (outcome === 'developing')      result.developing++;
       else if (outcome === 'candidate')       result.candidate++;
-      else if (outcome === 'regime_blocked')  result.regime_blocked++;
+      else if (outcome === 'regime_blocked')          result.regime_blocked++;
+      else if (outcome === 'classification_blocked') result.classification_blocked++;
     } catch (err: any) {
       console.warn(`[signalMaturity] tracker ${t.id} (${t.symbol} ${t.direction}) failed:`, err?.message);
       result.failed++;
@@ -849,6 +868,7 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
       `developing=${result.developing} ` +
       `candidate=${result.candidate} ` +
       `regime_blocked=${result.regime_blocked} ` +
+      `classification_blocked=${result.classification_blocked} ` +
       `failed=${result.failed} ` +
       `elapsed_ms=${result.elapsedMs}`,
     );

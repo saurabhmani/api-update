@@ -1,5 +1,6 @@
 @use '../variables' as *;
 @use '../mixins'    as *;
+@use 'sass:color';
 
 // ── Signal chip ───────────────────────────────────────────────────
 .signal-chip {
@@ -12,7 +13,7 @@
   font-weight:   700;
   letter-spacing: 0.5px;
 
-  &--BUY  { background:$color-accent-light;  color:darken(#059669,8%); }
+  &--BUY  { background:$color-accent-light;  color:color.adjust(#059669, $lightness: -8%); }
   &--SELL { background:$color-danger-light;  color:$color-danger; }
   &--HOLD { background:#F0F4F8;              color:$color-muted; }
 
@@ -124,7 +125,7 @@
     width:38px; height:38px; border-radius:50%;
     @include flex-center; font-size:$text-sm; font-weight:800; flex-shrink:0;
 
-    &--high   { background:$color-accent-light;  color:darken(#059669,5%); box-shadow:$shadow-glow-green; }
+    &--high   { background:$color-accent-light;  color:color.adjust(#059669, $lightness: -5%); box-shadow:$shadow-glow-green; }
     &--medium { background:$color-warning-light; color:$color-warning; }
     &--low    { background:#F0F4F8;              color:$color-muted; }
   }
@@ -177,7 +178,7 @@
     padding:3px 10px; font-size:$text-xs; font-weight:500;
     margin:2px; color:$color-text-2;
 
-    &--leader { border-color:$color-accent-light;  background:$color-accent-light;  color:darken(#059669,5%); }
+    &--leader { border-color:$color-accent-light;  background:$color-accent-light;  color:color.adjust(#059669, $lightness: -5%); }
     &--lagger { border-color:$color-danger-light;  background:$color-danger-light;  color:$color-danger; }
   }
 }
