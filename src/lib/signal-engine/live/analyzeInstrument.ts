@@ -37,6 +37,7 @@ import {
 } from '../core/runRejectionEngine';
 import type { PortfolioFitResult, ExecutionReadiness } from '../types/phase3.types';
 import { runPhase4Scoring, type FinalScoreBand } from '../scoring/phase4FactorAdapter';
+import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
 
 // ════════════════════════════════════════════════════════════════
 //  PUBLIC TYPES — canonical shape for live per-instrument analysis
@@ -487,6 +488,14 @@ function buildFromCandidate(
     upstreamStatus:     'APPROVED_SIGNAL',
   });
 
+  const modeCaps = applyStrategyModeCaps({
+    strategy:              best.strategy,
+    phase4Classification:  phase4.classification,
+    signalStatus:          'APPROVED_SIGNAL',
+    confidenceScore:       confidence,
+    finalScore:            phase4.final_score,
+  });
+
   return {
     instrument_key, tradingsymbol, exchange,
     direction,
@@ -498,11 +507,13 @@ function buildFromCandidate(
     conviction_band:   mapConfidenceBand(best.confidence.band),
     market_stance:     'selective',
     regime_alignment:  Math.round(contextScore),
-    rejection_reasons: [],
+    rejection_reasons: modeCaps.capped
+      ? [`Strategy mode cap: ${modeCaps.capReason ?? modeCaps.effectiveMode}`]
+      : [],
     rejection_codes:   [],
-    signal_status:     'APPROVED_SIGNAL',
+    signal_status:     modeCaps.signalStatus ?? 'APPROVED_SIGNAL',
     final_score:       phase4.final_score,
-    classification:    phase4.classification,
+    classification:    modeCaps.phase4Classification,
     factor_scores_phase4: phase4.factor_scores,
     soft_warnings:     best.warnings,
     blocked_by: {

@@ -40,6 +40,7 @@
 
 import { db } from '@/lib/db';
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
+import { canStrategyProduceConfirmedSignal } from '@/lib/signal-engine/strategies/strategyModePolicy';
 
 // ── Tunables ─────────────────────────────────────────────────────
 //
@@ -166,6 +167,7 @@ export interface SnapshotInsertResult {
     | 'low_maturity'
     | 'duplicate_active'
     | 'invalid_prices'
+    | 'strategy_mode'
     | 'db_error';
 }
 
@@ -292,6 +294,15 @@ export async function insertConfirmedSnapshotIfEligible(
     return reject(
       'wrong_classification',
       `classification=${klass || '(empty)'} not in {${[...MAIN_TABLE_CLASSIFICATIONS].join(', ')}}`,
+    );
+  }
+  if (!canStrategyProduceConfirmedSignal(input.strategy ?? '', {
+    confidenceScore: input.confidence_score,
+    finalScore:      input.final_score,
+  })) {
+    return reject(
+      'strategy_mode',
+      `strategy=${input.strategy ?? '(unknown)'} effective_mode blocks confirmed promotion`,
     );
   }
   if (input.live_valid === false) {

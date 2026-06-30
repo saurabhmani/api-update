@@ -13,8 +13,23 @@
 
 import type {
   StrategyName, StrategyRegistryEntry, MarketRegimeLabel,
-  EntryType, StrategyCategory,
+  EntryType, StrategyCategory, StrategyMode,
 } from '../types/signalEngine.types';
+import {
+  resolveEffectiveStrategyMode,
+  canStrategyProduceConfirmedSignal,
+} from './strategyModePolicy';
+
+export {
+  resolveEffectiveStrategyMode,
+  canStrategyProduceConfirmedSignal,
+  applyStrategyModeCaps,
+} from './strategyModePolicy';
+export type {
+  StrategyModeCapInput,
+  StrategyModeCapResult,
+  StrategyModeScoreContext,
+} from './strategyModePolicy';
 
 export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
   // ── Breakout family ────────────────────────────────────────
@@ -33,6 +48,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'bullish_breakout',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Price closed above resistance with improving momentum. Approval requires volume confirmation and fresh candle validation.',
     invalidationLogic:   'Close below the prior resistance band invalidates the breakout structure.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -52,6 +68,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'range_breakout',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Price is breaking out of a tight consolidation range with expanding volume.',
     invalidationLogic:   'Re-entry into the prior range invalidates the breakout.',
     idealMarketRegime:   ['Sideways', 'Bullish'],
@@ -73,6 +90,8 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'ema_crossover',
+    strategyMode:        'CONFIRMED_ENABLED',
+    scoreGatedWatchlist: true,
     explanationTemplate: 'Faster EMA has crossed above the slower EMA while broader trend remains constructive.',
     invalidationLogic:   'Close back below the slower EMA invalidates the crossover.',
     idealMarketRegime:   ['Bullish', 'Strong Bullish'],
@@ -94,6 +113,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'momentum_continuation',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Momentum continues in the direction of the prevailing trend; price is holding above short-term moving averages.',
     invalidationLogic:   'Loss of short-term trend support invalidates the continuation thesis.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -113,6 +133,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'gap_continuation',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Price gapped in the trend direction and continues higher with sustained volume.',
     invalidationLogic:   'Fill of the opening gap invalidates the continuation setup.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -132,6 +153,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'bullish_pullback',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Price is pulling back toward a rising moving average while the broader trend remains constructive.',
     invalidationLogic:   'Close below the rising moving average invalidates the pullback structure.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -150,6 +172,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'fibonacci_pullback',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Price is reacting from a key Fibonacci retracement zone inside a bullish trend.',
     invalidationLogic:   'Close below the 61.8% or 78.6% Fibonacci support zone invalidates the setup.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -169,6 +192,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'mean_reversion_bounce',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Price is recovering from an oversold zone, but confirmation is required before approval.',
     invalidationLogic:   'A fresh lower low without recovery invalidates the bounce setup.',
     idealMarketRegime:   ['Sideways', 'Weak'],
@@ -187,6 +211,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'oversold_bounce',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Oversold recovery detected with early momentum improvement, but confirmation remains pending.',
     invalidationLogic:   'Failure to reclaim the recent swing low invalidates the recovery.',
     idealMarketRegime:   ['Sideways', 'Weak'],
@@ -206,6 +231,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'bullish_divergence',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Momentum is diverging upward against price weakness; reversal pending confirmation.',
     invalidationLogic:   'A fresh lower low in price without momentum support invalidates the divergence.',
     idealMarketRegime:   ['Weak', 'Sideways'],
@@ -225,6 +251,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'swing',
     signalType:          'volume_climax_reversal',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Capitulation volume into a low; potential exhaustion reversal pending confirmation.',
     invalidationLogic:   'A second climax low without reclaim invalidates the reversal.',
     idealMarketRegime:   ['Weak', 'Bearish'],
@@ -243,6 +270,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'swing',
     signalType:          'overbought_reversal',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Price is extended above short-term averages and showing reversal risk. This setup should remain watchlisted unless weakness confirms.',
     invalidationLogic:   'A fresh higher high invalidates the reversal — exit on close above the rejection wick.',
     idealMarketRegime:   ['Sideways', 'Weak'],
@@ -263,6 +291,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'swing',
     signalType:          'bearish_breakdown',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Price is trading below support with weak trend structure. Risk gate will check follow-through and liquidity before approval.',
     invalidationLogic:   'Reclaim of the broken support invalidates the breakdown.',
     idealMarketRegime:   ['Bearish', 'Weak'],
@@ -282,6 +311,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'swing',
     signalType:          'weak_trend_breakdown',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Trend structure is weakening and price is failing to reclaim short-term averages.',
     invalidationLogic:   'A reclaim of the prior swing high invalidates the breakdown structure.',
     idealMarketRegime:   ['Weak', 'Bearish'],
@@ -303,6 +333,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'swing',
     signalType:          'failed_breakout_reversal',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Breakout attempt failed after price closed back below resistance, indicating possible bull-trap risk.',
     invalidationLogic:   'Setup invalidates if price reclaims and sustains above the failed breakout level.',
     idealMarketRegime:   ['Sideways', 'Weak'],
@@ -322,6 +353,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'swing',
     signalType:          'bearish_pullback_rejection',
+    strategyMode:        'WATCHLIST_ONLY',
     explanationTemplate: 'Price rallied into resistance within a weak trend and showed rejection, suggesting continuation risk.',
     invalidationLogic:   'Setup invalidates if price closes above the rejection / resistance zone.',
     idealMarketRegime:   ['Weak', 'Bearish'],
@@ -341,6 +373,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'swing',
     signalType:          'volatility_squeeze_breakout',
+    strategyMode:        'CONFIRMED_ENABLED',
     explanationTemplate: 'Volatility compression resolved into a breakout with improving participation.',
     invalidationLogic:   'Setup invalidates if price re-enters the compression range.',
     idealMarketRegime:   ['Bullish', 'Sideways'],
@@ -367,6 +400,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'conservative',
     timeframe:           'swing',
     signalType:          'multi_timeframe_alignment',
+    strategyMode:        'DISABLED',
     explanationTemplate: 'Weekly trend, daily setup, and short-term confirmation are aligned.',
     invalidationLogic:   'Loss of weekly trend support invalidates the alignment.',
     idealMarketRegime:   ['Bullish', 'Strong Bullish'],
@@ -386,6 +420,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'intraday',
     signalType:          'vwap_reclaim_long',
+    strategyMode:        'DISABLED',
     explanationTemplate: 'Price reclaimed VWAP with improving participation, supporting short-term bullish confirmation.',
     invalidationLogic:   'A close back below VWAP with rising volume invalidates the reclaim.',
     idealMarketRegime:   ['Bullish', 'Strong Bullish'],
@@ -405,6 +440,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate_high',
     timeframe:           'intraday',
     signalType:          'vwap_rejection_short',
+    strategyMode:        'DISABLED',
     explanationTemplate: 'Price rejected VWAP after a weak retest, supporting short-term bearish continuation.',
     invalidationLogic:   'A clean reclaim above VWAP invalidates the rejection.',
     idealMarketRegime:   ['Weak', 'Bearish'],
@@ -425,6 +461,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'moderate',
     timeframe:           'intraday',
     signalType:          'opening_range_breakout',
+    strategyMode:        'DISABLED',
     explanationTemplate: 'Price broke above the opening range with participation and VWAP support.',
     invalidationLogic:   'A return back inside the opening range invalidates the breakout.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
@@ -445,6 +482,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     riskProfile:         'high',
     timeframe:           'intraday',
     signalType:          'opening_range_breakdown',
+    strategyMode:        'DISABLED',
     explanationTemplate: 'Price broke below the opening range with weak structure and selling participation.',
     invalidationLogic:   'A reclaim into the opening range invalidates the breakdown.',
     idealMarketRegime:   ['Weak', 'Bearish'],
@@ -561,6 +599,13 @@ export function getStrategyInvalidation(strategy: StrategyName | string | null |
   return entry?.invalidationLogic ?? 'Stop-loss breach invalidates the setup.';
 }
 
+/** Registry-declared strategy mode (before score-gating). */
+export function getStrategyMode(strategy: StrategyName | string | null | undefined): StrategyMode {
+  if (!strategy) return 'CONFIRMED_ENABLED';
+  const entry = STRATEGY_REGISTRY[strategy as StrategyName];
+  return entry?.strategyMode ?? 'CONFIRMED_ENABLED';
+}
+
 /** Bundled metadata reader — useful when a caller needs everything
  *  at once (e.g. the API response mapper). */
 export function getStrategyMeta(strategy: StrategyName | string | null | undefined): {
@@ -571,7 +616,10 @@ export function getStrategyMeta(strategy: StrategyName | string | null | undefin
   direction:         'BUY' | 'SELL';
   explanation:       string;
   invalidation:      string;
+  strategyMode:      StrategyMode;
+  effectiveStrategyMode?: StrategyMode;
 } {
+  const mode = getStrategyMode(strategy);
   return {
     strategyId:       strategy ? String(strategy) : 'unclassified',
     strategyName:     getStrategyDisplayName(strategy),
@@ -580,5 +628,7 @@ export function getStrategyMeta(strategy: StrategyName | string | null | undefin
     direction:        getStrategyDirectionLabel(strategy),
     explanation:      getStrategyExplanation(strategy),
     invalidation:     getStrategyInvalidation(strategy),
+    strategyMode:     mode,
+    effectiveStrategyMode: resolveEffectiveStrategyMode(strategy),
   };
 }

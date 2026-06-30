@@ -30,9 +30,15 @@ describe('strategy-hub registry', () => {
     expect(detail!.displayName).toBe('Bullish Breakout');
     expect(detail!.category).toBe('breakout');
     expect(detail!.riskProfile).toBe('moderate');
+    expect(detail!.strategyMode).toBe('CONFIRMED_ENABLED');
     expect(detail!.isFeatured).toBe(true);
     expect(detail!.isActiveInRunner).toBe(true);
     expect(detail!.hasEvaluator).toBe(true);
+  });
+
+  it('exposes WATCHLIST_ONLY mode for mean reversion strategies', () => {
+    const detail = loadStrategyDetail('mean_reversion_bounce');
+    expect(detail?.strategyMode).toBe('WATCHLIST_ONLY');
   });
 
   it('sorts featured strategies first', () => {

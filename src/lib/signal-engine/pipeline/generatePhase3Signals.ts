@@ -37,6 +37,7 @@ import { validateFeatures } from '../utils/validation';
 import type { CandleProvider } from './generatePhase1Signals';
 import { runRejectionEngine, type RejectionInput, type RejectionDecision } from '../core/runRejectionEngine';
 import { runPhase4Scoring } from '../scoring/phase4FactorAdapter';
+import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
 
 export interface Phase3Result {
   regime: EnhancedMarketRegime;
@@ -1288,6 +1289,38 @@ export async function generatePhase3Signals(
       let phase4Classification = phase4.classification;
       if (rejectionDecision.signalStatus === 'NO_TRADE')         phase4Classification = 'NO_TRADE';
       else if (rejectionDecision.signalStatus === 'DEVELOPING_SETUP') phase4Classification = 'DEVELOPING_SETUP';
+
+      // ── Strategy-mode caps (registry metadata) ─────────────────
+      // WATCHLIST_ONLY / DISABLED strategies cannot become confirmed
+      // signals; they may still surface as DEVELOPING_SETUP or
+      // WATCHLIST_ONLY in the emerging tier.
+      const modeCaps = applyStrategyModeCaps({
+        strategy:                   best.strategy,
+        phase4Classification,
+        signalStatus:               rejectionDecision.signalStatus,
+        rejectionFinalDecision:     rejectionDecision.finalDecision,
+        executionApprovalDecision:  execution.approvalDecision,
+        confidenceScore:            best.confidence.finalScore,
+        finalScore:                 phase4.final_score,
+      });
+      phase4Classification = modeCaps.phase4Classification;
+      if (modeCaps.capped) {
+        if (modeCaps.signalStatus) {
+          (rejectionDecision as { signalStatus: typeof rejectionDecision.signalStatus }).signalStatus =
+            modeCaps.signalStatus;
+        }
+        if (modeCaps.rejectionFinalDecision) {
+          (rejectionDecision as { finalDecision: typeof rejectionDecision.finalDecision }).finalDecision =
+            modeCaps.rejectionFinalDecision;
+        }
+        if (modeCaps.executionApprovalDecision) {
+          execution.approvalDecision = modeCaps.executionApprovalDecision as typeof execution.approvalDecision;
+        }
+        execution.reasons = [
+          ...execution.reasons,
+          `Strategy mode cap: ${modeCaps.capReason ?? modeCaps.effectiveMode}`,
+        ];
+      }
 
       if (isSellCandidate && rejectionDecision.finalDecision !== 'rejected') {
         sellTrace.after_canonical_reject++;

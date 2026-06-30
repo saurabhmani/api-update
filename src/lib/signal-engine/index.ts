@@ -13,7 +13,7 @@ export { runAllStrategies } from './strategy-engine/runStrategies';
 export { computeRelativeStrength, defaultRelativeStrength, computeEnhancedRelativeStrength } from './context/relativeStrength';
 export { detectEnhancedRegime } from './regime/detectMarketRegime';
 export { resolveConflicts } from './strategy-engine/resolveConflicts';
-export { STRATEGY_REGISTRY, isStrategyAllowedInRegime, getStrategiesForRegime } from './strategies/strategyRegistry';
+export { STRATEGY_REGISTRY, isStrategyAllowedInRegime, getStrategiesForRegime, getStrategyMode, resolveEffectiveStrategyMode, canStrategyProduceConfirmedSignal, applyStrategyModeCaps } from './strategies/strategyRegistry';
 export { buildSectorContextFromStock, defaultSectorContext } from './context/sectorContext';
 export { scoreForStrategy } from './scoring/strategyScorers';
 export { saveStrategyBreakdowns, saveConflictResolution, migratePhase2Tables } from './repository/saveStrategyBreakdowns';
@@ -93,6 +93,7 @@ export type {
   Phase2PipelineResult,
   StrategyRegistryEntry,
   StrategyDirection,
+  StrategyMode,
   SectorContext,
   SectorTrendLabel,
   EnhancedRelativeStrength,
