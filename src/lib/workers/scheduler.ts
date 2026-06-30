@@ -17,6 +17,7 @@
  *     08:30 IST — morning DB scan (pre-market signals)
  *     16:00 IST — evening incremental candle update (IndianAPI)
  *     16:30 IST — evening DB scan (fresh EOD signals)
+ *     16:30 IST — signal outcome resolution (resolveSignalOutcomesJob)
  *     19:00 IST — nightly backtest
  *     00:00 IST — midnight maintenance
  *

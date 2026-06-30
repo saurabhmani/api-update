@@ -7,6 +7,7 @@
 //    16:00  Evening Update     — IndianAPI incremental EOD candle fetch
 //                                 └─► populates `candles` warehouse
 //    16:30  Evening Scan        — DB-only Phase 4 signals (fresh EOD)
+//    16:30  Outcome Resolution  — resolveSignalOutcomesJob (pending + ACTIVE)
 //    18:30  Manipulation Scan   — runDailyScan({ skipIngestion: true })
 //                                 └─► reads candles refreshed at 16:00;
 //                                     NEVER re-runs EOD ingestion here
@@ -27,6 +28,8 @@
 //    EVENING_UPDATE_CRON=0 16 * * 1-5
 //    EVENING_SCAN_CRON=30 16 * * 1-5
 //    MANIPULATION_DAILY_SCAN_CRON=30 18 * * 1-5
+//    SIGNAL_OUTCOMES_JOB_CRON=30 16 * * 1-5
+//    SIGNAL_OUTCOMES_JOB_ENABLED=true|false
 //    DAILY_SCAN_SCHEDULE_ENABLED=true|false
 //    SIGNAL_LEGACY_EVENING_SCAN_1830=true  — optional 18:30 duplicate scan
 //
@@ -59,16 +62,21 @@ import {
   runDailyScan,
   type DailyScanResult,
 } from '@/lib/manipulation-engine/pipeline/runDailyScan';
+import {
+  resolveSignalOutcomesJob,
+  RESOLVE_SIGNAL_OUTCOMES_JOB_CRON,
+} from '@/lib/signals/outcome/resolveSignalOutcomesJob';
 
 const log = logger.child({ component: 'dailyScanSchedule' });
 export const DAILY_SCAN_TIMEZONE = 'Asia/Kolkata';
 
 /** Default cron expressions — minute hour dom month dow (IST). */
 export const DAILY_SCHEDULE_CRONS = {
-  morningScan:           '30 8 * * 1-5',
-  eveningUpdate:         '0 16 * * 1-5',
-  eveningScan:           '30 16 * * 1-5',
-  manipulationDailyScan: '30 18 * * 1-5',
+  morningScan:              '30 8 * * 1-5',
+  eveningUpdate:            '0 16 * * 1-5',
+  eveningScan:              '30 16 * * 1-5',
+  signalOutcomesResolution: RESOLVE_SIGNAL_OUTCOMES_JOB_CRON,
+  manipulationDailyScan:    '30 18 * * 1-5',
 } as const;
 
 /** Parse `minute hour * * *` cron into minutes-from-midnight (IST wall clock). */
@@ -473,6 +481,18 @@ export function startDailyScanSchedule(): void {
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
+  if (envEnabled('SIGNAL_OUTCOMES_JOB_ENABLED', true)) {
+    const signalOutcomesCron = envCron(
+      'SIGNAL_OUTCOMES_JOB_CRON',
+      DAILY_SCHEDULE_CRONS.signalOutcomesResolution,
+    );
+    tasks.push(cron.schedule(signalOutcomesCron, () => {
+      void resolveSignalOutcomesJob().catch((err) => {
+        log.error('signal outcomes job failed', { err: String(err) });
+      });
+    }, { timezone: DAILY_SCAN_TIMEZONE }));
+  }
+
   tasks.push(cron.schedule(manipulationDailyScanCron, () => {
     // Scheduled 2h30m after Evening Update — relies on 16:00 candle refresh.
     void runManipulationDailyScanJob().catch((err) => {
@@ -493,6 +513,9 @@ export function startDailyScanSchedule(): void {
     morning_scan: morningCron,
     evening_update: eveningUpdateCron,
     evening_scan: eveningScanCron,
+    signal_outcomes_job: envEnabled('SIGNAL_OUTCOMES_JOB_ENABLED', true)
+      ? envCron('SIGNAL_OUTCOMES_JOB_CRON', DAILY_SCHEDULE_CRONS.signalOutcomesResolution)
+      : 'disabled',
     manipulation_daily_scan: manipulationDailyScanCron,
     legacy_1830: envEnabled('SIGNAL_LEGACY_EVENING_SCAN_1830', false) ? legacy1830Cron : 'disabled',
     jobs: tasks.length,

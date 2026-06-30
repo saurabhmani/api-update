@@ -122,7 +122,25 @@ export async function resolveSignalOutcomes(
   await migrateSignalOutcomesPublic();
 
   const signals = await fetchPendingSignals(limit, opts.sinceDays);
-  const result: ResolveSignalOutcomesResult = {
+  const result = emptyResult();
+  const candleCache = new Map<string, Awaited<ReturnType<typeof loadCandlesForSymbol>>>();
+
+  await evaluateSignalRows(signals, opts, result, candleCache);
+
+  result.elapsedMs = Date.now() - t0;
+  logResolutionSummary(result);
+  return result;
+}
+
+function countOutcome(result: ResolveSignalOutcomesResult, outcome: SignalResolutionOutcome): void {
+  if (outcome === 'T1_HIT') result.targetHits++;
+  else if (outcome === 'SL_HIT') result.stopLosses++;
+  else if (outcome === 'EXPIRED') result.expired++;
+  else if (outcome === 'ACTIVE') result.active++;
+}
+
+function emptyResult(): ResolveSignalOutcomesResult {
+  return {
     processed: 0,
     inserted: 0,
     updated: 0,
@@ -136,10 +154,57 @@ export async function resolveSignalOutcomes(
     expired: 0,
     elapsedMs: 0,
   };
+}
 
-  const candleCache = new Map<string, Awaited<ReturnType<typeof loadCandlesForSymbol>>>();
+interface ActiveOutcomeSignalRow {
+  signal_id: number;
+  strategy_id: string;
+  symbol: string;
+  signal_type: string;
+  direction: string;
+  entry_price: number;
+  stop_loss: number;
+  target1: number;
+  created_at: string;
+}
 
-  for (const row of signals) {
+/** Step 2 — ledger rows still marked ACTIVE (re-evaluate with latest candles). */
+export async function fetchActiveOutcomeSignals(
+  limit: number,
+): Promise<ActiveOutcomeSignalRow[]> {
+  const capped = Math.min(Math.max(limit, 1), 10_000);
+  const { rows } = await db.query<ActiveOutcomeSignalRow>(
+    `SELECT
+       o.signal_id,
+       o.strategy_id,
+       o.symbol,
+       s.signal_type,
+       s.direction,
+       s.entry_price,
+       s.stop_loss,
+       s.target1,
+       s.created_at
+     FROM q365_signal_outcomes o
+     INNER JOIN q365_signals s ON s.id = o.signal_id
+     WHERE o.outcome = 'ACTIVE'
+       AND s.entry_price IS NOT NULL
+       AND s.stop_loss IS NOT NULL
+       AND s.target1 IS NOT NULL
+     ORDER BY o.outcome_at ASC
+     LIMIT ?`,
+    [capped],
+  );
+  return rows ?? [];
+}
+
+async function evaluateSignalRows(
+  rows: Array<PendingSignalRow | ActiveOutcomeSignalRow>,
+  opts: { dryRun?: boolean },
+  result: ResolveSignalOutcomesResult,
+  candleCache: Map<string, Awaited<ReturnType<typeof loadCandlesForSymbol>>>,
+): Promise<void> {
+  for (const row of rows) {
+    const signalId = 'id' in row ? row.id : row.signal_id;
     const entry = Number(row.entry_price);
     const stop = Number(row.stop_loss);
     const target = Number(row.target1);
@@ -162,9 +227,11 @@ export async function resolveSignalOutcomes(
       }
 
       const signal: SignalForOutcomeResolution = {
-        signalId: row.id,
+        signalId,
         symbol: String(row.symbol ?? ''),
-        strategyId: resolveStrategyId(row),
+        strategyId: 'strategy_id' in row && row.strategy_id
+          ? String(row.strategy_id)
+          : resolveStrategyId(row as PendingSignalRow),
         direction: String(row.direction ?? 'BUY'),
         entryPrice: entry,
         stopLoss: stop,
@@ -201,15 +268,24 @@ export async function resolveSignalOutcomes(
       result.errors++;
     }
   }
+}
+
+/** Re-evaluate ACTIVE ledger rows against the latest candle warehouse. */
+export async function refreshActiveSignalOutcomes(
+  opts: ResolveSignalOutcomesOptions = {},
+): Promise<ResolveSignalOutcomesResult> {
+  const t0 = Date.now();
+  const limit = Math.min(Math.max(opts.limit ?? 500, 1), 10_000);
+
+  await migrateSignalOutcomesPublic();
+
+  const rows = await fetchActiveOutcomeSignals(limit);
+  const result = emptyResult();
+  const candleCache = new Map<string, Awaited<ReturnType<typeof loadCandlesForSymbol>>>();
+
+  await evaluateSignalRows(rows, opts, result, candleCache);
 
   result.elapsedMs = Date.now() - t0;
   logResolutionSummary(result);
   return result;
-}
-
-function countOutcome(result: ResolveSignalOutcomesResult, outcome: SignalResolutionOutcome): void {
-  if (outcome === 'T1_HIT') result.targetHits++;
-  else if (outcome === 'SL_HIT') result.stopLosses++;
-  else if (outcome === 'EXPIRED') result.expired++;
-  else if (outcome === 'ACTIVE') result.active++;
 }

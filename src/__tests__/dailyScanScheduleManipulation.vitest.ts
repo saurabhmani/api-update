@@ -53,6 +53,19 @@ vi.mock('@/lib/marketData/providers/batchScheduler', () => ({
 vi.mock('@/lib/marketData/providerRequestPolicy', () => ({
   DAILY_UPDATE_MAX_REQUESTS: () => 50,
 }));
+vi.mock('@/lib/signals/outcome/resolveSignalOutcomesJob', () => ({
+  resolveSignalOutcomesJob: vi.fn(async () => ({
+    ok: true,
+    processed: 0,
+    resolved: 0,
+    active: 0,
+    expired: 0,
+    failed: 0,
+    executionTimeMs: 1,
+    skipped: false,
+  })),
+  RESOLVE_SIGNAL_OUTCOMES_JOB_CRON: '30 16 * * 1-5',
+}));
 
 import { runDailyScan } from '@/lib/manipulation-engine/pipeline/runDailyScan';
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
@@ -67,6 +80,7 @@ import {
   cronIstMinutesFromMidnight,
   isManipulationScheduledAfterEodUpdate,
 } from '@/lib/workers/dailyScanSchedule';
+import { resolveSignalOutcomesJob } from '@/lib/signals/outcome/resolveSignalOutcomesJob';
 
 const EOD_UPDATE_CRON = '0 16 * * 1-5';
 const MANIPULATION_CRON = '30 18 * * 1-5';
@@ -115,17 +129,27 @@ describe('dailyScanSchedule — manipulation scanner', () => {
     scheduledJobs.length = 0;
   });
 
-  it('1.1 — startDailyScanSchedule registers one additional manipulation cron task', () => {
+  it('1.1 — startDailyScanSchedule registers manipulation + outcome resolution crons', () => {
     const baselineCronJobs = ['30 8 * * 1-5', '0 16 * * 1-5', '30 16 * * 1-5'];
 
     startDailyScanSchedule();
 
-    expect(scheduledJobs).toHaveLength(baselineCronJobs.length + 1);
+    // morning + evening update + evening scan + outcomes (16:30) + manipulation
+    expect(scheduledJobs).toHaveLength(baselineCronJobs.length + 2);
     for (const expr of baselineCronJobs) {
       expect(scheduledJobs.some((j) => j.cron === expr)).toBe(true);
     }
     const manip = manipulationJob();
     expect(manip.opts.timezone).toBe(DAILY_SCAN_TIMEZONE);
+    expect(DAILY_SCHEDULE_CRONS.signalOutcomesResolution).toBe('30 16 * * 1-5');
+  });
+
+  it('1.1b — 16:30 IST outcome cron triggers resolveSignalOutcomesJob', async () => {
+    startDailyScanSchedule();
+    const at1630 = scheduledJobs.filter((j) => j.cron === '30 16 * * 1-5');
+    expect(at1630).toHaveLength(2);
+    at1630[1].fn();
+    await vi.waitFor(() => expect(resolveSignalOutcomesJob).toHaveBeenCalled());
   });
 
   it('1.2 — 18:30 IST trigger executes runDailyScan({ skipIngestion: true })', async () => {

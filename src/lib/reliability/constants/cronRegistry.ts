@@ -43,7 +43,14 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     label: 'Afternoon Signal Scan',
     schedule: '16:30 IST',
     source: 'scheduler',
-    matchKeys: ['daily-scan-pm', 'signal-scan-pm'],
+    matchKeys: ['daily-scan-pm', 'signal-scan-pm', 'evening-scan'],
+  },
+  {
+    id: 'resolve-signal-outcomes',
+    label: 'Signal Outcome Resolution',
+    schedule: '16:30 IST weekdays',
+    source: 'scheduler',
+    matchKeys: ['resolveSignalOutcomesJob', 'signal-outcomes', 'outcome-resolution'],
   },
   {
     id: 'nightly-backtest',
