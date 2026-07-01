@@ -114,6 +114,26 @@ function numOrNull(v: unknown): number | null {
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : null;
 }
+
+/** Institutional composite floor for VALID_SIGNAL (scoringEngine default). */
+const PROMOTION_VALID_SIGNAL_COMPOSITE_FLOOR = 50;
+
+/**
+ * Classification used for snapshot promotion. Stored DEVELOPING_SETUP
+ * rows whose composite_final_score already clears VALID_SIGNAL must not
+ * be vetoed forever; WATCHLIST_ONLY / NO_TRADE are never upgraded.
+ */
+function resolvePromotionClassification(row: CurrentSignalRow): string {
+  const cls = String(row.classification ?? '').toUpperCase();
+  if (MAIN_TABLE_CLASSIFICATIONS.has(cls)) return cls;
+  if (cls === 'DEVELOPING_SETUP' && row.signal_status !== 'NO_TRADE') {
+    const composite = numOrNull(row.composite_final_score);
+    if (composite != null && composite >= PROMOTION_VALID_SIGNAL_COMPOSITE_FLOOR) {
+      return 'VALID_SIGNAL';
+    }
+  }
+  return cls;
+}
 function parseObj(v: unknown): Record<string, number> | null {
   if (!v) return null;
   if (typeof v === 'object' && !Array.isArray(v)) return v as Record<string, number>;
@@ -462,14 +482,24 @@ async function processTracker(
   // still DEVELOPING_SETUP / WATCHLIST_ONLY must not reach the writer;
   // they were creating zombie ACTIVE snapshots that the reader silently
   // filtered, starving the strict/elite gate chain.
-  const promotionCls = String(current.classification ?? '').toUpperCase();
+  const rawCls = String(current.classification ?? '').toUpperCase();
+  const promotionCls = resolvePromotionClassification(current);
   if (!MAIN_TABLE_CLASSIFICATIONS.has(promotionCls)) {
     console.warn(
       `[CLASSIFICATION_VETO] symbol=${tracker.symbol} dir=${tracker.direction} ` +
-      `classification=${promotionCls || '(empty)'} ` +
+      `classification=${rawCls || '(empty)'} ` +
+      `promotion_cls=${promotionCls} ` +
+      `composite=${numOrNull(current.composite_final_score) ?? 'null'} ` +
       `allowed={${[...MAIN_TABLE_CLASSIFICATIONS].join(', ')}}`,
     );
     return 'classification_blocked';
+  }
+  if (promotionCls !== rawCls) {
+    console.log(
+      `[CLASSIFICATION_UPGRADE_FOR_PROMOTION] symbol=${tracker.symbol} dir=${tracker.direction} ` +
+      `raw=${rawCls} promotion=${promotionCls} ` +
+      `composite=${numOrNull(current.composite_final_score) ?? 'null'}`,
+    );
   }
 
   // Eligible — try to insert the confirmed snapshot. The writer has
@@ -508,8 +538,10 @@ async function processTracker(
     target2:           current.target2 != null ? num(current.target2) : null,
     confidence_score:  num(current.confidence_score),
     final_score:       institutionalFinalScore,
-    classification:    current.classification,
-    signal_status:     current.signal_status ?? 'APPROVED_SIGNAL',
+    classification:    promotionCls,
+    signal_status:     MAIN_TABLE_CLASSIFICATIONS.has(promotionCls)
+      ? 'APPROVED_SIGNAL'
+      : (current.signal_status ?? 'DEVELOPING_SETUP'),
     live_valid:        current.live_valid == null ? null : Number(current.live_valid) === 1,
     factor_scores:     factorScores,
     explanation:       current.explanation_json ?? null,

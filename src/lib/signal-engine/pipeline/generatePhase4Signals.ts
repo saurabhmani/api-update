@@ -47,6 +47,10 @@ import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 // the correct entry type and would re-introduce the Phase 1 leak.
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
 import { qualityToRowStatus } from '../discovery/signalDiscoveryStatus';
+import {
+  logPostScanSummary,
+  type PostScanSummary,
+} from '../observability/postScanSummary';
 
 function isInsufficientCandleReason(reason: string): boolean {
   const t = String(reason ?? '').toLowerCase();
@@ -122,6 +126,7 @@ export interface Phase4Result {
     signalsSaved: number;
     scenarioTag:  string;
     marketStance: string;
+    postScanSummary?: PostScanSummary;
   };
 }
 
@@ -897,6 +902,17 @@ export async function generatePhase4Signals(
   const rejectedProviderErrors = countRejectedProviderErrors(phase3.rejectionLog);
   const failedSymbolsSample = sampleFailedSymbols(phase3.rejectionLog);
 
+  const finalPostScanSummary: PostScanSummary | undefined = phase3.postScanSummary
+    ? {
+        ...phase3.postScanSummary,
+        generationSource,
+        signalsSaved,
+      }
+    : undefined;
+  if (finalPostScanSummary) {
+    logPostScanSummary(finalPostScanSummary);
+  }
+
   return {
     signals: enriched,
     commentary,
@@ -916,6 +932,7 @@ export async function generatePhase4Signals(
       signalsSaved,
       scenarioTag:  scenario.scenario_tag,
       marketStance: marketStance.market_stance,
+      postScanSummary: finalPostScanSummary,
     },
   };
 }

@@ -23,7 +23,7 @@ export { generatePhase3Signals } from './pipeline/generatePhase3Signals';
 export type { Phase3Result } from './pipeline/generatePhase3Signals';
 export { calculatePositionSize } from './position-sizing/positionSizer';
 export { evaluatePortfolioFit } from './portfolio-fit/evaluatePortfolioFit';
-export { evaluateExecutionReadiness } from './execution/executionReadiness';
+export { evaluateExecutionReadiness, resetApprovalGateAggregator, flushApprovalGateAggregator, getApprovalFunnelSnapshot } from './execution/executionReadiness';
 export { computePhase3Risk } from './risk/phase3Risk';
 export { createLifecycle, transitionLifecycle, resolveInitialState, isExpired } from './lifecycle/signalLifecycle';
 export { DEFAULT_PHASE3_CONFIG, getSector } from './constants/phase3.constants';
@@ -63,6 +63,18 @@ export type {
   SignalExecutionStatus,
   DiscoveryGateCounters,
 } from './discovery/signalDiscoveryStatus';
+export {
+  buildPostScanSummary,
+  logPostScanSummary,
+} from './observability/postScanSummary';
+export type { PostScanSummary, PostScanStageCounts } from './observability/postScanSummary';
+export {
+  resetStrategyScanHistogram,
+  recordStrategyEvaluation,
+  recordStrategyOutcome,
+  snapshotStrategyScanHistogram,
+} from './observability/strategyScanHistogram';
+export type { StrategyScanStats } from './observability/strategyScanHistogram';
 export { detectMarketRegime } from './regime/detectMarketRegime';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';

@@ -51,6 +51,14 @@ import {
   type DiscoveryGateCounters,
 } from '../discovery/signalDiscoveryStatus';
 import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
+import {
+  resetStrategyScanHistogram,
+  recordStrategyOutcome,
+} from '../observability/strategyScanHistogram';
+import {
+  buildPostScanSummary,
+  type PostScanSummary,
+} from '../observability/postScanSummary';
 
 export interface Phase3Result {
   regime: EnhancedMarketRegime;
@@ -61,6 +69,7 @@ export interface Phase3Result {
   rejected: number;
   rejectionLog: { symbol: string; reason: string }[];
   discoveryGateCounters?: import('../discovery/signalDiscoveryStatus').DiscoveryGateCounters;
+  postScanSummary?: PostScanSummary;
 }
 
 const ACTION_MAP: Record<StrategyName, SignalAction> = {
@@ -315,6 +324,12 @@ export async function generatePhase3Signals(
     marketRegime: 0, finalScore: 0, n: 0,
   };
   const discoveryGateCounters: DiscoveryGateCounters = createDiscoveryGateCounters();
+  const rejectionHistogram = {
+    noTrade:                 0,
+    rejectedByStrategyMode:  0,
+    rejectedByFinalScore:    0,
+    rejectedByDataQuality:   0,
+  };
   // Spec "LOG ALL REJECTION REASONS" + "TOP 3 FILTERS" — bucket
   // every non-approved decision by canonical reason key. Keyed on
   // the leading token before the first colon so noisy per-symbol
@@ -472,6 +487,7 @@ export async function generatePhase3Signals(
   // aggregator; we reset here and flush at the end so one Phase 3
   // scan produces exactly one [SELL DEBUG AGG] log line.
   resetSellDebugAgg();
+  resetStrategyScanHistogram();
   // Spec INSTITUTIONAL §I — same pattern for the approval funnel.
   resetApprovalGateAggregator();
 
@@ -611,6 +627,7 @@ export async function generatePhase3Signals(
         // marker so operators can see whether the universe is reaching
         // Phase 3 with usable bars (vs. an empty / short series from a
         // failed candle refresh).
+        rejectionHistogram.rejectedByDataQuality++;
         rejectionLog.push({ symbol, reason: candleCheck.reason! });
         logPhase3({
           symbol, confidence: null, final_score: null, risk_reward: null,
@@ -705,6 +722,7 @@ export async function generatePhase3Signals(
         });
       }
       if (!featureCheck.valid) {
+        rejectionHistogram.rejectedByDataQuality++;
         rejectionLog.push({ symbol, reason: featureCheck.reason! });
         logPhase3({
           symbol, confidence: null, final_score: null, risk_reward: null,
@@ -1185,6 +1203,14 @@ export async function generatePhase3Signals(
       stageReached.decision_stage++;
       const rejectionDecision: RejectionDecision = runRejectionEngine(rejectionInput);
 
+      if (rejectionDecision.rejectionCode === 'data_quality'
+          || rejectionDecision.rejectionCode === 'liquidity_insufficient'
+          || rejectionDecision.rejectionCode === 'liquidity_score_low') {
+        rejectionHistogram.rejectedByDataQuality++;
+      } else if (rejectionDecision.rejectionCode === 'confidence_below_threshold') {
+        rejectionHistogram.rejectedByFinalScore++;
+      }
+
       // Spec "FORCE ACCEPT TEST MODE" — DEBUG_FORCE_SIGNAL=true
       // force-approves the first 5 candidates that reach this gate,
       // regardless of what the rejection engine decided. Only the
@@ -1307,6 +1333,7 @@ export async function generatePhase3Signals(
       });
       phase4Classification = modeCaps.phase4Classification;
       if (modeCaps.capped) {
+        rejectionHistogram.rejectedByStrategyMode++;
         if (modeCaps.signalStatus) {
           (rejectionDecision as { signalStatus: typeof rejectionDecision.signalStatus }).signalStatus =
             modeCaps.signalStatus;
@@ -1352,6 +1379,17 @@ export async function generatePhase3Signals(
         executionStatus,
         technicalRejected,
       );
+
+      if (signalQualityStatus === 'NO_TRADE') {
+        rejectionHistogram.noTrade++;
+      }
+
+      recordStrategyOutcome({
+        strategy:            best.strategy,
+        signalQualityStatus,
+        technicalRejected,
+        finalScore:          phase4.final_score,
+      });
 
       // Technical rejection still blocks execution — portfolio/sizing
       // do not downgrade signalQualityStatus.
@@ -1811,6 +1849,24 @@ export async function generatePhase3Signals(
       `synchronous structure.`,
     );
   }
+
+  const postScanSummary = buildPostScanSummary({
+    generationSource: 'signal-engine:generatePhase3Signals',
+    regime:           regime.label,
+    universeTotal:    TOTAL_TO_SCAN,
+    stageReached,
+    generatedCandidates: signals.length,
+    discoveryGateCounters,
+    rejectionHistogram,
+    scanCounters: {
+      scanned:  scannedCount,
+      approved,
+      deferred,
+      rejected,
+    },
+    signalsSaved: 0,
+  });
+
   // Spec "scanned reflects what we processed" — the previous return
   // reported `p1Config.universe.length` regardless of whether the
   // for-loop ran. When benchmark fetch threw upstream, scanned was
@@ -1818,6 +1874,6 @@ export async function generatePhase3Signals(
   // result.meta.scanned = symbols actually iterated.
   return {
     regime, signals, scanned: scannedCount, approved, deferred, rejected,
-    rejectionLog, discoveryGateCounters,
+    rejectionLog, discoveryGateCounters, postScanSummary,
   };
 }

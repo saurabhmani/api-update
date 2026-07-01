@@ -50,6 +50,10 @@ export function resetApprovalGateAggregator(): void {
   }
 }
 
+export function getApprovalFunnelSnapshot(): Readonly<ApprovalFunnel> {
+  return { ...APPROVAL_FUNNEL };
+}
+
 /** Flush the canonical 11-field envelope. Called once per Phase 3
  *  scan from generatePhase3Signals. Also accepts upstream-counted
  *  refusals (low_final_score / market_regime / volatility / stress /
