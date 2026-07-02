@@ -574,6 +574,15 @@ export async function getHistorical(
     }
   }
 
+  if (inv.status === 'failed' && (inv.data?.candles?.length ?? 0) === 0) {
+    return {
+      ...inv,
+      errorCode: inv.errorCode ?? 'UPSTREAM_ERROR',
+      errorMessage: inv.errorMessage ?? 'IndianAPI historical_data returned no usable bars',
+      data: null,
+    };
+  }
+
   return inv;
 }
 

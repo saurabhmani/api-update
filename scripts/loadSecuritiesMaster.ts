@@ -15,9 +15,10 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 import {
-  parseEquityLCsv,
+  buildSecuritiesMasterValidationSummary,
+  importActiveEqSecuritiesFromCsv,
+  logSecuritiesMasterValidation,
   resolveEquityLCsvPath,
-  upsertSecuritiesMaster,
 } from '@/lib/marketData/securitiesMaster';
 
 function parseArgs(argv: string[]): { csv: string; dryRun: boolean } {
@@ -35,10 +36,12 @@ async function main(): Promise<void> {
   const { csv, dryRun } = parseArgs(process.argv.slice(2));
   console.log(`[loadSecuritiesMaster] csv=${csv} dry_run=${dryRun}`);
   await ensureAllSchemas();
-  const rows = parseEquityLCsv(csv);
-  console.log(`[loadSecuritiesMaster] parsed EQ rows=${rows.length}`);
-  const result = await upsertSecuritiesMaster(rows, { dryRun });
+  const result = await importActiveEqSecuritiesFromCsv({ csvPath: csv, dryRun });
   console.log('[loadSecuritiesMaster] complete', result);
+  if (!dryRun) {
+    const validation = await buildSecuritiesMasterValidationSummary();
+    logSecuritiesMasterValidation(validation);
+  }
 }
 
 main().catch((err) => {

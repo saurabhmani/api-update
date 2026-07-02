@@ -2,6 +2,7 @@
  * buildNse1000Universe.ts — rank EQ symbols and populate q365_universe
  *
  * Prerequisite: npx tsx scripts/loadSecuritiesMaster.ts
+ *               npx tsx scripts/backfillCandles.ts --source securities_master --resume
  *
  * Usage:
  *   npx tsx scripts/buildNse1000Universe.ts
@@ -18,7 +19,10 @@ import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 import { _resetNifty500CacheForTests } from '@/lib/marketData/nifty500Universe';
 import {
   applyNseTopUniverseToDb,
+  assessCandleCoverageForRanking,
   buildNseTopUniverse,
+  logCandleCoverageValidation,
+  logUniverseApplyValidation,
   NSE_UNIVERSE_TARGET_DEFAULT,
 } from '@/lib/marketData/nseUniverseRanker';
 
@@ -41,14 +45,26 @@ async function main(): Promise<void> {
   console.log(`[buildNse1000Universe] target=${target} dry_run=${dryRun}`);
   await ensureAllSchemas();
 
-  const { ranked, selected, candidates } = await buildNseTopUniverse({ targetSize: target });
+  const coverage = await assessCandleCoverageForRanking({ targetSize: target });
+  logCandleCoverageValidation(coverage);
+  if (!coverage.readyForRanking && !dryRun) {
+    throw new Error(
+      `Cannot build top-${target} — ${coverage.blockers.join('; ')}. ` +
+      'Run: npx tsx scripts/weeklyNse1000UniverseRebuild.ts',
+    );
+  }
+
+  const { ranked, selected, candidates } = await buildNseTopUniverse({
+    targetSize: target,
+    requireCandleData: !dryRun,
+  });
   console.log(
     `[buildNse1000Universe] candidates=${candidates} selected=${selected.length} ` +
     `top=${ranked.slice(0, 5).map((r) => `${r.symbol}:${r.compositeScore.toFixed(3)}`).join(', ')}`,
   );
 
   const applied = await applyNseTopUniverseToDb(ranked, target, { dryRun });
-  console.log('[buildNse1000Universe] applied', applied);
+  logUniverseApplyValidation(applied, target);
 
   if (!dryRun) {
     _resetNifty500CacheForTests();

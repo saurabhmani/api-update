@@ -1526,6 +1526,18 @@ export default function SignalsPage() {
     if (isRelaxed || isScannerCand || qualityRelaxed) {
       return { passed: true, reasons: ['relaxed_bypass'] };
     }
+    const ss = String((r as any).signal_status ?? '').toUpperCase();
+    const sk = String((r as any).source_kind ?? '');
+    // Server already ran mainTableApproved + tier routing for confirmed
+    // snapshots. Re-applying stricter client floors (75/80/2.0) hid
+    // every APPROVED row while counters.approvedTotal stayed > 0.
+    if (ss === 'APPROVED_SIGNAL' && sk === 'confirmed_snapshot') {
+      const cls = String((r as any).classification ?? '').toUpperCase().trim();
+      const rawCls = String((r as any).raw_classification ?? '').toUpperCase().trim();
+      if (ELITE_CLS.has(cls) || (rawCls && ELITE_CLS.has(rawCls))) {
+        return { passed: true, reasons: ['server_confirmed_snapshot'] };
+      }
+    }
     const reasons: string[] = [];
     const cls = String((r as any).classification ?? '').toUpperCase().trim();
     const rawCls = String((r as any).raw_classification ?? '').toUpperCase().trim();
@@ -1534,7 +1546,6 @@ export default function SignalsPage() {
     }
     if ((r as any).execution_allowed === false) reasons.push('execution_allowed=false');
     if ((r as any).invalidation_reason)         reasons.push(`invalidated:${(r as any).invalidation_reason}`);
-    const ss = String((r as any).signal_status ?? '').toUpperCase();
     if (ss && ss !== 'APPROVED_SIGNAL') reasons.push(`signal_status=${ss}`);
     const conf = Number((r as any).confidence_score ?? (r as any).confidence ?? NaN);
     if (!Number.isFinite(conf) || conf < 75) reasons.push(`confidence=${conf}`);

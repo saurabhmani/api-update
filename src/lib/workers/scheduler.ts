@@ -14,11 +14,15 @@
  *   scheduler` (and PM2) invoke. It bootstraps env + path aliases,
  *   starts the canonical market-data scheduler, and registers the
  *   non-market-data nightly jobs that used to live here:
- *     08:30 IST — morning DB scan (pre-market signals)
+ *     08:30 IST — readiness check (no signals)
+ *     09:20 IST — first DB-only confirmation scan
+ *     09:45 IST — main DB-only morning scan
+ *     12:30 IST — active signal rescore
+ *     14:45 IST — late rescore / confirmation
  *     16:00 IST — evening incremental candle update (IndianAPI)
- *     16:30 IST — evening DB scan (fresh EOD signals)
+ *     16:30 IST — final EOD DB-only scan
  *     19:00 IST — nightly backtest
- *     00:00 IST — midnight maintenance
+ *     18:30 IST — manipulation scan (scan-only, separate pipeline)
  *
  * Signal generation at 18:30 IST is superseded by the 16:30 evening
  * scan unless SIGNAL_LEGACY_EVENING_SCAN_1830=true.
@@ -48,6 +52,7 @@ import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { startScheduler as startMarketDataScheduler } from '@/lib/scheduler';
 import { startDailyScanSchedule } from '@/lib/workers/dailyScanSchedule';
+import { startWeeklyUniverseSchedule } from '@/lib/marketData/weeklyUniverseSchedule';
 import {
   generatePhase4Signals,
   DEFAULT_PHASE3_CONFIG,
@@ -265,9 +270,11 @@ log.info('worker-scheduler starting', { timezone: IST });
 // 1. Market-data ingestion — canonical 10-minute IST cadence.
 startMarketDataScheduler();
 
-// 2. Daily scan schedule — 08:30 morning scan, 16:00 evening update,
-//    16:30 evening scan (see docs/DAILY_SCAN_SCHEDULE.md).
+// 2. Daily scan schedule — controlled IST cadence (see docs/DAILY_SCAN_SCHEDULE.md).
 startDailyScanSchedule();
+
+// 2b. Weekly NSE 1000 universe rebuild — Sunday 22:00 IST by default.
+startWeeklyUniverseSchedule();
 
 // 3. 19:00 IST — nightly backtest (Mon–Fri).
 cron.schedule('0 19 * * 1-5', () => {
@@ -491,19 +498,39 @@ if (BACKTEST_QUEUE_SCHEDULER_ENABLED) {
 
 log.info('worker-scheduler ready', {
   marketDataCadence: '09:20 warmup · 09:30-15:30 @ 10m · 15:35 post-close',
+  dailyScanSchedule: [
+    '08:30 readiness (no signals)',
+    '09:20 first morning scan (DB-only)',
+    '09:45 main morning scan (DB-only)',
+    '12:30 midday rescore',
+    '14:45 late rescore',
+    '16:00 evening EOD candle update (IndianAPI)',
+    '16:30 evening scan (DB-only)',
+    '18:30 manipulation scan (scan-only)',
+  ],
   nightlyJobs: [
-    '18:30 signal-generation',
     '19:00 backtest',
     '19:30 eod-manipulation (NSE bhavcopy + manipulation scan)',
   ],
-  intradayJobs: [
-    '*/1 min  rescore             (09:20-15:30 IST) — live ranking + decay',
-    '*/10 min regen               (09:30-15:30 IST) — full Phase 1-4 pipeline',
-    '30s     snapshot-lifecycle  (24x7)            — confirmed snapshot status mutations',
-    '60s     maturity-worker     (24x7)            — promote mature trackers to confirmed snapshots',
+  weeklyUniverseRebuild: {
+    enabled: process.env.UNIVERSE_WEEKLY_REBUILD_ENABLED !== 'false',
+    cron: process.env.UNIVERSE_WEEKLY_REBUILD_CRON ?? '0 22 * * 0 (Sun 22:00 IST)',
+    churn: 'add<=900 keep<=1100 remove>1200',
+  },
+  disabledByDefault: {
+    preopen_candle_warmup: 'PREOPEN_CANDLE_WARMUP_ENABLED=false',
+    intraday_regen: 'SIGNAL_INTRADAY_REGEN_ENABLED=false',
+    legacy_rescore: 'SIGNAL_INTRADAY_REGEN_ENABLED=false (use 12:30/14:45)',
+    auto_recovery: 'SIGNALS_AUTO_RECOVERY_ENABLED=false',
+    poll_auto_recovery: 'SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=false',
+    legacy_1830_signal_scan: 'SIGNAL_LEGACY_EVENING_SCAN_1830=false',
+  },
+  alwaysOn: [
+    '30s snapshot-lifecycle (24x7)',
+    '60s maturity-worker (24x7)',
     BACKTEST_QUEUE_SCHEDULER_ENABLED
-      ? '60s     backtest-queue-drain (24x7)       — recovery for queued backtests'
-      : '         backtest-queue-drain (disabled via BACKTEST_QUEUE_SCHEDULER_ENABLED=false)',
+      ? '60s backtest-queue-drain (24x7)'
+      : 'backtest-queue-drain disabled',
   ],
 });
 

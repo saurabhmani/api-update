@@ -213,8 +213,22 @@ export function isClassificationApproved(r: ApprovableSignalRow): boolean {
   return false;
 }
 
-export function isAlive(r: ApprovableSignalRow): boolean {
-  if (r.invalidation_reason) return false;
+/** Time-based snapshot expiry only — not a thesis invalidation. Off-hours
+ *  the dashboard still surfaces these as last-close confirmed signals. */
+const CLOSED_MARKET_SOFT_INVALIDATIONS = new Set<string>([
+  'validity_window_elapsed',
+]);
+
+export interface MainTableApprovalOpts {
+  /** When true, `validity_window_elapsed` rows remain admissible. */
+  closedMarket?: boolean;
+}
+
+function rowIsAlive(r: ApprovableSignalRow, closedMarket: boolean): boolean {
+  const inv = String(r.invalidation_reason ?? '').trim();
+  if (inv) {
+    if (!closedMarket || !CLOSED_MARKET_SOFT_INVALIDATIONS.has(inv)) return false;
+  }
   if (r.live_invalidated === true) return false;
   // Spec INSTITUTIONAL §A — execution_allowed=false is a hard veto if
   // the upstream shaper set it (matches the detail-page contract).
@@ -232,6 +246,15 @@ export function isAlive(r: ApprovableSignalRow): boolean {
   if (NEVER_SHIP_CLASSIFICATIONS.has(cls)) return false;
   if (rawCls && NEVER_SHIP_CLASSIFICATIONS.has(rawCls)) return false;
   return true;
+}
+
+export function isAlive(r: ApprovableSignalRow): boolean {
+  return rowIsAlive(r, false);
+}
+
+/** Closed-market aliveness — permits snapshots expired by validity window. */
+export function isAliveForClosedMarket(r: ApprovableSignalRow): boolean {
+  return rowIsAlive(r, true);
 }
 
 export function strictApproved(r: ApprovableSignalRow): boolean {
@@ -335,12 +358,21 @@ export function isBelowFloor(r: ApprovableSignalRow): boolean {
 // still surface in the "Stored Scanner Candidates / Not Tradable"
 // section). This is the predicate the closed-market loader uses to
 // decide whether a confirmed snapshot is tradeable today.
-export const MAIN_TABLE_MIN_CONFIDENCE = 75;
-export const MAIN_TABLE_MIN_FINAL      = 70;
-export const MAIN_TABLE_MIN_RR         = 2.0;
-export const MAIN_TABLE_MIN_MATURITY   = 85;
+// MATURATION_AUDIT_2026-05 — aligned with STAGE_MATURE_THRESHOLD (70) and
+// STRICT_* floors so promoted snapshots that cleared the maturity worker
+// can surface off-hours instead of always falling through to the q365
+// early-signal fallback (which tags every row is_relaxed=true).
+export const MAIN_TABLE_MIN_CONFIDENCE =
+  resolveScoreFloor('SIGNAL_API_MAIN_TABLE_CONFIDENCE_FLOOR', 0, 100, 55);
+export const MAIN_TABLE_MIN_FINAL      =
+  resolveScoreFloor('SIGNAL_API_MAIN_TABLE_FINAL_FLOOR',      0, 100, 60);
+export const MAIN_TABLE_MIN_RR         =
+  resolveScoreFloor('SIGNAL_API_MAIN_TABLE_RR_FLOOR',       0.5,   5,  1.5);
+export const MAIN_TABLE_MIN_MATURITY   =
+  resolveScoreFloor('SIGNAL_API_MAIN_TABLE_MATURITY_FLOOR',   0, 100, 60);
 export const MAIN_TABLE_MIN_CYCLES     = 3;
-export const MAIN_TABLE_MIN_EDGE_PCT   = 2;
+export const MAIN_TABLE_MIN_EDGE_PCT   =
+  resolveScoreFloor('SIGNAL_API_MAIN_TABLE_EDGE_FLOOR',       0, 100,  1);
 
 /** Wide row shape — the main-table predicate reads tracker fields
  *  that aren't in `ApprovableSignalRow`, so we accept the full row
@@ -371,10 +403,14 @@ export interface MainTableRow extends ApprovableSignalRow {
 // spec §5 (NEVER allow): NO_TRADE, rr < 1.5, confidence < 60. The
 // relaxed thresholds below all sit at or above those floors so the
 // "never allow" rule holds by construction.
-export const RELAXED_MAIN_MIN_CONFIDENCE = 65;
-export const RELAXED_MAIN_MIN_FINAL      = 65;
-export const RELAXED_MAIN_MIN_RR         = 1.5;
-export const RELAXED_MAIN_MIN_MATURITY   = 65;
+export const RELAXED_MAIN_MIN_CONFIDENCE =
+  resolveScoreFloor('SIGNAL_API_RELAXED_MAIN_CONFIDENCE_FLOOR', 0, 100, 55);
+export const RELAXED_MAIN_MIN_FINAL      =
+  resolveScoreFloor('SIGNAL_API_RELAXED_MAIN_FINAL_FLOOR',      0, 100, 60);
+export const RELAXED_MAIN_MIN_RR         =
+  resolveScoreFloor('SIGNAL_API_RELAXED_MAIN_RR_FLOOR',       0.5,   5,  1.5);
+export const RELAXED_MAIN_MIN_MATURITY   =
+  resolveScoreFloor('SIGNAL_API_RELAXED_MAIN_MATURITY_FLOOR',   0, 100, 60);
 export const RELAXED_MAIN_MIN_CYCLES     = 1;
 
 // ── Early-signal tier (q365_signals fallback) ───────────────────
@@ -497,8 +533,12 @@ export function earlySignalApproved(r: MainTableRow): boolean {
  * Hard floors retained: alive, direction ∈ {BUY, SELL},
  * confidence ≥ 65, final ≥ 65, rr ≥ 1.5.
  */
-export function relaxedMainTableApproved(r: MainTableRow): boolean {
-  if (!isAlive(r)) return false;
+export function relaxedMainTableApproved(
+  r: MainTableRow,
+  opts?: MainTableApprovalOpts,
+): boolean {
+  const aliveFn = opts?.closedMarket ? isAliveForClosedMarket : isAlive;
+  if (!aliveFn(r)) return false;
   if (r.is_stale_candidate === true) return false;
 
   const dir = String(r.direction ?? '').toUpperCase();
@@ -546,8 +586,12 @@ export function relaxedMainTableApproved(r: MainTableRow): boolean {
  * normalizer. Same for `is_stale_candidate=true` — a stale tracker is
  * not live evidence.
  */
-export function mainTableApproved(r: MainTableRow): boolean {
-  if (!isAlive(r)) return false;
+export function mainTableApproved(
+  r: MainTableRow,
+  opts?: MainTableApprovalOpts,
+): boolean {
+  const aliveFn = opts?.closedMarket ? isAliveForClosedMarket : isAlive;
+  if (!aliveFn(r)) return false;
   if (r.is_stale_candidate === true) return false;
   const rawCls = String(r.raw_classification ?? '').toUpperCase().trim();
   if (rawCls === 'NO_TRADE' || rawCls === 'WATCHLIST_ONLY') return false;

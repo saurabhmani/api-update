@@ -645,22 +645,37 @@ async function loadConfirmedSnapshotsClosed(limit: number): Promise<ConfirmedSig
            q.composite_final_score AS source_composite_final_score,
            q.confidence_score      AS source_confidence_score,
            s.stress_survival_score,
-           COALESCE(s.maturity_score,           mt.maturity_score)            AS maturity_score,
-           COALESCE(s.validation_cycles_passed, mt.validation_cycles_passed)  AS validation_cycles_passed,
+           COALESCE(NULLIF(s.maturity_score, 0),           NULLIF(mt.maturity_score, 0))            AS maturity_score,
+           COALESCE(NULLIF(s.validation_cycles_passed, 0), NULLIF(mt.validation_cycles_passed, 0))  AS validation_cycles_passed,
            s.signal_age_minutes_at_promotion,
-           COALESCE(s.conviction_level,         mt.conviction_level)          AS conviction_level,
-           COALESCE(s.stability_passed,         mt.stable)                    AS stability_passed,
+           COALESCE(mt.conviction_level,         s.conviction_level)          AS conviction_level,
+           COALESCE(NULLIF(s.stability_passed, 0), NULLIF(mt.stable, 0))                              AS stability_passed,
            s.rejection_codes_json, s.gate_details_json,
            s.status, s.invalidation_reason,
            s.confirmed_at, s.valid_until
       FROM q365_confirmed_signal_snapshots s
       LEFT JOIN q365_signal_maturity_tracker mt
-        ON  mt.symbol    = s.symbol
-        AND mt.direction = s.direction
+        ON  mt.id = (
+          SELECT t2.id
+            FROM q365_signal_maturity_tracker t2
+           WHERE t2.symbol    = s.symbol
+             AND t2.direction = s.direction
+           ORDER BY
+             CASE t2.stage
+               WHEN 'mature'     THEN 0
+               WHEN 'developing' THEN 1
+               WHEN 'candidate'  THEN 2
+               WHEN 'promoted'   THEN 3
+               ELSE 4
+             END,
+             t2.last_evaluated_at DESC
+           LIMIT 1
+        )
       LEFT JOIN q365_signals q
         ON  q.id = s.source_signal_id
-     WHERE s.status = 'ACTIVE'
-       AND s.invalidation_reason IS NULL
+     WHERE s.status IN ('ACTIVE', 'EXPIRED')
+       AND (s.invalidation_reason IS NULL
+            OR s.invalidation_reason = 'validity_window_elapsed')
        AND s.direction IN ('BUY','SELL')
        AND s.confidence_score >= ?
        AND COALESCE(q.composite_final_score, s.final_score, s.confidence_score, 0) >= ?
@@ -708,12 +723,17 @@ async function loadConfirmedSnapshotsClosed(limit: number): Promise<ConfirmedSig
         ?? (conf > 0 ? conf : null);
       const normalizedCls = normalizeClassification(institutionalFinalScore, rawCls);
       const validUntilIso = toIso(r.valid_until);
+      const softWindowExpired =
+        r.invalidation_reason === 'validity_window_elapsed' || r.status === 'EXPIRED';
+      const wireInvalidation = softWindowExpired ? null : (r.invalidation_reason ?? null);
+      const wireValidUntil   = softWindowExpired ? null : validUntilIso;
       const effectiveStatus = deriveEffectiveSignalStatus(
-        rawCls, 'APPROVED_SIGNAL', r.invalidation_reason ?? null, validUntilIso,
+        rawCls, 'APPROVED_SIGNAL', wireInvalidation, wireValidUntil,
       );
       const cyclesNum   = r.validation_cycles_passed != null ? Number(r.validation_cycles_passed) : 0;
-      const isAlive     = !r.invalidation_reason
-        && (validUntilIso == null || Date.parse(validUntilIso) > Date.now());
+      const isAlive     = softWindowExpired
+        || (!r.invalidation_reason
+            && (validUntilIso == null || Date.parse(validUntilIso) > Date.now()));
       const confirmedAtIso = toIso(r.confirmed_at);
       const minutesSince = (() => {
         const ts = confirmedAtIso ? Date.parse(confirmedAtIso) : NaN;
@@ -795,10 +815,10 @@ async function loadConfirmedSnapshotsClosed(limit: number): Promise<ConfirmedSig
         rejection_codes:                 rejectionCodes,
         rejection_reasons:               [],
         live_valid:                      true,
-        status:                          r.status,
-        invalidation_reason:             r.invalidation_reason,
+        status:                          softWindowExpired ? 'ACTIVE' : r.status,
+        invalidation_reason:             wireInvalidation,
         confirmed_at:                    toIso(r.confirmed_at),
-        valid_until:                     toIso(r.valid_until),
+        valid_until:                     wireValidUntil,
       } as unknown as ConfirmedSignalRow;
     });
   } catch (err) {
@@ -1121,9 +1141,10 @@ export async function loadClosedMarketSignals(
   //
   // q365_signals rows are NEVER shown in the main table; they route
   // to `scannerCandidates` for the separate "Not Tradable" panel.
+  const closedMarketOpts = { closedMarket: true } as const;
   const snapRows = await loadConfirmedSnapshotsClosed(limit);
   scannedRowCount += snapRows.length;
-  const matureMain = snapRows.filter(mainTableApproved);
+  const matureMain = snapRows.filter((r) => mainTableApproved(r, closedMarketOpts));
   approvedRowCount += matureMain.length;
 
   // Scanner candidates: every q365_signals strict-tier row + any
@@ -1146,7 +1167,7 @@ export async function loadClosedMarketSignals(
       ),
     );
     const candidates: ConfirmedSignalRow[] = [
-      ...snapRows.filter((r) => !mainTableApproved(r)),
+      ...snapRows.filter((r) => !mainTableApproved(r, closedMarketOpts)),
       ...q365Strict.filter((r) =>
         !shippedKeys.has(
           `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
@@ -1166,11 +1187,16 @@ export async function loadClosedMarketSignals(
   }
 
   // Spec SMART-RELAXED §2 — strict empty → try relaxed tier on the
-  // same snapshot pool. Successful rows are tagged `is_relaxed=true`
-  // so the UI flags them as "⚠️ Early Signal".
+  // same snapshot pool. Confirmed-snapshot rows keep is_relaxed=false
+  // so they route to APPROVED; q365 early rows stay is_relaxed=true.
   const relaxedMain = snapRows
-    .filter(relaxedMainTableApproved)
-    .map((r) => ({ ...r, is_relaxed: true } as ConfirmedSignalRow));
+    .filter((r) => relaxedMainTableApproved(r, closedMarketOpts))
+    .map((r) => ({
+      ...r,
+      is_relaxed: (r as { source_kind?: string }).source_kind === 'confirmed_snapshot'
+        ? false
+        : true,
+    } as ConfirmedSignalRow));
   approvedRowCount += relaxedMain.length;
 
   if (relaxedMain.length > 0) {
@@ -1184,7 +1210,7 @@ export async function loadClosedMarketSignals(
     );
     const candidates: ConfirmedSignalRow[] = [
       // Anything that even the relaxed tier didn't accept (plus q365_signals).
-      ...snapRows.filter((r) => !relaxedMainTableApproved(r)),
+      ...snapRows.filter((r) => !relaxedMainTableApproved(r, closedMarketOpts)),
       ...q365Strict.filter((r) =>
         !shippedKeys.has(
           `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,

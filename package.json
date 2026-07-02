@@ -112,6 +112,11 @@
     "fix:manipulation": "tsx scripts/fixManipulationTables.ts",
     "load:securities-master": "tsx scripts/loadSecuritiesMaster.ts",
     "build:nse1000-universe": "tsx scripts/buildNse1000Universe.ts",
+    "rebuild:nse1000-universe": "tsx scripts/weeklyNse1000UniverseRebuild.ts",
+    "rebuild:nse1000-universe:bootstrap": "tsx scripts/weeklyNse1000UniverseRebuild.ts --skip-backfill --bootstrap",
+    "rebuild:nse1000-universe:dry-run": "tsx scripts/weeklyNse1000UniverseRebuild.ts --dry-run",
+    "candles:backfill:securities": "tsx scripts/backfillCandles.ts --source securities_master --resume --min-bars 80 --limit 2500",
+    "validate:nse1000-universe": "tsx scripts/validateNse1000UniverseAcceptance.ts",
     "db:perf-indexes": "tsx scripts/addPerfIndexes.ts"
   },
   "dependencies": {

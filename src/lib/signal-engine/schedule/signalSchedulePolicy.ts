@@ -38,6 +38,11 @@ export function isSignalsAutoRecoveryAllowedOnRead(): boolean {
   return envFlag('SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ', false);
 }
 
+/** 09:25 IST full-universe candle warmup in market scheduler (off by default). */
+export function isPreopenCandleWarmupEnabled(): boolean {
+  return envFlag('PREOPEN_CANDLE_WARMUP_ENABLED', false);
+}
+
 export function isDailyScanScheduleEnabled(): boolean {
   return envFlag('DAILY_SCAN_SCHEDULE_ENABLED', true);
 }

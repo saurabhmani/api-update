@@ -2,20 +2,34 @@ import { describe, it, expect } from 'vitest';
 import { scoreUniverseCandidate } from '@/lib/marketData/nseUniverseRanker';
 import {
   CONTROLLED_SIGNAL_CRONS,
+  isPreopenCandleWarmupEnabled,
   isSignalIntradayRegenEnabled,
+  isSignalsAutoRecoveryAllowedOnRead,
   isSignalsAutoRecoveryEnabled,
 } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 
 describe('signalSchedulePolicy', () => {
-  it('defaults intraday regen and auto-recovery to disabled', () => {
-    const prevRegen = process.env.SIGNAL_INTRADAY_REGEN_ENABLED;
-    const prevRecovery = process.env.SIGNALS_AUTO_RECOVERY_ENABLED;
+  it('defaults optional full scans and auto-recovery to disabled', () => {
+    const prev = {
+      preopen: process.env.PREOPEN_CANDLE_WARMUP_ENABLED,
+      regen: process.env.SIGNAL_INTRADAY_REGEN_ENABLED,
+      recovery: process.env.SIGNALS_AUTO_RECOVERY_ENABLED,
+      recoveryRead: process.env.SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ,
+    };
+    delete process.env.PREOPEN_CANDLE_WARMUP_ENABLED;
     delete process.env.SIGNAL_INTRADAY_REGEN_ENABLED;
     delete process.env.SIGNALS_AUTO_RECOVERY_ENABLED;
+    delete process.env.SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ;
+    expect(isPreopenCandleWarmupEnabled()).toBe(false);
     expect(isSignalIntradayRegenEnabled()).toBe(false);
     expect(isSignalsAutoRecoveryEnabled()).toBe(false);
-    if (prevRegen !== undefined) process.env.SIGNAL_INTRADAY_REGEN_ENABLED = prevRegen;
-    if (prevRecovery !== undefined) process.env.SIGNALS_AUTO_RECOVERY_ENABLED = prevRecovery;
+    expect(isSignalsAutoRecoveryAllowedOnRead()).toBe(false);
+    if (prev.preopen !== undefined) process.env.PREOPEN_CANDLE_WARMUP_ENABLED = prev.preopen;
+    if (prev.regen !== undefined) process.env.SIGNAL_INTRADAY_REGEN_ENABLED = prev.regen;
+    if (prev.recovery !== undefined) process.env.SIGNALS_AUTO_RECOVERY_ENABLED = prev.recovery;
+    if (prev.recoveryRead !== undefined) {
+      process.env.SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ = prev.recoveryRead;
+    }
   });
 
   it('defines controlled IST cron defaults', () => {
