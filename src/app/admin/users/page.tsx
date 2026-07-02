@@ -4,7 +4,7 @@ import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading, Empty, Modal, Button, Input, AlertBanner } from '@/components/ui';
 import { adminApi } from '@/lib/apiClient';
 import { fmt } from '@/lib/utils';
-import { Users, Plus, Pencil } from 'lucide-react';
+import { Users, Plus, Pencil, Trash2 } from 'lucide-react';
 
 interface AdminUser {
   id: number;
@@ -81,6 +81,8 @@ export default function AdminUsersPage() {
   const [editFormError,   setEditFormError]   = useState('');
   const [saving,          setSaving]          = useState(false);
   const [editSaving,      setEditSaving]      = useState(false);
+  const [deleteTarget,    setDeleteTarget]    = useState<AdminUser | null>(null);
+  const [deleteSaving,    setDeleteSaving]    = useState(false);
   const [successMsg,      setSuccessMsg]      = useState('');
   const [pageError,       setPageError]       = useState('');
 
@@ -196,6 +198,24 @@ export default function AdminUsersPage() {
       const err = e as { data?: { error?: string } };
       setSuccessMsg('');
       setPageError(err.data?.error || 'Failed to update user');
+    }
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!deleteTarget) return;
+
+    setDeleteSaving(true);
+    try {
+      const res = await adminApi.deleteUser(deleteTarget.id) as { email?: string };
+      setUsers(prev => prev.filter(u => u.id !== deleteTarget.id));
+      setSuccessMsg(`User ${res.email || deleteTarget.email} deleted successfully`);
+      setPageError('');
+      setDeleteTarget(null);
+    } catch (e: unknown) {
+      const err = e as { data?: { error?: string } };
+      setPageError(err.data?.error || 'Failed to delete user');
+    } finally {
+      setDeleteSaving(false);
     }
   };
 
@@ -337,6 +357,34 @@ export default function AdminUsersPage() {
         />
       </Modal>
 
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => { if (!deleteSaving) setDeleteTarget(null); }}
+        title="Delete User"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)} disabled={deleteSaving}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={confirmDeleteUser} loading={deleteSaving}>
+              Delete User
+            </Button>
+          </>
+        }
+      >
+        {deleteTarget && (
+          <>
+            <AlertBanner variant="warning">
+              This action permanently removes the user account and cannot be undone.
+            </AlertBanner>
+            <p style={{ fontSize: 14, color: '#334155', margin: '12px 0 0' }}>
+              Are you sure you want to delete <strong>{deleteTarget.name || deleteTarget.email}</strong>
+              {' '}({deleteTarget.email})?
+            </p>
+          </>
+        )}
+      </Modal>
+
       <div className="page">
         <div className="page__header">
           <div><h1>User Management</h1><p>{users.length} users</p></div>
@@ -403,6 +451,12 @@ export default function AdminUsersPage() {
                           </button>
                           <button className="btn btn--sm btn--secondary" onClick={() => patchUser(u.id, { is_active: !u.is_active })}>
                             {u.is_active ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            className="btn btn--sm btn--danger"
+                            onClick={() => setDeleteTarget(u)}
+                          >
+                            <Trash2 size={13} /> Delete
                           </button>
                         </div>
                       </td>

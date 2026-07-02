@@ -14,7 +14,7 @@ vi.mock('bcryptjs', () => ({
 }));
 
 import { db } from '@/lib/db';
-import { createUserByAdmin, updateUserByAdmin } from '@/services/auth';
+import { createUserByAdmin, updateUserByAdmin, deleteUserByAdmin } from '@/services/auth';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 function read(rel: string): string {
@@ -181,6 +181,59 @@ describe('updateUserByAdmin', () => {
   });
 });
 
+describe('deleteUserByAdmin', () => {
+  beforeEach(() => {
+    vi.mocked(db.query).mockReset();
+  });
+
+  it('prevents deleting own account', async () => {
+    const result = await deleteUserByAdmin(1, 1);
+    expect(result).toEqual({ error: 'Cannot delete your own account' });
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown user', async () => {
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [] } as never);
+
+    const result = await deleteUserByAdmin(99, 1);
+    expect(result).toEqual({ error: 'User not found' });
+  });
+
+  it('prevents deleting the last admin', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'admin@example.com', role: 'admin' }] } as never)
+      .mockResolvedValueOnce({ rows: [{ c: 1 }] } as never);
+
+    const result = await deleteUserByAdmin(2, 1);
+    expect(result).toEqual({ error: 'Cannot delete the last admin account' });
+  });
+
+  it('deletes user after cleaning up auth-related rows', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'user@example.com', role: 'user' }] } as never)
+      .mockResolvedValue({ rows: [], affectedRows: 1 } as never);
+
+    const result = await deleteUserByAdmin(2, 1);
+    expect(result).toEqual({ ok: true, email: 'user@example.com' });
+    expect(db.query).toHaveBeenCalledWith('DELETE FROM users WHERE id = ?', [2]);
+  });
+
+  it('maps foreign key errors to a friendly message', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'user@example.com', role: 'user' }] } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockRejectedValueOnce({ code: 'ER_ROW_IS_REFERENCED_2', errno: 1451 } as never);
+
+    const result = await deleteUserByAdmin(2, 1);
+    expect(result).toEqual({
+      error: 'Cannot delete user because related records still exist. Disable the account instead.',
+    });
+  });
+});
+
 describe('admin users UI contracts', () => {
   const page = read('src/app/admin/users/page.tsx');
   const apiClient = read('src/lib/apiClient.ts');
@@ -215,5 +268,16 @@ describe('admin users UI contracts', () => {
     expect(page).toMatch(/adminApi\.updateUser/);
     expect(page).toMatch(/applyUserUpdate/);
     expect(adminRoute).toMatch(/updateUserByAdmin/);
+  });
+
+  it('exposes Delete User action with confirmation and API wiring', () => {
+    expect(page).toMatch(/Delete User/);
+    expect(page).toMatch(/setDeleteTarget/);
+    expect(page).toMatch(/confirmDeleteUser/);
+    expect(page).toMatch(/adminApi\.deleteUser/);
+    expect(page).toMatch(/cannot be undone/i);
+    expect(apiClient).toMatch(/deleteUser:\s*\(id: number\)\s*=>\s*del\(`\/admin\?resource=user&id=\$\{id\}`\)/);
+    expect(adminRoute).toMatch(/deleteUserByAdmin/);
+    expect(adminRoute).toMatch(/export async function DELETE/);
   });
 });

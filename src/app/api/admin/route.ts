@@ -25,7 +25,7 @@ import { invalidateConfig,
          seedThresholds }              from '@/services/systemConfigService';
 import { computeScenario }              from '@/services/scenarioEngine';
 import { computeMarketStance }          from '@/services/marketStanceEngine';
-import { createUserByAdmin, updateUserByAdmin } from '@/services/auth';
+import { createUserByAdmin, updateUserByAdmin, deleteUserByAdmin } from '@/services/auth';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
@@ -218,6 +218,34 @@ export async function PUT(req: NextRequest) {
   }
 
   return NextResponse.json({ ok: true, user: result.user });
+}
+
+export async function DELETE(req: NextRequest) {
+  let admin;
+  try { admin = await checkAdmin(req); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+
+  const resource = req.nextUrl.searchParams.get('resource');
+  if (resource !== 'user') {
+    return NextResponse.json({ error: 'Unknown resource' }, { status: 400 });
+  }
+
+  const id = Number(req.nextUrl.searchParams.get('id'));
+  if (!Number.isFinite(id) || id <= 0) {
+    return NextResponse.json({ error: 'Valid user id required' }, { status: 400 });
+  }
+
+  const result = await deleteUserByAdmin(id, admin.id);
+  if ('error' in result) {
+    const status = result.error === 'User not found'
+      ? 404
+      : result.error.includes('related records')
+        ? 409
+        : 400;
+    return NextResponse.json({ error: result.error }, { status });
+  }
+
+  return NextResponse.json({ ok: true, email: result.email });
 }
 
 export async function POST(req: NextRequest) {

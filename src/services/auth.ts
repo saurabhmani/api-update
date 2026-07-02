@@ -271,6 +271,62 @@ export async function updateUserByAdmin(
   }
 }
 
+// ── Admin user delete ─────────────────────────────────────────────
+const USER_DELETE_CLEANUP_QUERIES = [
+  `DELETE FROM user_sessions WHERE user_id = ?`,
+  `DELETE FROM password_resets WHERE user_id = ?`,
+  `DELETE FROM notifications WHERE user_id = ?`,
+  `DELETE FROM user_notification_reads WHERE user_id = ?`,
+] as const;
+
+export async function deleteUserByAdmin(
+  userId: number,
+  adminId: number,
+): Promise<{ ok: true; email: string } | { error: string }> {
+  try {
+    if (!Number.isFinite(userId) || userId <= 0) return { error: 'Valid user id required' };
+    if (userId === adminId) return { error: 'Cannot delete your own account' };
+
+    const { rows: existingRows } = await db.query(
+      `SELECT id, email, role FROM users WHERE id = ?`,
+      [userId],
+    );
+    const existing = (existingRows as Record<string, unknown>[])[0];
+    if (!existing) return { error: 'User not found' };
+
+    if (String(existing.role) === 'admin') {
+      const { rows: adminRows } = await db.query(
+        `SELECT COUNT(*) AS c FROM users WHERE role = 'admin'`,
+      );
+      if (Number((adminRows as { c?: number }[])[0]?.c ?? 0) <= 1) {
+        return { error: 'Cannot delete the last admin account' };
+      }
+    }
+
+    for (const sql of USER_DELETE_CLEANUP_QUERIES) {
+      try {
+        await db.query(sql, [userId]);
+      } catch {
+        // Optional tables may be absent in some environments.
+      }
+    }
+
+    const result = await db.query(`DELETE FROM users WHERE id = ?`, [userId]);
+    if (!result.affectedRows) return { error: 'User not found' };
+
+    return { ok: true, email: String(existing.email) };
+  } catch (e: unknown) {
+    const err = e as { code?: string; errno?: number };
+    if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.errno === 1451) {
+      return {
+        error: 'Cannot delete user because related records still exist. Disable the account instead.',
+      };
+    }
+    const msg = e instanceof Error ? e.message : 'User deletion failed';
+    return { error: msg };
+  }
+}
+
 // ── Create session ────────────────────────────────────────────────
 export async function createSession(userId: number, device?: string, ip?: string): Promise<string> {
   const token    = randomBytes(48).toString('hex');
