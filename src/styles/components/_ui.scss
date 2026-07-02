@@ -105,6 +105,32 @@
   &::placeholder { color:$color-subtle; }
   &:disabled     { background:$color-bg; cursor:not-allowed; }
   &--error       { border-color:$color-danger; }
+  &--with-toggle { padding-right:40px; }
+}
+
+.input-wrap {
+  position:relative;
+  display:flex;
+  align-items:center;
+}
+
+.input-eye-btn {
+  position:absolute;
+  right:8px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:30px;
+  height:30px;
+  background:transparent;
+  border:none;
+  border-radius:$r-sm;
+  color:$color-muted;
+  cursor:pointer;
+  transition:color $t-fast, background $t-fast;
+
+  &:hover { color:$color-text; background:rgba(0,0,0,0.04); }
+  &:focus-visible { outline:2px solid $color-glow-mid; outline-offset:1px; }
 }
 
 // ── Table ─────────────────────────────────────────────────────────

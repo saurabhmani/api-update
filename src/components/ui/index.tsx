@@ -1,6 +1,6 @@
 'use client';
-import { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, CSSProperties } from 'react';
-import { Loader2 } from 'lucide-react';
+import { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, CSSProperties, useState } from 'react';
+import { Loader2, Eye, EyeOff } from 'lucide-react';
 import { clsx } from '@/lib/utils';
 import '@/styles/components/_ui.scss';
 
@@ -40,13 +40,36 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   hint?: string;
   error?: string;
+  passwordToggle?: boolean;
 }
 
-export function Input({ label, hint, error, className, ...props }: InputProps) {
+export function Input({ label, hint, error, className, passwordToggle, type, ...props }: InputProps) {
+  const [showPassword, setShowPassword] = useState(false);
+  const isPassword = passwordToggle && type === 'password';
+
   return (
     <div className="field">
       {label && <label>{label}</label>}
-      <input className={clsx('input', error && 'input--error', className)} {...props} />
+      {isPassword ? (
+        <div className="input-wrap">
+          <input
+            className={clsx('input', 'input--with-toggle', error && 'input--error', className)}
+            type={showPassword ? 'text' : 'password'}
+            {...props}
+          />
+          <button
+            type="button"
+            className="input-eye-btn"
+            onClick={() => setShowPassword(s => !s)}
+            aria-label={showPassword ? 'Hide password' : 'Show password'}
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
+        </div>
+      ) : (
+        <input className={clsx('input', error && 'input--error', className)} type={type} {...props} />
+      )}
       {error && <div style={{ color: '#DC2626', fontSize: '0.75rem', marginTop: 4 }}>{error}</div>}
       {hint && !error && <div className="hint">{hint}</div>}
     </div>

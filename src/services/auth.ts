@@ -5,6 +5,8 @@ import { db } from '@/lib/db';
 import { cacheDel } from '@/lib/redis';
 import { encrypt, decrypt } from '@/lib/encryption';
 import { enforceSessionLimit } from '@/lib/security/sessionManager';
+import { validateEmail, validatePassword, sanitizeString } from '@/lib/security/validation';
+import { ValidationError } from '@/lib/errors';
 import type { User } from '@/types';
 
 const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE || '86400');
@@ -94,6 +96,77 @@ export async function registerUser(
     user: { id: userId, email: emailLower, name: name.trim(), role: 'user' },
     sessionToken,
   };
+}
+
+// ── Admin user creation ───────────────────────────────────────────
+export async function createUserByAdmin(
+  email: string,
+  password: string,
+  name: string,
+  role: 'user' | 'admin' = 'user',
+): Promise<{
+  user: {
+    id: number;
+    email: string;
+    name: string | null;
+    role: string;
+    is_active: boolean;
+    totp_enabled: boolean;
+    last_login_at: string | null;
+    created_at: string | null;
+  };
+} | { error: string }> {
+  try {
+    const emailLower = validateEmail(email);
+    validatePassword(password);
+    const safeName = sanitizeString(name, 255);
+    if (!safeName) return { error: 'Name is required' };
+    if (role !== 'user' && role !== 'admin') return { error: 'Invalid role' };
+
+    const { rows: existing } = await db.query(`SELECT id FROM users WHERE email = ?`, [emailLower]);
+    if ((existing as { id: number }[]).length > 0) {
+      return { error: 'An account with this email already exists' };
+    }
+
+    const hash = await hashPassword(password);
+    const result = await db.query(
+      `INSERT INTO users (email, password_hash, name, role, is_active, created_at)
+       VALUES (?, ?, ?, ?, TRUE, NOW())`,
+      [emailLower, hash, safeName, role],
+    );
+
+    const insertId = result.insertId;
+    if (!insertId) return { error: 'User creation failed' };
+
+    const { rows } = await db.query(
+      `SELECT id, email, name, role, is_active, totp_enabled, last_login_at, created_at
+         FROM users WHERE id = ?`,
+      [Number(insertId)],
+    );
+    const row = (rows as Record<string, unknown>[])[0];
+    if (!row) return { error: 'User creation failed' };
+
+    return {
+      user: {
+        id:            Number(row.id),
+        email:         String(row.email),
+        name:          row.name != null ? String(row.name) : null,
+        role:          String(row.role),
+        is_active:     Boolean(row.is_active),
+        totp_enabled:  Boolean(row.totp_enabled),
+        last_login_at: row.last_login_at ? new Date(String(row.last_login_at)).toISOString() : null,
+        created_at:    row.created_at ? new Date(String(row.created_at)).toISOString() : null,
+      },
+    };
+  } catch (e: unknown) {
+    if (e instanceof ValidationError) return { error: e.message };
+    const err = e as { code?: string; errno?: number };
+    if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+      return { error: 'An account with this email already exists' };
+    }
+    const msg = e instanceof Error ? e.message : 'User creation failed';
+    return { error: msg };
+  }
 }
 
 // ── Create session ────────────────────────────────────────────────

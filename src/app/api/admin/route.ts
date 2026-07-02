@@ -25,6 +25,7 @@ import { invalidateConfig,
          seedThresholds }              from '@/services/systemConfigService';
 import { computeScenario }              from '@/services/scenarioEngine';
 import { computeMarketStance }          from '@/services/marketStanceEngine';
+import { createUserByAdmin }            from '@/services/auth';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
@@ -236,8 +237,25 @@ export async function POST(req: NextRequest) {
   try { await checkAdmin(req); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
 
+  const resource = req.nextUrl.searchParams.get('resource');
+
   let body: any = {};
   try { body = await req.json(); } catch {}
+
+  if (resource === 'user') {
+    const role = body.role === 'admin' ? 'admin' : 'user';
+    const result = await createUserByAdmin(
+      String(body.email ?? ''),
+      String(body.password ?? ''),
+      String(body.name ?? ''),
+      role,
+    );
+    if ('error' in result) {
+      const status = result.error.includes('already exists') ? 409 : 400;
+      return NextResponse.json({ error: result.error }, { status });
+    }
+    return NextResponse.json({ ok: true, user: result.user });
+  }
 
   // Normalise: accept both `action` and `type` keys, and map UI shorthand names
   // to the full action names used internally.

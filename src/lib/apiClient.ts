@@ -140,6 +140,7 @@ export const userApi = {
 // ── Admin ────────────────────────────────────────────────────────
 export const adminApi = {
   users:      ()               => get('/admin?resource=users'),
+  createUser: (data: unknown)  => post('/admin?resource=user', data),
   updateUser: (data: unknown)  => put('/admin?resource=user', data),
   auditLogs:  (limit = 100)    => get(`/admin?resource=audit&limit=${limit}`),
   usage:      ()               => get('/admin?resource=usage'),
