@@ -693,7 +693,7 @@ ecosystem.config.js   # PM2 config
 | [`docs/signal-engine-flow.md`](docs/signal-engine-flow.md) | 4-phase pipeline, lifecycle |
 | [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md) | IST cron jobs, dependency graph |
 | [`docs/PROVIDER_REQUEST_POLICY.md`](docs/PROVIDER_REQUEST_POLICY.md) | IndianAPI budget policy |
-| [`docs/quant-platform-release.md`](docs/quant-platform-release.md) | Release notes / platform changes |
+| [`docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md`](docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md) | Daily report / backtest API perf notes |
 
 ---
 
