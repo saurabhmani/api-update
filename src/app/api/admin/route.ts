@@ -25,7 +25,7 @@ import { invalidateConfig,
          seedThresholds }              from '@/services/systemConfigService';
 import { computeScenario }              from '@/services/scenarioEngine';
 import { computeMarketStance }          from '@/services/marketStanceEngine';
-import { createUserByAdmin }            from '@/services/auth';
+import { createUserByAdmin, updateUserByAdmin } from '@/services/auth';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
@@ -191,46 +191,33 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: 'Valid user id required' }, { status: 400 });
   }
 
-  if (id === admin.id) {
-    if (body.is_active === false) {
-      return NextResponse.json({ error: 'Cannot disable your own account' }, { status: 400 });
-    }
-    if (body.role === 'user') {
-      return NextResponse.json({ error: 'Cannot demote your own admin role' }, { status: 400 });
-    }
+  const patch: {
+    name?: string;
+    email?: string;
+    role?: 'user' | 'admin';
+    is_active?: boolean;
+    password?: string;
+  } = {};
+
+  if (body.name !== undefined) patch.name = String(body.name);
+  if (body.email !== undefined) patch.email = String(body.email);
+  if (body.role !== undefined) patch.role = body.role === 'admin' ? 'admin' : 'user';
+  if (body.is_active !== undefined) patch.is_active = Boolean(body.is_active);
+  if (body.password !== undefined && String(body.password).length > 0) {
+    patch.password = String(body.password);
   }
 
-  const sets: string[] = [];
-  const params: unknown[] = [];
-
-  if (body.role !== undefined) {
-    const role = String(body.role);
-    if (role !== 'user' && role !== 'admin') {
-      return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
-    }
-    sets.push('role = ?');
-    params.push(role);
+  const result = await updateUserByAdmin(id, admin.id, patch);
+  if ('error' in result) {
+    const status = result.error.includes('already exists')
+      ? 409
+      : result.error === 'User not found'
+        ? 404
+        : 400;
+    return NextResponse.json({ error: result.error }, { status });
   }
 
-  if (body.is_active !== undefined) {
-    sets.push('is_active = ?');
-    params.push(body.is_active ? 1 : 0);
-  }
-
-  if (sets.length === 0) {
-    return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
-  }
-
-  params.push(id);
-  await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
-
-  const { rows } = await db.query(
-    `SELECT id, email, name, role, is_active, totp_enabled, last_login_at, created_at
-       FROM users WHERE id = ?`,
-    [id],
-  );
-  const updated = (rows as Record<string, unknown>[])[0];
-  return NextResponse.json({ ok: true, user: updated ? mapUserRow(updated) : null });
+  return NextResponse.json({ ok: true, user: result.user });
 }
 
 export async function POST(req: NextRequest) {

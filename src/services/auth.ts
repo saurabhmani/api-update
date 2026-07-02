@@ -13,6 +13,30 @@ const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE || '86400');
 const MAX_ATTEMPTS    = 5;
 const LOCK_MINUTES    = 30;
 
+export type AdminUserRecord = {
+  id: number;
+  email: string;
+  name: string | null;
+  role: string;
+  is_active: boolean;
+  totp_enabled: boolean;
+  last_login_at: string | null;
+  created_at: string | null;
+};
+
+function mapAdminUserRow(row: Record<string, unknown>): AdminUserRecord {
+  return {
+    id:            Number(row.id),
+    email:         String(row.email),
+    name:          row.name != null ? String(row.name) : null,
+    role:          String(row.role),
+    is_active:     Boolean(row.is_active),
+    totp_enabled:  Boolean(row.totp_enabled),
+    last_login_at: row.last_login_at ? new Date(String(row.last_login_at)).toISOString() : null,
+    created_at:    row.created_at ? new Date(String(row.created_at)).toISOString() : null,
+  };
+}
+
 // ── Login ─────────────────────────────────────────────────────────
 export async function loginUser(email: string, password: string): Promise<{
   user: User; requires2fa: boolean; sessionToken?: string;
@@ -104,18 +128,7 @@ export async function createUserByAdmin(
   password: string,
   name: string,
   role: 'user' | 'admin' = 'user',
-): Promise<{
-  user: {
-    id: number;
-    email: string;
-    name: string | null;
-    role: string;
-    is_active: boolean;
-    totp_enabled: boolean;
-    last_login_at: string | null;
-    created_at: string | null;
-  };
-} | { error: string }> {
+): Promise<{ user: AdminUserRecord } | { error: string }> {
   try {
     const emailLower = validateEmail(email);
     validatePassword(password);
@@ -146,18 +159,7 @@ export async function createUserByAdmin(
     const row = (rows as Record<string, unknown>[])[0];
     if (!row) return { error: 'User creation failed' };
 
-    return {
-      user: {
-        id:            Number(row.id),
-        email:         String(row.email),
-        name:          row.name != null ? String(row.name) : null,
-        role:          String(row.role),
-        is_active:     Boolean(row.is_active),
-        totp_enabled:  Boolean(row.totp_enabled),
-        last_login_at: row.last_login_at ? new Date(String(row.last_login_at)).toISOString() : null,
-        created_at:    row.created_at ? new Date(String(row.created_at)).toISOString() : null,
-      },
-    };
+    return { user: mapAdminUserRow(row) };
   } catch (e: unknown) {
     if (e instanceof ValidationError) return { error: e.message };
     const err = e as { code?: string; errno?: number };
@@ -165,6 +167,106 @@ export async function createUserByAdmin(
       return { error: 'An account with this email already exists' };
     }
     const msg = e instanceof Error ? e.message : 'User creation failed';
+    return { error: msg };
+  }
+}
+
+export type AdminUserUpdate = {
+  name?: string;
+  email?: string;
+  role?: 'user' | 'admin';
+  is_active?: boolean;
+  password?: string;
+};
+
+// ── Admin user update ─────────────────────────────────────────────
+export async function updateUserByAdmin(
+  userId: number,
+  adminId: number,
+  patch: AdminUserUpdate,
+): Promise<{ user: AdminUserRecord } | { error: string }> {
+  try {
+    if (!Number.isFinite(userId) || userId <= 0) return { error: 'Valid user id required' };
+
+    const { rows: existingRows } = await db.query(
+      `SELECT id, email, name, role, is_active FROM users WHERE id = ?`,
+      [userId],
+    );
+    const existing = (existingRows as Record<string, unknown>[])[0];
+    if (!existing) return { error: 'User not found' };
+
+    if (userId === adminId) {
+      if (patch.is_active === false) return { error: 'Cannot disable your own account' };
+      if (patch.role === 'user' && String(existing.role) === 'admin') {
+        return { error: 'Cannot demote your own admin role' };
+      }
+    }
+
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (patch.name !== undefined) {
+      const safeName = sanitizeString(patch.name, 255);
+      if (!safeName) return { error: 'Name is required' };
+      sets.push('name = ?');
+      params.push(safeName);
+    }
+
+    if (patch.email !== undefined) {
+      const emailLower = validateEmail(patch.email);
+      if (emailLower !== String(existing.email).toLowerCase()) {
+        const { rows: dupRows } = await db.query(
+          `SELECT id FROM users WHERE email = ? AND id <> ?`,
+          [emailLower, userId],
+        );
+        if ((dupRows as { id: number }[]).length > 0) {
+          return { error: 'An account with this email already exists' };
+        }
+      }
+      sets.push('email = ?');
+      params.push(emailLower);
+    }
+
+    if (patch.role !== undefined) {
+      if (patch.role !== 'user' && patch.role !== 'admin') return { error: 'Invalid role' };
+      sets.push('role = ?');
+      params.push(patch.role);
+    }
+
+    if (patch.is_active !== undefined) {
+      sets.push('is_active = ?');
+      params.push(patch.is_active ? 1 : 0);
+    }
+
+    if (patch.password !== undefined && patch.password !== '') {
+      validatePassword(patch.password);
+      const hash = await hashPassword(patch.password);
+      sets.push('password_hash = ?');
+      params.push(hash);
+    }
+
+    if (sets.length === 0) return { error: 'Nothing to update' };
+
+    sets.push('updated_at = NOW()');
+    params.push(userId);
+    await db.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+
+    const { rows } = await db.query(
+      `SELECT id, email, name, role, is_active, totp_enabled, last_login_at, created_at
+         FROM users WHERE id = ?`,
+      [userId],
+    );
+    const row = (rows as Record<string, unknown>[])[0];
+    if (!row) return { error: 'User not found' };
+
+    return { user: mapAdminUserRow(row) };
+  } catch (e: unknown) {
+    if (e instanceof ValidationError) return { error: e.message };
+    const err = e as { code?: string; errno?: number };
+    if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+      return { error: 'An account with this email already exists' };
+    }
+    const msg = e instanceof Error ? e.message : 'User update failed';
     return { error: msg };
   }
 }

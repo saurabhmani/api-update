@@ -4,7 +4,7 @@ import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading, Empty, Modal, Button, Input, AlertBanner } from '@/components/ui';
 import { adminApi } from '@/lib/apiClient';
 import { fmt } from '@/lib/utils';
-import { Users, Plus } from 'lucide-react';
+import { Users, Plus, Pencil } from 'lucide-react';
 
 interface AdminUser {
   id: number;
@@ -17,32 +17,72 @@ interface AdminUser {
 }
 
 const emptyForm = { name: '', email: '', password: '', confirmPassword: '', role: 'user' as 'user' | 'admin' };
+const emptyEditForm = {
+  name: '',
+  email: '',
+  role: 'user' as 'user' | 'admin',
+  is_active: true,
+  password: '',
+  confirmPassword: '',
+};
+
+function validateEmailField(email: string): string | undefined {
+  if (!email.trim()) return 'Email is required';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Invalid email address';
+  return undefined;
+}
+
+function validatePasswordFields(password: string, confirmPassword: string, required: boolean): Record<string, string> {
+  const errs: Record<string, string> = {};
+  if (!password && !confirmPassword) {
+    if (required) {
+      errs.password = 'Password is required';
+      errs.confirmPassword = 'Please confirm the password';
+    }
+    return errs;
+  }
+  if (!password) errs.password = 'Password is required';
+  else if (password.length < 8) errs.password = 'Password must be at least 8 characters';
+  else if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    errs.password = 'Password must contain at least one letter and one number';
+  }
+  if (!confirmPassword) errs.confirmPassword = 'Please confirm the password';
+  else if (password !== confirmPassword) errs.confirmPassword = 'Passwords do not match';
+  return errs;
+}
 
 function validateCreateForm(form: typeof emptyForm): Record<string, string> {
   const errs: Record<string, string> = {};
   if (!form.name.trim()) errs.name = 'Name is required';
-  if (!form.email.trim()) errs.email = 'Email is required';
-  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) errs.email = 'Invalid email address';
-  if (!form.password) errs.password = 'Password is required';
-  else if (form.password.length < 8) errs.password = 'Password must be at least 8 characters';
-  else if (!/[A-Za-z]/.test(form.password) || !/[0-9]/.test(form.password)) {
-    errs.password = 'Password must contain at least one letter and one number';
-  }
-  if (!form.confirmPassword) errs.confirmPassword = 'Please confirm the password';
-  else if (form.password !== form.confirmPassword) errs.confirmPassword = 'Passwords do not match';
-  return errs;
+  const emailErr = validateEmailField(form.email);
+  if (emailErr) errs.email = emailErr;
+  return { ...errs, ...validatePasswordFields(form.password, form.confirmPassword, true) };
+}
+
+function validateEditForm(form: typeof emptyEditForm): Record<string, string> {
+  const errs: Record<string, string> = {};
+  if (!form.name.trim()) errs.name = 'Name is required';
+  const emailErr = validateEmailField(form.email);
+  if (emailErr) errs.email = emailErr;
+  return { ...errs, ...validatePasswordFields(form.password, form.confirmPassword, false) };
 }
 
 export default function AdminUsersPage() {
-  const [users,        setUsers]        = useState<AdminUser[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [modalOpen,    setModalOpen]    = useState(false);
-  const [form,         setForm]         = useState(emptyForm);
-  const [fieldErrors,  setFieldErrors]  = useState<Record<string, string>>({});
-  const [formError,    setFormError]    = useState('');
-  const [saving,       setSaving]       = useState(false);
-  const [successMsg,   setSuccessMsg]   = useState('');
-  const [pageError,    setPageError]    = useState('');
+  const [users,           setUsers]           = useState<AdminUser[]>([]);
+  const [loading,         setLoading]         = useState(true);
+  const [modalOpen,       setModalOpen]       = useState(false);
+  const [editModalOpen,   setEditModalOpen]   = useState(false);
+  const [editingUser,     setEditingUser]     = useState<AdminUser | null>(null);
+  const [form,            setForm]            = useState(emptyForm);
+  const [editForm,        setEditForm]        = useState(emptyEditForm);
+  const [fieldErrors,     setFieldErrors]     = useState<Record<string, string>>({});
+  const [editFieldErrors, setEditFieldErrors] = useState<Record<string, string>>({});
+  const [formError,       setFormError]       = useState('');
+  const [editFormError,   setEditFormError]   = useState('');
+  const [saving,          setSaving]          = useState(false);
+  const [editSaving,      setEditSaving]      = useState(false);
+  const [successMsg,      setSuccessMsg]      = useState('');
+  const [pageError,       setPageError]       = useState('');
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -56,11 +96,38 @@ export default function AdminUsersPage() {
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
+  const applyUserUpdate = (user: AdminUser) => {
+    setUsers(prev => prev.map(u => u.id === user.id ? user : u));
+  };
+
   const closeModal = () => {
     setModalOpen(false);
     setForm(emptyForm);
     setFieldErrors({});
     setFormError('');
+  };
+
+  const closeEditModal = () => {
+    setEditModalOpen(false);
+    setEditingUser(null);
+    setEditForm(emptyEditForm);
+    setEditFieldErrors({});
+    setEditFormError('');
+  };
+
+  const openEditModal = (user: AdminUser) => {
+    setEditingUser(user);
+    setEditForm({
+      name: user.name || '',
+      email: user.email,
+      role: user.role === 'admin' ? 'admin' : 'user',
+      is_active: user.is_active,
+      password: '',
+      confirmPassword: '',
+    });
+    setEditFieldErrors({});
+    setEditFormError('');
+    setEditModalOpen(true);
   };
 
   const createUser = async () => {
@@ -82,18 +149,49 @@ export default function AdminUsersPage() {
       setSuccessMsg(`User ${res.user.email} created successfully`);
       setPageError('');
     } catch (e: unknown) {
-      const err = e as { data?: { error?: string }; status?: number };
-      const msg = err.data?.error || 'Failed to create user';
-      setFormError(msg);
+      const err = e as { data?: { error?: string } };
+      setFormError(err.data?.error || 'Failed to create user');
     } finally {
       setSaving(false);
     }
   };
 
-  const updateUser = async (id: number, patch: Partial<AdminUser>) => {
+  const saveEditUser = async () => {
+    if (!editingUser) return;
+    const errs = validateEditForm(editForm);
+    setEditFieldErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+
+    setEditSaving(true);
+    setEditFormError('');
     try {
-      await adminApi.updateUser({ id, ...patch });
-      setUsers(prev => prev.map(u => u.id === id ? { ...u, ...patch } : u));
+      const payload: Record<string, unknown> = {
+        id: editingUser.id,
+        name: editForm.name.trim(),
+        email: editForm.email.trim(),
+        role: editForm.role,
+        is_active: editForm.is_active,
+      };
+      if (editForm.password) payload.password = editForm.password;
+
+      const res = await adminApi.updateUser(payload) as { user: AdminUser };
+      applyUserUpdate(res.user);
+      closeEditModal();
+      setSuccessMsg(`User ${res.user.email} updated successfully`);
+      setPageError('');
+    } catch (e: unknown) {
+      const err = e as { data?: { error?: string } };
+      setEditFormError(err.data?.error || 'Failed to update user');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const patchUser = async (id: number, patch: Partial<AdminUser>) => {
+    try {
+      const res = await adminApi.updateUser({ id, ...patch }) as { user: AdminUser };
+      applyUserUpdate(res.user);
+      setPageError('');
     } catch (e: unknown) {
       const err = e as { data?: { error?: string } };
       setSuccessMsg('');
@@ -162,6 +260,83 @@ export default function AdminUsersPage() {
         </div>
       </Modal>
 
+      <Modal
+        open={editModalOpen}
+        onClose={closeEditModal}
+        title="Edit User"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeEditModal}>Cancel</Button>
+            <Button onClick={saveEditUser} loading={editSaving}>Save Changes</Button>
+          </>
+        }
+      >
+        {editFormError && <AlertBanner variant="error">{editFormError}</AlertBanner>}
+        {editingUser && (
+          <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>
+            <div>User ID: {editingUser.id}</div>
+            <div>2FA: {editingUser.totp_enabled ? 'Enabled' : 'Off'}</div>
+            <div>Last login: {fmt.datetime(editingUser.last_login_at)}</div>
+          </div>
+        )}
+        <Input
+          label="Name"
+          placeholder="Jane Doe"
+          value={editForm.name}
+          error={editFieldErrors.name}
+          onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+        />
+        <Input
+          label="Email"
+          type="email"
+          placeholder="user@example.com"
+          value={editForm.email}
+          error={editFieldErrors.email}
+          onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))}
+        />
+        <div className="field">
+          <label>Role</label>
+          <select
+            className="input"
+            value={editForm.role}
+            onChange={e => setEditForm(f => ({ ...f, role: e.target.value as 'user' | 'admin' }))}
+          >
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Status</label>
+          <select
+            className="input"
+            value={editForm.is_active ? 'active' : 'disabled'}
+            onChange={e => setEditForm(f => ({ ...f, is_active: e.target.value === 'active' }))}
+          >
+            <option value="active">Active</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
+        <Input
+          label="New Password"
+          type="password"
+          passwordToggle
+          placeholder="Leave blank to keep current password"
+          value={editForm.password}
+          error={editFieldErrors.password}
+          hint="Optional — must contain at least one letter and one number"
+          onChange={e => setEditForm(f => ({ ...f, password: e.target.value }))}
+        />
+        <Input
+          label="Confirm New Password"
+          type="password"
+          passwordToggle
+          placeholder="Re-enter new password"
+          value={editForm.confirmPassword}
+          error={editFieldErrors.confirmPassword}
+          onChange={e => setEditForm(f => ({ ...f, confirmPassword: e.target.value }))}
+        />
+      </Modal>
+
       <div className="page">
         <div className="page__header">
           <div><h1>User Management</h1><p>{users.length} users</p></div>
@@ -211,7 +386,7 @@ export default function AdminUsersPage() {
                       <td>
                         <select
                           value={u.role}
-                          onChange={e => updateUser(u.id, { role: e.target.value })}
+                          onChange={e => patchUser(u.id, { role: e.target.value })}
                           style={{ fontSize:12, border:'1px solid #E2E8F0', borderRadius:6, padding:'2px 8px', background:'#fff', cursor:'pointer' }}
                         >
                           <option value="user">User</option>
@@ -222,9 +397,14 @@ export default function AdminUsersPage() {
                       <td><Badge variant={u.totp_enabled ? 'green' : 'gray'}>{u.totp_enabled ? 'Enabled' : 'Off'}</Badge></td>
                       <td style={{ fontSize:12, color:'#64748B' }}>{fmt.datetime(u.last_login_at)}</td>
                       <td>
-                        <button className="btn btn--sm btn--secondary" onClick={() => updateUser(u.id, { is_active: !u.is_active })}>
-                          {u.is_active ? 'Disable' : 'Enable'}
-                        </button>
+                        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                          <button className="btn btn--sm btn--secondary" onClick={() => openEditModal(u)}>
+                            <Pencil size={13} /> Edit
+                          </button>
+                          <button className="btn btn--sm btn--secondary" onClick={() => patchUser(u.id, { is_active: !u.is_active })}>
+                            {u.is_active ? 'Disable' : 'Enable'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

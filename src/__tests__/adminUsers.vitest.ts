@@ -14,7 +14,7 @@ vi.mock('bcryptjs', () => ({
 }));
 
 import { db } from '@/lib/db';
-import { createUserByAdmin } from '@/services/auth';
+import { createUserByAdmin, updateUserByAdmin } from '@/services/auth';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 function read(rel: string): string {
@@ -92,6 +92,95 @@ describe('createUserByAdmin', () => {
   });
 });
 
+describe('updateUserByAdmin', () => {
+  beforeEach(() => {
+    vi.mocked(db.query).mockReset();
+  });
+
+  it('rejects unknown user', async () => {
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [] } as never);
+
+    const result = await updateUserByAdmin(99, 1, { name: 'Jane' });
+    expect(result).toEqual({ error: 'User not found' });
+  });
+
+  it('rejects duplicate email owned by another user', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'old@example.com', role: 'user', is_active: 1 }] } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 3 }] } as never);
+
+    const result = await updateUserByAdmin(2, 1, { email: 'taken@example.com' });
+    expect(result).toEqual({ error: 'An account with this email already exists' });
+  });
+
+  it('prevents admin from disabling own account', async () => {
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ id: 1, email: 'admin@example.com', role: 'admin', is_active: 1 }],
+    } as never);
+
+    const result = await updateUserByAdmin(1, 1, { is_active: false });
+    expect(result).toEqual({ error: 'Cannot disable your own account' });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates editable fields and returns refreshed user', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'old@example.com', role: 'user', is_active: 1 }] } as never)
+      .mockResolvedValueOnce({ rows: [] } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 2,
+          email: 'new@example.com',
+          name: 'Updated Name',
+          role: 'admin',
+          is_active: 1,
+          totp_enabled: 0,
+          last_login_at: null,
+          created_at: '2026-01-01 10:00:00',
+        }],
+      } as never);
+
+    const result = await updateUserByAdmin(2, 1, {
+      name: 'Updated Name',
+      email: 'new@example.com',
+      role: 'admin',
+      is_active: true,
+    });
+
+    expect('user' in result && result.user).toMatchObject({
+      id: 2,
+      email: 'new@example.com',
+      name: 'Updated Name',
+      role: 'admin',
+      is_active: true,
+    });
+    expect(db.query).toHaveBeenCalledTimes(4);
+  });
+
+  it('allows keeping the same email without duplicate error', async () => {
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [{ id: 2, email: 'same@example.com', role: 'user', is_active: 1 }] } as never)
+      .mockResolvedValueOnce({ rows: [], affectedRows: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 2,
+          email: 'same@example.com',
+          name: 'Renamed',
+          role: 'user',
+          is_active: 1,
+          totp_enabled: 0,
+          last_login_at: null,
+          created_at: '2026-01-01 10:00:00',
+        }],
+      } as never);
+
+    const result = await updateUserByAdmin(2, 1, { name: 'Renamed', email: 'same@example.com' });
+    expect('user' in result && result.user?.name).toBe('Renamed');
+    expect(db.query).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('admin users UI contracts', () => {
   const page = read('src/app/admin/users/page.tsx');
   const apiClient = read('src/lib/apiClient.ts');
@@ -117,5 +206,14 @@ describe('admin users UI contracts', () => {
     expect(adminRoute).toMatch(/resource === 'user'/);
     expect(adminRoute).toMatch(/createUserByAdmin/);
     expect(adminRoute).toMatch(/already exists.*409/);
+  });
+
+  it('exposes Edit User action and update wiring', () => {
+    expect(page).toMatch(/Edit User|Edit/);
+    expect(page).toMatch(/openEditModal/);
+    expect(page).toMatch(/validateEditForm/);
+    expect(page).toMatch(/adminApi\.updateUser/);
+    expect(page).toMatch(/applyUserUpdate/);
+    expect(adminRoute).toMatch(/updateUserByAdmin/);
   });
 });
