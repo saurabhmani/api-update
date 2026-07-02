@@ -39,6 +39,9 @@ import { buildTradePlanForStrategy } from '../trade-plan/buildTradePlan';
 import { buildReasons } from '../explain/buildReasons';
 import { buildWarnings } from '../explain/buildWarnings';
 import { STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
+import {
+  recordStrategyEvaluation,
+} from '../observability/strategyScanHistogram';
 
 interface StrategyEntry {
   name: StrategyName;
@@ -124,6 +127,7 @@ function evaluateOne(
   const result = evaluate(features);
   if (!result.matched) {
     rejections.push({ strategy: name, reason: result.rejectionReason || 'Not matched' });
+    recordStrategyEvaluation(name, 'rejected', result.rejectionReason || 'Not matched');
     return;
   }
 
@@ -149,18 +153,25 @@ function evaluateOne(
     'bullish_breakout', 'bullish_pullback', 'fibonacci_pullback', 'momentum_continuation', 'gap_continuation',
   ];
   if (bullishStrategies.includes(name) && relativeStrength.rsVsIndex < -5) {
-    rejections.push({ strategy: name, reason: `Weak relative strength vs index: ${relativeStrength.rsVsIndex}%` });
+    const reason = `Weak relative strength vs index: ${relativeStrength.rsVsIndex}%`;
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
     return;
   }
   if (BEARISH_STRATEGIES.has(name) && relativeStrength.rsVsIndex > 5) {
-    rejections.push({ strategy: name, reason: `Stock outperforming index — ${name} unlikely (rs=${relativeStrength.rsVsIndex.toFixed(1)}%)` });
+    const reason = `Stock outperforming index — ${name} unlikely (rs=${relativeStrength.rsVsIndex.toFixed(1)}%)`;
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
     return;
   }
   if (bullishStrategies.includes(name) && relativeStrength.sectorStrengthScore < 30) {
-    rejections.push({ strategy: name, reason: `Weak sector: score ${relativeStrength.sectorStrengthScore}` });
+    const reason = `Weak sector: score ${relativeStrength.sectorStrengthScore}`;
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
     return;
   }
 
+  recordStrategyEvaluation(name, 'matched');
   candidates.push({
     strategy: name,
     features,

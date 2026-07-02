@@ -28,6 +28,8 @@
 
 import cron, { type ScheduledTask } from 'node-cron';
 import { logger } from '@/lib/logger';
+import { isSignalIntradayRegenEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
+import { startDailyScanSchedule } from './dailyScanSchedule';
 
 const log = logger.child({ component: 'bootInProc' });
 const IST = 'Asia/Kolkata';
@@ -208,11 +210,12 @@ export function bootInProcScheduler(): void {
     state.heartbeatHandle = null;
   }
 
-  // ── 1-minute rescore ─────────────────────────────────────────
-  // Cron expression widened to '* * * * *' (every minute, 24×7) so the
-  // Q365_REGEN_24X7 override actually takes effect — without this, the
-  // outer cron schedule `* 9-15 * * 1-5` already skips outside market
-  // hours regardless of what isInsideRescoreWindow returns.
+  // ── Legacy */5 rescore + 10-min regen (opt-in only) ───────────
+  // Controlled schedule (12:30 / 14:45 rescore, 09:20 scans) runs
+  // via startDailyScanSchedule() below. Keep legacy loops disabled
+  // unless SIGNAL_INTRADAY_REGEN_ENABLED=true.
+  const regenInProc = isSignalIntradayRegenEnabled();
+  if (regenInProc) {
   const rescoreCron = isRegenAlwaysOn() ? '*/5 * * * *' : '*/5 9-15 * * 1-5';
   state.rescoreTask = cron.schedule(rescoreCron, () => {
     if (!isInsideRescoreWindow()) return;
@@ -234,29 +237,11 @@ export function bootInProcScheduler(): void {
       }
     })();
   }, { timezone: IST });
+  } else {
+    log.info('[INPROC RESCORE] disabled — controlled 12:30/14:45 schedule via dailyScanSchedule');
+  }
 
-  // ── 10-minute intraday regeneration (default ON) ─────────────
-  //
-  // Full Phase 1-4 pipeline over ~2943 stocks is 60-120s of CPU +
-  // Yahoo/Kite fetches + heavy DB writes per tick. Running that // @deprecated marker
-  // inside the Next dev process is measurable but not fatal — and
-  // without it the dashboard freezes on a stale batch (the "BUY 50
-  // is static" symptom). Self-coalescing via regenInFlight +
-  // hourlyScanInFlight stops back-to-back runs from overlapping,
-  // and the rescore cron continues unblocked because it runs on a
-  // separate cadence and shares no state with regen.
-  //
-  // Default: ENABLED in-process. Disable if you run the standalone
-  // PM2 scheduler (workers/scheduler.ts) and don't want both
-  // generating batches:
-  //   Q365_INPROC_REGEN=0 npm run dev
-  //
-  // Rescore stays in-process always — it's cheap (a DB read + batch
-  // live-price fetch + arithmetic + one chunked UPDATE), and it's
-  // what makes the dashboard feel alive.
-  const regenInProc = process.env.Q365_INPROC_REGEN !== '0';
   if (regenInProc) {
-    // Same widening as the rescore cron when Q365_REGEN_24X7=1.
     const regenCron = isRegenAlwaysOn() ? '*/10 * * * *' : '*/10 9-15 * * 1-5';
     state.regenTask = cron.schedule(regenCron, () => {
       if (!isInsideRegenWindow()) return;
@@ -268,63 +253,34 @@ export function bootInProcScheduler(): void {
         .catch((err) => log.error('[INPROC REGEN] failed', { err: err?.message ?? String(err) }))
         .finally(() => { state.regenInFlight = null; });
     }, { timezone: IST });
+
+    const hourlyScanCron = isRegenAlwaysOn() ? '0 * * * *' : '0 9-15 * * 1-5';
+    state.hourlyScanTask = cron.schedule(hourlyScanCron, () => {
+      if (!isInsideRegenWindow()) return;
+      if (state.hourlyScanInFlight || state.regenInFlight) {
+        log.warn('[INPROC HOURLY-SCAN] regen still in flight — skipping');
+        return;
+      }
+      state.hourlyScanInFlight = runRegenInProc()
+        .catch((err) => log.error('[INPROC HOURLY-SCAN] failed', { err: err?.message ?? String(err) }))
+        .finally(() => { state.hourlyScanInFlight = null; });
+    }, { timezone: IST });
+
+    setTimeout(() => {
+      if (!isInsideRegenWindow()) return;
+      if (state.hourlyScanInFlight || state.regenInFlight) return;
+      log.info('[INPROC HOURLY-SCAN] cold-fire on boot');
+      state.hourlyScanInFlight = runRegenInProc()
+        .catch((err) => log.error('[INPROC HOURLY-SCAN] cold-fire failed', { err: err?.message ?? String(err) }))
+        .finally(() => { state.hourlyScanInFlight = null; });
+    }, 30_000);
+  } else {
+    log.info('[INPROC REGEN] disabled — use controlled scan schedule (SIGNAL_INTRADAY_REGEN_ENABLED=false)');
   }
 
-  // ── Hourly FULL-MARKET scan (always on during NSE hours) ─────
-  //
-  // What it does: runs the same Phase 1-4 pipeline as runRegenInProc
-  // (full universe ≈ 2943 symbols), top-of-hour during the NSE
-  // session. This is the path that *discovers new signals*. Without
-  // it, the dashboard freezes on whatever batch the engine last
-  // produced — which is exactly the "BUY 50 static" symptom that
-  // motivated this scheduler entry: rescore (every minute) keeps
-  // existing rows scored against fresh ticks, but it never adds or
-  // removes rows. Only a regen does that.
-  //
-  // Why hourly, not faster: a full Phase 1-4 over the universe is
-  // 60-120s of CPU + Yahoo/Kite fetches per tick. At 10-min cadence // @deprecated marker
-  // (the legacy regenTask) it eats a measurable fraction of the
-  // event loop. Hourly is the right balance: a daytrader's edge
-  // doesn't decay materially between top-of-hour boundaries, the
-  // event loop stays responsive, and Yahoo's per-IP rate budget // @deprecated marker
-  // isn't strained.
-  //
-  // Why a separate cron from regenTask: regenTask is opt-in
-  // (Q365_INPROC_REGEN=1) and tuned for the operator who wants
-  // 10-min cadence. This task is the new always-on default that
-  // satisfies the "scan per hour when market is open" contract.
-  // Both can coexist — they share self-coalescing on regenInFlight
-  // so they never overlap.
-  //
-  // Cron: top of every hour 09-15 IST Mon-Fri. The `runHourlyMarket
-  // ScanCheck` inner function gates on the more-precise 09:30-15:30
-  // window, so the 09:00 firing actually fires at 10:00, the 15:00
-  // firing fires (the last useful pass), and 16:00+ skip.
-  const hourlyScanCron = isRegenAlwaysOn() ? '0 * * * *' : '0 9-15 * * 1-5';
-  state.hourlyScanTask = cron.schedule(hourlyScanCron, () => {
-    if (!isInsideRegenWindow()) return;
-    if (state.hourlyScanInFlight || state.regenInFlight) {
-      log.warn('[INPROC HOURLY-SCAN] regen still in flight — skipping');
-      return;
-    }
-    state.hourlyScanInFlight = runRegenInProc()
-      .catch((err) => log.error('[INPROC HOURLY-SCAN] failed', { err: err?.message ?? String(err) }))
-      .finally(() => { state.hourlyScanInFlight = null; });
-  }, { timezone: IST });
-
-  // Cold-fire: if we boot during market hours, kick one scan after
-  // 30s so the dashboard doesn't sit on whatever batch was in the DB
-  // before this process started. 30s gives the rest of the boot
-  // sequence (DB pool warmup, candle scheduler first tick) time to
-  // settle before we spend ~90s of CPU on a regen.
-  setTimeout(() => {
-    if (!isInsideRegenWindow()) return;
-    if (state.hourlyScanInFlight || state.regenInFlight) return;
-    log.info('[INPROC HOURLY-SCAN] cold-fire on boot');
-    state.hourlyScanInFlight = runRegenInProc()
-      .catch((err) => log.error('[INPROC HOURLY-SCAN] cold-fire failed', { err: err?.message ?? String(err) }))
-      .finally(() => { state.hourlyScanInFlight = null; });
-  }, 30_000);
+  // Controlled IST scan / rescore cadence (08:30 readiness → 16:30 EOD scan).
+  startDailyScanSchedule();
+  log.info('[INPROC] daily scan schedule started');
 
   // ── 15:30 IST market-close snapshot writer ──────────────────
   //

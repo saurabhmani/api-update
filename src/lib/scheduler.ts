@@ -34,6 +34,7 @@ import {
   runIntelTier,
   runHeartbeatTier,
 } from '@/lib/marketData/providers/batchScheduler';
+import { isPreopenCandleWarmupEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 
 const log = logger.child({ component: 'marketScheduler' });
 
@@ -83,35 +84,36 @@ export function startScheduler(): void {
     void runBatchTier().catch(err => log.error('warmup failed', { err: String(err) }));
   }, { timezone: IST }));
 
-  // 09:25 IST — pre-open CANDLE warmup. Step 4(c) of the budget-fix
-  // PR: ONE full-universe sweep per day (the only force=true call
-  // that touches every active symbol). After this, the 15-min ticks
-  // operate on a curated subset capped at CANDLE_MAX_PER_CYCLE.
-  // This call's cost is bounded by the active universe size
-  // (NIFTY 500 by default = 500 historical fetches/day, ~11k/month).
-  tasks.push(cron.schedule('25 9 * * 1-5', () => {
-    void (async () => {
-      try {
-        const [{ refreshDailyCandles }, { DEFAULT_PHASE1_CONFIG, loadTradeableUniverse }] =
-          await Promise.all([
-            import('@/lib/marketData/candleIngest'),
-            import('@/lib/signal-engine/constants/signalEngine.constants'),
-          ]);
-        await loadTradeableUniverse();
-        const r = await refreshDailyCandles({
-          symbols: DEFAULT_PHASE1_CONFIG.universe,
-          force:   true,
-          noCap:   true,
-        });
-        log.info('pre-open candle warmup complete', {
-          requested: r.requested, refreshed: r.refreshed,
-          bars: r.barsIngested, failed: r.failed.length,
-        });
-      } catch (err) {
-        log.error('pre-open candle warmup failed', { err: String(err) });
-      }
-    })();
-  }, { timezone: IST }));
+  // 09:25 IST — optional pre-open CANDLE warmup (off by default).
+  // When enabled: ONE full-universe sweep per day (force=true, noCap=true).
+  // Disabled by default — controlled EOD update at 16:00 IST owns candle refresh.
+  if (isPreopenCandleWarmupEnabled()) {
+    tasks.push(cron.schedule('25 9 * * 1-5', () => {
+      void (async () => {
+        try {
+          const [{ refreshDailyCandles }, { DEFAULT_PHASE1_CONFIG, loadTradeableUniverse }] =
+            await Promise.all([
+              import('@/lib/marketData/candleIngest'),
+              import('@/lib/signal-engine/constants/signalEngine.constants'),
+            ]);
+          await loadTradeableUniverse();
+          const r = await refreshDailyCandles({
+            symbols: DEFAULT_PHASE1_CONFIG.universe,
+            force:   true,
+            noCap:   true,
+          });
+          log.info('pre-open candle warmup complete', {
+            requested: r.requested, refreshed: r.refreshed,
+            bars: r.barsIngested, failed: r.failed.length,
+          });
+        } catch (err) {
+          log.error('pre-open candle warmup failed', { err: String(err) });
+        }
+      })();
+    }, { timezone: IST }));
+  } else {
+    log.info('pre-open candle warmup disabled (PREOPEN_CANDLE_WARMUP_ENABLED=false)');
+  }
 
   // ── TIER A — every 10 minutes during market hours ────────────────
   tasks.push(cron.schedule('*/10 9-15 * * 1-5', () => {
@@ -181,8 +183,9 @@ export function startScheduler(): void {
       trigger:     '5,25,45 9-15 * * 1-5',
       intel:       '15 9-15 * * 1-5',
       warmup:      '20 9 * * 1-5',
+      preopenCandles: isPreopenCandleWarmupEnabled() ? '25 9 * * 1-5' : 'disabled',
       postClose:   '35 15 * * 1-5',
-      dailyScans:  'see dailyScanSchedule (08:30 scan, 16:00 update, 16:30 scan)',
+      dailyScans:  'see dailyScanSchedule (08:30 readiness, 09:20/09:45 scans, 16:00 update, 16:30 scan)',
     },
   });
 }

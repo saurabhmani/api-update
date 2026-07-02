@@ -1472,103 +1472,41 @@ export default function SignalsPage() {
 
   const universeExtras: SignalRow[] = []; // never populated — kept for shape compat
 
-  // Spec ELITE-2026-05 §UI — defence-in-depth elite gate. Mirrors the
-  // backend `applyEliteGate` predicate so a server leak (cached
-  // response, RELAXED fallback, scanner_candidates injection, missing
-  // env, …) cannot put a non-elite row on screen. The page renders
-  // ONLY rows that pass every elite floor + every categorical
-  // predicate. When 0 rows pass we render the empty-state copy
-  // ("No institutional-grade setups available.") rather than padding
-  // with weak setups.
-  //
-  //   confidence_score      ≥ 75
-  //   final/institutional   ≥ 80
-  //   risk_reward           ≥ 2.0
-  //   stress_survival_score ≥ 75   (skipped when null — backend gate
-  //                                  already enforced; rows from
-  //                                  pre-elite cache can be missing it)
-  //   classification ∈ { INSTITUTIONAL_HIGH_CONVICTION, HIGH_CONVICTION }
-  //   execution_allowed = true, no invalidation_reason
-  //   freshness_state ≠ stale, decay_state ∉ { stale, expired }
-  //
-  // The full 8-floor predicate runs server-side; the UI-side floors
-  // are the four the user sees on the row (confidence, final, RR,
-  // classification + freshness/exec). Per-factor floors (liquidity,
-  // market_regime, portfolio_fit, data_quality) are tested when the
-  // row carries them — when absent we trust the server gate.
-  const ELITE_CLS = new Set(['INSTITUTIONAL_HIGH_CONVICTION', 'HIGH_CONVICTION']);
+  // INSTITUTIONAL_TIER_2026-05 — signals[] is the server's EXECUTION_READY
+  // tier (partitionByTier + strict/elite gates already ran). Re-applying
+  // stricter client floors (75/80/2.0) here was double-gating: counters
+  // showed approvedTotal=15 while the table rendered only the 3 rows that
+  // also cleared the UI elite bar. Trust the server bucket; keep only
+  // hard-veto checks so an invalidated/blocked row cannot slip through.
   type EliteCheck = { passed: boolean; reasons: string[] };
+  const eliteHardVetoReasons = (r: SignalRow): string[] => {
+    const reasons: string[] = [];
+    if ((r as any).execution_allowed === false) reasons.push('execution_allowed=false');
+    if ((r as any).live_invalidated === true)   reasons.push('live_invalidated=true');
+    if ((r as any).invalidation_reason) {
+      reasons.push(`invalidated:${(r as any).invalidation_reason}`);
+    }
+    const tradeability = String((r as any).tradeability_status ?? '').toLowerCase();
+    if (tradeability === 'blocked' || tradeability === 'restricted') {
+      reasons.push(`tradeability=${tradeability}`);
+    }
+    const conv = String((r as any).conviction_band ?? '').toLowerCase();
+    if (conv === 'avoid') reasons.push('conviction_band=avoid');
+    return reasons;
+  };
   const eliteRowApproved = (r: SignalRow): EliteCheck => {
-    // Spec NEVER-EMPTY-WHEN-DB-HAS-ROWS — when the server tagged a row
-    // as relaxed or scanner-candidate, its lenient server gate
-    // (SIGNAL_ELITE_LENIENT_FACTORS=true + SIGNAL_ELITE_NEVER_EMPTY=true,
-    // both default-on) already made a deliberate ship decision. Re-
-    // applying the strict UI floors here was double-gating the response
-    // — the server returned signals=[16] tagged is_relaxed=true and
-    // signal_quality='RELAXED', then the UI's hard 75/80/2.0 floors
-    // and freshness_state!=stale check rejected all of them, leaving
-    // the APPROVED tab empty. Respect the server's contract: when the
-    // row carries is_relaxed / is_scanner_candidate, OR signal_quality
-    // is RELAXED / SCANNER_CANDIDATES, pass it through. The reason
-    // 'relaxed_bypass' keeps the audit log grep-able so an operator
-    // can still see "16 rows passed via relaxed_bypass" in the
-    // [ELITE_UI_FILTERED] line.
     const isRelaxed     = (r as any).is_relaxed === true;
     const isScannerCand = (r as any).is_scanner_candidate === true;
-    // signalQuality's declared type is stale ('STRICT' | 'NONE') but the
-    // runtime payload carries 'RELAXED' and 'SCANNER_CANDIDATES'
-    // (server-side definition in confirmedSignalPolicy / signals route).
-    // Compare via String() to bypass the narrow declared type without
-    // expanding it here — the type definition fix is out of scope for
-    // this UI patch.
     const sq = String(signalQuality ?? '').toUpperCase();
     const qualityRelaxed = sq === 'RELAXED' || sq === 'SCANNER_CANDIDATES';
     if (isRelaxed || isScannerCand || qualityRelaxed) {
       return { passed: true, reasons: ['relaxed_bypass'] };
     }
-    const reasons: string[] = [];
-    const cls = String((r as any).classification ?? '').toUpperCase().trim();
-    const rawCls = String((r as any).raw_classification ?? '').toUpperCase().trim();
-    if (!ELITE_CLS.has(cls) && !(rawCls && ELITE_CLS.has(rawCls))) {
-      reasons.push(`classification=${cls || rawCls || 'unknown'}`);
+    const hardReasons = eliteHardVetoReasons(r);
+    if (hardReasons.length > 0) {
+      return { passed: false, reasons: hardReasons };
     }
-    if ((r as any).execution_allowed === false) reasons.push('execution_allowed=false');
-    if ((r as any).invalidation_reason)         reasons.push(`invalidated:${(r as any).invalidation_reason}`);
-    const ss = String((r as any).signal_status ?? '').toUpperCase();
-    if (ss && ss !== 'APPROVED_SIGNAL') reasons.push(`signal_status=${ss}`);
-    const conf = Number((r as any).confidence_score ?? (r as any).confidence ?? NaN);
-    if (!Number.isFinite(conf) || conf < 75) reasons.push(`confidence=${conf}`);
-    const fs = Number((r as any).final_score ?? (r as any).institutional_score ?? NaN);
-    if (!Number.isFinite(fs) || fs < 80) reasons.push(`institutional_score=${fs}`);
-    const rr = Number((r as any).risk_reward ?? (r as any).rr_ratio ?? NaN);
-    if (!Number.isFinite(rr) || rr < 2.0) reasons.push(`risk_reward=${rr}`);
-    const stress = (r as any).stress_survival_score;
-    if (stress != null) {
-      const stN = Number(stress);
-      if (!Number.isFinite(stN) || stN < 75) reasons.push(`stress=${stN}`);
-    }
-    const fresh = String((r as any).freshness_state ?? '').toLowerCase();
-    if (fresh === 'stale') reasons.push('freshness_state=stale');
-    const decay = String((r as any).decay_state ?? '').toLowerCase();
-    if (decay === 'stale' || decay === 'expired') reasons.push(`decay_state=${decay}`);
-    const liveVal = String((r as any).live_validation_state ?? '').toUpperCase();
-    if (liveVal && liveVal !== 'VALID') reasons.push(`live_validation_state=${liveVal}`);
-    // Per-factor floors — only checked when the field is present on the
-    // row. Server gate is authoritative; a row missing these came from
-    // a path that didn't run the elite gate (cache, pre-migration row).
-    const checkFactor = (key: string, floor: number) => {
-      const v = (r as any)[key];
-      if (v == null) return;
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < floor) reasons.push(`${key}=${n}`);
-    };
-    checkFactor('portfolio_fit_score', 70);
-    checkFactor('liquidity_score',     60);
-    checkFactor('market_regime_score', 65);
-    checkFactor('data_quality_score',  80);
-    const conv = String((r as any).conviction_band ?? '').toLowerCase();
-    if (conv === 'avoid') reasons.push('conviction_band=avoid');
-    return { passed: reasons.length === 0, reasons };
+    return { passed: true, reasons: ['server_signals_tier'] };
   };
 
   // Audit + filter pass. Logs every input row, every rejection, and
@@ -2070,15 +2008,15 @@ export default function SignalsPage() {
               );
             })()}
             <div style={{ textAlign: 'center', background: '#EFF6FF', borderRadius: 8, padding: '8px 16px' }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#1D4ED8' }}>{counters?.approvedTotal ?? validRows.length}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#1D4ED8' }}>{validRows.length}</div>
               <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>APPROVED TOTAL</div>
             </div>
             <div style={{ textAlign: 'center', background: '#F0FDF4', borderRadius: 8, padding: '8px 16px' }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#16A34A' }}>{counters?.approvedBuy ?? buySignals.length}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#16A34A' }}>{buySignals.length}</div>
               <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>APPROVED BUY</div>
             </div>
             <div style={{ textAlign: 'center', background: '#FEF2F2', borderRadius: 8, padding: '8px 16px' }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#DC2626' }}>{counters?.approvedSell ?? sellSignals.length}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#DC2626' }}>{sellSignals.length}</div>
               <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>APPROVED SELL</div>
             </div>
             {/*
@@ -2128,7 +2066,7 @@ export default function SignalsPage() {
               // been stale on this surface; derive from the same tab
               // counts the strip uses so the summary line and the tab
               // headers can never disagree.
-              const approvedNow      = counters?.approvedTotal ?? signals.length;
+              const approvedNow      = validRows.length;
               const highPotentialNow = Math.max(counters?.highPotentialTotal ?? 0, highPotential.length);
               const watchlistNow     = Math.max(counters?.watchlistTotal     ?? 0, watchlistTotal);
               const rejectedNow      = Math.max(counters?.rejectedTotal      ?? 0, rejectedTotal);
@@ -2157,7 +2095,7 @@ export default function SignalsPage() {
               rejected candidates exists. Keeps the operator informed
               without changing any approval rule. */}
           {(() => {
-            const approvedNow = counters?.approvedTotal ?? signals.length;
+            const approvedNow = validRows.length;
             const hasOtherCandidates = (watchlistTotal + rejectedTotal + highPotential.length) > 0;
             if (approvedNow !== 0 || !hasOtherCandidates) return null;
             return (
@@ -2233,7 +2171,7 @@ export default function SignalsPage() {
           const isBootstrapData = isBootstrap;
           if (!marketOpen) {
             headline = `Market ${marketLabel}`;
-            const approvedZero = (counters?.approvedTotal ?? 0) === 0;
+            const approvedZero = validRows.length === 0;
             sub = approvedZero && (watchlistTotal > 0 || highPotential.length > 0)
               ? 'Market Closed — Showing last-close watchlist candidates'
               : isBootstrap
@@ -2490,7 +2428,7 @@ export default function SignalsPage() {
             the dashboard never looks empty. Each card explains the gap
             between the candidate and the institutional bar. Warning copy
             makes it explicit these are NOT execution-ready. */}
-        {(counters?.approvedTotal ?? validRows.length) === 0 && nearestSignals && nearestSignals.length > 0 && (
+        {validRows.length === 0 && nearestSignals && nearestSignals.length > 0 && (
           <Card style={{ marginBottom: 20, borderColor: '#FCD34D', background: '#FFFBEB' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <Target size={18} color="#B45309" style={{ marginTop: 2, flexShrink: 0 }} />
@@ -2697,7 +2635,7 @@ export default function SignalsPage() {
             // The server's counters block can lag behind the granular
             // arrays (different code paths populate them), and we'd
             // rather over-count by one than hide a populated tab.
-            { key: 'APPROVED'       as const, label: 'APPROVED',       count: Math.max(counters?.approvedTotal       ?? 0, validRows.length),       icon: <Shield        size={13} /> },
+            { key: 'APPROVED'       as const, label: 'APPROVED',       count: validRows.length,       icon: <Shield        size={13} /> },
             { key: 'HIGH_POTENTIAL' as const, label: 'HIGH POTENTIAL', count: Math.max(counters?.highPotentialTotal  ?? 0, highPotential.length),   icon: <Zap           size={13} /> },
             { key: 'WATCHLIST'      as const, label: 'WATCHLIST',      count: Math.max(counters?.watchlistTotal      ?? 0, watchlistTotal),         icon: <Activity      size={13} /> },
             { key: 'REJECTED'       as const, label: 'REJECTED',       count: Math.max(counters?.rejectedTotal       ?? 0, rejectedTotal),          icon: <AlertTriangle size={13} /> },

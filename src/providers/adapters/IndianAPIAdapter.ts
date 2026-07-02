@@ -1043,7 +1043,7 @@ export async function getHistorical(
   const sym = symbol.trim().toUpperCase();
   const period = mapRangeToIndianPeriod(range);
   const filter = 'price';
-  let raw: { datasets?: Array<{ metric?: string; values?: Array<[string, string | number]> }> };
+  let raw: { datasets?: Array<{ metric?: string; values?: Array<[string, string | number]> }>; error?: string };
   try {
     raw = await call<typeof raw>(
       INDIANAPI_ENDPOINTS.historical,
@@ -1072,6 +1072,19 @@ export async function getHistorical(
     // layer treats `candles.length === 0` as a clean skip (negative-
     // cached for 1h) so a single bad symbol never blocks the pipeline.
     return { symbol: sym, range, candles: [] };
+  }
+
+  const upstreamErr = typeof (raw as { error?: unknown }).error === 'string'
+    ? String((raw as { error: string }).error).trim()
+    : '';
+  if (upstreamErr) {
+    log.warn('historical_data upstream error payload', {
+      symbol: sym, period, filter, error: upstreamErr.slice(0, 240),
+    });
+    throw new IndianAPIError(
+      `IndianAPI historical_data error: ${upstreamErr.slice(0, 240)}`,
+      502,
+    );
   }
 
   // IndianAPI returns parallel arrays keyed by metric (Price / Volume

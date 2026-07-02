@@ -36,7 +36,8 @@ import {
   type SignalStatus,
 } from '../core/runRejectionEngine';
 import type { PortfolioFitResult, ExecutionReadiness } from '../types/phase3.types';
-import { runPhase4Scoring, type FinalScoreBand } from '../scoring/phase4FactorAdapter';
+import { runPhase4Scoring, normalizeConfidenceBreakdownForPhase4, type FinalScoreBand } from '../scoring/phase4FactorAdapter';
+import { applyStrategyModeCaps } from '../strategies/strategyModePolicy';
 
 // ════════════════════════════════════════════════════════════════
 //  PUBLIC TYPES — canonical shape for live per-instrument analysis
@@ -471,13 +472,14 @@ function buildFromCandidate(
   // ── Phase-4 scoring (calculateFinalScore + 6-band) ────────────
   // Same adapter the batch path calls — guarantees identical fields
   // across live and batch outputs.
+  const phase4Factors = normalizeConfidenceBreakdownForPhase4(best.confidence);
   const phase4 = runPhase4Scoring({
     strategyQuality:    best.confidence.finalScore,
-    trendAlignment:     best.confidence.trendScore,
-    momentum:           best.confidence.momentumScore,
-    volumeConfirmation: best.confidence.volumeScore,
+    trendAlignment:     phase4Factors.trendAlignment,
+    momentum:           phase4Factors.momentum,
+    volumeConfirmation: phase4Factors.volumeConfirmation,
     liquidity:          null,                            // derived from volumeVs20dAvg
-    marketRegime:       contextScore,
+    marketRegime:       phase4Factors.marketRegime ?? contextScore,
     portfolioFit:       50,                              // live has no portfolio context
     riskRewardRatio:    rewardRisk,
     volumeVs20dAvg:     best.features.volume.volumeVs20dAvg ?? null,
@@ -485,6 +487,14 @@ function buildFromCandidate(
     manipulationScore:  null,
     ageBars:            0,
     upstreamStatus:     'APPROVED_SIGNAL',
+  });
+
+  const modeCaps = applyStrategyModeCaps({
+    strategy:              best.strategy,
+    phase4Classification:  phase4.classification,
+    signalStatus:          'APPROVED_SIGNAL',
+    confidenceScore:       confidence,
+    finalScore:            phase4.final_score,
   });
 
   return {
@@ -498,11 +508,13 @@ function buildFromCandidate(
     conviction_band:   mapConfidenceBand(best.confidence.band),
     market_stance:     'selective',
     regime_alignment:  Math.round(contextScore),
-    rejection_reasons: [],
+    rejection_reasons: modeCaps.capped
+      ? [`Strategy mode cap: ${modeCaps.capReason ?? modeCaps.effectiveMode}`]
+      : [],
     rejection_codes:   [],
-    signal_status:     'APPROVED_SIGNAL',
+    signal_status:     modeCaps.signalStatus ?? 'APPROVED_SIGNAL',
     final_score:       phase4.final_score,
-    classification:    phase4.classification,
+    classification:    modeCaps.phase4Classification,
     factor_scores_phase4: phase4.factor_scores,
     soft_warnings:     best.warnings,
     blocked_by: {
@@ -803,13 +815,14 @@ export async function generateSignal(
     // can read `liquidity_score` (and other Phase-4 outputs) from
     // them. Without this, the Phase-5 numeric gates would have no
     // 0-100 liquidity score to evaluate.
+    const livePhase4Factors = normalizeConfidenceBreakdownForPhase4(best.confidence);
     const livePhase4 = runPhase4Scoring({
       strategyQuality:    best.confidence.finalScore,
-      trendAlignment:     best.confidence.trendScore,
-      momentum:           best.confidence.momentumScore,
-      volumeConfirmation: best.confidence.volumeScore,
+      trendAlignment:     livePhase4Factors.trendAlignment,
+      momentum:           livePhase4Factors.momentum,
+      volumeConfirmation: livePhase4Factors.volumeConfirmation,
       liquidity:          null,
-      marketRegime:       computeContextScore(benchmark.regime.label),
+      marketRegime:       livePhase4Factors.marketRegime ?? computeContextScore(benchmark.regime.label),
       portfolioFit:       50,                                 // live has no portfolio context
       riskRewardRatio:    best.tradePlan.rewardRiskApprox,
       volumeVs20dAvg:     best.features.volume.volumeVs20dAvg ?? null,
@@ -853,10 +866,6 @@ export async function generateSignal(
       direction:          liveDirection,
     };
     const decision = runRejectionEngine(rejectionInput);
-    console.log(
-      `[SignalEngine] ${tradingsymbol} rejection=${decision.finalDecision} ` +
-      `status=${decision.signalStatus} code=${decision.rejectionCode ?? 'none'}`
-    );
 
     if (decision.finalDecision === 'rejected') {
       const reasons = [

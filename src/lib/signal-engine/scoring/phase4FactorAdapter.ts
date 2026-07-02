@@ -28,6 +28,48 @@ import {
   type FinalScoreFactorInputs,
 } from './scoringEngine';
 import { getFinalScoreWeights } from './strategyWeightModel';
+import { clamp } from '../utils/math';
+
+/** Max raw points from confidenceScorer.ts component buckets. */
+export const CONFIDENCE_COMPONENT_MAX = {
+  trend:    25,
+  momentum: 20,
+  volume:   20,
+  context:  15,
+} as const;
+
+/**
+ * Map a raw component score (0..max) to the 0-100 scale that
+ * `calculateFinalScore` expects for factor inputs.
+ */
+export function normalizeScore(
+  value: number | null | undefined,
+  max: number,
+): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (max <= 0) return 0;
+  return clamp((value / max) * 100, 0, 100);
+}
+
+/** Normalize confidence-breakdown components for Phase-4 factor inputs. */
+export function normalizeConfidenceBreakdownForPhase4(confidence: {
+  trendScore:     number;
+  momentumScore:  number;
+  volumeScore:    number;
+  contextScore?: number | null;
+}): {
+  trendAlignment:     number | null;
+  momentum:           number | null;
+  volumeConfirmation: number | null;
+  marketRegime:       number | null;
+} {
+  return {
+    trendAlignment:     normalizeScore(confidence.trendScore,    CONFIDENCE_COMPONENT_MAX.trend),
+    momentum:           normalizeScore(confidence.momentumScore, CONFIDENCE_COMPONENT_MAX.momentum),
+    volumeConfirmation: normalizeScore(confidence.volumeScore,   CONFIDENCE_COMPONENT_MAX.volume),
+    marketRegime:       normalizeScore(confidence.contextScore,  CONFIDENCE_COMPONENT_MAX.context),
+  };
+}
 
 /** Tri-state inherited from upstream rejection engine. When set,
  *  the resulting classification is forced to match — calculateFinalScore

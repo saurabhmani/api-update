@@ -302,6 +302,11 @@ export interface Phase4SignalEnvelope {
   // legacy (pass-through) rows.
   phase11?: import('../pipeline/runPhase11Pipeline').Phase11RunOutput | null;
 
+  /** Discovery-layer technical quality (portfolio-independent). */
+  signalQualityStatus?: import('../discovery/signalDiscoveryStatus').SignalQualityStatus;
+  executionStatus?: import('../discovery/signalDiscoveryStatus').SignalExecutionStatus;
+  executionBlockReason?: string | null;
+
   // Standard
   reasons: string[];
   warnings: string[];

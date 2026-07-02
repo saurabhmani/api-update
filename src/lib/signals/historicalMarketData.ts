@@ -137,6 +137,121 @@ const intervalToCandleType = (i: HistoricalInterval): { candle_type: string; int
   return                        { candle_type: 'intraday', interval_unit: '1minute' };
 };
 
+type CandleRow = {
+  symbol_key: string;
+  ts: string | Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+function mapCandleRows(rows: CandleRow[]): HistoricalCandle[] {
+  return rows.map((r) => ({
+    ts:     typeof r.ts === 'string' ? r.ts : new Date(r.ts).toISOString(),
+    open:   Number(r.open),
+    high:   Number(r.high),
+    low:    Number(r.low),
+    close:  Number(r.close),
+    volume: Number(r.volume ?? 0),
+  }));
+}
+
+function emptyCandleResult(
+  symbol: string,
+  interval: HistoricalInterval,
+  warnings: string[] = [],
+): HistoricalCandleResult {
+  return { symbol, interval, candles: [], warnings, available: false };
+}
+
+const BATCH_CHUNK_SIZE = 100;
+
+/** Batch candle fetch — one SQL round-trip per chunk instead of N sequential
+ *  per-symbol queries (primary backtest / daily-report bottleneck fix). */
+export async function getHistoricalCandlesBatch(
+  symbols:   string[],
+  startDate: string,
+  endDate:   string,
+  interval:  HistoricalInterval = '1day',
+): Promise<Map<string, HistoricalCandleResult>> {
+  const out = new Map<string, HistoricalCandleResult>();
+  const normalized = [...new Set(
+    symbols.map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean),
+  )];
+  for (const sym of normalized) {
+    out.set(sym, emptyCandleResult(sym, interval));
+  }
+  if (!normalized.length || !startDate || !endDate) return out;
+
+  const { candle_type, interval_unit } = intervalToCandleType(interval);
+  const useDateBounds = interval === '1day';
+
+  for (let i = 0; i < normalized.length; i += BATCH_CHUNK_SIZE) {
+    const chunk = normalized.slice(i, i + BATCH_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(',');
+    try {
+      const rows: CandleRow[] = queryRows(await (db as any).query(
+        useDateBounds
+          ? `SELECT UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) AS symbol_key,
+                    ts, open, high, low, close, volume
+               FROM candles
+              WHERE candle_type   = ?
+                AND interval_unit = ?
+                AND UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) IN (${placeholders})
+                AND DATE(ts) >= DATE(?)
+                AND DATE(ts) <= DATE(?)
+              ORDER BY symbol_key, ts ASC`
+          : `SELECT UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) AS symbol_key,
+                    ts, open, high, low, close, volume
+               FROM candles
+              WHERE candle_type   = ?
+                AND interval_unit = ?
+                AND UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) IN (${placeholders})
+                AND ts >= ?
+                AND ts <= ?
+              ORDER BY symbol_key, ts ASC`,
+        useDateBounds
+          ? [candle_type, interval_unit, ...chunk, startDate, endDate]
+          : [candle_type, interval_unit, ...chunk, startDate, endDate],
+      ));
+
+      const bySymbol = new Map<string, HistoricalCandle[]>();
+      for (const row of rows) {
+        const sym = String(row.symbol_key ?? '').trim().toUpperCase();
+        if (!sym) continue;
+        if (!bySymbol.has(sym)) bySymbol.set(sym, []);
+        const c = mapCandleRows([row])[0];
+        if (c) bySymbol.get(sym)!.push(c);
+      }
+
+      for (const sym of chunk) {
+        const candles = bySymbol.get(sym) ?? [];
+        const warnings: string[] = [];
+        if (candles.length === 0) {
+          warnings.push(`No ${interval} candles in DB for ${sym} between ${startDate} and ${endDate}.`);
+        }
+        out.set(sym, {
+          symbol: sym,
+          interval,
+          candles,
+          warnings,
+          available: candles.length > 0,
+        });
+      }
+    } catch (e) {
+      const msg = (e as Error).message ?? 'unknown error';
+      log.warn('getHistoricalCandlesBatch chunk failed', { interval, chunkSize: chunk.length, msg });
+      for (const sym of chunk) {
+        out.set(sym, emptyCandleResult(sym, interval, [`Historical candle batch lookup failed: ${msg}`]));
+      }
+    }
+  }
+
+  return out;
+}
+
 /** Pull historical candles for one symbol from the MySQL `candles`
  *  table. Bounded by [startDate, endDate]. Always returns a result —
  *  `available=false + candles=[]` when the lookup found nothing. */
@@ -152,77 +267,8 @@ export async function getHistoricalCandles(
     return { symbol, interval, candles: [], warnings, available: false };
   }
   const sym = symbol.toUpperCase().trim();
-  const { candle_type, interval_unit } = intervalToCandleType(interval);
-  const useDateBounds = interval === '1day';
-
-  try {
-    const rows: Array<{
-      ts: string | Date; open: number; high: number; low: number; close: number; volume: number;
-    }> = queryRows(await (db as any).query(
-      useDateBounds
-        ? `SELECT ts, open, high, low, close, volume
-           FROM candles
-           WHERE (instrument_key = ?
-                  OR instrument_key = ?
-                  OR instrument_key LIKE ?
-                  OR instrument_key LIKE ?
-                  OR instrument_key LIKE ?)
-             AND candle_type   = ?
-             AND interval_unit = ?
-             AND DATE(ts) >= DATE(?)
-             AND DATE(ts) <= DATE(?)
-           ORDER BY ts ASC`
-        : `SELECT ts, open, high, low, close, volume
-           FROM candles
-           WHERE (instrument_key = ?
-                  OR instrument_key = ?
-                  OR instrument_key LIKE ?
-                  OR instrument_key LIKE ?
-                  OR instrument_key LIKE ?)
-             AND candle_type   = ?
-             AND interval_unit = ?
-             AND ts >= ?
-             AND ts <= ?
-           ORDER BY ts ASC`,
-      useDateBounds
-        ? [
-          sym,
-          `NSE_EQ|${sym}`,
-          `%|${sym}`,
-          `${sym}|%`,
-          `%|${sym}|%`,
-          candle_type, interval_unit,
-          startDate, endDate,
-        ]
-        : [
-          sym,
-          `NSE_EQ|${sym}`,
-          `%|${sym}`,
-          `${sym}|%`,
-          `%|${sym}|%`,
-          candle_type, interval_unit,
-          startDate, endDate,
-        ],
-    ));
-
-    const candles: HistoricalCandle[] = rows.map((r) => ({
-      ts:     typeof r.ts === 'string' ? r.ts : new Date(r.ts).toISOString(),
-      open:   Number(r.open),
-      high:   Number(r.high),
-      low:    Number(r.low),
-      close:  Number(r.close),
-      volume: Number(r.volume ?? 0),
-    }));
-    if (candles.length === 0) {
-      warnings.push(`No ${interval} candles in DB for ${sym} between ${startDate} and ${endDate}.`);
-    }
-    return { symbol: sym, interval, candles, warnings, available: candles.length > 0 };
-  } catch (e) {
-    const msg = (e as Error).message ?? 'unknown error';
-    log.warn('getHistoricalCandles failed', { symbol, interval, msg });
-    warnings.push(`Historical candle lookup failed: ${msg}`);
-    return { symbol, interval, candles: [], warnings, available: false };
-  }
+  const batch = await getHistoricalCandlesBatch([sym], startDate, endDate, interval);
+  return batch.get(sym) ?? emptyCandleResult(sym, interval, ['Historical candle lookup returned no result']);
 }
 
 /** Pull intraday candles for one symbol on one trade date. */
@@ -281,6 +327,8 @@ async function queryMarketMoversForDate(
   tradeDate: string,
   limit: number,
 ): Promise<MarketMover[]> {
+  // Window-function scan bounded to ±10 calendar days around tradeDate —
+  // avoids per-row correlated subquery over the full candles table.
   const rows: Array<{
     instrument_key: string;
     symbol: string;
@@ -290,37 +338,34 @@ async function queryMarketMoversForDate(
     move_percent: number;
   }> = queryRows(await (db as any).query(
     `SELECT
-       curr.instrument_key,
-       SUBSTRING_INDEX(curr.instrument_key, '|', -1) AS symbol,
-       curr.close,
-       prev.close AS prev_close,
-       curr.volume,
-       ((curr.close - prev.close) / prev.close) * 100 AS move_percent
-     FROM candles curr
-     INNER JOIN candles prev
-       ON prev.instrument_key = curr.instrument_key
-      AND prev.candle_type   = ?
-      AND prev.interval_unit = ?
-      AND prev.ts = (
-        SELECT MAX(p2.ts)
-        FROM candles p2
-        WHERE p2.instrument_key = curr.instrument_key
-          AND p2.candle_type   = ?
-          AND p2.interval_unit = ?
-          AND DATE(p2.ts) < DATE(curr.ts)
-      )
-     WHERE curr.candle_type   = ?
-       AND curr.interval_unit = ?
-       AND DATE(curr.ts) = ?
-       AND prev.close > 0
-       AND curr.close > 0
-     ORDER BY ABS(((curr.close - prev.close) / prev.close) * 100) DESC
+       instrument_key,
+       symbol,
+       close,
+       prev_close,
+       volume,
+       ((close - prev_close) / prev_close) * 100 AS move_percent
+     FROM (
+       SELECT
+         instrument_key,
+         SUBSTRING_INDEX(instrument_key, '|', -1) AS symbol,
+         close,
+         volume,
+         LAG(close) OVER (PARTITION BY instrument_key ORDER BY ts) AS prev_close,
+         DATE(ts) AS trade_date
+       FROM candles
+       WHERE candle_type   = ?
+         AND interval_unit = ?
+         AND ts >= DATE_SUB(?, INTERVAL 10 DAY)
+         AND ts <= DATE_ADD(?, INTERVAL 1 DAY)
+     ) ranked
+     WHERE trade_date = DATE(?)
+       AND prev_close > 0
+       AND close > 0
+     ORDER BY ABS(((close - prev_close) / prev_close) * 100) DESC
      LIMIT ?`,
     [
       EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-      EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-      EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-      tradeDate,
+      tradeDate, tradeDate, tradeDate,
       limit,
     ],
   ));

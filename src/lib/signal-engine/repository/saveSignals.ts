@@ -20,6 +20,11 @@ import { validatePostSignal } from '../validation/postSignalValidator';
 import { computeFinalScore } from '../ranking/dynamicRanker';
 import { upsertTrackerOnDetection } from './maturityTracker';
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
+import {
+  deriveSignalQualityStatus,
+  qualityToPersistedSignalStatus,
+  qualityToRowStatus,
+} from '../discovery/signalDiscoveryStatus';
 
 // Maximum acceptable gap between the strategy-derived entry price
 // (built from daily candles, possibly hours stale) and the live
@@ -517,21 +522,36 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
     new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
   );
 
-  // Product-facing tri-state classification, persisted alongside
-  // the lifecycle `status` column. saveSignals only ever receives
-  // signals the rejection engine did NOT reject outright — so the
-  // classification is entirely driven by `status` and confidence:
-  //   - status='active' + conf ≥ 55 → APPROVED_SIGNAL
-  //   - status='watchlist'           → DEVELOPING_SETUP
-  //   - active but below conv floor → DEVELOPING_SETUP
-  // NO_TRADE never reaches this writer (those rows are filtered
-  // upstream in generatePhase3Signals). readSignals derives the
-  // same tri-state on the fly for historical rows whose column is
-  // still NULL.
-  const sigStatus: 'APPROVED_SIGNAL' | 'DEVELOPING_SETUP' =
-    s.status === 'watchlist'             ? 'DEVELOPING_SETUP'
-    : (s.confidenceScore ?? 0) < 55      ? 'DEVELOPING_SETUP'
-    :                                      'APPROVED_SIGNAL';
+  // Product-facing tri-state: prefer explicit signalQualityStatus from
+  // Phase 3/4; when absent (legacy callers), derive from phase4 band
+  // so signal_status never contradicts classification (e.g.
+  // APPROVED_SIGNAL + WATCHLIST_ONLY).
+  const phase4FinalScoreEarly = s.phase4FinalScore ?? null;
+  const phase4ClassificationEarly = s.phase4Classification ?? null;
+  const legacyDerivedQuality =
+    !s.signalQualityStatus && phase4ClassificationEarly
+      ? deriveSignalQualityStatus({
+          phase4Classification: phase4ClassificationEarly,
+          technicalRejected:    false,
+          finalScore:           phase4FinalScoreEarly,
+        })
+      : null;
+  const resolvedQuality = s.signalQualityStatus ?? legacyDerivedQuality ?? null;
+
+  const sigStatus: 'APPROVED_SIGNAL' | 'DEVELOPING_SETUP' | 'NO_TRADE' =
+    resolvedQuality
+      ? qualityToPersistedSignalStatus(resolvedQuality)
+      : s.status === 'watchlist'
+        ? 'DEVELOPING_SETUP'
+        : (s.confidenceScore ?? 0) < 55
+          ? 'DEVELOPING_SETUP'
+          : 'APPROVED_SIGNAL';
+
+  const rowLifecycleStatus = resolvedQuality
+    ? qualityToRowStatus(resolvedQuality)
+    : s.status === 'watchlist'
+      ? 'watchlist'
+      : 'active';
 
   // ── Phase-4 scoring values (calculateFinalScore + 6-band) ─────
   // Threaded from ExecutableSignal via generatePhase4Signals. When
@@ -540,8 +560,8 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
   // `final_score` for filtering/ordering. Existing `final_score`
   // (dynamic) and the new `composite_final_score` (Phase-2) are
   // both written so the Phase-1 hard gate remains untouched.
-  const phase4FinalScore     = s.phase4FinalScore     ?? null;
-  const phase4Classification = s.phase4Classification ?? null;
+  const phase4FinalScore     = phase4FinalScoreEarly;
+  const phase4Classification = phase4ClassificationEarly;
   const phase4FactorScoresJson = s.phase4FactorScores
     ? JSON.stringify(s.phase4FactorScores)
     : null;
@@ -563,10 +583,15 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
     s.phase11RejectionCodes && s.phase11RejectionCodes.length > 0
       ? JSON.stringify(s.phase11RejectionCodes)
       : null;
-  const rejectionReasonsJson =
-    s.phase11RejectionReasons && s.phase11RejectionReasons.length > 0
-      ? JSON.stringify(s.phase11RejectionReasons)
-      : null;
+  const rejectionReasonsJson = (() => {
+    const reasons: string[] = [
+      ...(s.phase11RejectionReasons ?? []),
+    ];
+    if (s.executionBlockReason && s.executionStatus && s.executionStatus !== 'EXECUTABLE') {
+      reasons.push(`[${s.executionStatus}] ${s.executionBlockReason}`);
+    }
+    return reasons.length > 0 ? JSON.stringify(reasons) : null;
+  })();
   const liveValidationReasonsJson =
     s.phase11LiveValidationReasons && s.phase11LiveValidationReasons.length > 0
       ? JSON.stringify(s.phase11LiveValidationReasons)
@@ -599,7 +624,7 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
       s.riskScore, s.riskBand,
       entryPrice, stopLoss, target1, target2,
       riskReward, s.marketRegime,
-      s.status === 'active' ? 'active' : s.status === 'watchlist' ? 'watchlist' : 'active',
+      rowLifecycleStatus,
       sigStatus,
       toMysqlDateTime(s.generatedAt),
       opportunityScore, scenarioTag, marketStance, factorScoresJson,

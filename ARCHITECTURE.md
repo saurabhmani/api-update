@@ -1,7 +1,7 @@
 # Quantorus365 — Institutional Intelligence Architecture
 
 **Version:** 2.1.0  
-**Last updated:** 2026-06-26
+**Last updated:** 2026-07-02
 
 ---
 
@@ -68,20 +68,25 @@ Every call through `MarketDataProvider` returns a `ProviderResponse<T>` that car
 
 ## Runtime Topology
 
-Production runs as a **single PM2-managed Node process** (`server.js`), not bare `next start`.
+Production may run in one of **three supported layouts**. All use `node-cron` / `setInterval` timers **inside Node processes** — they are not separate OS cron jobs.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    nginx (HTTPS) → dev.quantorus.in                            │
+│                    nginx (HTTPS) → quantorus.in                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  server.js  (quantorus365-app, PM2)                                          │
+│  Layout A — unified (recommended in ecosystem.config.js)                       │
+│  server.js  (PM2)                                                              │
 │  ├── Next.js HTTP server              → PORT 5000 (default)                  │
 │  ├── WebSocket stream server          → STREAM_WS_PORT 5001                  │
-│  │     (tickBus fan-out via instrumentation.ts)                              │
-│  └── Child worker processes (supervised, isolated crashes)                   │
-│        ├── scheduler.ts              — market data, signal regen, maturity │
-│        ├── manipulationScannerCli    — daily manipulation scan (18:30 IST) │
-│        └── learningScheduler.ts      — outcome grading / calibration         │
+│  └── Child: scheduler.ts              — full worker schedule (see below)     │
+│                                                                               │
+│  Layout B — split (common on VPS)                                              │
+│  PM2 #1: npm start / next start       → HTTP only (port 3000 or 5000)        │
+│  PM2 #2: tsx src/lib/workers/scheduler.ts → full worker schedule             │
+│                                                                               │
+│  Layout C — dev / single-process fallback                                      │
+│  npm run dev  OR  next start with Q365_INPROC_SCHEDULER=1                     │
+│  └── bootInProc.ts (instrumentation.ts) — in-process crons + maturity        │
 └─────────────────────────────────────────────────────────────────────────────┘
          │                    │                    │
          ▼                    ▼                    ▼
@@ -89,12 +94,41 @@ Production runs as a **single PM2-managed Node process** (`server.js`), not bare
       PostgreSQL (target)   in-memory cache    Yahoo (fallback)
 ```
 
-| Mode | Entry | Port |
-|------|-------|------|
-| **Production** | `node server.js` via PM2 (`ecosystem.config.js`) | 5000 / 5001 |
-| **Local dev** | `npm run dev` (`next dev`) | 3000 |
+| Mode | Entry | Port | Scheduler owner |
+|------|-------|------|-----------------|
+| **Production (unified)** | `node server.js` via PM2 (`ecosystem.config.js`) | 5000 / 5001 | `scheduler.ts` child |
+| **Production (split)** | `npm start` + separate `quantorus365-scheduler` PM2 app | 3000 or 5000 | `scheduler.ts` process |
+| **Production (in-proc)** | `next start` + `Q365_INPROC_SCHEDULER=1` | 3000 or 5000 | `bootInProc.ts` inside Next |
+| **Local dev** | `npm run dev` (`next dev`) | 3000 | `bootInProc.ts` (auto in development) |
 
-nginx terminates TLS and proxies to `127.0.0.1:5000`. The Node process **cannot** reliably HTTP-call its own public hostname (hairpin NAT) — see **internalFetch** below.
+**Critical:** `next start` alone does **not** register the full worker schedule unless either (a) `bootInProcScheduler()` boots in-process (`Q365_INPROC_SCHEDULER=1` or `Q365_INPROC_REGEN=1`), or (b) a separate `scheduler.ts` PM2 process is running. Without one of these, the **60s maturity worker** never fires and `q365_confirmed_signal_snapshots` stays empty.
+
+`server.js` sets `Q365_INPROC_SCHEDULER=0` by default when unset, to avoid double-firing crons when the `scheduler.ts` child is supervised.
+
+nginx terminates TLS and proxies to the app port (commonly `127.0.0.1:5000` or `:3000`). The Node process **cannot** reliably HTTP-call its own public hostname (hairpin NAT) — see **internalFetch** below.
+
+### Scheduler ownership matrix
+
+| Job | `scheduler.ts` child | `bootInProc.ts` (in-process) |
+|-----|----------------------|--------------------------------|
+| Daily scan ladder (08:30–18:30 IST) | Yes | Yes |
+| Market-data 10-min loop (`src/lib/scheduler.ts`) | Yes | **No** |
+| Weekly NSE 1000 universe rebuild | Yes | **No** |
+| Maturity worker (60s, 24×7) | Yes | Yes |
+| Snapshot lifecycle (30s, 24×7) | Yes | Yes |
+| Nightly backtest (19:00 IST) | Yes | **No** |
+| News ingestion (5 min) | No | Yes |
+| Manipulation one-shot (server.js UTC cron) | Via `server.js` only | No |
+
+Verify scheduler health in PM2 logs:
+
+```bash
+# Unified or in-proc
+pm2 logs <app> --lines 300 | grep -iE 'worker-scheduler ready|\[INPROC MATURITY\]|\[MATURITY\]|daily scan schedule'
+
+# Split layout — check both processes
+pm2 logs quantorus365-scheduler --lines 100 | grep 'worker-scheduler ready'
+```
 
 ---
 
@@ -144,6 +178,87 @@ PORT=5000
 | `GET /api/signals/backtest` | signals pool |
 
 Browser/client code may use relative paths (`fetch('/api/signals')`) — the browser talks to nginx, which works. Only **server-side** aggregators need loopback.
+
+---
+
+## Environment Configuration
+
+Env resolution is centralized in `src/lib/envPath.ts` (`resolveEnvFilePath`).
+
+| Priority | Source | When |
+|----------|--------|------|
+| 1 | `DOTENV_CONFIG_PATH` | Explicit PM2 / CLI override |
+| 2 | `.env` | `NODE_ENV=production` (VPS convention) |
+| 3 | `.env.local` | Local dev when present |
+| 4 | `.env` | Fallback |
+
+**Next.js** also loads `.env`, `.env.local`, `.env.production` at `next start` / `next dev` — but CLI scripts and `server.js` use `resolveEnvFilePath()` unless `DOTENV_CONFIG_PATH` is set.
+
+**Production operators using `.env.local` only** should either:
+
+```bash
+ln -sf .env.local .env
+# or
+DOTENV_CONFIG_PATH=/var/www/api-update/.env.local
+```
+
+Scripts (`backfillCandles.ts`, `weeklyNse1000UniverseRebuild.ts`, etc.) load `.env.local` first, then `.env` (first value wins for duplicate keys).
+
+### Key scheduler env vars
+
+| Variable | Effect |
+|----------|--------|
+| `Q365_INPROC_SCHEDULER=1` | Force in-process crons inside Next (`bootInProc.ts`) |
+| `Q365_INPROC_SCHEDULER=0` | Suppress in-proc (use when `scheduler.ts` child runs) |
+| `Q365_INPROC_REGEN=1` | Also boots in-proc if scheduler flag unset |
+| `DAILY_SCAN_SCHEDULE_ENABLED` | Weekday scan ladder (default `true`) |
+| `SIGNAL_INTRADAY_REGEN_ENABLED` | Legacy 5/10-min regen loops (default `false`) |
+| `UNIVERSE_WEEKLY_REBUILD_ENABLED` | Sunday universe rebuild cron |
+| `UNIVERSE_WEEKLY_REBUILD_CRON` | Default `0 22 * * 0` (Sun 22:00 IST) |
+
+---
+
+## NSE 1000 Tradeable Universe
+
+As of v2.1, the production universe is **liquidity-ranked NSE EQ symbols** (~1000 target), not the legacy static Nifty 500 CSV.
+
+| Concern | Truth |
+|---------|-------|
+| **Mode** | `UNIVERSE_MODE=NSE1000` (default); legacy `NIFTY500` still supported |
+| **Source of truth** | `q365_universe WHERE is_active=1` |
+| **Boot gate** | `initOnce()` in `nifty500Universe.ts` refuses boot if active count `< UNIVERSE_MIN_SIZE` |
+| **Default band** | min 950 / target 1000 / max 1050 |
+| **Master list** | `securities_master` (active EQ from `EQUITY_L.csv`) |
+| **Ranking input** | `candles` EOD traded value (≥ `UNIVERSE_MIN_ELIGIBLE_BARS` bars, default 80) |
+| **Auto-seed** | `UNIVERSE_AUTO_SEED_FROM_CSV=false` in prod — universe must be built deliberately |
+
+### Universe pipeline
+
+```
+EQUITY_L.csv  →  securities_master (active EQ)
+                      │
+                      ▼
+              candle backfill (IndianAPI, resume-capable)
+                      │
+                      ▼
+              nseUniverseRanker (liquidity sort + churn control)
+                      │
+                      ▼
+              q365_universe (is_active=1) + universe snapshot audit
+```
+
+| Script / npm command | Purpose |
+|---------------------|---------|
+| `npm run load:securities-master` | Import `EQUITY_L.csv` → `securities_master` |
+| `npm run candles:backfill:securities` | Backfill candles for securities_master pool |
+| `npm run build:nse1000-universe` | Rank + apply to `q365_universe` |
+| `npm run rebuild:nse1000-universe` | Full pipeline (import → backfill → rank → apply) |
+| `npm run rebuild:nse1000-universe:bootstrap` | Rank + apply only (skip backfill; first deploy) |
+| `npm run validate:nse1000-universe` | Acceptance checks (count band, bar depth, rank order) |
+
+Weekly rebuild runs via `startWeeklyUniverseSchedule()` in `scheduler.ts` when `UNIVERSE_WEEKLY_REBUILD_ENABLED=true`. Churn bands: add ≤ rank 900, keep ≤ 1100, remove > rank 1200 (env-tunable).
+
+Boot logs to grep: `[UNIVERSE_INIT_START]`, `[UNIVERSE_FINAL] count=…`, `[UNIVERSE READY]`.
 
 ---
 
@@ -355,6 +470,35 @@ The signal engine runs as a single sequential pipeline: Phase 1 → 2 → 3 → 
 
 **Phase 4 enriches but does not override approval decisions.**
 
+### Confirmed signals — two-layer architecture
+
+The `/signals` UI **Confirmed** tab reads only from `q365_confirmed_signal_snapshots` (`status='ACTIVE'`). Scanner output in `q365_signals` alone is **not** confirmed.
+
+```
+q365_signals (scanner)
+       │
+       ▼ upsert on detection
+q365_signal_maturity_tracker  ──60s worker──►  q365_confirmed_signal_snapshots
+       │              (signalMaturity.ts)              │
+       │                                               ▼
+       │                                    30s lifecycle worker
+       │                              (confirmedSnapshotLifecycle.ts)
+       │                                               │
+       └──────────────────────────────────► EXPIRED / TARGET_HIT / STOP_LOSS_HIT
+```
+
+| Layer | Table | Worker | Cadence |
+|-------|-------|--------|---------|
+| Scanner | `q365_signals` | Daily scans + optional intraday regen | IST schedule |
+| Maturity | `q365_signal_maturity_tracker` | `runSignalMaturityWorker()` | 60s, 24×7 |
+| Confirmed | `q365_confirmed_signal_snapshots` | `insertConfirmedSnapshotIfEligible()` | On promotion only |
+| Lifecycle | same | `runConfirmedSnapshotLifecycle()` | 30s, 24×7 |
+
+Promotion requires `signal_status=APPROVED_SIGNAL`, main-table `classification`, score/cycle/maturity floors, and passing the data-quality gate (`evaluateMaturityDqGate`). Rows with `DEVELOPING_SETUP` / `WATCHLIST_ONLY` appear in Watchlist tiers but **cannot promote**.
+
+Diagnostics: `GET /api/signals/diagnostics`, `npx tsx scripts/diagnoseApprovalFunnel.ts`.  
+Greppable logs: `[INPROC MATURITY]`, `[PROMOTION_BLOCK]`, `[PROMOTION_SUCCESS]`, `[MATURITY_FUNNEL]`.
+
 ### Canonical Rejection Engine (`core/runRejectionEngine.ts`)
 
 Runs 8 sequential gates, each producing a traced result:
@@ -395,21 +539,52 @@ All news enriched fields use **0-1 scale** (no mixed scales). Real scorecard dim
 
 ## Workers & Daily Scan Schedule
 
-Scheduled jobs run inside the worker process (`npm run scheduler` / `scheduler.ts` child). Full IST schedule: [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md).
+Scheduled jobs register inside **`src/lib/workers/scheduler.ts`** (standalone PM2 process or `server.js` child) and/or **`src/lib/workers/bootInProc.ts`** (in-process via `instrumentation.ts`). Full IST schedule: [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md).
 
-| Job (IST) | Purpose |
-|-----------|---------|
-| 08:30 Morning Scan | Pre-market signals from last EOD candle (DB-only) |
-| 16:00 Evening Update | IndianAPI EOD refresh → `candles` warehouse |
-| 16:30 Evening Scan | Fresh EOD signals after candle update |
-| 18:30 Manipulation Scan | Surveillance scan (reads candles; no duplicate ingestion) |
+### Weekday scan ladder (IST, Mon–Fri)
 
-Additional cron children from `server.js`:
+| Time | Cron | Job |
+|------|------|-----|
+| 08:30 | `30 8 * * 1-5` | Readiness check (DB probes — no signals) |
+| 09:20 | `20 9 * * 1-5` | First morning scan (DB-only Phase 4) |
+| 09:45 | `45 9 * * 1-5` | Main morning scan (DB-only Phase 4) |
+| 12:30 | `30 12 * * 1-5` | Midday rescore |
+| 14:45 | `45 14 * * 1-5` | Late rescore |
+| 16:00 | `0 16 * * 1-5` | Evening candle update (IndianAPI EOD) |
+| 16:30 | `30 16 * * 1-5` | Evening scan (DB-only Phase 4) |
+| 18:30 | `30 18 * * 1-5` | Manipulation scan (scan-only) |
 
-- **Learning scheduler** — outcome grading, calibration (~20:30 IST)
-- **Manipulation scanner CLI** — standalone daily scan path
+### Market-data cadence (`src/lib/scheduler.ts`, scheduler child only)
 
----
+| Time | Job |
+|------|-----|
+| 09:20 IST | Pre-open warmup |
+| 09:30–15:30 every 10m | Intraday batch refresh |
+| 09:30–15:30 every 1m | Pipeline heartbeat |
+| 15:35 IST | Post-close reconciliation |
+
+### Always-on (24×7)
+
+| Interval | Job |
+|----------|-----|
+| 30s | Confirmed snapshot lifecycle |
+| 60s | Signal maturity / promotion |
+| 60s | Backtest queue drain (if enabled) |
+
+### Nightly / weekly (scheduler child)
+
+| Time | Job |
+|------|-----|
+| 19:00 IST (Mon–Fri) | Nightly backtest |
+| 19:30 IST (Mon–Fri) | EOD bhavcopy + manipulation ingest |
+| Sun 22:00 IST (default) | NSE 1000 weekly universe rebuild |
+
+### `server.js` UTC crons (unified layout only)
+
+- **13:00 UTC** (18:30 IST) — manipulation scan one-shot child
+- **15:00 UTC** (20:30 IST) — learning scheduler one-shot child
+
+Legacy paths off by default: `SIGNAL_INTRADAY_REGEN_ENABLED`, `PREOPEN_CANDLE_WARMUP_ENABLED`, `SIGNALS_AUTO_RECOVERY_ENABLED`.
 
 ## Data Sources
 
@@ -435,7 +610,9 @@ Boot-time DDL: `src/lib/db/ensureAllSchemas.ts` (idempotent `CREATE TABLE IF NOT
 | Area | Key tables |
 |------|------------|
 | Auth | `users`, `user_sessions` |
-| Signals | `q365_signals`, `q365_signal_lifecycle`, `q365_strategy_breakdowns` |
+| Universe | `securities_master`, `q365_universe`, universe rebuild audit snapshots |
+| Signals | `q365_signals`, `q365_signal_maturity_tracker`, `q365_confirmed_signal_snapshots` |
+| Signal meta | `q365_signal_lifecycle`, `q365_strategy_breakdowns` |
 | Market warehouse | `candles`, `market_data_daily`, EOD ingestion logs |
 | News | `news_events`, `news_scores` |
 | Manipulation | manipulation events, scan snapshots |
@@ -516,6 +693,7 @@ ecosystem.config.js   # PM2 config
 | [`docs/signal-engine-flow.md`](docs/signal-engine-flow.md) | 4-phase pipeline, lifecycle |
 | [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md) | IST cron jobs, dependency graph |
 | [`docs/PROVIDER_REQUEST_POLICY.md`](docs/PROVIDER_REQUEST_POLICY.md) | IndianAPI budget policy |
+| [`docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md`](docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md) | Daily report / backtest API perf notes |
 
 ---
 
@@ -527,17 +705,51 @@ cp .env.example .env.local          # fill in MYSQL + IndianAPI + session secret
 npm run db:ensure                     # boot-time MySQL DDL (or db:migrate-all)
 npm run db:migrate:pg                 # PostgreSQL canonical migrations
 npm run build
+```
+
+### Production PM2 — choose one layout
+
+**Unified (recommended):**
+
+```bash
+ln -sf .env.local .env                # or set DOTENV_CONFIG_PATH in ecosystem
 pm2 start ecosystem.config.js --env production
 pm2 save && pm2 startup
+```
+
+**Split (`next start` + scheduler):**
+
+```bash
+DOTENV_CONFIG_PATH=/var/www/api-update/.env.local NODE_ENV=production \
+  pm2 start npm --name quantorus365-prod -- start
+
+DOTENV_CONFIG_PATH=/var/www/api-update/.env.local NODE_ENV=production \
+  pm2 start npx --name quantorus365-scheduler -- tsx src/lib/workers/scheduler.ts
+
+# Prevent double crons in Next process:
+# Q365_INPROC_SCHEDULER=0
+
+pm2 save
+```
+
+### NSE 1000 first deploy (production)
+
+```bash
+npm run load:securities-master
+npm run candles:backfill:securities    # repeat until dry-run shows sufficient bars
+npm run rebuild:nse1000-universe:bootstrap
+npm run validate:nse1000-universe      # must pass before app boot (min 950 active)
+pm2 restart quantorus365-prod
 ```
 
 ### Production env (minimum)
 
 ```env
 NODE_ENV=production
-PORT=5000
+PORT=5000                             # or 3000 if nginx proxies there
 STREAM_WS_PORT=5001
 INTERNAL_APP_URL=http://127.0.0.1:5000
+DOTENV_CONFIG_PATH=/var/www/api-update/.env.local   # optional explicit override
 
 MYSQL_HOST=...
 MYSQL_DATABASE=...
@@ -546,7 +758,18 @@ MYSQL_PASSWORD=...
 
 SESSION_SECRET=...                    # 32+ chars
 INDIAN_API_KEY=...
-NEXT_PUBLIC_APP_URL=https://dev.quantorus.in
+NEXT_PUBLIC_APP_URL=https://quantorus.in
+
+# Universe (NSE 1000)
+UNIVERSE_MODE=NSE1000
+UNIVERSE_MIN_SIZE=950
+UNIVERSE_MAX_SIZE=1050
+UNIVERSE_TARGET_SIZE=1000
+UNIVERSE_AUTO_SEED_FROM_CSV=false
+
+# Scheduler — pick ONE owner (in-proc OR separate worker)
+Q365_INPROC_SCHEDULER=0               # when scheduler.ts PM2 process runs
+# Q365_INPROC_SCHEDULER=1             # when using next start only, no scheduler child
 ```
 
 ### First-run after deploy
@@ -574,14 +797,19 @@ GET /api/admin?action=get_stance
 ## Final Validation Checklist
 
 - [ ] No server route builds internal fetch origin from `req.url` — all use `internalFetch`
-- [ ] `INTERNAL_APP_URL` set on VPS (or defaults to `127.0.0.1:5000`)
+- [ ] `INTERNAL_APP_URL` set on VPS (or defaults to `127.0.0.1:5000` / `:3000`)
 - [ ] `grep -rn "from '@/providers/adapters/\(Yahoo\|IndianAPI\|Kite\)Adapter'" src/ --include="*.ts"` → only inside `src/providers/`
 - [ ] `system_thresholds` table has 25 rows after migration
 - [ ] All engines import from `systemConfigService`, not hardcoding values
 - [ ] `signal_rejections.approved=0` rows accumulate during market hours
 - [ ] Command Center `/dashboard` module statuses match `/signals/engine-health`
-- [ ] `ops.scheduler_runs` shows a row per 10-minute cycle during 09:30–15:30 IST
+- [ ] `ops.scheduler_runs` shows a row per 10-minute cycle during 09:30–15:30 IST (scheduler child running)
 - [ ] Provider response envelope includes `provider_name`, `source_type`, `vendor_timestamp`, `freshness_ms`, and `fallback_reason` on every return path
+- [ ] `npm run validate:nse1000-universe` passes (`active` in [950, 1050], liquidity-ranked, not CSV order)
+- [ ] Boot logs show `[UNIVERSE_FINAL] count=…` ≥ `UNIVERSE_MIN_SIZE` and no degraded-universe crash
+- [ ] PM2 logs show `[INPROC MATURITY]` or `[MATURITY]` every ~60s (maturity worker alive)
+- [ ] `q365_confirmed_signal_snapshots` has `ACTIVE` rows after market-hours scans (or `diagnoseApprovalFunnel.ts` shows promotion path clear)
+- [ ] Scheduler owner is explicit: `Q365_INPROC_SCHEDULER=0` when `quantorus365-scheduler` PM2 app runs; never both firing duplicate crons unintentionally
 
 ## Verifying IndianAPI connectivity
 

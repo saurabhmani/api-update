@@ -10,6 +10,7 @@
  *   npx tsx scripts/backfillCandles.ts --resume --dry-run
  *   npx tsx scripts/backfillCandles.ts --resume --max-fetch 50
  *   npx tsx scripts/backfillCandles.ts --symbol RELIANCE --min-bars 240
+ *   npx tsx scripts/backfillCandles.ts --source securities_master --resume
  */
 
 import { config as dotenvConfig } from 'dotenv';
@@ -18,7 +19,7 @@ import { resolve as resolvePath } from 'node:path';
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
-import { runCandleBackfillJob } from '@/lib/marketData/candleBackfillJob';
+import { runCandleBackfillJob, type BackfillSymbolSource } from '@/lib/marketData/candleBackfillJob';
 import { getHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import {
@@ -38,6 +39,7 @@ interface CliArgs {
   resume: boolean;
   maxFetch: number | undefined;
   symbols: string[];
+  symbolSource: BackfillSymbolSource;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -50,6 +52,7 @@ function parseArgs(argv: string[]): CliArgs {
   let resume = false;
   let maxFetch: number | undefined;
   const symbols: string[] = [];
+  let symbolSource: BackfillSymbolSource = 'q365_universe';
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -62,6 +65,10 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--delay-ms' && argv[i + 1]) { delayMs = Number(argv[++i]); }
     else if (a === '--max-fetch' && argv[i + 1]) { maxFetch = Number(argv[++i]); }
     else if (a === '--symbol' && argv[i + 1]) { symbols.push(String(argv[++i]).toUpperCase()); }
+    else if (a === '--source' && argv[i + 1]) {
+      const src = String(argv[++i]).trim().toLowerCase();
+      symbolSource = src === 'securities_master' ? 'securities_master' : 'q365_universe';
+    }
   }
 
   return {
@@ -74,6 +81,7 @@ function parseArgs(argv: string[]): CliArgs {
     resume: resume || symbols.length === 0,
     maxFetch: maxFetch != null && Number.isFinite(maxFetch) ? maxFetch : undefined,
     symbols,
+    symbolSource,
   };
 }
 
@@ -94,6 +102,12 @@ async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
     `[CANDLE BACKFILL PREFLIGHT] FAIL — ${inv.errorCode ?? 'unknown'}: ` +
     `${inv.errorMessage ?? inv.status}`,
   );
+  if (inv.errorMessage?.includes('screener.in')) {
+    console.error(
+      '[CANDLE BACKFILL PREFLIGHT] IndianAPI upstream dependency (screener.in) is failing. ' +
+      'This is an provider-side outage — retry later or contact IndianAPI support.',
+    );
+  }
   return false;
 }
 
@@ -104,6 +118,19 @@ async function main(): Promise<void> {
     const sym = args.symbols[0] ?? 'RELIANCE';
     const ok = await runPreflight(sym);
     process.exit(ok ? 0 : 1);
+  }
+
+  const skipPreflight = process.env.CANDLE_BACKFILL_SKIP_PREFLIGHT === 'true';
+  if (!args.dryRun && !skipPreflight && args.symbols.length === 0) {
+    const sym = args.symbols[0] ?? 'RELIANCE';
+    const ok = await runPreflight(sym);
+    if (!ok) {
+      console.error(
+        '[CANDLE BACKFILL] preflight failed — aborting live run. ' +
+        'Fix IndianAPI upstream or set CANDLE_BACKFILL_SKIP_PREFLIGHT=true to override.',
+      );
+      process.exit(1);
+    }
   }
 
   if (args.dryRun) {
@@ -137,6 +164,7 @@ async function main(): Promise<void> {
 
   const summary = await runCandleBackfillJob({
     universeLimit: args.limit,
+    symbolSource: args.symbolSource,
     minBars: args.minBars,
     maxAgeDays: args.maxAgeDays,
     requestDelayMs: args.delayMs,

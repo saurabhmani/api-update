@@ -446,6 +446,12 @@ export interface QuantSignal {
     rejection_explanation:      string;
     final_decision_explanation: string;
   };
+
+  /** Discovery-layer quality (technical only). */
+  signalQualityStatus?: import('../discovery/signalDiscoveryStatus').SignalQualityStatus;
+  /** Portfolio / sizing / risk execution fitness. */
+  executionStatus?: import('../discovery/signalDiscoveryStatus').SignalExecutionStatus;
+  executionBlockReason?: string | null;
 }
 
 // ── Pipeline Config ──────────────────────────────────────────
@@ -491,6 +497,14 @@ export type StrategyCategory =
 // reads from confidence/risk breakdowns — this is a display hint only.
 export type StrategyRiskProfile = 'conservative' | 'moderate' | 'moderate_high' | 'high';
 
+/** Deployment mode — controls whether a strategy may produce confirmed
+ *  (main-table) signals or is capped at watchlist / developing tiers. */
+export type StrategyMode =
+  | 'CONFIRMED_ENABLED'
+  | 'WATCHLIST_ONLY'
+  | 'EXPERIMENTAL'
+  | 'DISABLED';
+
 export interface StrategyRegistryEntry {
   strategyId: StrategyName;
   displayName: string;
@@ -526,6 +540,11 @@ export interface StrategyRegistryEntry {
   /** Phase 4 — confirmation-only strategies that boost / contradict
    *  other signals rather than emitting standalone trades. */
   isConfirmationOnly?:   boolean;
+  /** Whether this strategy may produce confirmed main-table signals. */
+  strategyMode:          StrategyMode;
+  /** When true, effective mode drops to WATCHLIST_ONLY unless score
+   *  floors clear (used by ema_crossover). */
+  scoreGatedWatchlist?:  boolean;
 }
 
 // ── Sector Context ─────────────────────────────────────────

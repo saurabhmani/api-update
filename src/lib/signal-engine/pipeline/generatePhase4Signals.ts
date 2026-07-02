@@ -46,6 +46,11 @@ import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 // the legacy literal 'breakout_confirmation' here was overwriting
 // the correct entry type and would re-introduce the Phase 1 leak.
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
+import { qualityToRowStatus } from '../discovery/signalDiscoveryStatus';
+import {
+  logPostScanSummary,
+  type PostScanSummary,
+} from '../observability/postScanSummary';
 
 function isInsufficientCandleReason(reason: string): boolean {
   const t = String(reason ?? '').toLowerCase();
@@ -121,6 +126,7 @@ export interface Phase4Result {
     signalsSaved: number;
     scenarioTag:  string;
     marketStance: string;
+    postScanSummary?: PostScanSummary;
   };
 }
 
@@ -545,6 +551,10 @@ export async function generatePhase4Signals(
       // treat them as legacy rows).
       phase11: phase11 ?? null,
 
+      signalQualityStatus:  sig.signalQualityStatus,
+      executionStatus:      sig.executionStatus,
+      executionBlockReason: sig.executionBlockReason ?? null,
+
       reasons: sig.reasons,
       warnings: sig.warnings,
       generatedAt: sig.generatedAt,
@@ -630,8 +640,13 @@ export async function generatePhase4Signals(
       relativeStrength: undefined,
       confidenceBreakdown: undefined,
       riskBreakdown: undefined,
-      status: sig.executionReadiness.approvalDecision === 'approved' ? 'active' : 'watchlist',
+      status: sig.signalQualityStatus
+        ? qualityToRowStatus(sig.signalQualityStatus)
+        : (sig.executionReadiness.approvalDecision === 'approved' ? 'active' : 'watchlist'),
       generatedAt: sig.generatedAt,
+      signalQualityStatus:  sig.signalQualityStatus,
+      executionStatus:      sig.executionStatus,
+      executionBlockReason: sig.executionBlockReason ?? null,
       // Phase-4 scoring pass-through — populated by runPhase4Scoring
       // in generatePhase3Signals.ts. saveSignals reads these and
       // writes composite_final_score / classification / factor scores
@@ -887,6 +902,17 @@ export async function generatePhase4Signals(
   const rejectedProviderErrors = countRejectedProviderErrors(phase3.rejectionLog);
   const failedSymbolsSample = sampleFailedSymbols(phase3.rejectionLog);
 
+  const finalPostScanSummary: PostScanSummary | undefined = phase3.postScanSummary
+    ? {
+        ...phase3.postScanSummary,
+        generationSource,
+        signalsSaved,
+      }
+    : undefined;
+  if (finalPostScanSummary) {
+    logPostScanSummary(finalPostScanSummary);
+  }
+
   return {
     signals: enriched,
     commentary,
@@ -906,6 +932,7 @@ export async function generatePhase4Signals(
       signalsSaved,
       scenarioTag:  scenario.scenario_tag,
       marketStance: marketStance.market_stance,
+      postScanSummary: finalPostScanSummary,
     },
   };
 }

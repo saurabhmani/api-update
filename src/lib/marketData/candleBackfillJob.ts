@@ -17,6 +17,10 @@ import {
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
 import {
+  fetchNseHistoricalCandles,
+  isNseHistoricalFetchEnabled,
+} from '@/lib/marketData/providers/nseHistoricalProvider';
+import {
   beginPerRunBudget,
   endPerRunBudget,
   getApiUsage,
@@ -42,7 +46,7 @@ export const BACKFILL_MIN_BARS_DEFAULT = () =>
   envNum('CANDLE_BACKFILL_MIN_BARS', 50, 500, 240);
 
 export const BACKFILL_UNIVERSE_LIMIT_DEFAULT = () =>
-  envNum('CANDLE_BACKFILL_UNIVERSE_LIMIT', 1, 5000, 1000);
+  envNum('CANDLE_BACKFILL_UNIVERSE_LIMIT', 1, 5000, 2500);
 
 /** Max calendar age of latest bar to consider history "recent enough". */
 export const BACKFILL_MAX_AGE_DAYS_DEFAULT = () =>
@@ -69,9 +73,13 @@ function sleep(ms: number): Promise<void> {
 
 // ── Types ─────────────────────────────────────────────────────────
 
+export type BackfillSymbolSource = 'q365_universe' | 'securities_master';
+
 export interface CandleBackfillJobOptions {
-  /** Max active symbols from q365_universe. Default 1000. */
+  /** Max active symbols from the chosen source. Default 1000. */
   universeLimit?: number;
+  /** Symbol pool — q365_universe (default) or securities_master EQ. */
+  symbolSource?: BackfillSymbolSource;
   /** Skip upstream when bar count >= this and latest is recent. Default 240. */
   minBars?: number;
   /** Latest bar must be newer than this many calendar days. Default 7. */
@@ -120,7 +128,21 @@ export interface CandleBackfillJobSummary {
 
 const PER_RUN_BUDGET_REASON = 'PER_RUN_LIMIT_EXCEEDED';
 
-function isAbortReason(reason: string | undefined): 'budget' | 'auth' | null {
+const UPSTREAM_ABORT_THRESHOLD = () =>
+  envNum('CANDLE_BACKFILL_UPSTREAM_ABORT', 3, 25, 5);
+
+function isUpstreamOutage(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return (
+    reason.includes('provider status=failed')
+    || reason.includes('UPSTREAM_ERROR')
+    || reason.includes('EMPTY_RESPONSE')
+    || reason.includes('HTTP_5')
+    || reason.includes('tripped')
+  );
+}
+
+function isAbortReason(reason: string | undefined): 'budget' | 'auth' | 'upstream' | null {
   if (!reason) return null;
   if (
     reason.includes(PER_RUN_BUDGET_REASON)
@@ -157,6 +179,51 @@ interface SymbolCandleStats {
 
 // ── Universe + stats ──────────────────────────────────────────────
 
+function resolveSymbolSource(options: Pick<CandleBackfillJobOptions, 'symbolSource'>): BackfillSymbolSource {
+  return options.symbolSource === 'securities_master' ? 'securities_master' : 'q365_universe';
+}
+
+async function loadSecuritiesMasterEqCount(): Promise<number> {
+  const { rows } = await db.query<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM securities_master WHERE is_active = 1 AND series = 'EQ'`,
+  );
+  return Number((rows[0] as { cnt?: number })?.cnt ?? 0);
+}
+
+/** Resolve pool size — securities_master uses full EQ count when limit covers it. */
+async function resolveBackfillPoolLimit(
+  source: BackfillSymbolSource,
+  limit: number,
+): Promise<number> {
+  if (source !== 'securities_master') return limit;
+  const eqCount = await loadSecuritiesMasterEqCount();
+  return eqCount > 0 ? Math.max(limit, eqCount) : limit;
+}
+
+const BACKFILL_QUEUE_ORDER_UNIVERSE = `COALESCE(d.bar_count, 0) DESC, u.symbol ASC`;
+const BACKFILL_QUEUE_ORDER_MASTER = `COALESCE(liq.traded_value, 0) DESC, COALESCE(d.bar_count, 0) ASC, u.symbol ASC`;
+
+async function loadBackfillSymbolPool(
+  source: BackfillSymbolSource,
+  limit: number,
+): Promise<string[]> {
+  const poolLimit = await resolveBackfillPoolLimit(source, limit);
+  if (source === 'securities_master') {
+    const { rows } = await db.query<{ symbol: string }>(
+      `SELECT symbol
+         FROM securities_master
+        WHERE is_active = 1 AND series = 'EQ'
+        ORDER BY symbol ASC
+        LIMIT ?`,
+      [poolLimit],
+    );
+    return (rows as Array<{ symbol: string }>)
+      .map((r) => String(r.symbol).toUpperCase().trim())
+      .filter(Boolean);
+  }
+  return loadActiveUniverseSymbols(limit);
+}
+
 export async function loadActiveUniverseSymbols(limit: number): Promise<string[]> {
   const { rows } = await db.query<{ symbol: string }>(
     `SELECT symbol
@@ -182,7 +249,21 @@ export async function getUniverseBackfillStats(
   limit: number,
   minBars: number,
   maxAgeDays: number,
+  symbolSource: BackfillSymbolSource = 'q365_universe',
 ): Promise<UniverseBackfillStats> {
+  const poolLimit = await resolveBackfillPoolLimit(symbolSource, limit);
+  const poolSql = symbolSource === 'securities_master'
+    ? `SELECT symbol
+         FROM securities_master
+        WHERE is_active = 1 AND series = 'EQ'
+        ORDER BY symbol ASC
+        LIMIT ?`
+    : `SELECT symbol
+         FROM q365_universe
+        WHERE is_active = 1
+        ORDER BY symbol ASC
+        LIMIT ?`;
+
   const { rows } = await db.query<{
     universe_total: number;
     already_sufficient: number;
@@ -208,18 +289,14 @@ export async function getUniverseBackfillStats(
          END
        ) AS needing_backfill
      FROM (
-       SELECT symbol
-         FROM q365_universe
-        WHERE is_active = 1
-        ORDER BY symbol ASC
-        LIMIT ?
+       ${poolSql}
      ) u
      LEFT JOIN (
        SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
          FROM market_data_daily
         GROUP BY symbol
      ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci`,
-    [minBars, maxAgeDays, minBars, maxAgeDays, limit],
+    [minBars, maxAgeDays, minBars, maxAgeDays, poolLimit],
   );
   const row = (rows[0] as {
     universe_total?: number;
@@ -237,25 +314,50 @@ export async function loadSymbolsNeedingBackfill(
   limit: number,
   minBars: number,
   maxAgeDays: number,
+  symbolSource: BackfillSymbolSource = 'q365_universe',
 ): Promise<string[]> {
+  const poolLimit = await resolveBackfillPoolLimit(symbolSource, limit);
+  const fromClause = symbolSource === 'securities_master'
+    ? `securities_master u`
+    : `q365_universe u`;
+  const activeFilter = symbolSource === 'securities_master'
+    ? `u.is_active = 1 AND u.series = 'EQ'`
+    : `u.is_active = 1`;
+
+  const queueOrder = symbolSource === 'securities_master'
+    ? BACKFILL_QUEUE_ORDER_MASTER
+    : BACKFILL_QUEUE_ORDER_UNIVERSE;
+
+  const liquidityJoin = symbolSource === 'securities_master'
+    ? `LEFT JOIN (
+         SELECT SUBSTRING_INDEX(instrument_key, '|', -1) AS symbol,
+                COALESCE(SUM(volume * close), 0) AS traded_value
+           FROM candles
+          WHERE candle_type = 'eod' AND interval_unit = '1day'
+            AND ts >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)
+          GROUP BY instrument_key
+       ) liq ON liq.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci`
+    : '';
+
   const { rows } = await db.query<{ symbol: string }>(
     `SELECT u.symbol
-       FROM q365_universe u
+       FROM ${fromClause}
+       ${liquidityJoin}
        LEFT JOIN (
          SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
            FROM market_data_daily
           GROUP BY symbol
        ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci
-      WHERE u.is_active = 1
+      WHERE ${activeFilter}
         AND (
           d.bar_count IS NULL
           OR d.bar_count < ?
           OR d.latest_ts IS NULL
           OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
         )
-      ORDER BY u.symbol ASC
+      ORDER BY ${queueOrder}
       LIMIT ?`,
-    [minBars, maxAgeDays, limit],
+    [minBars, maxAgeDays, poolLimit],
   );
   return (rows as Array<{ symbol: string }>)
     .map((r) => String(r.symbol).toUpperCase().trim())
@@ -412,6 +514,19 @@ async function backfillOneSymbol(
   }
 
   if (!fetch.ok || fetch.candles.length === 0) {
+    if (isNseHistoricalFetchEnabled()) {
+      const nse = await fetchNseHistoricalCandles(symbol);
+      if (nse.ok && nse.candles.length > 0) {
+        const { inserted, updated } = await persistBarsForSymbol(symbol, nse.candles);
+        if (inserted > 0 || updated > 0) {
+          console.log(
+            `[CANDLE BACKFILL] ${symbol} nse_fallback bars=${nse.candles.length} ` +
+            `inserted=${inserted} updated=${updated}`,
+          );
+          return { status: 'fetched', inserted, updated };
+        }
+      }
+    }
     return {
       status: 'failed',
       inserted: 0,
@@ -438,18 +553,19 @@ async function backfillOneSymbol(
 export async function estimateBackfillApiRequests(
   options: Pick<
     CandleBackfillJobOptions,
-    'universeLimit' | 'minBars' | 'maxAgeDays' | 'resume' | 'symbols' | 'maxFetch'
+    'universeLimit' | 'minBars' | 'maxAgeDays' | 'resume' | 'symbols' | 'maxFetch' | 'symbolSource'
   > = {},
 ): Promise<number> {
   const universeLimit = options.universeLimit ?? BACKFILL_UNIVERSE_LIMIT_DEFAULT();
   const minBars = options.minBars ?? BACKFILL_MIN_BARS_DEFAULT();
   const maxAgeDays = options.maxAgeDays ?? BACKFILL_MAX_AGE_DAYS_DEFAULT();
+  const symbolSource = resolveSymbolSource(options);
 
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
     : options.resume
-      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays)
-      : await loadActiveUniverseSymbols(universeLimit);
+      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays, symbolSource)
+      : await loadBackfillSymbolPool(symbolSource, universeLimit);
 
   let wouldFetch = 0;
   for (const symbol of symbols) {
@@ -534,17 +650,30 @@ async function runCandleBackfillJobInner(ctx: {
     maxFetch,
     symbols: options.symbols,
   });
+
+  if (!dryRun) {
+    const usage = getApiUsage();
+    if (usage.daily_exceeded || usage.monthly_exceeded) {
+      throw new Error(
+        `[CANDLE BACKFILL] API budget exhausted — daily=${usage.daily}/${usage.daily_limit} ` +
+        `monthly=${usage.monthly}/${usage.monthly_limit}. Wait for IST midnight reset or raise limits.`,
+      );
+    }
+  }
+
   beginPerRunBudget(perRunLimit);
+
+  const symbolSource = resolveSymbolSource(options);
 
   const universeStats = options.symbols?.length
     ? null
-    : await getUniverseBackfillStats(universeLimit, minBars, maxAgeDays);
+    : await getUniverseBackfillStats(universeLimit, minBars, maxAgeDays, symbolSource);
 
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
     : options.resume
-      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays)
-      : await loadActiveUniverseSymbols(universeLimit);
+      ? await loadSymbolsNeedingBackfill(universeLimit, minBars, maxAgeDays, symbolSource)
+      : await loadBackfillSymbolPool(symbolSource, universeLimit);
 
   const summary: CandleBackfillJobSummary = {
     totalSymbols: symbols.length,
@@ -564,7 +693,7 @@ async function runCandleBackfillJobInner(ctx: {
 
   const symbolsAttempted = summary.universeTotal;
   console.log(
-    `[CANDLE BACKFILL] start universe=${summary.universeTotal} ` +
+    `[CANDLE BACKFILL] start source=${symbolSource} universe=${summary.universeTotal} ` +
     `already_sufficient=${summary.alreadySufficient} queue=${symbols.length} ` +
     `symbols_attempted=${symbolsAttempted} min_bars=${minBars} ` +
     `max_age_days=${maxAgeDays} delay_ms=${requestDelayMs} dry_run=${dryRun} ` +
@@ -592,6 +721,7 @@ async function runCandleBackfillJobInner(ctx: {
   }
 
   let processed = 0;
+  let consecutiveUpstreamFailures = 0;
   for (const symbol of symbols) {
     processed++;
     let lastStatus: 'skipped' | 'fetched' | 'failed' = 'failed';
@@ -602,6 +732,7 @@ async function runCandleBackfillJobInner(ctx: {
       if (result.status === 'skipped') {
         summary.skippedSufficient++;
       } else if (result.status === 'fetched') {
+        consecutiveUpstreamFailures = 0;
         summary.fetched++;
         summary.candlesInserted += result.inserted;
         summary.candlesUpdated += result.updated;
@@ -638,6 +769,20 @@ async function runCandleBackfillJobInner(ctx: {
             `[CANDLE BACKFILL] ${symbol} auth rejected after retry — skipping ` +
             `(verify INDIANAPI_API_KEY if failures cluster)`,
           );
+        } else if (isUpstreamOutage(result.reason)) {
+          consecutiveUpstreamFailures++;
+          const threshold = UPSTREAM_ABORT_THRESHOLD();
+          if (consecutiveUpstreamFailures >= threshold) {
+            summary.deferredDueToBudget = symbols.length - processed;
+            console.error(
+              `[CANDLE BACKFILL] upstream outage — ${consecutiveUpstreamFailures} consecutive ` +
+              `failures (e.g. "${result.reason?.slice(0, 80)}"). Aborting to preserve API quota. ` +
+              `Run: npm run candles:backfill:preflight`,
+            );
+            break;
+          }
+        } else {
+          consecutiveUpstreamFailures = 0;
         }
       }
     } catch (err) {

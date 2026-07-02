@@ -3,6 +3,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
 import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
 import type { StrategyHubSummary, StrategyHubDetail } from './types';
 import { categoryLabel, riskProfileLabel } from './categories';
@@ -77,6 +78,8 @@ export function mapEntryToSummary(
     isActiveInRunner: ACTIVE_RUNNER_STRATEGIES.has(entry.strategyId),
     deploymentStatus: profile?.deployment_status ?? paper.deploymentStatus,
     paperTradingReady: profile?.paper_trading_enabled ?? paper.ready,
+    strategyMode: entry.strategyMode,
+    effectiveStrategyMode: resolveEffectiveStrategyMode(entry.strategyId),
   };
 }
 

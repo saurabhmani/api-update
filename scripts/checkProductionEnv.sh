@@ -80,13 +80,31 @@ REGEN="${E[Q365_INPROC_REGEN]:-}"
 X247="${E[Q365_REGEN_24X7]:-}"
 
 if [ "$SCH" = '0' ] && [ "$REGEN" = '0' ]; then
-  warn 'BOTH scheduler AND regen disabled in-process. Make sure a SEPARATE worker (PM2 scheduler.ts) is running, otherwise NO new signals will be produced.'
+  ok 'In-process scheduler disabled — PM2 worker should run scheduler.ts + dailyScanSchedule'
 elif [ "$SCH" = '0' ]; then
   ok 'Q365_INPROC_SCHEDULER=0 — scheduler disabled in-process (assumes external worker)'
 elif [ "$REGEN" = '0' ]; then
-  ok 'Q365_INPROC_REGEN=0 — heavy 10-min regen disabled; lighter crons still run in-process'
+  ok 'Q365_INPROC_REGEN=0 — legacy in-process regen disabled'
 else
-  fail 'Both Q365_INPROC_SCHEDULER and Q365_INPROC_REGEN unset/=1 — heavy regen runs every 10 min on the Next.js process. Sets Q365_INPROC_REGEN=0 for prod load.'
+  warn 'Q365_INPROC_REGEN unset/=1 — may duplicate legacy regen if SIGNAL_INTRADAY_REGEN_ENABLED=true'
+fi
+
+INTRADAY="${E[SIGNAL_INTRADAY_REGEN_ENABLED]:-false}"
+RECOVERY="${E[SIGNALS_AUTO_RECOVERY_ENABLED]:-false}"
+case "$INTRADAY" in
+  true|1|yes|on) fail 'SIGNAL_INTRADAY_REGEN_ENABLED=true on prod — disables controlled schedule benefits' ;;
+  *) ok 'SIGNAL_INTRADAY_REGEN_ENABLED=false (controlled schedule)' ;;
+esac
+case "$RECOVERY" in
+  true|1|yes|on) warn 'SIGNALS_AUTO_RECOVERY_ENABLED=true — ensure guards (once/day, candle coverage) are acceptable' ;;
+  *) ok 'SIGNALS_AUTO_RECOVERY_ENABLED=false (poll-driven recovery off)' ;;
+esac
+
+UNIVERSE_MODE="${E[UNIVERSE_MODE]:-NSE1000}"
+if [ "$UNIVERSE_MODE" = 'NSE1000' ]; then
+  ok 'UNIVERSE_MODE=NSE1000 (Top 1000 liquid via buildNse1000Universe.ts)'
+else
+  warn "UNIVERSE_MODE=$UNIVERSE_MODE — legacy NIFTY500 band unless buildNse1000Universe was run"
 fi
 if [ "$X247" = '1' ]; then
   fail 'Q365_REGEN_24X7=1 on prod — engine ignores market-hours gate. Burns CPU 24/7. Unset or set to 0.'

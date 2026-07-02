@@ -41,6 +41,8 @@ export interface StrategyHubSummary {
   isActiveInRunner: boolean;
   deploymentStatus: DeploymentStatus;
   paperTradingReady: boolean;
+  strategyMode: string;
+  effectiveStrategyMode?: string;
   performance?: StrategyHubPerformanceSummary | null;
 }
 

@@ -1194,6 +1194,8 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
       `scanned=${result.meta.scanned} approved=${result.signals.length} ` +
       `rejected=${result.meta.rejected} heartbeat=${stageState.heartbeat}`,
     );
+    const { markAutoRecoveryCompleted } = await import('@/lib/signals/autoRecoveryPolicy');
+    markAutoRecoveryCompleted();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!pipelineErr) {
@@ -1238,6 +1240,18 @@ async function triggerAutoScanIfEmpty(
   opts: { coldStart?: boolean; awaitCompletion?: boolean } = {},
 ): Promise<void> {
   const now = Date.now();
+
+  const { evaluateAutoRecovery } = await import('@/lib/signals/autoRecoveryPolicy');
+  const recoveryDecision = await evaluateAutoRecovery(reason, {
+    bootstrap: opts.awaitCompletion === true,
+    onReadPath: true,
+  });
+  if (!recoveryDecision.allowed) {
+    console.log(
+      `[AUTO-RECOVERY] skipped policy="${recoveryDecision.reason}" trigger="${reason}"`,
+    );
+    return;
+  }
 
   // Spec "OPTIMIZE API USAGE" §5 — refuse to fire a fresh recovery
   // when the daily IndianAPI budget is already exhausted. A

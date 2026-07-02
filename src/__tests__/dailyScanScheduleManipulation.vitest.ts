@@ -53,6 +53,20 @@ vi.mock('@/lib/marketData/providers/batchScheduler', () => ({
 vi.mock('@/lib/marketData/providerRequestPolicy', () => ({
   DAILY_UPDATE_MAX_REQUESTS: () => 50,
 }));
+vi.mock('@/lib/signal-engine/rescore/rescoreActiveSignals', () => ({
+  rescoreActiveSignals: vi.fn(async () => ({
+    scanned: 10, updated: 5, invalidated: 0, downgraded: 0,
+    skippedNoPrice: 0, failedFetches: 0, elapsedMs: 100,
+    kiteHits: 0, yahooHits: 0, otherHits: 0, staleRescored: 0,
+  })),
+}));
+vi.mock('@/lib/signal-engine/schedule/scanReadinessCheck', () => ({
+  runScanReadinessCheck: vi.fn(async () => ({
+    ok: true, checkedAt: new Date().toISOString(), universeActive: 1000,
+    universeMin: 950, universeMax: 1050, securitiesMasterEq: 2000,
+    candleCoveragePct: 80, lastScheduledScanAt: null, blockers: [], warnings: [],
+  })),
+}));
 
 import { runDailyScan } from '@/lib/manipulation-engine/pipeline/runDailyScan';
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
@@ -115,8 +129,16 @@ describe('dailyScanSchedule — manipulation scanner', () => {
     scheduledJobs.length = 0;
   });
 
-  it('1.1 — startDailyScanSchedule registers one additional manipulation cron task', () => {
-    const baselineCronJobs = ['30 8 * * 1-5', '0 16 * * 1-5', '30 16 * * 1-5'];
+  it('1.1 — startDailyScanSchedule registers controlled jobs + manipulation cron', () => {
+    const baselineCronJobs = [
+      '30 8 * * 1-5',
+      '20 9 * * 1-5',
+      '45 9 * * 1-5',
+      '30 12 * * 1-5',
+      '45 14 * * 1-5',
+      '0 16 * * 1-5',
+      '30 16 * * 1-5',
+    ];
 
     startDailyScanSchedule();
 

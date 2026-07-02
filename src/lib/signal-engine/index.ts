@@ -13,7 +13,7 @@ export { runAllStrategies } from './strategy-engine/runStrategies';
 export { computeRelativeStrength, defaultRelativeStrength, computeEnhancedRelativeStrength } from './context/relativeStrength';
 export { detectEnhancedRegime } from './regime/detectMarketRegime';
 export { resolveConflicts } from './strategy-engine/resolveConflicts';
-export { STRATEGY_REGISTRY, isStrategyAllowedInRegime, getStrategiesForRegime } from './strategies/strategyRegistry';
+export { STRATEGY_REGISTRY, isStrategyAllowedInRegime, getStrategiesForRegime, getStrategyMode, resolveEffectiveStrategyMode, canStrategyProduceConfirmedSignal, applyStrategyModeCaps } from './strategies/strategyRegistry';
 export { buildSectorContextFromStock, defaultSectorContext } from './context/sectorContext';
 export { scoreForStrategy } from './scoring/strategyScorers';
 export { saveStrategyBreakdowns, saveConflictResolution, migratePhase2Tables } from './repository/saveStrategyBreakdowns';
@@ -23,7 +23,7 @@ export { generatePhase3Signals } from './pipeline/generatePhase3Signals';
 export type { Phase3Result } from './pipeline/generatePhase3Signals';
 export { calculatePositionSize } from './position-sizing/positionSizer';
 export { evaluatePortfolioFit } from './portfolio-fit/evaluatePortfolioFit';
-export { evaluateExecutionReadiness } from './execution/executionReadiness';
+export { evaluateExecutionReadiness, resetApprovalGateAggregator, flushApprovalGateAggregator, getApprovalFunnelSnapshot } from './execution/executionReadiness';
 export { computePhase3Risk } from './risk/phase3Risk';
 export { createLifecycle, transitionLifecycle, resolveInitialState, isExpired } from './lifecycle/signalLifecycle';
 export { DEFAULT_PHASE3_CONFIG, getSector } from './constants/phase3.constants';
@@ -43,6 +43,38 @@ export { saveOutcome, saveExplanation, saveDecisionMemory, loadFeedbackState, mi
 
 // Shared
 export { rankSignals } from './pipeline/rankSignals';
+export {
+  normalizeScore,
+  normalizeConfidenceBreakdownForPhase4,
+  CONFIDENCE_COMPONENT_MAX,
+} from './scoring/phase4FactorAdapter';
+export {
+  createDiscoveryGateCounters,
+  deriveSignalQualityStatus,
+  deriveSignalExecutionStatus,
+  executionStatusReason,
+  recordDiscoveryGateCounters,
+  formatDiscoveryGateCounters,
+  qualityToPersistedSignalStatus,
+  qualityToRowStatus,
+} from './discovery/signalDiscoveryStatus';
+export type {
+  SignalQualityStatus,
+  SignalExecutionStatus,
+  DiscoveryGateCounters,
+} from './discovery/signalDiscoveryStatus';
+export {
+  buildPostScanSummary,
+  logPostScanSummary,
+} from './observability/postScanSummary';
+export type { PostScanSummary, PostScanStageCounts } from './observability/postScanSummary';
+export {
+  resetStrategyScanHistogram,
+  recordStrategyEvaluation,
+  recordStrategyOutcome,
+  snapshotStrategyScanHistogram,
+} from './observability/strategyScanHistogram';
+export type { StrategyScanStats } from './observability/strategyScanHistogram';
 export { detectMarketRegime } from './regime/detectMarketRegime';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';
@@ -93,6 +125,7 @@ export type {
   Phase2PipelineResult,
   StrategyRegistryEntry,
   StrategyDirection,
+  StrategyMode,
   SectorContext,
   SectorTrendLabel,
   EnhancedRelativeStrength,
