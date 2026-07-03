@@ -37,6 +37,8 @@ export interface RankedEntry {
   portfolio_fit_score: number | null;
   signal_age_min:      number | null;
   opportunity_rank:    number;
+  /** When the rankings row was last written by syncRankingsFromNse. */
+  rankings_updated_at?: string | null;
   data_source:         'redis' | 'mysql';
   /** Sector lookup from the instruments master table — the rankings
    *  table itself does not carry sector. Null when no instrument row
@@ -158,7 +160,7 @@ const rankingsKey = (limit: number, exchange?: string) =>
 
 // ── Multi-dimensional opportunity rank ────────────────────────────
 
-function computeOpportunityRank(e: Partial<RankedEntry>): number {
+export function computeOpportunityRank(e: Partial<RankedEntry>): number {
   let score = e.score ?? 50;
 
   // Confidence (use confidence_score if available, else fallback)
@@ -333,6 +335,7 @@ async function fetchFromMySQL(
         THEN TIMESTAMPDIFF(MINUTE, s.generated_at, NOW())
         ELSE NULL
       END AS signal_age_min,
+      r.updated_at                                                   AS rankings_updated_at,
       -- Sector lives on the instruments master table, not on rankings
       -- itself. Join in so the dashboard's Sector column / rankings
       -- page Sector cell render real values instead of "—". The LEFT
@@ -414,6 +417,11 @@ async function fetchFromMySQL(
         conviction_band:     convictionBand,
         portfolio_fit_score: row.portfolio_fit_score != null ? Number(row.portfolio_fit_score) : null,
         signal_age_min:      row.signal_age_min != null ? Number(row.signal_age_min) : null,
+        rankings_updated_at: row.rankings_updated_at
+          ? (row.rankings_updated_at instanceof Date
+              ? row.rankings_updated_at.toISOString()
+              : String(row.rankings_updated_at))
+          : null,
         data_source:         'mysql' as const,
         // Sector resolution chain:
         //   1. instruments.sector (DB master data) — best
@@ -656,3 +664,15 @@ export const getTopRankings = (
   exchange?: string,
   allowExternalFallback?: boolean,
 ) => getRankings({ limit, page, exchange, allowExternalFallback });
+
+/** Drop cached /api/rankings payloads after a rankings table sync. */
+export async function bustRankingsCache(): Promise<void> {
+  const { cacheDel } = await import('@/lib/redis');
+  const limits = [50, 100, 200, 500];
+  const exchanges: Array<string | undefined> = [undefined, 'NSE', 'BSE'];
+  await Promise.all(
+    limits.flatMap((lim) =>
+      exchanges.map((ex) => cacheDel(`rankings:top:${lim}:${ex ?? 'ALL'}`)),
+    ),
+  );
+}

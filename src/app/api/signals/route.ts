@@ -319,12 +319,12 @@ function q365Project(cols: Set<string>, col: string): string {
 // continue to override at runtime without a rebuild.
 const RELAXED_SIGNAL_FLOORS = getRelaxedSignalFloors();
 
-// Server-side auto-recovery throttle. When /api/signals sees an empty
-// DB pool we kick the Yahoo scanner once per 5 min so the dashboard
-// recovers without operator intervention. Module-level so multiple
-// concurrent requests share the same cooldown — without this, every
-// poll on a cold deployment fires a scanner request → scanner refuses
-// (in-flight cooldown) → log spam.
+// Server-side auto-recovery throttle. Normal /api/signals reads are
+// read-only: auto-recovery is disabled unless
+// SIGNALS_AUTO_RECOVERY_ENABLED=true and, for poll-driven reads,
+// SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=true. Module-level cooldown is
+// retained only for explicit/allowed recovery so concurrent requests
+// share one in-flight run.
 //
 // Cold-start uses a SHORTER cooldown (60s) instead of bypassing it
 // entirely. The previous "bypass on coldStart" path made every 5s
@@ -687,17 +687,15 @@ function pipelineHealthEnvelope(opts: {
 }
 
 /**
- * Spec FIX-DATA-PIPELINE §5: auto-scan must fire when the signals
- * pool is empty OR the latest batch is stale (>10 min). Previously
- * the function was retired to a no-op, which left the dashboard
- * stuck on `validation_status: NO_SIGNALS_CONFIRMED` indefinitely
- * with no in-process recovery path.
+ * Auto-recovery runner. This must never be called from normal read-only
+ * polling unless autoRecoveryPolicy has explicitly allowed it:
+ *   SIGNALS_AUTO_RECOVERY_ENABLED=true
+ *   and, for GET /api/signals polling, SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=true.
  *
  * Reinstated with the original 5-minute throttle + an in-flight
  * guard so a busy poll loop can't fire the scanner more than once
- * per cooldown window. Cold-start mode forces the scan even if a
- * scan already ran today (the original throttle would otherwise
- * suppress the recovery on a fresh deployment).
+ * per cooldown window. The policy layer additionally enforces once per
+ * day, candle coverage, and "no recent scheduled scan" guards.
  */
 async function runAutoScanRecovery(reason: string): Promise<void> {
   const pipelineStartedAt = Date.now();
@@ -1486,17 +1484,18 @@ async function triggerAutoScanIfEmpty(
 }
 
 // Staleness threshold for the latest batch. Above this, the route's
-// fallback path treats the data as too old to surface and triggers a
-// fresh scan instead of shipping rows from a 5-hour-old batch (the
-// `signal_age_minutes = 300+` symptom). 10 min matches the regen cron
-// cadence — every scan tick that's overdue triggers an auto-recovery.
+// fallback path treats the data as too old to surface instead of
+// shipping rows from a 5-hour-old batch (the `signal_age_minutes = 300+`
+// symptom). Any recovery from this state is separately guarded by
+// autoRecoveryPolicy and is disabled in normal read-only flow by default.
 const STALE_BATCH_THRESHOLD_MS = 10 * 60_000;
 // Hard ceiling above which q365_signals fallback rows are NEVER
 // surfaced — the operator gets an honest empty state instead of a
 // table full of stale prices that no longer reflect the live tape.
 // Picked at 30 min so a regen cron that's running on a 10-min cadence
 // gets a 3-tick grace window before fallback rows are blocked. Above
-// this, the route ships zero rows + triggers an auto-scan.
+// this, the route ships zero rows; auto-recovery only runs when explicitly
+// enabled and policy-approved.
 const FALLBACK_MAX_AGE_MS = 30 * 60_000;
 
 // Stamps the runtime identity once per process so two environments

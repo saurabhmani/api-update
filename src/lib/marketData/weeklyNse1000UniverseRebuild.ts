@@ -92,6 +92,8 @@ export async function runWeeklyNse1000UniverseRebuild(
   const t0 = Date.now();
   const dryRun = options.dryRun ?? false;
   const targetSize = options.targetSize ?? NSE_UNIVERSE_TARGET_DEFAULT();
+  const minEligibleBars = NSE_UNIVERSE_MIN_ELIGIBLE_BARS_DEFAULT();
+  const minBarsTarget = envNum('UNIVERSE_RANK_MIN_BARS', 50, 500, Math.max(200, minEligibleBars));
   const useChurnControl = options.useChurnControl !== false;
   const triggerSource = options.triggerSource ?? 'manual:weekly-rebuild';
   const blockers: string[] = [];
@@ -150,7 +152,7 @@ export async function runWeeklyNse1000UniverseRebuild(
     backfill = await runCandleBackfillJob({
       symbolSource: 'securities_master',
       universeLimit: backfillLimit,
-      minBars: NSE_UNIVERSE_MIN_ELIGIBLE_BARS_DEFAULT(),
+      minBars: minEligibleBars,
       resume: true,
       maxFetch: options.maxFetch,
       dryRun,
@@ -171,7 +173,10 @@ export async function runWeeklyNse1000UniverseRebuild(
     console.log('[NSE1000_REBUILD] backfill skipped');
   }
 
-  const candleCoverage = await assessCandleCoverageForRanking({ targetSize });
+  const candleCoverage = await assessCandleCoverageForRanking({
+    targetSize,
+    minBarsTarget: minEligibleBars,
+  });
   logCandleCoverageValidation(candleCoverage);
 
   let universe: BuildNseUniverseResult | null = null;
@@ -200,6 +205,8 @@ export async function runWeeklyNse1000UniverseRebuild(
 
       universe = await buildNseTopUniverse({
         targetSize,
+        minBarsTarget,
+        minEligibleBars,
         requireCandleData: false,
       });
       console.log(
@@ -224,6 +231,12 @@ export async function runWeeklyNse1000UniverseRebuild(
           `thresholds=add<=${churn.thresholds.addMaxRank} ` +
           `keep<=${churn.thresholds.keepMaxRank} remove>${churn.thresholds.removeMinRank}`,
         );
+        if (churn.selected.length !== targetSize) {
+          throw new Error(
+            `NSE${targetSize} churn selection produced ${churn.selected.length} symbols; ` +
+            `refusing to apply partial universe.`,
+          );
+        }
         apply = await applyNseUniverseSelectionToDb(
           universe.ranked,
           churn.selected,
@@ -233,6 +246,12 @@ export async function runWeeklyNse1000UniverseRebuild(
           },
         );
       } else {
+        if (universe.selected.length !== targetSize) {
+          throw new Error(
+            `NSE${targetSize} top cut produced ${universe.selected.length} symbols; ` +
+            `refusing to apply partial universe.`,
+          );
+        }
         apply = await applyNseTopUniverseToDb(universe.ranked, targetSize, { dryRun });
       }
 

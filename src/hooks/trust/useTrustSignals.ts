@@ -30,7 +30,7 @@ async function fetchSignals(filters: SignalBoardFilters): Promise<TrustSignalBoa
   return body.data as TrustSignalBoardRow[];
 }
 
-export function useTrustSignals(filters: SignalBoardFilters = { status: 'active', limit: 50 }) {
+export function useTrustSignals(filters: SignalBoardFilters = { status: 'all', limit: 50 }) {
   return useQuery({
     queryKey: ['trust', 'signals', filters],
     queryFn: () => fetchSignals(filters),

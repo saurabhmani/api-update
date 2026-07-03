@@ -73,6 +73,18 @@ async function loadClosedSnapshots(
     return (rows as Array<Record<string, unknown>>).map((r) => {
       const status = r.status as ConfirmedSnapshotRow['status'];
       const invalidation = r.invalidation_reason != null ? String(r.invalidation_reason) : null;
+      // MySQL DATETIME columns come back as either JS `Date` objects or an
+      // engine-formatted string ("YYYY-MM-DD HH:MM:SS"). Serialize both to
+      // an ISO-8601 string so the wire shape matches the active-signals
+      // response (see readConfirmedSnapshots.ts).
+      const toIso = (v: unknown): string => {
+        if (v == null || v === '') return '';
+        if (v instanceof Date) return v.toISOString();
+        const d = new Date(v as string);
+        return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
+      };
+      const confirmedAtIso = toIso(r.confirmed_at);
+      const validUntilIso = toIso(r.valid_until);
       return {
         id: Number(r.id),
         source_signal_id: r.source_signal_id != null ? Number(r.source_signal_id) : null,
@@ -96,9 +108,9 @@ async function loadClosedSnapshots(
         final_score: r.final_score != null ? Number(r.final_score) : null,
         classification: r.classification != null ? String(r.classification) : null,
         status,
-        confirmed_at: String(r.confirmed_at ?? ''),
-        valid_until: String(r.valid_until ?? ''),
-        status_changed_at: String(r.confirmed_at ?? ''),
+        confirmed_at: confirmedAtIso,
+        valid_until: validUntilIso,
+        status_changed_at: confirmedAtIso,
         invalidation_reason: invalidation,
         validation_gates_passed: 0,
         valid_minutes_remaining: 0,

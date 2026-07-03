@@ -5,7 +5,16 @@ import { Card, StatCard, Badge, Button, AlertBanner, Loading } from '@/component
 import { adminApi } from '@/lib/apiClient';
 import { fmt } from '@/lib/utils';
 import { Database, RefreshCw, Users, FileText, Activity, CheckCircle, AlertTriangle } from 'lucide-react';
-const SYNCS = ['rankings', 'signals', 'instruments-nse', 'instruments-bse', 'instruments-fo'];
+const SYNCS = [
+  'securities-master',
+  'securities-candles',
+  'nse1000-universe',
+  'rankings',
+  'signals',
+  'instruments-nse',
+  'instruments-bse',
+  'instruments-fo',
+];
 
 function AdminDataContent() {
   const [usage,     setUsage]     = useState<any>(null);
@@ -25,7 +34,16 @@ function AdminDataContent() {
     setSyncing(type); setMsg(null);
     try {
       const d = await adminApi.syncData(type) as any;
-      setMsg({ text: `✓ ${type} sync: ${d.message || 'OK'}`, ok: true });
+      const extra =
+        type === 'rankings' && d.db_count != null
+          ? ` (${d.db_count} rows in DB)`
+          : type === 'nse1000-universe' && d.apply?.totalActive != null
+            ? ` (${d.apply.totalActive}/${d.targetSize ?? 1000} active universe)`
+            : type === 'securities-master' && d.total != null
+              ? ` (${d.total} EQ rows)`
+              : '';
+      setMsg({ text: `✓ ${type} sync: ${d.message || 'OK'}${extra}`, ok: true });
+      adminApi.usage().then(setUsage).catch(() => {});
     } catch (e: any) {
       setMsg({ text: `✗ Failed: ${e.data?.error || e.message}`, ok: false });
     } finally { setSyncing(null); }
@@ -67,9 +85,10 @@ function AdminDataContent() {
         <Card style={{ marginBottom: 20 }}>
           <h3 style={{ fontWeight: 700, marginBottom: 4 }}>Data Sync Jobs</h3>
           <p style={{ fontSize: 13, color: '#64748B', marginBottom: 16 }}>
-            Run <strong>instruments-nse</strong> first to load the full equity instrument master
-            (public CDN, no auth, takes 1–2 min). Then run <strong>rankings</strong> during
-            market hours (9:15–15:30 IST) to populate the dashboard and signal engine.
+            NSE1000 uses <strong>EQUITY_L.csv</strong> as the securities master,
+            filters <strong>SERIES=EQ</strong>, backfills candle history, then ranks
+            the top 1000 by traded value, volume consistency, and candle completeness.
+            Weekly rebuild is scheduled automatically; these buttons run it manually.
           </p>
           {msg && <AlertBanner variant={msg.ok ? 'success' : 'error'}>{msg.text}</AlertBanner>}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
@@ -85,8 +104,10 @@ function AdminDataContent() {
           <div className="grid-stats">
             <StatCard label="Total Users"       value={usage.total_users ?? '—'}     icon={Users}    iconVariant="blue"   />
             <StatCard label="Active Sessions"   value={usage.active_today ?? '—'}    icon={Activity} iconVariant="green"  />
-            <StatCard label="Reports Generated" value={usage.reports_total ?? '—'}   icon={FileText} iconVariant="orange" />
-            <StatCard label="API Calls Today"   value={usage.api_calls_today ?? '—'} icon={Database} iconVariant="blue"   />
+            <StatCard label="Rankings Rows"     value={usage.total_rankings ?? '—'}  icon={Database} iconVariant="green"  />
+            <StatCard label="Universe Active"   value={usage.total_universe ?? '—'}   icon={Database} iconVariant="orange" />
+            <StatCard label="Securities EQ"     value={usage.total_securities_eq ?? '—'} icon={FileText} iconVariant="blue" />
+            <StatCard label="Instruments"       value={usage.total_instruments ?? '—'} icon={Database} iconVariant="blue" />
           </div>
         )}
       </div>

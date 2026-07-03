@@ -203,6 +203,65 @@ function bestPrice(raw: RawStock): number {
   return num(raw.currentPrice?.NSE) || num(raw.currentPrice?.BSE);
 }
 
+/** /trending and /NSE_most_active return snake_case payloads that
+ *  differ from the /stock camelCase shape verified on the dev plan. */
+function mapTrendingRow(raw: Record<string, unknown>): MoversBucket {
+  const ric = String(raw.ric ?? raw.ticker ?? '').trim();
+  let symbol = String(raw.symbol ?? raw.tickerId ?? '').trim().toUpperCase();
+  // `ticker_id` is an IndianAPI internal id (e.g. S0003124) — not NSE tradingsymbol.
+  if (!symbol && ric) {
+    symbol = ric.replace(/\.(NS|BO|BS)$/i, '').toUpperCase();
+  }
+  const price = num(raw.price) || num(raw.ltp) || num(raw.lastPrice) || bestPrice(raw as RawStock);
+  const changePercent = num(raw.percent_change ?? raw.percentChange ?? raw.changePercent);
+  return { symbol, price, changePercent };
+}
+
+/** Map Reuters/vendor tickers and company names → NSE tradingsymbol. */
+async function resolveMoverSymbolsViaDb(
+  buckets: MoversBucket[],
+  raws: Record<string, unknown>[],
+): Promise<void> {
+  const { db } = await import('@/lib/db');
+  let inUniverse: ((sym: string) => boolean) | null = null;
+  try {
+    const uni = await import('@/lib/marketData/nifty500Universe');
+    inUniverse = uni.isInNifty500;
+  } catch { /* universe not init — still try DB */ }
+
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const raw = raws[i];
+    if (b.symbol && inUniverse?.(b.symbol)) continue;
+
+    const company = String(
+      raw.company_name ?? raw.companyName ?? raw.company ?? '',
+    ).trim();
+    if (!company) continue;
+
+    const needle = company.replace(/\s+(Ltd|Limited|Inc)\.?$/i, '').slice(0, 48);
+    try {
+      const { rows } = await db.query<{ tradingsymbol: string }>(
+        `SELECT tradingsymbol FROM instruments
+          WHERE exchange = 'NSE'
+            AND (
+              UPPER(name) LIKE CONCAT('%', UPPER(?), '%')
+              OR UPPER(tradingsymbol) = UPPER(?)
+            )
+          ORDER BY CASE WHEN UPPER(name) = UPPER(?) THEN 0
+                        WHEN UPPER(name) LIKE CONCAT(UPPER(?), '%') THEN 1
+                        ELSE 2 END,
+                   CHAR_LENGTH(name) ASC
+          LIMIT 1`,
+        [needle, b.symbol || '', company, needle],
+      );
+      if (rows[0]?.tradingsymbol) {
+        b.symbol = String(rows[0].tradingsymbol).toUpperCase();
+      }
+    } catch { /* non-fatal */ }
+  }
+}
+
 // ── Public adapter surface ──────────────────────────────────────────
 
 export class IndianAPIError extends Error {
@@ -1140,18 +1199,27 @@ export async function searchSymbol(query: string, signal?: AbortSignal): Promise
 
 /** Endpoint: GET /trending  (CONFIRMED) */
 export async function getMovers(signal?: AbortSignal): Promise<MoversResult> {
+  const { initOnce } = await import('@/lib/marketData/nifty500Universe');
+  await initOnce().catch(() => {});
+
   const raw = await call<{
-    trending_stocks?: { top_gainers?: RawStock[]; top_losers?: RawStock[] };
+    trending_stocks?: {
+      top_gainers?: Record<string, unknown>[];
+      top_losers?: Record<string, unknown>[];
+    };
   }>(INDIANAPI_ENDPOINTS.trending, undefined, signal);
-  const mapBucket = (s: RawStock): MoversBucket => ({
-    symbol: String(s.tickerId ?? '').toUpperCase(),
-    price: bestPrice(s),
-    changePercent: num(s.percentChange),
-  });
+  const gainerRaws = raw.trending_stocks?.top_gainers ?? [];
+  const loserRaws  = raw.trending_stocks?.top_losers ?? [];
+  const gainers = gainerRaws.map(mapTrendingRow);
+  const losers  = loserRaws.map(mapTrendingRow);
+  await resolveMoverSymbolsViaDb(gainers, gainerRaws);
+  await resolveMoverSymbolsViaDb(losers, loserRaws);
+  const valid = (rows: MoversBucket[]) =>
+    rows.filter(b => b.symbol && Number.isFinite(b.price) && b.price > 0);
   return {
-    gainers:    (raw.trending_stocks?.top_gainers ?? []).map(mapBucket),
-    losers:     (raw.trending_stocks?.top_losers  ?? []).map(mapBucket),
-    mostActive: [],  // not exposed on trending endpoint
+    gainers:    valid(gainers),
+    losers:     valid(losers),
+    mostActive: [],
   };
 }
 
@@ -1279,22 +1347,18 @@ export async function get52WeekHighLow(): Promise<unknown> {
 
 /** GET /NSE_most_active  (VERIFY) */
 export async function getNseMostActive(): Promise<MoversBucket[]> {
-  const raw = await call<RawStock[]>(INDIANAPI_ENDPOINTS.nseMostActive);
-  return (raw ?? []).map(s => ({
-    symbol: String(s.tickerId ?? s.companyName ?? '').toUpperCase(),
-    price: bestPrice(s),
-    changePercent: num(s.percentChange),
-  }));
+  const raw = await call<Record<string, unknown>[]>(INDIANAPI_ENDPOINTS.nseMostActive);
+  const rows = (raw ?? []).map(mapTrendingRow);
+  await resolveMoverSymbolsViaDb(rows, raw ?? []);
+  return rows.filter(b => b.symbol && b.price > 0);
 }
 
 /** GET /BSE_most_active  (VERIFY) */
 export async function getBseMostActive(): Promise<MoversBucket[]> {
-  const raw = await call<RawStock[]>(INDIANAPI_ENDPOINTS.bseMostActive);
-  return (raw ?? []).map(s => ({
-    symbol: String(s.tickerId ?? s.companyName ?? '').toUpperCase(),
-    price: bestPrice(s),
-    changePercent: num(s.percentChange),
-  }));
+  const raw = await call<Record<string, unknown>[]>(INDIANAPI_ENDPOINTS.bseMostActive);
+  const rows = (raw ?? []).map(mapTrendingRow);
+  await resolveMoverSymbolsViaDb(rows, raw ?? []);
+  return rows.filter(b => b.symbol && b.price > 0);
 }
 
 /** GET /price_shockers  (VERIFY) */
@@ -1613,16 +1677,17 @@ function mapBatchRow(r: RawBatchRow): MarketSnapshot | null {
  */
 export async function getTrendingSymbols(signal?: AbortSignal): Promise<string[]> {
   const raw = await call<{
-    trending_stocks?: { top_gainers?: RawStock[]; top_losers?: RawStock[] };
+    trending_stocks?: { top_gainers?: Record<string, unknown>[]; top_losers?: Record<string, unknown>[] };
   }>(INDIANAPI_ENDPOINTS.trending, {}, signal);
   const symbols = new Set<string>();
-  for (const s of raw.trending_stocks?.top_gainers ?? []) {
-    const sym = String(s.tickerId ?? '').toUpperCase();
-    if (sym) symbols.add(sym);
-  }
-  for (const s of raw.trending_stocks?.top_losers ?? []) {
-    const sym = String(s.tickerId ?? '').toUpperCase();
-    if (sym) symbols.add(sym);
+  const gainerRaws = raw.trending_stocks?.top_gainers ?? [];
+  const loserRaws  = raw.trending_stocks?.top_losers ?? [];
+  const gainers = gainerRaws.map(mapTrendingRow);
+  const losers  = loserRaws.map(mapTrendingRow);
+  await resolveMoverSymbolsViaDb(gainers, gainerRaws);
+  await resolveMoverSymbolsViaDb(losers, loserRaws);
+  for (const b of [...gainers, ...losers]) {
+    if (b.symbol) symbols.add(b.symbol);
   }
   return [...symbols];
 }

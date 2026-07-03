@@ -91,6 +91,7 @@ fi
 
 INTRADAY="${E[SIGNAL_INTRADAY_REGEN_ENABLED]:-false}"
 RECOVERY="${E[SIGNALS_AUTO_RECOVERY_ENABLED]:-false}"
+RECOVERY_READ="${E[SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ]:-false}"
 case "$INTRADAY" in
   true|1|yes|on) fail 'SIGNAL_INTRADAY_REGEN_ENABLED=true on prod — disables controlled schedule benefits' ;;
   *) ok 'SIGNAL_INTRADAY_REGEN_ENABLED=false (controlled schedule)' ;;
@@ -99,10 +100,25 @@ case "$RECOVERY" in
   true|1|yes|on) warn 'SIGNALS_AUTO_RECOVERY_ENABLED=true — ensure guards (once/day, candle coverage) are acceptable' ;;
   *) ok 'SIGNALS_AUTO_RECOVERY_ENABLED=false (poll-driven recovery off)' ;;
 esac
+case "$RECOVERY_READ" in
+  true|1|yes|on) fail 'SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=true — normal /api/signals reads may trigger recovery scans' ;;
+  *) ok 'SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=false (read-only API flow remains read-only)' ;;
+esac
 
 UNIVERSE_MODE="${E[UNIVERSE_MODE]:-NSE1000}"
+UNIVERSE_TARGET="${E[UNIVERSE_TARGET_SIZE]:-1000}"
+UNIVERSE_BAND="${E[UNIVERSE_ALLOW_BAND]:-false}"
 if [ "$UNIVERSE_MODE" = 'NSE1000' ]; then
   ok 'UNIVERSE_MODE=NSE1000 (Top 1000 liquid via buildNse1000Universe.ts)'
+  if [ "$UNIVERSE_TARGET" = '1000' ]; then
+    ok 'UNIVERSE_TARGET_SIZE=1000 (exact NSE 1000 universe)'
+  else
+    fail "UNIVERSE_TARGET_SIZE=$UNIVERSE_TARGET — expected exact 1000"
+  fi
+  case "$UNIVERSE_BAND" in
+    true|1|yes|on) fail 'UNIVERSE_ALLOW_BAND=true — NSE1000 runtime may boot with fewer/more than exactly 1000 symbols' ;;
+    *) ok 'UNIVERSE_ALLOW_BAND=false (runtime requires exact NSE 1000)' ;;
+  esac
 else
   warn "UNIVERSE_MODE=$UNIVERSE_MODE — legacy NIFTY500 band unless buildNse1000Universe was run"
 fi

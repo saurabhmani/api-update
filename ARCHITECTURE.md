@@ -1,7 +1,8 @@
 # Quantorus365 — Institutional Intelligence Architecture
 
 **Version:** 2.1.0  
-**Last updated:** 2026-07-02
+**Last updated:** 2026-07-02  
+**Scale:** 277 API routes · 59 App Router pages · 43 service modules · 128 CLI scripts
 
 ---
 
@@ -264,17 +265,187 @@ Boot logs to grep: `[UNIVERSE_INIT_START]`, `[UNIVERSE_FINAL] count=…`, `[UNIV
 
 ## Application Layer — Command Center & Dashboards
 
-Two dashboard surfaces serve different audiences:
+Two dashboard surfaces serve different audiences (admin ops surfaces are listed below):
 
 | Surface | Page | API | Data path |
 |---------|------|-----|-----------|
 | **Command Center** | `/dashboard` | `GET /api/dashboard` | Server-side aggregation via `internalFetch` → all intelligence modules |
 | **Engine Health** | `/signals/engine-health` | `GET /api/signals/engine-health` | Same modules, direct loopback fan-out |
-| **Admin Dashboard** | `/admin/dashboard` | `GET /api/admin/dashboard` | Direct DB/service reads (`buildAdminDashboard`) — no HTTP self-call |
 
 `/api/dashboard` is a **pure aggregator** — it never runs scoring logic, never fabricates data, and degrades gracefully when any upstream module fails. Failures are classified as `HEALTHY | WARNING | STALE | DEGRADED | TIMEOUT | BROKEN | …` so the UI never surfaces raw `AbortController` strings.
 
 Individual module pages (`/signals`, `/news-intelligence`, `/manipulation`) call their APIs **from the browser** and remain healthy even when an aggregator misconfigured its origin.
+
+### Admin surfaces
+
+| Surface | Page | API | Scope |
+|---------|------|-----|-------|
+| **Admin Dashboard** | `/admin/dashboard` | `GET /api/admin/dashboard` | Ops KPIs, pipeline health |
+| **User Management** | `/admin/users` | `GET/POST/PUT/DELETE /api/admin?resource=user` | Create, edit, disable, delete users |
+| **Role Management** | `/admin/roles` | `GET /api/security/rbac` | RBAC matrix + role assignment UI |
+| **Reliability** | `/admin/reliability` | `GET /api/reliability/*` | Cron health, alerts, audit |
+| **Thresholds / Pipeline** | `/admin/pipeline`, `/admin/signal-rules` | `POST /api/admin` actions | `set_threshold`, `recompute_signals`, … |
+| **Audit** | `/admin/audit`, `/admin/audit-logs` | `GET /api/admin?resource=audit` | Admin action trail |
+
+---
+
+## Identity, Auth & Access Control
+
+### Session model
+
+| Concern | Implementation |
+|---------|----------------|
+| **Session cookie** | `q200_session` (httpOnly, `sameSite=lax`, `Secure` in production) |
+| **Session store** | `user_sessions` table + Redis cache (`session:{token}`, TTL 300s) |
+| **Middleware** | `src/middleware.ts` — cookie-presence gate; unauthenticated API → 401 JSON, pages → `/login` redirect |
+| **Route guards** | `getSession()`, `requireSession()`, `requireAdmin()`, `requirePermission()` in `src/lib/session.ts` |
+| **Auth API** | `POST/GET /api/auth` — login, register, 2FA verify, logout (`src/services/auth.ts`) |
+
+Public paths bypass middleware: `/`, `/login`, `/register`, `/api/auth`, `/api/health`, and a small set of market-data health/bot routes.
+
+### Login hardening
+
+- bcrypt password hashing (cost 12)
+- Account lockout after 5 failed attempts (`LOCK_MINUTES=30`)
+- Optional TOTP 2FA (`totp_enabled`, encrypted `totp_secret` via `src/lib/encryption.ts`)
+- Auth rate limit: 5 req/min per IP (`authLimiter`)
+- Security audit events on login (`logSecurityEvent` → `security_audit_logs`)
+- Session cap enforced via `enforceSessionLimit` (`src/lib/security/sessionManager.ts`)
+
+### Account roles (operational)
+
+The `users.role` column stores **two operational roles**:
+
+| Role | Created by | Access |
+|------|-----------|--------|
+| `user` | Self-registration (`registerUser`) or admin create | Standard platform features, plan-gated |
+| `admin` | Admin create only (`createUserByAdmin`) | Full admin APIs, enterprise-equivalent entitlements |
+
+Admin user lifecycle (`src/services/auth.ts`):
+
+- `POST /api/admin?resource=user` — create (email, password, name, role)
+- `PUT /api/admin?resource=user&id={id}` — update name, email, role, `is_active`, password
+- `DELETE /api/admin?resource=user&id={id}` — delete (blocks self-delete, last-admin guard)
+- `GET /api/admin?resource=users` — list all users
+
+Safeguards: admins cannot demote/disable themselves; last active admin cannot be deleted or demoted.
+
+### RBAC (extended permissions layer)
+
+`src/lib/security/rbac.ts` defines a **four-role permission matrix** seeded into `roles` / `permissions` / `role_permissions` tables:
+
+| RBAC role | Key permissions beyond `user` |
+|-----------|------------------------------|
+| `user` | signals:read, portfolio, paper trading, billing:read |
+| `trader` | + signals:write, trading:live |
+| `analyst` | + signals:write (no live trading) |
+| `admin` | `*` (wildcard) |
+
+**Note:** Admin create/update APIs currently coerce roles to `user` or `admin` only. The Role Management UI (`/admin/roles`) lists all four RBAC roles, but assigning `trader`/`analyst` via the admin API requires widening the role validation in `updateUserByAdmin` — the RBAC tables and `normalizeRole()` already support them.
+
+### Onboarding preferences (not account roles)
+
+Stored in `user_preferences` (via `POST /api/user/onboarding`):
+
+- `trader_type`: `beginner` | `active_trader` | `options_trader`
+- `risk_profile`: `low` | `medium` | `high`
+- `alert_mode`: `instant` | `digest` | `limited`
+
+---
+
+## Billing & Entitlements
+
+Subscription billing lives in `src/lib/billing/` with the entitlement facade in `src/services/entitlement.ts`.
+
+### Plans
+
+| Plan | Price (INR/mo) | Notes |
+|------|----------------|-------|
+| `free` | 0 | Daily signal cap (`FREE_DAILY_SIGNAL_LIMIT`), basic features |
+| `pro` | 2,999 | Advanced signals, trade setups, option intelligence |
+| `premium` | 7,999 | Top opportunities, trader analytics, market explanation |
+| `enterprise` | 24,999 | `__all` features; admins receive this tier automatically |
+
+Plan catalog: `src/lib/billing/constants/plans.ts` (`PLAN_CATALOG`).
+
+### Credit wallets
+
+Four credit types: `ai_builder`, `backtests`, `research_reports`, `premium_signals`.  
+Debit/consume via `checkPremiumAccess` / `consumePremiumAccess`; balances in `user_wallets`.
+
+### Key tables (auto-created by `ensureBillingTables`)
+
+`subscriptions`, `user_wallets`, `credit_transactions`, `billing_usage_events`, `invoices`, `invoice_items`, `payment_transactions`, `billing_admin_overrides`, `user_plans`
+
+### API entry points
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/billing/subscription` | Current plan |
+| `POST /api/billing/subscribe`, `/upgrade` | Plan changes |
+| `GET /api/billing/usage` | Usage logs |
+| `GET /api/user/features` | Full feature map for logged-in user |
+| `POST /api/billing/admin/override` | Admin plan/credit override |
+
+Feature gates in UI use `FeatureGate` (`src/components/intelligence/FeatureGate.tsx`) backed by `getAllUserFeatures()`.
+
+---
+
+## Security & Compliance
+
+Module root: `src/lib/security/`.
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| RBAC | `rbac.ts` | Role → permission mapping, `hasPermission`, `requirePermission` |
+| Audit | `audit.ts` | `logSecurityEvent`, auth/admin action trail |
+| MFA | `mfaService.ts` | TOTP setup/verify helpers |
+| Compliance | `compliance.ts` | Consent tracking (`user_consents`, `consent_logs`) |
+| Rate limiting | `rateLimiter.ts` | Per-route IP limits (auth, security, admin) |
+| Validation | `validation.ts` | Email/password sanitization |
+| Session manager | `sessionManager.ts` | Concurrent session limits, revocation |
+| Secrets | `secretManager.ts` | Encrypted secret storage (`encrypted_secrets`) |
+
+### Consent types
+
+`terms_of_service`, `privacy_policy`, `trading_disclaimer`, `live_trading_risk`, `data_processing`, `marketing`
+
+### Security API routes
+
+| Route | Auth | Purpose |
+|-------|------|---------|
+| `GET /api/security/status` | Session | MFA status, sessions, consents, permissions |
+| `GET /api/security/rbac` | Admin | Full roles/permissions matrix |
+| `GET/POST /api/security/compliance` | Session | Consent accept/revoke |
+| `GET /api/security/sessions` | Session | Active sessions, revoke |
+| `GET /api/security/events` | Admin + permission | Security event log |
+
+---
+
+## Reliability & Operations
+
+Module root: `src/lib/reliability/`.
+
+Aggregates production health across cron jobs, data loaders, broker connectivity, signal validation, and user management into a single dashboard (`collectReliabilityDashboard`).
+
+| Component | Purpose |
+|-----------|---------|
+| `healthAggregator.ts` | Roll up subsystem health → `ReliabilityDashboard` |
+| `alertDispatcher.ts` | Evaluate SLO thresholds, dispatch alerts |
+| `alertDelivery.ts` | Channel delivery (email/webhook hooks) |
+| `auditLogger.ts` | Reliability action audit trail |
+| `cronRegistry.ts` | Canonical cron job metadata |
+
+### API entry points
+
+| Route | Auth | Purpose |
+|-------|------|---------|
+| `GET /api/reliability/status` | Admin | Full reliability dashboard |
+| `GET /api/reliability/health` | Admin | Health metrics snapshot |
+| `GET /api/reliability/alerts` | Admin | Alert history |
+| `GET /api/reliability/audit` | Admin | Reliability audit log |
+
+Admin UI: `/admin/reliability`.
 
 ---
 
@@ -338,9 +509,15 @@ Market Data → Features → Factor Scores
 | Manipulation surveillance | `src/lib/manipulation-engine/` | `/api/manipulation`, `/api/manipulation-engine` |
 | News intelligence | `src/lib/news-engine/` | `/api/news-engine` |
 | Trust layer | `src/lib/trust-layer/` | `/api/trust/*` |
-| Strategy hub / lab | `src/lib/strategy-hub/`, `src/lib/strategy-lab/` | `/api/strategies/*` |
-| Paper / live trading | `src/lib/paper-trading/`, `src/lib/broker/` | `/api/paper/*`, `/api/broker/*` |
+| Strategy hub / lab / builder | `src/lib/strategy-hub/`, `strategy-lab/`, `strategy-builder/` | `/api/strategies/*` |
+| Paper / live trading | `src/lib/paper-trading/`, `src/lib/broker/`, `src/lib/execution/` | `/api/paper/*`, `/api/broker/*`, `/api/live-trading/*` |
 | Quant platform | `src/lib/quant-platform/` | `/api/quant/*` |
+| Billing & entitlements | `src/lib/billing/`, `src/services/entitlement.ts` | `/api/billing/*`, `/api/user/features` |
+| Security & compliance | `src/lib/security/` | `/api/security/*` |
+| Reliability / SLO | `src/lib/reliability/` | `/api/reliability/*` |
+| Pre-trade gateway | `src/services/preTradeGatewayService.ts` | `/api/pretrade/evaluate` |
+| Governance | `src/services/governanceService.ts` | `/api/governance/*` |
+| Public API | `src/app/api/public/v1/` | `/api/public/v1/signals` (versioned external surface) |
 
 ---
 
@@ -609,20 +786,23 @@ Boot-time DDL: `src/lib/db/ensureAllSchemas.ts` (idempotent `CREATE TABLE IF NOT
 
 | Area | Key tables |
 |------|------------|
-| Auth | `users`, `user_sessions` |
+| Auth | `users`, `user_sessions`, `password_resets`, `user_preferences` |
+| Billing | `subscriptions`, `user_wallets`, `credit_transactions`, `invoices`, `billing_admin_overrides` |
+| Security | `roles`, `permissions`, `role_permissions`, `security_audit_logs`, `user_consents`, `consent_logs` |
 | Universe | `securities_master`, `q365_universe`, universe rebuild audit snapshots |
 | Signals | `q365_signals`, `q365_signal_maturity_tracker`, `q365_confirmed_signal_snapshots` |
-| Signal meta | `q365_signal_lifecycle`, `q365_strategy_breakdowns` |
-| Market warehouse | `candles`, `market_data_daily`, EOD ingestion logs |
-| News | `news_events`, `news_scores` |
-| Manipulation | manipulation events, scan snapshots |
-| Ops | `system_thresholds`, `signal_rejections`, scheduler run logs |
+| Signal meta | `q365_signal_lifecycle`, `q365_strategy_breakdowns`, `q365_signal_explanations` |
+| Market warehouse | `candles`, `market_data_daily` (view), EOD ingestion logs |
+| News | `q365_news_events`, `q365_news_scores` |
+| Manipulation | `q365_manipulation_events`, `q365_manipulation_snapshots` |
+| Backtest | `q365_backtest_runs` |
+| Ops | `system_thresholds`, `signal_rejections`, `q365_data_feed_health`, `audit_logs` |
 
 Access: `import { db } from '@/lib/db'` — parameterized SQL, no ORM.
 
 ### Canonical PostgreSQL (target warehouse)
 
-Versioned migrations: `migrations/postgres/001` – `031` (auth, master, market, intel, app, ops, trust, strategy, billing, broker, security, quant platform, …).
+Versioned migrations: `migrations/postgres/001` – `032` (auth, master, market, intel, app, ops, trust, strategy, billing, broker, security, quant platform, universe snapshots, …).
 
 | Schema | Purpose |
 |--------|---------|
@@ -632,6 +812,8 @@ Versioned migrations: `migrations/postgres/001` – `031` (auth, master, market,
 | `intel.*` | news, corporate_events, forecasts, target_prices |
 | `app.*` | watchlists, portfolios, alerts, reports |
 | `ops.*` | scheduler_runs, provider_health_logs, dead_letter_events |
+| `billing.*` | subscriptions, wallets, invoices, usage (migrations `025`, `026`) |
+| `security.*` | RBAC, consents, audit, retention (migrations `029`, `030`) |
 
 Run: `npm run db:migrate:pg`  
 Validate: `npm run db:check:pg:insert`  
@@ -660,22 +842,32 @@ Full inventory: [`docs/database-inventory.md`](docs/database-inventory.md)
 
 ```
 src/
-├── app/              # Next.js App Router — pages + ~174 API routes
-├── components/       # React UI (dashboard, signals, stock detail, layout)
+├── app/              # Next.js App Router — 59 pages + 277 API route handlers
+├── components/       # React UI (dashboard, signals, stock detail, layout, intelligence)
 ├── lib/              # Core engines (signal, backtest, manipulation, news, market data)
-│   └── api/
-│       └── internalFetch.ts   # ← mandatory for same-app server-side fetch
-├── services/         # Application service layer
+│   ├── api/
+│   │   └── internalFetch.ts   # ← mandatory for same-app server-side fetch
+│   ├── billing/      # Subscriptions, wallets, premium access
+│   ├── security/     # RBAC, audit, MFA, compliance, rate limits
+│   ├── reliability/  # SLO dashboard, alert dispatch, cron registry
+│   ├── signal-engine/
+│   ├── backtesting/
+│   ├── manipulation-engine/
+│   ├── news-engine/
+│   ├── paper-trading/
+│   ├── broker/
+│   └── quant-platform/
+├── services/         # Application service layer (43 modules — auth, entitlement, engines)
 ├── providers/        # Market data adapters (IndianAPI, Yahoo)
-├── hooks/            # React hooks
+├── hooks/            # React hooks (auth, features, onboarding, trust)
 ├── types/            # Shared TypeScript types
 ├── instrumentation.ts
 └── middleware.ts     # Cookie-presence auth gate (q200_session)
 
 services/             # Microservice scaffolds (identity, market-ingestion, …)
 packages/             # Shared contracts, eventbus, RPC
-scripts/              # CLI ops, validation, backfill
-migrations/postgres/  # Versioned PostgreSQL DDL
+scripts/              # 128 CLI ops, validation, backfill scripts
+migrations/postgres/  # Versioned PostgreSQL DDL (001–032)
 docs/                 # Detailed inventories and runbooks
 server.js             # Production unified entry (HTTP + WS + workers)
 ecosystem.config.js   # PM2 config
@@ -691,9 +883,13 @@ ecosystem.config.js   # PM2 config
 | [`docs/api-inventory.md`](docs/api-inventory.md) | All API routes with auth classification |
 | [`docs/database-inventory.md`](docs/database-inventory.md) | Schemas, tables, migrations |
 | [`docs/signal-engine-flow.md`](docs/signal-engine-flow.md) | 4-phase pipeline, lifecycle |
+| [`docs/strategy-flow.md`](docs/strategy-flow.md) | Strategy registry, evaluators, scoring |
 | [`docs/DAILY_SCAN_SCHEDULE.md`](docs/DAILY_SCAN_SCHEDULE.md) | IST cron jobs, dependency graph |
 | [`docs/PROVIDER_REQUEST_POLICY.md`](docs/PROVIDER_REQUEST_POLICY.md) | IndianAPI budget policy |
 | [`docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md`](docs/PERFORMANCE_DAILY_REPORT_BACKTEST.md) | Daily report / backtest API perf notes |
+| [`docs/security-review.md`](docs/security-review.md) | Secret exposure, auth gaps, risk register |
+| [`docs/SLO_RUNBOOK.md`](docs/SLO_RUNBOOK.md) | Reliability SLOs and alert runbook |
+| [`docs/PREMIUM_NEWS_FEEDS.md`](docs/PREMIUM_NEWS_FEEDS.md) | Premium news feed validation |
 
 ---
 
@@ -704,6 +900,7 @@ npm install
 cp .env.example .env.local          # fill in MYSQL + IndianAPI + session secrets
 npm run db:ensure                     # boot-time MySQL DDL (or db:migrate-all)
 npm run db:migrate:pg                 # PostgreSQL canonical migrations
+npm run db:seed-users                 # optional: seed admin + demo users (reads SEED_*_PASSWORD from .env.local)
 npm run build
 ```
 
@@ -757,8 +954,14 @@ MYSQL_USER=...
 MYSQL_PASSWORD=...
 
 SESSION_SECRET=...                    # 32+ chars
+SESSION_MAX_AGE=86400                 # cookie TTL seconds (default 24h)
 INDIAN_API_KEY=...
 NEXT_PUBLIC_APP_URL=https://quantorus.in
+
+# Auth seed passwords (local/dev only — npm run db:seed-users)
+SEED_ADMIN_PASSWORD=...
+SEED_JOHN_PASSWORD=...
+SEED_PRIYA_PASSWORD=...
 
 # Universe (NSE 1000)
 UNIVERSE_MODE=NSE1000
@@ -810,6 +1013,12 @@ GET /api/admin?action=get_stance
 - [ ] PM2 logs show `[INPROC MATURITY]` or `[MATURITY]` every ~60s (maturity worker alive)
 - [ ] `q365_confirmed_signal_snapshots` has `ACTIVE` rows after market-hours scans (or `diagnoseApprovalFunnel.ts` shows promotion path clear)
 - [ ] Scheduler owner is explicit: `Q365_INPROC_SCHEDULER=0` when `quantorus365-scheduler` PM2 app runs; never both firing duplicate crons unintentionally
+- [ ] `users` table has at least one active `admin` row (`npm run db:seed-users` or manual insert)
+- [ ] Admin user CRUD works: `GET /api/admin?resource=users`, create via `POST ?resource=user`
+- [ ] Billing tables exist after first billing API call (`ensureBillingTables`) or PG migration `025_billing.sql`
+- [ ] `GET /api/user/features` returns plan + feature map for logged-in non-admin user
+- [ ] RBAC matrix loads at `GET /api/security/rbac` (admin session required)
+- [ ] Reliability dashboard responds at `GET /api/reliability/status` (admin session required)
 
 ## Verifying IndianAPI connectivity
 

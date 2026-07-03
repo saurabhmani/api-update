@@ -298,80 +298,162 @@ export async function loadDirectSignalOutcomes(
   window: PerformanceWindow,
 ): Promise<PerformanceOutcomeRow[]> {
   const cutoff = windowCutoffIso(window);
-  const where  = cutoff ? `WHERE evaluated_at >= ?` : '';
+  // Window by the resolution timestamp (`outcome_at`) so terminal
+  // outcomes fall in the intended window regardless of when the
+  // row was first inserted (rows are updated in-place as trades mature).
+  const eventAt = 'COALESCE(o.outcome_at, o.resolved_at, o.evaluated_at)';
+  const where  = cutoff ? `WHERE ${eventAt} >= ?` : '';
   const params = cutoff ? [cutoff] : [];
   try {
-    // Include `source_snapshot_id` (and `id` as a fallback) so the row
-    // carries a stable `signalRef` for cross-source dedupe. Without
-    // this, the same matured snapshot can be double-counted as both a
-    // direct outcome and an observed terminal row.
+    // Schema note (verified against `q365_signal_outcomes` and
+    // `q365_signals`): the outcomes table carries `strategy_id`,
+    // `outcome`, `max_gain_pct`, `pnl_r`, `days_held`, and the
+    // per-target/stop hit flags. The signal join fills in
+    // `direction`, `sector`, `confidence_score`, and the entry /
+    // stop / target prices needed to compute a signed return.
     const { rows } = await db.query<any>(
-      `SELECT id, signal_id, source_snapshot_id, symbol, strategy, direction, sector, regime,
-              confidence_score, outcome, return_pct, return_r,
-              target_hit, stop_hit, invalidated,
-              mfe_pct, mae_pct, holding_period_bars,
-              approval_status, evaluated_at
-         FROM q365_signal_outcomes
+      `SELECT o.id, o.signal_id, o.symbol, o.strategy_id,
+              o.outcome, o.outcome_label,
+              o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
+              o.max_gain_pct, o.pnl_r,
+              o.max_fav_excursion_pct, o.max_adv_excursion_pct,
+              o.return_bar5_pct, o.return_bar10_pct,
+              o.days_held, o.outcome_at, o.evaluated_at, o.resolved_at,
+              s.direction, s.confidence_score, s.sector, s.market_regime,
+              s.entry_price, s.stop_loss, s.target1, s.target2,
+              s.classification, s.rejection_codes_json
+         FROM q365_signal_outcomes o
+         LEFT JOIN q365_signals    s ON s.id = o.signal_id
          ${where}
-         ORDER BY evaluated_at DESC
+         ORDER BY ${eventAt} DESC
          LIMIT 20000`,
       params,
     );
     return (rows ?? []).map(directOutcomeToRow);
-  } catch {
-    // Table not present — fall through. Caller decides next source.
+  } catch (err) {
+    // Legacy fallback: the outcomes table (or the join) may not
+    // exist on very old deployments. Only swallow after logging so
+    // this failure mode is visible in dev.
+    if (process.env.LOG_VERBOSE_PERFORMANCE === '1') {
+      console.warn('[performance] loadDirectSignalOutcomes failed:', (err as Error).message);
+    }
     return [];
   }
 }
 
+/** Normalise the varchar `outcome` column. The writer has used two
+ *  vocabularies over time — the newer `WIN` / `LOSS` labels and the
+ *  older `T1_HIT` / `SL_HIT` labels. Both count identically. */
+function normaliseOutcome(raw: string): OutcomeStatus {
+  const v = raw.trim().toUpperCase();
+  if (v === 'WIN' || v === 'T1_HIT' || v === 'T2_HIT' || v === 'T3_HIT') return 'WIN';
+  if (v === 'LOSS' || v === 'SL_HIT') return 'LOSS';
+  if (v === 'EXPIRED') return 'EXPIRED';
+  if (v === 'INVALIDATED') return 'INVALIDATED';
+  if (v === 'ACTIVE' || v === 'OPEN' || v === '') return 'OPEN';
+  return 'INSUFFICIENT_DATA';
+}
+
 function directOutcomeToRow(r: any): PerformanceOutcomeRow {
-  const outcomeRaw = String(r.outcome ?? '').toLowerCase();
-  const outcome: OutcomeStatus =
-    outcomeRaw === 'win'         ? 'WIN'
-    : outcomeRaw === 'loss'      ? 'LOSS'
-    : outcomeRaw === 'open'      ? 'OPEN'
-    : outcomeRaw === 'expired'   ? 'EXPIRED'
-    : outcomeRaw === 'invalidated' ? 'INVALIDATED'
-    :                              'INSUFFICIENT_DATA';
-  const approval = String(r.approval_status ?? '').toUpperCase();
-  const approvalStatus: PerformanceOutcomeRow['approvalStatus'] =
-    approval === 'APPROVED'   ? 'APPROVED'
-    : approval === 'WATCHLIST' ? 'WATCHLIST'
-    : approval === 'REJECTED'  ? 'REJECTED'
-    :                            'UNKNOWN';
-  // Prefer source_snapshot_id so the ref matches observedRowToOutcome
-  // (the observed loader emits the snapshot's own id). Falls back to
-  // the outcome row id when no snapshot is linked.
-  const snapshotRef = r.source_snapshot_id != null
-    ? `snapshot:${String(r.source_snapshot_id)}`
-    : r.id != null
-      ? `outcome:${String(r.id)}`
-      : null;
+  const outcome = normaliseOutcome(String(r.outcome ?? r.outcome_label ?? ''));
+  const dir: 'BUY' | 'SELL' =
+    String(r.direction ?? 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+
+  const entry = num(r.entry_price);
+  const stop  = num(r.stop_loss);
+  const t1    = num(r.target1);
+
+  const targetHit = !!(r.target1_hit || r.target2_hit || r.target3_hit);
+  const stopHit   = !!r.stop_hit;
+
+  // Signed realised return in %. Prefer the recorded `max_gain_pct`
+  // when the outcome is a WIN because that reflects the actual
+  // realised move captured by the resolver. For losses, use the
+  // stop-distance (magnitude is what got taken).
+  let returnPct: number | null = null;
+  if (outcome === 'WIN') {
+    const gain = num(r.max_gain_pct);
+    if (gain != null && gain > 0) {
+      returnPct = round(gain, 2);
+    } else if (entry != null && t1 != null && entry > 0) {
+      const move = ((t1 - entry) / entry) * 100;
+      returnPct = round(dir === 'SELL' ? -move : move, 2);
+    }
+  } else if (outcome === 'LOSS') {
+    if (entry != null && stop != null && entry > 0) {
+      const move = ((stop - entry) / entry) * 100;
+      returnPct = round(dir === 'SELL' ? -move : move, 2);
+    } else {
+      // Last resort: mark magnitude negative when nothing else is available.
+      const gain = num(r.max_gain_pct);
+      if (gain != null) returnPct = round(-Math.abs(gain), 2);
+    }
+  } else if (outcome === 'EXPIRED') {
+    const bar10 = num(r.return_bar10_pct);
+    const bar5  = num(r.return_bar5_pct);
+    returnPct = bar10 ?? bar5 ?? null;
+  }
+
+  // R-multiple: prefer the recorded value; else derive from
+  // returnPct and the stop distance.
+  let returnR: number | null = num(r.pnl_r);
+  if (returnR == null && entry != null && stop != null && entry > 0) {
+    const riskPct = Math.abs(((stop - entry) / entry) * 100);
+    if (riskPct > 0 && returnPct != null) {
+      returnR = round(returnPct / riskPct, 2);
+    }
+  }
+  if (returnR == null && outcome === 'LOSS') returnR = -1;
+
+  // Approval status derived from the linked signal's classification
+  // and rejection codes — the outcomes table doesn't store it directly.
+  const classification = String(r.classification ?? '').toUpperCase();
+  const rejectionCodes: string[] = (() => {
+    const raw = r.rejection_codes_json;
+    if (!raw) return [];
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch { return []; }
+  })();
+  let approvalStatus: PerformanceOutcomeRow['approvalStatus'] = 'APPROVED';
+  if (classification === 'REJECTED' || classification === 'NO_TRADE') {
+    approvalStatus = 'REJECTED';
+  } else if (
+    classification === 'WATCHLIST' ||
+    classification === 'WATCHLIST_ONLY' ||
+    classification === 'DEVELOPING' ||
+    classification === 'LOW_CONVICTION'
+  ) {
+    approvalStatus = 'WATCHLIST';
+  } else if (rejectionCodes.length > 0) {
+    approvalStatus = 'WATCHLIST';
+  }
+
   return {
-    strategyId:        String(r.strategy ?? 'unclassified'),
+    strategyId:        String(r.strategy_id ?? 'unclassified'),
     symbol:            String(r.symbol ?? ''),
-    direction:         String(r.direction ?? 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+    direction:         dir,
     sector:            r.sector ? String(r.sector) : safeSector(r.symbol),
-    regime:            r.regime ? String(r.regime) : null,
+    regime:            r.market_regime ? String(r.market_regime) : null,
     confidenceScore:   num(r.confidence_score),
     outcome,
-    returnPct:         num(r.return_pct),
-    returnR:           num(r.return_r),
-    targetHit:         !!r.target_hit,
-    stopHit:           !!r.stop_hit,
-    invalidated:       !!r.invalidated,
-    mfePct:            num(r.mfe_pct),
-    maePct:            num(r.mae_pct),
-    holdingPeriodBars: num(r.holding_period_bars),
+    returnPct,
+    returnR,
+    targetHit,
+    stopHit,
+    invalidated:       outcome === 'INVALIDATED',
+    mfePct:            num(r.max_fav_excursion_pct),
+    maePct:            num(r.max_adv_excursion_pct),
+    holdingPeriodBars: num(r.days_held),
     approvalStatus,
-    evaluatedAt:       toIso(r.evaluated_at),
-    // Phase 2 Priority 1 — these rows come from q365_signal_outcomes,
-    // which carries the per-signal authored outcome. They are the most
-    // trustworthy source and take priority over inferred observed
-    // snapshots in dedupeOutcomesBySignal.
+    evaluatedAt:       toIso(r.outcome_at ?? r.resolved_at ?? r.evaluated_at),
+    // Phase 2 Priority 1 — direct authored outcomes.
     source:            'direct',
     outcomeSource:     'direct',
-    signalRef:         snapshotRef,
+    // signalRef points at the underlying q365_signals row so
+    // dedupeOutcomesBySignal collapses any observed twin.
+    signalRef:         r.signal_id != null ? `signal:${String(r.signal_id)}` : null,
     signalId:          r.signal_id != null ? Number(r.signal_id) : null,
   };
 }
@@ -439,7 +521,10 @@ export async function loadObservedOutcomes(
   window: PerformanceWindow,
 ): Promise<PerformanceOutcomeRow[]> {
   const cutoff = windowCutoffIso(window);
-  const where  = cutoff ? `WHERE confirmed_at >= ?` : '';
+  // Window by outcome time, not promotion time. A signal confirmed 6 months
+  // ago but closed this week belongs in the 7D/30D/90D window.
+  const eventAt = 'COALESCE(status_changed_at, confirmed_at)';
+  const where  = cutoff ? `WHERE ${eventAt} >= ?` : '';
   const params = cutoff ? [cutoff] : [];
   try {
     // Spec hardening: surface classification, execution_allowed, and
@@ -459,7 +544,7 @@ export async function loadObservedOutcomes(
                 rejection_codes_json
            FROM q365_confirmed_signal_snapshots
            ${where}
-           ORDER BY confirmed_at DESC
+           ORDER BY ${eventAt} DESC
            LIMIT 5000`,
         params,
       );
@@ -474,7 +559,7 @@ export async function loadObservedOutcomes(
                 invalidation_reason
            FROM q365_confirmed_signal_snapshots
            ${where}
-           ORDER BY confirmed_at DESC
+           ORDER BY ${eventAt} DESC
            LIMIT 5000`,
         params,
       );
@@ -580,10 +665,16 @@ function observedRowToOutcome(r: any): PerformanceOutcomeRow {
     evaluatedAt:       toIso(r.status_changed_at ?? r.confirmed_at),
     source:            'observed',
     outcomeSource:     'observed',
-    // signalRef matches the `snapshot:<id>` shape used by directOutcomeToRow
-    // when both sources are loaded, so dedupe collapses the pair to the
-    // higher-priority `direct` row.
-    signalRef:         r.id != null ? `snapshot:${String(r.id)}` : null,
+    // signalRef is `signal:<source_signal_id>` when we know the linked
+    // signal. This matches the ref emitted by `directOutcomeToRow` so
+    // dedupe collapses observed+direct pairs into a single direct row.
+    // Falls back to `snapshot:<id>` when the confirmed snapshot is not
+    // linked to a signal.
+    signalRef:         r.source_signal_id != null
+                         ? `signal:${String(r.source_signal_id)}`
+                         : r.id != null
+                           ? `snapshot:${String(r.id)}`
+                           : null,
     signalId:          r.source_signal_id != null ? Number(r.source_signal_id) : null,
   };
 }

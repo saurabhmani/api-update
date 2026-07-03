@@ -7,7 +7,7 @@
 //    - GET /api/signals/freshness
 //    - GET /api/signals/[id]
 //    - GET /api/signals/stream (SSE)
-//    - getIntelligenceSignals
+//    - (intelligence hub reads q365_signals via getActiveSignals)
 //
 //  This module returns ONLY rows that:
 //    - status = 'ACTIVE'

@@ -28,7 +28,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
-import { getTopRankings }            from '@/services/rankingsService';
+import { getTopRankings, bustRankingsCache, computeOpportunityRank } from '@/services/rankingsService';
+import type { RankedEntry } from '@/services/rankingsService';
+import { syncRankingsFromNse }       from '@/services/dataSync';
+import { isMarketOpen }              from '@/lib/marketData/marketHours';
 import { fetchYahooQuotesBatch }     from '@/lib/marketData/yahooBatch'; // @deprecated marker
 import { getLivePrice }              from '@/lib/marketData/getLivePrice';
 import { getMarketEnvelope }         from '@/lib/marketData/marketHours';
@@ -98,8 +101,7 @@ async function enrichRankingsWithLiveLtp(rows: any[]): Promise<void> {
   if (!rows.length) return;
   const t0 = Date.now();
 
-  // Single Yahoo batch for every symbol in the response. Kite has // @deprecated marker
-  // been removed; Yahoo is the sole live-quote upstream. // @deprecated marker
+  // Batch resolve through marketDataResolver (IndianAPI primary).
   const symbols: string[] = [];
   for (const row of rows) {
     const sym = (row.symbol ?? '').toString().toUpperCase();
@@ -127,23 +129,19 @@ async function enrichRankingsWithLiveLtp(rows: any[]): Promise<void> {
       }
     }
   } catch (err: any) {
-    console.warn('[API/rankings] Yahoo enrichment failed:', err?.message); // @deprecated marker
+    console.warn('[API/rankings] live quote enrichment failed:', err?.message);
   }
 
   if (VERBOSE_RANKINGS) {
     console.log(
-      `[DATA SOURCE] path=LIVE-RANKINGS  channel=Yahoo Finance  ` + // @deprecated marker
+      `[DATA SOURCE] path=LIVE-RANKINGS  channel=IndianAPI/resolver  ` +
       `rows=${rows.length}  hits=${hits}  miss=${miss}  ` +
       `corrected=${corrected}  elapsed=${Date.now() - t0}ms`
     );
   }
-
-  // Guaranteed pct_change fallback from market_data_daily for any
-  // row Yahoo didn't enrich (or enriched with 0%). // @deprecated marker
-  await backfillPctChangeFromCandles(rows);
 }
 
-async function backfillPctChangeFromCandles(rows: any[]): Promise<void> {
+async function backfillPctChangeFromCandles(rows: any[], allowLiveFallback: boolean): Promise<void> {
   const targets = rows.filter(r =>
     r && r.symbol && (r.pct_change == null || Number(r.pct_change) === 0)
   );
@@ -201,12 +199,12 @@ async function backfillPctChangeFromCandles(rows: any[]): Promise<void> {
     try {
       const ph = unmatched.map(() => '?').join(',');
       const { rows: rk } = await db.query(
-        `SELECT tradingsymbol, pct_change, ltp, created_at
+        `SELECT tradingsymbol, pct_change, ltp, updated_at
            FROM rankings
           WHERE tradingsymbol IN (${ph})
             AND pct_change IS NOT NULL
             AND pct_change <> 0
-          ORDER BY created_at DESC`,
+          ORDER BY updated_at DESC`,
         unmatched,
       );
       const seen = new Map<string, { pct: number; ltp: number }>();
@@ -234,12 +232,9 @@ async function backfillPctChangeFromCandles(rows: any[]): Promise<void> {
     }
   }
 
-  // Final fallback: hit getLivePrice (Kite → Yahoo cascade) // @deprecated marker
-  // for anything still at 0%. Yahoo always carries pChange even // @deprecated marker
-  // when our local candles + WS tick don't, so this turns the
-  // "data-not-available" failure into "guaranteed value at the
-  // cost of one HTTP round-trip per missing symbol".
-  if (unmatched.length) {
+  // Final fallback: resolve live quotes for symbols still at 0%.
+  // Skipped off-hours — external providers time out and block the page.
+  if (allowLiveFallback && unmatched.length) {
     const lpStart = Date.now();
     let lpFilled = 0;
     const results = await Promise.allSettled(
@@ -300,6 +295,38 @@ async function backfillPctChangeFromCandles(rows: any[]): Promise<void> {
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
 
+/** During market hours, refresh the rankings table when it is empty
+ *  or older than RANKINGS_AUTO_SYNC_MAX_AGE_HOURS (default 4h). There
+ *  is no background cron for rankings — without this hook the page
+ *  can show week-old LTP / 0% change until an admin manually syncs. */
+async function refreshStaleRankingsIfNeeded(marketOpen: boolean): Promise<void> {
+  if (!marketOpen) return;
+  const maxAgeHours = (() => {
+    const raw = Number(process.env.RANKINGS_AUTO_SYNC_MAX_AGE_HOURS);
+    if (!Number.isFinite(raw) || raw <= 0) return 4;
+    return Math.min(168, Math.floor(raw));
+  })();
+  try {
+    const { rows } = await db.query<{ cnt: number; max_ts: Date | string | null }>(
+      `SELECT COUNT(*) AS cnt, MAX(updated_at) AS max_ts FROM rankings`,
+    );
+    const cnt   = Number(rows[0]?.cnt ?? 0);
+    const maxTs = rows[0]?.max_ts ? new Date(rows[0].max_ts) : null;
+    const stale = !maxTs || !Number.isFinite(maxTs.getTime())
+      || (Date.now() - maxTs.getTime()) / 3_600_000 > maxAgeHours;
+    if (cnt === 0 || stale) {
+      const ageLabel = maxTs && Number.isFinite(maxTs.getTime())
+        ? `${((Date.now() - maxTs.getTime()) / 3_600_000).toFixed(1)}h old`
+        : 'empty';
+      console.log(`[API/rankings] auto-sync triggered (${ageLabel})`);
+      await syncRankingsFromNse();
+      await bustRankingsCache();
+    }
+  } catch (err: unknown) {
+    console.warn('[API/rankings] auto-sync check failed:', (err as Error)?.message);
+  }
+}
+
 export async function GET(req: NextRequest) {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
@@ -340,6 +367,8 @@ export async function GET(req: NextRequest) {
   const SORTED_BY = 'opportunity_rank DESC, conviction, confidence DESC, risk ASC, volume DESC, symbol ASC';
 
   try {
+    await refreshStaleRankingsIfNeeded(market.isOpen);
+
     // Spec MARKET-AWARENESS §5 — closed market means no external
     // quote fan-out. allowExternalFallback gates buildFromLiveMarket()
     // and syncRankingsFromNse() inside the service layer; passing
@@ -347,6 +376,24 @@ export async function GET(req: NextRequest) {
     // Yahoo / NSE upstreams just because the rankings table happens
     // to be empty.
     const result = await getTopRankings(limit, page, exchange, market.isOpen);
+
+    // Backfill flat 0% rows from market_data_daily (and last-resort
+    // live resolver) in ALL market states — previously this only ran
+    // inside enrichRankingsWithLiveLtp during open hours, so closed-
+    // market pages showed pct_change=0 for every row.
+    await backfillPctChangeFromCandles(result.data ?? [], market.isOpen);
+    // Re-score rows whose % change was backfilled so opportunity_rank
+    // and the flat view sort reflect real movers, not stale score=50.
+    for (const row of result.data ?? []) {
+      const pct = Number(row.pct_change ?? 0);
+      if (Number.isFinite(pct) && pct !== 0) {
+        row.score = Math.min(100, Math.max(0, 50 + pct * 2));
+      }
+      row.opportunity_rank = computeOpportunityRank(row as RankedEntry);
+    }
+    (result.data ?? []).sort((a, b) => (b.opportunity_rank ?? 0) - (a.opportunity_rank ?? 0));
+    (result.data ?? []).forEach((r, i) => { r.rank_position = i + 1; });
+
     // Spec MARKET-AWARENESS §5 — enrichment runs ONLY during open
     // hours. Off-hours the upstream returns last-close (or stale)
     // prices that would disagree with the dashboard's last-close
@@ -382,6 +429,25 @@ export async function GET(req: NextRequest) {
       dataSource = isCacheHit ? 'last_close_cache' : 'last_rankings_db';
     }
 
+    let rankingsMaxUpdatedAt: string | null = null;
+    try {
+      const { rows: tsRows } = await db.query<{ max_ts: Date | string | null }>(
+        `SELECT MAX(updated_at) AS max_ts FROM rankings`,
+      );
+      const raw = tsRows[0]?.max_ts;
+      if (raw) {
+        rankingsMaxUpdatedAt = raw instanceof Date ? raw.toISOString() : String(raw);
+      }
+    } catch { /* non-fatal */ }
+    if (!rankingsMaxUpdatedAt) {
+      for (const row of result.data ?? []) {
+        const ts = row.rankings_updated_at;
+        if (ts && (!rankingsMaxUpdatedAt || ts > rankingsMaxUpdatedAt)) {
+          rankingsMaxUpdatedAt = ts;
+        }
+      }
+    }
+
     return NextResponse.json({
       ...result,
       // Envelope contract used by the Rankings page header / banner.
@@ -398,6 +464,10 @@ export async function GET(req: NextRequest) {
       data_source:  dataSource,
       cache_hit:    isCacheHit,
       sorted_by:    SORTED_BY,
+      rankings_max_updated_at: rankingsMaxUpdatedAt,
+      message: dataSource === 'unavailable'
+        ? 'No rankings rows in database. Sync rankings from Admin → Data Management during market hours.'
+        : null,
     });
   } catch (err: any) {
     console.error('[/api/rankings] Error:', err?.message);

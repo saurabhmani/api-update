@@ -23,6 +23,9 @@ export interface TrustDashboardPayload {
   winRate: number;
   riskExposure: number;
   riskSeverity: 'ok' | 'info' | 'warning' | 'critical';
+  /** True when the user has at least one portfolio row. When false, the
+   *  UI should render "N/A" for P&L / risk instead of misleading zeros. */
+  hasPortfolio: boolean;
   marketRegime: TrustRegimeSnapshot;
   trustScore: {
     score: number;
@@ -77,6 +80,12 @@ export interface TrustSignalBoardRow {
   riskReward: number;
   reasons: string[];
   warnings: string[];
+  /** Where the reasons were sourced from (database columns, explanation_json,
+   *  strategy registry). Surfaced in UI as small badges to explain provenance. */
+  reasonSources: Array<'database' | 'explanation' | 'registry'>;
+  warningSources: Array<'database' | 'explanation' | 'engine'>;
+  /** Higher-severity warnings (e.g. institutional flow, dark-pool prints). */
+  institutionalWarnings: string[];
   status: string;
   lifecycle: 'active' | 'closed';
   confirmedAt: string | null;
@@ -89,10 +98,16 @@ export interface TrustStrategyPerformanceRow {
   winRate: number;
   totalTrades: number;
   averageProfit: number;
+  /** Magnitude of average losing trade (%), always ≥ 0. */
   averageLoss: number;
   bestTrade: number;
   worstTrade: number;
   dataStatus: 'AVAILABLE' | 'INSUFFICIENT';
+  /** Mirrors the Phase-2 performance gate — LIMITED rows have 5–19
+   *  evaluated signals; SUFFICIENT rows have ≥ 20. */
+  performanceStatus?: 'SUFFICIENT' | 'LIMITED' | 'INSUFFICIENT_DATA';
+  performanceSource?: string;
+  healthLabel?: string;
 }
 
 export interface TrustWatchlistItem {

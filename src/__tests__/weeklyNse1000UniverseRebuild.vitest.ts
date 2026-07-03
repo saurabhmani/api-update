@@ -36,10 +36,10 @@ vi.mock('@/lib/marketData/candleBackfillJob', () => ({
 
 vi.mock('@/lib/marketData/nseUniverseChurn', () => ({
   computeUniverseChurnSelection: vi.fn().mockReturnValue({
-    selected: ['RELIANCE', 'HDFCBANK'],
+    selected: Array.from({ length: 1000 }, (_, i) => `SYM${i}`),
     decisions: [],
     added: 1,
-    kept: 1,
+    kept: 999,
     removed: 0,
     targetSize: 1000,
     thresholds: { addMaxRank: 900, keepMaxRank: 1100, removeMinRank: 1200 },
@@ -68,7 +68,7 @@ vi.mock('@/lib/marketData/nseUniverseRanker', () => ({
       { symbol: 'RELIANCE', compositeScore: 0.99, tradedValue: 1, volumeConsistency: 1, candleCompleteness: 1 },
       { symbol: 'HDFCBANK', compositeScore: 0.98, tradedValue: 1, volumeConsistency: 1, candleCompleteness: 1 },
     ],
-    selected: ['RELIANCE', 'HDFCBANK'],
+    selected: Array.from({ length: 1000 }, (_, i) => `SYM${i}`),
     candidates: 2000,
   }),
   loadTotalDailyBarCounts: vi.fn().mockResolvedValue(new Map([
@@ -158,17 +158,17 @@ describe('weeklyNse1000UniverseRebuild', () => {
       callOrder.push('rank');
       return {
         ranked: [{ symbol: 'RELIANCE', compositeScore: 0.99, tradedValue: 1, volumeConsistency: 1, candleCompleteness: 1 }],
-        selected: ['RELIANCE'],
+        selected: Array.from({ length: 1000 }, (_, i) => `SYM${i}`),
         candidates: 2000,
       };
     });
     vi.mocked(computeUniverseChurnSelection).mockImplementation(() => {
       callOrder.push('churn');
       return {
-        selected: ['RELIANCE'],
+        selected: Array.from({ length: 1000 }, (_, i) => `SYM${i}`),
         decisions: [],
         added: 0,
-        kept: 1,
+        kept: 1000,
         removed: 0,
         targetSize: 1000,
         thresholds: { addMaxRank: 900, keepMaxRank: 1100, removeMinRank: 1200 },
@@ -191,7 +191,7 @@ describe('weeklyNse1000UniverseRebuild', () => {
 
     expect(callOrder).toEqual(['import', 'backfill', 'rank', 'churn', 'apply']);
     expect(summary.ok).toBe(true);
-    expect(summary.churn?.selected).toEqual(['RELIANCE']);
+    expect(summary.churn?.selected.length).toBe(1000);
     expect(loadActiveUniverseSymbolSet).toHaveBeenCalled();
     expect(loadTotalDailyBarCounts).toHaveBeenCalled();
     expect(startUniverseRebuildLog).toHaveBeenCalled();

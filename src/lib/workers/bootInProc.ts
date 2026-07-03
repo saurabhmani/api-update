@@ -38,9 +38,9 @@ const GLOBAL_KEY = '__q365_inproc_scheduler__';
 interface InProcState {
   rescoreTask:       ScheduledTask | null;
   regenTask:         ScheduledTask | null;
-  /** Hourly full-market scan — always-on during NSE hours. Distinct
-   *  from regenTask (the legacy 10-min opt-in path) so operators can
-   *  keep both running, or run only the hourly one. */
+  /** Legacy hourly full-market scan. Opt-in only with
+   *  SIGNAL_INTRADAY_REGEN_ENABLED=true; controlled dailyScanSchedule is
+   *  the canonical signal-generation cadence. */
   hourlyScanTask:    ScheduledTask | null;
   hourlyScanInFlight: Promise<void> | null;
   newsTask:          ScheduledTask | null;
@@ -210,8 +210,8 @@ export function bootInProcScheduler(): void {
     state.heartbeatHandle = null;
   }
 
-  // ── Legacy */5 rescore + 10-min regen (opt-in only) ───────────
-  // Controlled schedule (12:30 / 14:45 rescore, 09:20 scans) runs
+  // ── Legacy */5 rescore + 10-min/hourly regen (opt-in only) ─────
+  // Controlled schedule (12:30 / 14:45 rescore, 09:20/09:45/16:30 scans) runs
   // via startDailyScanSchedule() below. Keep legacy loops disabled
   // unless SIGNAL_INTRADAY_REGEN_ENABLED=true.
   const regenInProc = isSignalIntradayRegenEnabled();
@@ -254,6 +254,9 @@ export function bootInProcScheduler(): void {
         .finally(() => { state.regenInFlight = null; });
     }, { timezone: IST });
 
+    // Legacy hourly full-universe scan. Kept behind the same explicit
+    // opt-in gate as 10-minute regen so normal operation cannot drift
+    // away from the controlled scan schedule.
     const hourlyScanCron = isRegenAlwaysOn() ? '0 * * * *' : '0 9-15 * * 1-5';
     state.hourlyScanTask = cron.schedule(hourlyScanCron, () => {
       if (!isInsideRegenWindow()) return;
@@ -275,7 +278,7 @@ export function bootInProcScheduler(): void {
         .finally(() => { state.hourlyScanInFlight = null; });
     }, 30_000);
   } else {
-    log.info('[INPROC REGEN] disabled — use controlled scan schedule (SIGNAL_INTRADAY_REGEN_ENABLED=false)');
+    log.info('[INPROC REGEN] disabled — controlled scan schedule owns full DB-only scans (SIGNAL_INTRADAY_REGEN_ENABLED=false)');
   }
 
   // Controlled IST scan / rescore cadence (08:30 readiness → 16:30 EOD scan).
@@ -474,19 +477,6 @@ export function bootInProcScheduler(): void {
 
   state.bootedAt = Date.now();
 
-  // ── Daily scan schedule (dev / in-proc only) ─────────────────
-  // PM2 `workers/scheduler.ts` owns this in production. In dev the
-  // standalone scheduler is usually not running, so manipulation
-  // snapshots go stale without the 16:00 EOD + 18:30 scan crons.
-  if (process.env.Q365_INPROC_DAILY_SCAN !== '0') {
-    void import('@/lib/workers/dailyScanSchedule').then(({ startDailyScanSchedule }) => {
-      startDailyScanSchedule();
-      log.info('daily scan schedule started (in-proc — includes 18:30 manipulation scan)');
-    }).catch((err) => {
-      log.warn('daily scan schedule failed to start', { err: err?.message ?? String(err) });
-    });
-  }
-
   // ── Stale snapshot auto-heal ─────────────────────────────────
   void import('@/lib/workers/manipulationAutoHeal').then(({ scheduleManipulationAutoHeal }) => {
     scheduleManipulationAutoHeal(90_000);
@@ -502,14 +492,14 @@ export function bootInProcScheduler(): void {
       '30s confirmed-snapshot lifecycle (24x7)',
       '60s signal-maturity worker (24x7)',
       '60s pipeline heartbeat (24x7)',
-      ...(process.env.Q365_INPROC_DAILY_SCAN !== '0' ? ['daily scan schedule (16:00 EOD + 18:30 manipulation)'] : []),
+      'controlled daily scan schedule (08:30 readiness, 09:20/09:45/16:30 scans, 12:30/14:45 rescore)',
       'manipulation auto-heal on stale snapshots (90s after boot)',
     ],
     regen_in_proc: regenInProc,
-    hourly_scan:   true,
+    hourly_scan:   regenInProc,
     regen_hint:    regenInProc
-      ? '10-min regen ON (default). Set Q365_INPROC_REGEN=0 if you run the standalone PM2 scheduler.'
-      : '10-min regen explicitly disabled via Q365_INPROC_REGEN=0. Hourly full-market scan is always on during NSE hours.',
+      ? 'Legacy 10-min/hourly regen ON by explicit SIGNAL_INTRADAY_REGEN_ENABLED=true.'
+      : 'Legacy 10-min/hourly regen disabled. Controlled schedule is authoritative.',
   });
 }
 

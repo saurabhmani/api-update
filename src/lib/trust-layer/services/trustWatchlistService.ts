@@ -59,6 +59,23 @@ export async function loadTrustWatchlist(userId: number): Promise<TrustWatchlist
         }
       } catch { /* cache miss */ }
 
+      // Fallback: if the Redis quote cache is cold (common off-hours or right
+      // after a container restart) pull last-known LTP / pct_change from the
+      // rankings table so the watchlist doesn't render em-dashes everywhere.
+      if (ltp == null) {
+        try {
+          const { rows: r } = await db.query(
+            'SELECT ltp, pct_change FROM rankings WHERE symbol = ? LIMIT 1',
+            [item.tradingsymbol.toUpperCase()],
+          );
+          const row = r[0] as { ltp?: number; pct_change?: number } | undefined;
+          if (row?.ltp != null) ltp = Number(row.ltp) || null;
+          if (row?.pct_change != null && changePct == null) {
+            changePct = Number(row.pct_change);
+          }
+        } catch { /* rankings unavailable */ }
+      }
+
       if (!signal) {
         return {
           instrumentKey: item.instrument_key,
