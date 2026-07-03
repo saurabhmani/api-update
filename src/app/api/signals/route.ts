@@ -66,7 +66,6 @@ import { getTrackerCounts, getInProgressTrackersLenient } from '@/lib/signal-eng
 import {
   buildSignalsResponsePayload,
   deriveValidationStatus,
-  dropStaleOrConflictingRows,
   filterSignalsToNifty500,
   type ClosestToApprovalRow,
 }                                     from '@/lib/signals/responseAssembly';
@@ -115,7 +114,6 @@ import {
 import {
   applySectorDiversity,
   commitRotation,
-  isFreshEnough,
   rotationCmp,
   pullRotationStateFromRedis,
 }                                     from '@/lib/signals/rotationPolicy';
@@ -2678,60 +2676,18 @@ export async function GET(req: NextRequest) {
               'liveScannerCandidates',
             );
 
-            // Spec INSTITUTIONAL §A + §B + §F + §I — the closed-market
-            // loader returns rows that may include MEDIUM_CONVICTION /
-            // LOW_CONVICTION classifications (relaxed tier rebucketing),
-            // rows whose execution_allowed=false, rows that are stale,
-            // and rows from the same sector cluster. None of these are
-            // shippable as actionable BUY/SELL. Apply the same firewall
-            // chain the live (loadConfirmedSignalsBundle) path does:
-            //   1. NIFTY-500 lock
-            //   2. dropStaleOrConflictingRows  → consistency + whitelist
-            //   3. isFreshEnough                → aggressive expiry
-            //   4. rotationCmp + sector diversity → no symbol pinning
+            // Parity with the market_closed branch: loadClosedMarketSignals
+            // already enforces SQL age (CLOSED_SIGNALS_MAX_AGE_HOURS) and
+            // main-table gates. The closed branch only applies NIFTY-500
+            // filtering before partitionByTier — do NOT re-apply the
+            // open-market 6h isFreshEnough cap or STALE tagging here.
+            // That extra layer zeroed approved_count intraday while the
+            // same rows appeared after 15:30 IST.
             const nifty500Closed = filterSignalsToNifty500(
               closed.signals ?? [],
               'liveClosedMarketSignals',
             );
-            const consistentClosed = dropStaleOrConflictingRows(
-              nifty500Closed as ConfirmedSignalRow[],
-              'closedMarketSignals',
-            );
-            // Spec INSTITUTIONAL §B + market-awareness — when the cash
-            // session is closed, the 6h freshness cap blanket-rejects
-            // the previous session's confirmed batch (~16:00 IST close
-            // → next 09:15 IST open is ~17h). Pass marketOpen=false so
-            // the closed-market freshness cap (default 24h) applies and
-            // yesterday's institutional signals stay visible until the
-            // next pre-open scan replaces them.
-            //
-            // BUG-FIX (2026-05) — Spec FIX RULE 5: when ALL rows fail
-            // the freshness gate (e.g. weekend / multi-day data gap →
-            // 6+ day-old candles) but the firewall (NIFTY-500, drop-
-            // stale, dropStaleOrConflictingRows) accepted them, ship
-            // them with `freshness_state='STALE'` instead of zeroing
-            // the response. Without this fallback the dashboard reads
-            // `signals=[]` while the engine has perfectly valid (just
-            // old) rows internally — exactly the "data are not showing"
-            // condition reported.
-            const marketIsOpen = getMarketStatus().isOpen;
-            const freshClosed = consistentClosed.filter(
-              (r) => isFreshEnough(r, { marketOpen: marketIsOpen }),
-            );
-            let freshnessFallbackApplied = false;
-            let workingClosed: ConfirmedSignalRow[] = freshClosed;
-            if (freshClosed.length === 0 && consistentClosed.length > 0) {
-              freshnessFallbackApplied = true;
-              workingClosed = consistentClosed.map((r) => ({
-                ...r,
-                freshness_state: 'STALE',
-              } as ConfirmedSignalRow & { freshness_state: 'STALE' }));
-              console.log(
-                `[DATA] freshness fallback engaged — shipping ${consistentClosed.length} ` +
-                `STALE rows (no fresh candidates available); freshness_state='STALE'`,
-              );
-            }
-            const sortedClosed = [...workingClosed].sort(rotationCmp);
+            const sortedClosed = [...(nifty500Closed as ConfirmedSignalRow[])].sort(rotationCmp);
             const sectorBalanced = applySectorDiversity(sortedClosed);
             // Spec ELITE-2026-05 — the closed-market fallback bypasses
             // buildSignalsResponsePayload (it overwrites signals[] in-
@@ -2749,15 +2705,6 @@ export async function GET(req: NextRequest) {
                 dropped:  closedElite.dropped.length,
                 bypassed: (closedElite as { bypassed?: boolean }).bypassed === true,
               });
-            }
-            if (freshnessFallbackApplied) {
-              // Tag the response so the UI can render a clear "Stale
-              // data" banner instead of silently rendering the rows
-              // as if they were live.
-              responsePayloadBase = {
-                ...responsePayloadBase,
-                freshness_state: 'STALE',
-              } as typeof responsePayloadBase & { freshness_state: 'STALE' };
             }
             if (closedSignals.length > 0) {
               const newBuy  = closedSignals.filter(
@@ -4098,7 +4045,10 @@ export async function GET(req: NextRequest) {
         mode:                'live' as const,
         data_source:         dataSourceTag,
         market_data:         liveMarketData,
-        debug_scan:          debugScan,
+        debug_scan:          {
+          ...debugScan,
+          approved_count: tieredApproved.length,
+        },
         // Spec INSTITUTIONAL §UX-SIMPLIFY — additive transparency
         // fields. signals[] is unchanged (institutional whitelist).
         // rejected[] is the union of every non-approved row in the
@@ -4183,6 +4133,7 @@ export async function GET(req: NextRequest) {
         closestToApproval:   finalClosestToApproval,
         nearestSignals:      finalNearestSignals,
         approvedSignals:     tieredApproved      as unknown as typeof responsePayloadBase.approvedSignals,
+        approvedCount:       tieredApproved.length,
         highPotentialSignals: tieredHighPotential as unknown as typeof responsePayloadBase.highPotentialSignals,
         // watchlistSignals legacy alias = developing ∪ scanner ∪ watchlist
         // matches the counters.watchlistTotal formula and what the

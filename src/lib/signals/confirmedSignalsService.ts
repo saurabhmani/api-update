@@ -425,12 +425,33 @@ export async function loadConfirmedSignalsBundle(
   //     / IT cannot fill the table on a sector-strong day.
   //   - confirmedSnapshotCmp is preserved as the deterministic tiebreak.
   const beforeFreshness = strictPassed;
-  const sortedApproved: ConfirmedSignalRow[] = beforeFreshness
+  let sortedApproved: ConfirmedSignalRow[] = beforeFreshness
     .filter((r) => isFreshEnough(r, { marketOpen: marketIsOpen }))
     .sort((a, b) => {
       const r = rotationCmp(a, b);
       return r !== 0 ? r : confirmedSnapshotCmp(a, b);
     });
+
+  // When the cash session is open, the 6h cap can reject every
+  // confirmed snapshot (e.g. morning promotion, afternoon poll) while
+  // the same rows are visible after 15:30 via loadClosedMarketSignals.
+  // Fall back to the closed-market freshness cap (default 24h) without
+  // tagging rows STALE — partitionByTier rejects freshness_state=STALE.
+  if (sortedApproved.length === 0 && beforeFreshness.length > 0 && marketIsOpen) {
+    const closedCapApproved = beforeFreshness
+      .filter((r) => isFreshEnough(r, { marketOpen: false }))
+      .sort((a, b) => {
+        const r = rotationCmp(a, b);
+        return r !== 0 ? r : confirmedSnapshotCmp(a, b);
+      });
+    if (closedCapApproved.length > 0) {
+      sortedApproved = closedCapApproved;
+      console.log(
+        `[FRESHNESS_FUNNEL] open-market cap rejected all ${beforeFreshness.length} rows; ` +
+        `closed-market cap recovered ${closedCapApproved.length}`,
+      );
+    }
+  }
 
   // Freshness funnel — separate log line so the operator can see
   // whether freshness is the SECOND blocker after strictApproved.
