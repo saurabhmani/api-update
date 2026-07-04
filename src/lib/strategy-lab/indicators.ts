@@ -19,12 +19,13 @@ export const SUPPORTED_INDICATORS: IndicatorMeta[] = [
   { id: 'volume_expansion', label: 'Volume Expansion', category: 'volume', defaultOperator: 'gte', valueHint: '1.5', lookaheadSafe: true },
   { id: 'close_vs_ema20', label: 'Close vs EMA20', category: 'trend', defaultOperator: 'gt', valueHint: '0', lookaheadSafe: true },
   { id: 'close_vs_ema50', label: 'Close vs EMA50', category: 'trend', defaultOperator: 'gt', valueHint: '0', lookaheadSafe: true },
+  { id: 'fib_pullback_zone', label: 'Fibonacci Pullback Zone', category: 'trend', defaultOperator: 'eq', valueHint: '1', lookaheadSafe: true },
   { id: 'atr_pct', label: 'ATR %', category: 'volatility', defaultOperator: 'lte', valueHint: '5', lookaheadSafe: true },
   { id: 'regime_bullish', label: 'Bullish Regime', category: 'regime', defaultOperator: 'eq', valueHint: '1', lookaheadSafe: true },
   { id: 'price_above_ema20', label: 'Price Above EMA20', category: 'trend', defaultOperator: 'eq', valueHint: '1', lookaheadSafe: true },
 ];
 
-export const SUPPORTED_TIMEFRAMES: LabTimeframe[] = ['daily', 'swing'];
+export const SUPPORTED_TIMEFRAMES: LabTimeframe[] = ['intraday', 'swing', 'positional', 'daily'];
 
 export const INDICATOR_IDS = new Set(SUPPORTED_INDICATORS.map((i) => i.id));
 

@@ -106,6 +106,8 @@ export interface OptionChainRow {
 }
 
 export interface OptionChainResult {
+  symbol:           string;
+  requestedSymbol?: string;
   records:          OptionChainRow[];
   underlyingValue:  number;
   expiryDates:      string[];
@@ -402,10 +404,157 @@ const OPTION_INDEX_YAHOO: Record<string, string> = {
   BANKEX:     '^BSEBANK',
 };
 
+const OPTION_INDEX_DB_ALIASES: Record<string, string[]> = {
+  NIFTY:      ['NIFTY 50', 'NIFTY50', '^NSEI'],
+  BANKNIFTY:  ['NIFTY BANK', 'BANKNIFTY', '^NSEBANK'],
+  FINNIFTY:   ['NIFTY FIN SERVICE', 'FINNIFTY', 'NIFTY FINANCIAL SERVICES'],
+  MIDCPNIFTY: ['NIFTY MIDCAP SELECT', 'MIDCPNIFTY', 'NIFTY MIDCAP 100'],
+  SENSEX:     ['SENSEX', 'BSE SENSEX', '^BSESN'],
+  BANKEX:     ['BANKEX', 'BSE BANKEX'],
+};
+
+const OPTION_STOCK_ALIASES: Record<string, string> = {};
+
+function normalizeOptionInputSymbol(symbol: string): string {
+  return symbol.trim().toUpperCase().replace(/\.NS$/, '');
+}
+
+async function fetchIndexSpotFromDb(symbol: string): Promise<number | null> {
+  const sym = symbol.toUpperCase();
+  const aliases = OPTION_INDEX_DB_ALIASES[sym] ?? [];
+  if (aliases.length === 0) return null;
+
+  const cacheKey = `index_spot_db:${sym}`;
+  const cached = await cacheGet<number>(cacheKey);
+  if (typeof cached === 'number' && cached > 0) return cached;
+
+  const keys = aliases.map((a) => `NSE_INDEX|${a}`);
+  try {
+    const { rows } = await db.query<{ close: number }>(
+      `SELECT close
+         FROM candles
+        WHERE candle_type='eod'
+          AND interval_unit='1day'
+          AND (
+            SUBSTRING_INDEX(instrument_key, '|', -1) IN (${aliases.map(() => '?').join(',')})
+            OR instrument_key IN (${keys.map(() => '?').join(',')})
+          )
+        ORDER BY ts DESC
+        LIMIT 1`,
+      [...aliases, ...keys],
+    );
+    const spot = Number((rows[0] as { close?: number } | undefined)?.close ?? 0);
+    if (spot > 0) {
+      await cacheSet(cacheKey, spot, 300);
+      return spot;
+    }
+  } catch { /* index candle fallback unavailable */ }
+  return null;
+}
+
+async function fetchStockSpotFromDb(symbol: string): Promise<number | null> {
+  const sym = symbol.toUpperCase();
+  const cacheKey = `stock_spot_db:${sym}`;
+  const cached = await cacheGet<number>(cacheKey);
+  if (typeof cached === 'number' && cached > 0) return cached;
+
+  try {
+    const { rows } = await db.query<{ ltp: number }>(
+      `SELECT ltp
+         FROM rankings
+        WHERE tradingsymbol = ?
+          AND ltp IS NOT NULL
+          AND ltp > 0
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [sym],
+    );
+    const spot = Number((rows[0] as { ltp?: number } | undefined)?.ltp ?? 0);
+    if (spot > 0) {
+      await cacheSet(cacheKey, spot, 300);
+      return spot;
+    }
+  } catch { /* rankings fallback unavailable */ }
+
+  try {
+    const { rows } = await db.query<{ close: number }>(
+      `SELECT close
+         FROM market_data_daily
+        WHERE symbol = ?
+          AND close IS NOT NULL
+          AND close > 0
+        ORDER BY ts DESC
+        LIMIT 1`,
+      [sym],
+    );
+    const spot = Number((rows[0] as { close?: number } | undefined)?.close ?? 0);
+    if (spot > 0) {
+      await cacheSet(cacheKey, spot, 300);
+      return spot;
+    }
+  } catch { /* daily fallback unavailable */ }
+
+  try {
+    const { rows } = await db.query<{ close: number }>(
+      `SELECT close
+         FROM candles
+        WHERE interval_unit = '1day'
+          AND close IS NOT NULL
+          AND close > 0
+          AND (
+            instrument_key = ?
+            OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?
+          )
+        ORDER BY ts DESC
+        LIMIT 1`,
+      [`NSE_EQ|${sym}`, sym],
+    );
+    const spot = Number((rows[0] as { close?: number } | undefined)?.close ?? 0);
+    if (spot > 0) {
+      await cacheSet(cacheKey, spot, 300);
+      return spot;
+    }
+  } catch { /* candle fallback unavailable */ }
+
+  return null;
+}
+
+async function hasExactStockSymbol(symbol: string): Promise<boolean> {
+  const sym = symbol.toUpperCase();
+  const cacheKey = `stock_symbol_exact:${sym}`;
+  const cached = await cacheGet<boolean>(cacheKey);
+  if (typeof cached === 'boolean') return cached;
+
+  try {
+    const { rows } = await db.query<{ ok: number }>(
+      `SELECT (
+          EXISTS(SELECT 1 FROM rankings WHERE tradingsymbol = ? LIMIT 1)
+          OR EXISTS(SELECT 1 FROM securities_master WHERE symbol = ? LIMIT 1)
+          OR EXISTS(SELECT 1 FROM q365_universe WHERE symbol = ? LIMIT 1)
+          OR EXISTS(SELECT 1 FROM market_data_daily WHERE symbol = ? LIMIT 1)
+          OR EXISTS(
+            SELECT 1
+              FROM candles
+             WHERE instrument_key = ?
+                OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?
+             LIMIT 1
+          )
+        ) AS ok`,
+      [sym, sym, sym, sym, `NSE_EQ|${sym}`, sym],
+    );
+    const ok = Number((rows[0] as { ok?: number } | undefined)?.ok ?? 0) === 1;
+    await cacheSet(cacheKey, ok, 300);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchOptionChain(
   symbol: string,
 ): Promise<OptionChainResult | null> {
-  const sym = symbol.toUpperCase();
+  const requestedSym = normalizeOptionInputSymbol(symbol);
+  let sym = OPTION_STOCK_ALIASES[requestedSym] ?? requestedSym;
 
   // Resolve spot: indices go through Yahoo's index ticker path; // @deprecated marker
   // stocks go through the regular fetchQuote (Kite → Yahoo `.NS`). // @deprecated marker
@@ -414,10 +563,18 @@ export async function fetchOptionChain(
   if (indexTicker) {
     const idx = await fetchYahooIndexMeta(indexTicker); // @deprecated marker
     spot = idx?.last ?? 0;
+    if (!spot || spot <= 0) {
+      spot = await fetchIndexSpotFromDb(sym) ?? 0;
+    }
+  } else if (!(await hasExactStockSymbol(sym))) {
+    return null;
   }
   if (!spot || spot <= 0) {
     const quote = await fetchQuote(sym);
     spot = quote?.lastPrice ?? 0;
+  }
+  if (!spot || spot <= 0) {
+    spot = await fetchStockSpotFromDb(sym) ?? 0;
   }
   if (!spot || spot <= 0) return null;
 
@@ -475,6 +632,8 @@ export async function fetchOptionChain(
   }
 
   return {
+    symbol: sym,
+    requestedSymbol: requestedSym !== sym ? requestedSym : undefined,
     records,
     underlyingValue: spot,
     expiryDates,

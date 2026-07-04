@@ -14,7 +14,7 @@ import type { BacktestRunConfig } from '@/lib/backtesting/types';
 import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ReferenceLine, ComposedChart,
+  ReferenceLine, ComposedChart, Cell,
 } from 'recharts';
 
 interface BacktestRunRow {
@@ -110,6 +110,17 @@ function formatBacktestApiError(err: unknown): string {
   return 'Unknown backtesting error';
 }
 
+function summaryNumber(summary: any, key: string): number {
+  const n = Number(summary?.[key] ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function countWithSummaryFallback(raw: unknown, summary: any, summaryKey: string): number {
+  const direct = Number(raw ?? 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return summaryNumber(summary, summaryKey);
+}
+
 interface SummaryData {
   totalSignalsGenerated: number;
   totalTradesTaken: number;
@@ -186,24 +197,27 @@ export default function BacktestingPage() {
     try {
       const res = await fetch('/api/backtest', { cache: 'no-store' });
       const data = await readJsonOrThrow(res, '/api/backtest');
-      const list = (data.backtests ?? data.runs ?? []).map((r: Record<string, unknown>) => ({
-        run_id: r.backtestId ?? r.id ?? r.run_id,
-        name: r.name,
-        status: r.status,
-        started_at: r.startedAt ?? r.started_at,
-        completed_at: r.completedAt ?? r.completed_at,
-        duration_ms: r.durationMs ?? r.duration_ms ?? null,
-        signal_count: r.signalCount ?? r.signal_count ?? 0,
-        trade_count: r.tradeCount ?? r.trade_count ?? 0,
-        summary_json: r.summary ?? r.summary_json,
-        config_json: r.config ?? r.config_json,
-        progress_percent: r.progressPercent ?? r.progress_percent,
-        current_step: r.currentStep ?? r.current_step,
-        error: r.error,
-      }));
+      const list = (data.backtests ?? data.runs ?? []).map((r: Record<string, unknown>) => {
+        const summaryJson = r.summary ?? r.summary_json;
+        return {
+          run_id: r.backtestId ?? r.id ?? r.run_id,
+          name: r.name,
+          status: r.status,
+          started_at: r.startedAt ?? r.started_at,
+          completed_at: r.completedAt ?? r.completed_at,
+          duration_ms: r.durationMs ?? r.duration_ms ?? null,
+          signal_count: countWithSummaryFallback(r.signalCount ?? r.signal_count, summaryJson, 'totalSignalsGenerated'),
+          trade_count: countWithSummaryFallback(r.tradeCount ?? r.trade_count, summaryJson, 'totalTradesTaken'),
+          summary_json: summaryJson,
+          config_json: r.config ?? r.config_json,
+          progress_percent: r.progressPercent ?? r.progress_percent,
+          current_step: r.currentStep ?? r.current_step,
+          error: r.error,
+        };
+      });
       setRuns(list);
       if (list.length > 0 && !selectedId) {
-        const completed = list.find((r: BacktestRunRow) => r.status === 'completed');
+        const completed = list.find((r: BacktestRunRow) => normalizeApiStatus(r.status) === 'COMPLETED');
         if (completed) loadDetail(completed.run_id);
       }
     } catch (err) {
@@ -1024,7 +1038,7 @@ export default function BacktestingPage() {
                                 <ReferenceLine y={0} stroke="#5A6A7E" />
                                 <Bar dataKey="dayPnl" fill="#00C9FF" radius={[2, 2, 0, 0]}>
                                   {chartData.map((entry, idx) => (
-                                    <rect key={idx} fill={entry.dayPnl >= 0 ? '#059669' : '#DC2626'} />
+                                    <Cell key={`day-pnl-${idx}`} fill={entry.dayPnl >= 0 ? '#059669' : '#DC2626'} />
                                   ))}
                                 </Bar>
                               </BarChart>

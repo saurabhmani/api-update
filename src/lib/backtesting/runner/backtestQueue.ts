@@ -151,7 +151,10 @@ export async function processBacktestRun(runId: string): Promise<{ status: ApiSt
     // day, generates signals, simulates trades, etc. The function
     // already swallows internal failures into result.status='failed'
     // rather than throwing — we still wrap in try/catch for true panics.
-    const result = await runBacktest(cfg);
+    const result = await runBacktest(cfg, {
+      onProgress: (progressPercent, currentStep) =>
+        setProgress(runId, progressPercent, currentStep),
+    });
 
     if (result.status === 'failed') {
       await markFailed(runId, result.error ?? 'Run reported failed status');
@@ -235,22 +238,24 @@ export async function processQueuedBacktestRuns(maxConcurrent = 1): Promise<{
   running:   number;
 }> {
   await ensureBacktestTables();
-  const safeMax = Math.max(1, Math.min(8, Math.floor(maxConcurrent)));
+  const safeMax = Math.max(0, Math.min(8, Math.floor(maxConcurrent)));
 
-  const { rows }: any = await db.query(
-    `SELECT run_id FROM backtest_runs
-      WHERE status='queued'
-      ORDER BY started_at ASC
-      LIMIT ?`,
-    [safeMax],
-  );
   const processed: string[] = [];
-  for (const r of rows ?? []) {
-    const runId = String((r as any).run_id);
-    void processBacktestRun(runId).catch((err) => {
-      console.error(`[BacktestQueue] processQueuedBacktestRuns(${runId}) error:`, err);
-    });
-    processed.push(runId);
+  if (safeMax > 0) {
+    const { rows }: any = await db.query(
+      `SELECT run_id FROM backtest_runs
+        WHERE status='queued'
+        ORDER BY started_at ASC
+        LIMIT ?`,
+      [safeMax],
+    );
+    for (const r of rows ?? []) {
+      const runId = String((r as any).run_id);
+      void processBacktestRun(runId).catch((err) => {
+        console.error(`[BacktestQueue] processQueuedBacktestRuns(${runId}) error:`, err);
+      });
+      processed.push(runId);
+    }
   }
 
   let queued = 0;

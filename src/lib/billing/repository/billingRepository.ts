@@ -234,6 +234,7 @@ export async function seedWalletsForPlan(userId: number, plan: SubscriptionPlan)
 export async function getWalletBalances(userId: number): Promise<WalletBalance[]> {
   await ensureBillingTables();
   const sub = await getOrCreateSubscription(userId);
+  await ensureWalletTypes(userId, sub.plan);
   await resetWalletsIfNeeded(userId, sub.plan);
   const { rows } = await db.query(
     `SELECT * FROM user_wallets WHERE user_id = ? ORDER BY credit_type`,
@@ -250,6 +251,24 @@ export async function getWalletBalances(userId: number): Promise<WalletBalance[]
     lastResetAt: (r as Record<string, unknown>).last_reset_at
       ? String((r as Record<string, unknown>).last_reset_at) : null,
   }));
+}
+
+async function ensureWalletTypes(userId: number, plan: SubscriptionPlan): Promise<void> {
+  const config = PLAN_CATALOG[plan];
+  const { rows } = await db.query(
+    `SELECT credit_type FROM user_wallets WHERE user_id = ?`,
+    [userId],
+  );
+  const existing = new Set(rows.map((r) => String((r as Record<string, unknown>).credit_type)));
+  const today = new Date().toISOString().slice(0, 10);
+  for (const creditType of CREDIT_TYPES) {
+    if (existing.has(creditType)) continue;
+    await db.query(
+      `INSERT INTO user_wallets (id, user_id, credit_type, balance, monthly_allocation, last_reset_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [`w_${userId}_${creditType}`, userId, creditType, config.credits[creditType], config.credits[creditType], today],
+    );
+  }
 }
 
 async function resetWalletsIfNeeded(userId: number, plan: SubscriptionPlan): Promise<void> {
@@ -559,7 +578,14 @@ export async function listUsageLogs(userId: number, limit = 100) {
     `SELECT * FROM billing_usage_events WHERE user_id=? ORDER BY created_at DESC LIMIT ?`,
     [userId, limit],
   );
-  return rows;
+  return rows.map((r) => ({
+    id: Number((r as Record<string, unknown>).id),
+    userId: Number((r as Record<string, unknown>).user_id),
+    creditType: String((r as Record<string, unknown>).credit_type),
+    featureKey: (r as Record<string, unknown>).feature_key ? String((r as Record<string, unknown>).feature_key) : null,
+    quantity: Number((r as Record<string, unknown>).quantity),
+    createdAt: String((r as Record<string, unknown>).created_at),
+  }));
 }
 
 export async function rechargeWallet(

@@ -44,6 +44,7 @@ export async function GET(req: NextRequest) {
       );
     }
     return NextResponse.json({
+      ok:               true,
       symbol:           chain.symbol,
       underlying_value: chain.underlying_value,
       expiry_dates:     chain.expiry_dates,

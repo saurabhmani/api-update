@@ -5,7 +5,7 @@
 import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
 import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
 import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
-import type { StrategyHubSummary, StrategyHubDetail } from './types';
+import type { StrategyCardStatus, StrategyHubSummary, StrategyHubDetail } from './types';
 import { categoryLabel, riskProfileLabel } from './categories';
 import { assessPaperTradingReadiness } from './services/paperTradingReadiness';
 import type { StrategyProfileRow } from './types';
@@ -54,6 +54,23 @@ export function isFeaturedStrategy(strategyId: string): boolean {
   return FEATURED_STRATEGY_IDS.includes(strategyId as StrategyName);
 }
 
+function timeframeLabel(timeframe: string): string {
+  const normalized = timeframe.toLowerCase();
+  if (normalized === 'swing') return 'Positional';
+  if (normalized === 'intraday') return 'Intraday';
+  return timeframe.replace(/_/g, ' ');
+}
+
+function cardStatus(
+  entry: StrategyRegistryEntry,
+  paperReady: boolean,
+  isActiveInRunner: boolean,
+): StrategyCardStatus {
+  if (entry.strategyMode === 'DISABLED') return 'Inactive';
+  if (paperReady || isActiveInRunner) return 'Active';
+  return 'Inactive';
+}
+
 export function mapEntryToSummary(
   entry: StrategyRegistryEntry,
   profile?: StrategyProfileRow | null,
@@ -63,23 +80,28 @@ export function mapEntryToSummary(
     isActiveInRunner: ACTIVE_RUNNER_STRATEGIES.has(entry.strategyId),
     profile,
   });
+  const activeInRunner = ACTIVE_RUNNER_STRATEGIES.has(entry.strategyId);
+  const paperReady = profile?.paper_trading_enabled ?? paper.ready;
 
   return {
     strategyId: entry.strategyId,
     displayName: entry.displayName,
     category: entry.category,
     categoryLabel: categoryLabel(entry.category),
-    direction: entry.direction === 'short' ? 'SELL' : 'BUY',
+    direction: entry.direction === 'short' ? 'SELL' : entry.direction === 'neutral' ? 'BOTH' : 'BUY',
+    marketType: 'Equity',
     riskProfile: entry.riskProfile,
     riskProfileLabel: riskProfileLabel(entry.riskProfile),
     timeframe: entry.timeframe,
+    timeframeLabel: timeframeLabel(entry.timeframe),
     explanation: entry.explanationTemplate,
     isFeatured: isFeaturedStrategy(entry.strategyId),
-    isActiveInRunner: ACTIVE_RUNNER_STRATEGIES.has(entry.strategyId),
+    isActiveInRunner: activeInRunner,
     deploymentStatus: profile?.deployment_status ?? paper.deploymentStatus,
-    paperTradingReady: profile?.paper_trading_enabled ?? paper.ready,
+    paperTradingReady: paperReady,
     strategyMode: entry.strategyMode,
     effectiveStrategyMode: resolveEffectiveStrategyMode(entry.strategyId),
+    cardStatus: cardStatus(entry, paperReady, activeInRunner),
   };
 }
 

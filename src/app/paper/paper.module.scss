@@ -86,6 +86,30 @@
   }
 }
 
+.fieldLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 600;
+
+  select {
+    border: 1px solid #CBD5E1;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: #fff;
+    color: #0F172A;
+    font-size: 0.9rem;
+  }
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: #64748B;
+  font-size: 0.78rem;
+}
+
 .killActive {
   background: #FEF2F2;
   border: 1px solid #FECACA;

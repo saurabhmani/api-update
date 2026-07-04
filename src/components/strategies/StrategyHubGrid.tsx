@@ -9,13 +9,32 @@ interface Props {
   category: string | null;
   featuredOnly?: boolean;
   paperReadyOnly?: boolean;
+  timeframe?: string | null;
+  direction?: string | null;
+  marketType?: string | null;
+  status?: string | null;
+  risk?: string | null;
 }
 
-export function StrategyHubGrid({ category, featuredOnly, paperReadyOnly }: Props) {
+export function StrategyHubGrid({
+  category,
+  featuredOnly,
+  paperReadyOnly,
+  timeframe,
+  direction,
+  marketType,
+  status,
+  risk,
+}: Props) {
   const { data, isLoading, error } = useStrategyHub({
     category,
     featuredOnly,
     paperReadyOnly,
+    timeframe,
+    direction,
+    marketType,
+    status,
+    risk,
     window: '90D',
   });
 

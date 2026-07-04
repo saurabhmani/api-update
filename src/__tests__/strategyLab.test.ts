@@ -17,8 +17,11 @@ function check(name: string, passed: boolean, detail = '') {
 function baseDef(overrides: Partial<StrategyDefinition> = {}): StrategyDefinition {
   return {
     name: 'Test Strategy',
+    market: 'equity',
+    symbolUniverse: ['NIFTY 500'],
     timeframe: 'swing',
     direction: 'long',
+    marketRegimeFilter: ['Bullish'],
     source: 'no_code',
     entry: {
       operator: 'AND',
@@ -50,6 +53,11 @@ async function main() {
   check('AI parser finds ADX entry', ai.entry.conditions.some((c) => c.indicator === 'adx'), '');
   check('AI parser sets stop loss', ai.stopLoss.value === 2, `stop=${ai.stopLoss.value}`);
   check('AI parser sets target R', ai.targets[0]?.value === 2, '');
+
+  const fibAi = parseNaturalLanguageStrategy('Create a bullish Fibonacci pullback strategy.', 'AI Strategy');
+  check('AI parser recognizes Fibonacci pullback', fibAi.entry.conditions.some((c) => c.indicator === 'fib_pullback_zone'), '');
+  check('AI parser maps Fibonacci parent strategy', fibAi.metadata?.parentStrategyId === 'fibonacci_pullback', '');
+  check('AI parser adds bullish regime gate', fibAi.marketRegimeFilter.includes('Bullish'), '');
 
   // Parser — structured
   const structured = parseStructuredDefinition(baseDef({ name: 'Structured' }));

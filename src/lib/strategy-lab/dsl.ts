@@ -18,8 +18,11 @@ function formatGroup(name: string, group: ConditionGroup): string {
 export function serializeToDsl(def: StrategyDefinition): string {
   const lines = [
     `STRATEGY "${def.name}"`,
+    `MARKET ${def.market}`,
+    `UNIVERSE ${def.symbolUniverse.join(', ')}`,
     `TIMEFRAME ${def.timeframe}`,
     `DIRECTION ${def.direction}`,
+    `REGIME_FILTER ${def.marketRegimeFilter.length ? def.marketRegimeFilter.join(', ') : 'none'}`,
     `SOURCE ${def.source}`,
     '',
     formatGroup('ENTRY', def.entry),

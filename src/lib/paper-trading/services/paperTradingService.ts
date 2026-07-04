@@ -132,7 +132,10 @@ export async function placePaperOrder(
   const symbol = req.symbol.toUpperCase();
   const refPrice = await resolveReferencePrice(symbol, req.referencePrice);
   const openPositions = await listOpenPositions(freshAccount.id);
-  const pendingOrders = pendingOrdersForBook(await listOrders(freshAccount.id));
+  const allOrders = await listOrders(freshAccount.id);
+  const pendingOrders = pendingOrdersForBook(allOrders);
+  const today = todayIst();
+  const todayOrderCount = allOrders.filter((o) => String(o.createdAt).slice(0, 10) === today).length;
   const priorClose = await resolvePriorClose(symbol);
 
   const risk = evaluateOrderRisk(
@@ -143,6 +146,7 @@ export async function placePaperOrder(
       pendingOrders,
       priorClosePrice: priorClose,
       atrPct: null,
+      todayOrderCount,
       killSwitchActive: isGlobalKillSwitchActive(),
       marketOpen: isMarketOpen(),
     },
@@ -161,7 +165,7 @@ export async function placePaperOrder(
     limitPrice: req.limitPrice ?? null,
     stopPrice: req.stopPrice ?? null,
     triggerPrice: req.triggerPrice ?? null,
-    status: 'SUBMITTED',
+    status: 'PENDING',
     strategyId: req.strategyId ?? null,
     filledQty: 0,
     idempotencyKey: req.idempotencyKey ?? null,
@@ -449,8 +453,32 @@ export async function deployToPaper(
   strategyId: string,
   actor: string,
 ): Promise<{ ok: boolean; approved: boolean; issues: string[]; accountId?: string }> {
-  const { requestPaperDeployment } = await import('@/lib/strategy-lab');
-  const result = await requestPaperDeployment(strategyId, actor);
+  const { getRegistryEntry, ACTIVE_RUNNER_STRATEGIES } = await import('@/lib/strategy-hub/registry');
+  const registryEntry = getRegistryEntry(strategyId);
+  let result: { approved: boolean; issues: string[] };
+
+  if (registryEntry) {
+    const [{ assessPaperTradingReadiness }, { loadStrategyProfile }] = await Promise.all([
+      import('@/lib/strategy-hub/services/paperTradingReadiness'),
+      import('@/lib/strategy-hub/repository/strategyProfiles'),
+    ]);
+    const profile = await loadStrategyProfile(strategyId);
+    const readiness = assessPaperTradingReadiness(strategyId, {
+      hasEvaluator: ACTIVE_RUNNER_STRATEGIES.has(registryEntry.strategyId),
+      isActiveInRunner: ACTIVE_RUNNER_STRATEGIES.has(registryEntry.strategyId),
+      profile,
+    });
+    result = {
+      approved: readiness.ready,
+      issues: readiness.checks
+        .filter((check) => check.required && !check.pass)
+        .map((check) => check.name),
+    };
+  } else {
+    const { requestPaperDeployment } = await import('@/lib/strategy-lab');
+    result = await requestPaperDeployment(strategyId, actor);
+  }
+
   const account = await getOrCreateAccount(userId);
   if (result.approved) {
     await upsertRiskProfile(userId, account.account.id, account.account.risk);

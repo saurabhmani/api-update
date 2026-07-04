@@ -217,14 +217,12 @@ export async function register() {
   // consumer that holds a reference to DEFAULT_PHASE1_CONFIG.universe
   // sees the populated list on first read after boot.
   //
-  // PRODUCTION CONTRACT: the loader THROWS when the DB returns
-  // < NIFTY500_MIN_SIZE (480) symbols. No silent fallback to CSV.
-  // Operator response: run `npx tsx scripts/loadNifty500.ts` to seed
-  // q365_universe from ind_nifty500list.csv, then restart. We bypass
-  // `withBudget` in production so the throw propagates and Next
-  // refuses to boot rather than scan a degraded universe. Dev / test
-  // paths stay wrapped so an absent local DB does not block
-  // `npm run dev`.
+  // PRODUCTION CONTRACT: the loader THROWS when q365_universe is
+  // degraded. Do not let that throw kill Next instrumentation, though:
+  // production should boot so operators can reach admin/health pages and
+  // run the NSE1000 rebuild. Signal/scanner entrypoints still call
+  // ensureUniverseReady() and return/throw UNIVERSE_NOT_READY until the
+  // DB has the exact NSE1000 target.
   //
   // Universe log emits a [UNIVERSE] DB=N CSV=N ACTIVE=N line so an
   // operator can spot drift between the seed file and the DB at a
@@ -251,21 +249,22 @@ export async function register() {
     );
   }
 
-  // Production AND dev both await init unconditionally — the route /
-  // worker entry guards (initOnce() with its shared promise lock)
-  // depend on the cache being hydrated by the time requests start
-  // landing. Wrapping dev in `withBudget` would silently swallow a
-  // schema/connection error and let the first /api/signals request
-  // hit "NIFTY500_UNIVERSE_NOT_INITIALIZED" — the bug this fix
-  // explicitly closes. If the local DB is missing, dev should fail
-  // loudly at boot too.
   {
     const { loadTradeableUniverse } = await import(
       '@/lib/signal-engine/constants/signalEngine.constants'
     );
-    const universe = await loadTradeableUniverse();
-    log.info('Tradeable universe loaded', { size: universe.length });
-    await logUniverseLine(universe.length);
+    try {
+      const universe = await loadTradeableUniverse();
+      log.info('Tradeable universe loaded', { size: universe.length });
+      await logUniverseLine(universe.length);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[UNIVERSE_NOT_READY] boot continuing with degraded/unloaded universe: ${msg}`);
+      log.error('Tradeable universe not ready — boot continuing; scan/API entrypoints remain guarded', {
+        error_message: msg,
+        remediation: 'Run npx tsx scripts/weeklyNse1000UniverseRebuild.ts --target 1000, then restart.',
+      });
+    }
   }
 
   // ── 60s OHLC refresh scheduler ──────────────────────────────

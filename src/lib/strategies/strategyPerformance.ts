@@ -301,35 +301,54 @@ export async function loadDirectSignalOutcomes(
   // Window by the resolution timestamp (`outcome_at`) so terminal
   // outcomes fall in the intended window regardless of when the
   // row was first inserted (rows are updated in-place as trades mature).
-  const eventAt = 'COALESCE(o.outcome_at, o.resolved_at, o.evaluated_at)';
+  const eventAt = 'o.evaluated_at';
   const where  = cutoff ? `WHERE ${eventAt} >= ?` : '';
   const params = cutoff ? [cutoff] : [];
   try {
-    // Schema note (verified against `q365_signal_outcomes` and
-    // `q365_signals`): the outcomes table carries `strategy_id`,
-    // `outcome`, `max_gain_pct`, `pnl_r`, `days_held`, and the
-    // per-target/stop hit flags. The signal join fills in
-    // `direction`, `sector`, `confidence_score`, and the entry /
-    // stop / target prices needed to compute a signed return.
-    const { rows } = await db.query<any>(
-      `SELECT o.id, o.signal_id, o.symbol, o.strategy_id,
-              o.outcome, o.outcome_label,
-              o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
-              o.max_gain_pct, o.pnl_r,
-              o.max_fav_excursion_pct, o.max_adv_excursion_pct,
-              o.return_bar5_pct, o.return_bar10_pct,
-              o.days_held, o.outcome_at, o.evaluated_at, o.resolved_at,
-              s.direction, s.confidence_score, s.sector, s.market_regime,
-              s.entry_price, s.stop_loss, s.target1, s.target2,
-              s.classification, s.rejection_codes_json
-         FROM q365_signal_outcomes o
-         LEFT JOIN q365_signals    s ON s.id = o.signal_id
-         ${where}
-         ORDER BY ${eventAt} DESC
-         LIMIT 20000`,
-      params,
-    );
-    return (rows ?? []).map(directOutcomeToRow);
+    try {
+      const { rows } = await db.query<any>(
+        `SELECT o.id, o.signal_id, o.source_snapshot_id, o.symbol,
+                COALESCE(NULLIF(o.strategy_id, ''), NULLIF(o.strategy, ''), 'unclassified') AS strategy_id,
+                o.direction, o.sector,
+                o.regime AS market_regime, o.confidence_score,
+                o.outcome, o.return_pct, o.return_r,
+                o.target_hit, o.stop_hit, o.invalidated,
+                o.mfe_pct, o.mae_pct, o.holding_period_bars,
+                o.approval_status, o.evaluated_at,
+                s.entry_price, s.stop_loss, s.target1, s.target2,
+                s.classification, s.rejection_codes_json
+           FROM q365_signal_outcomes o
+           LEFT JOIN q365_signals s ON s.id = o.signal_id
+           ${where}
+           ORDER BY ${eventAt} DESC
+           LIMIT 20000`,
+        params,
+      );
+      return (rows ?? []).map(directOutcomeToRow);
+    } catch {
+      // Legacy outcome table shape from earlier signal-engine work.
+      const legacyEventAt = 'o.evaluated_at';
+      const legacyWhere = cutoff ? `WHERE ${legacyEventAt} >= ?` : '';
+      const { rows } = await db.query<any>(
+        `SELECT o.id, o.signal_id, s.symbol, s.strategy_id,
+                o.outcome_label AS outcome,
+                o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
+                o.max_fav_excursion_pct AS max_gain_pct, o.pnl_r,
+                o.max_fav_excursion_pct, o.max_adv_excursion_pct,
+                o.return_bar5_pct, o.return_bar10_pct,
+                o.evaluated_at,
+                s.direction, s.confidence_score, s.sector, s.market_regime,
+                s.entry_price, s.stop_loss, s.target1, s.target2,
+                s.classification, s.rejection_codes_json
+           FROM q365_signal_outcomes o
+           LEFT JOIN q365_signals s ON s.id = o.signal_id
+           ${legacyWhere}
+           ORDER BY ${legacyEventAt} DESC
+           LIMIT 20000`,
+        params,
+      );
+      return (rows ?? []).map(directOutcomeToRow);
+    }
   } catch (err) {
     // Legacy fallback: the outcomes table (or the join) may not
     // exist on very old deployments. Only swallow after logging so
@@ -363,16 +382,16 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
   const stop  = num(r.stop_loss);
   const t1    = num(r.target1);
 
-  const targetHit = !!(r.target1_hit || r.target2_hit || r.target3_hit);
+  const targetHit = !!(r.target_hit || r.target1_hit || r.target2_hit || r.target3_hit);
   const stopHit   = !!r.stop_hit;
 
   // Signed realised return in %. Prefer the recorded `max_gain_pct`
   // when the outcome is a WIN because that reflects the actual
   // realised move captured by the resolver. For losses, use the
   // stop-distance (magnitude is what got taken).
-  let returnPct: number | null = null;
+  let returnPct: number | null = num(r.return_pct);
   if (outcome === 'WIN') {
-    const gain = num(r.max_gain_pct);
+    const gain = returnPct ?? num(r.max_gain_pct);
     if (gain != null && gain > 0) {
       returnPct = round(gain, 2);
     } else if (entry != null && t1 != null && entry > 0) {
@@ -394,9 +413,18 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     returnPct = bar10 ?? bar5 ?? null;
   }
 
+  // Outcome rows have gone through multiple resolver versions. Some
+  // persisted rows store the move magnitude without a sign, so enforce
+  // the canonical metric convention here: wins are positive, losses are
+  // negative. Expired/open rows keep their observed signed mark.
+  if (returnPct != null) {
+    if (outcome === 'WIN') returnPct = round(Math.abs(returnPct), 2);
+    else if (outcome === 'LOSS') returnPct = round(-Math.abs(returnPct), 2);
+  }
+
   // R-multiple: prefer the recorded value; else derive from
   // returnPct and the stop distance.
-  let returnR: number | null = num(r.pnl_r);
+  let returnR: number | null = num(r.return_r) ?? num(r.pnl_r);
   if (returnR == null && entry != null && stop != null && entry > 0) {
     const riskPct = Math.abs(((stop - entry) / entry) * 100);
     if (riskPct > 0 && returnPct != null) {
@@ -404,6 +432,10 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     }
   }
   if (returnR == null && outcome === 'LOSS') returnR = -1;
+  if (returnR != null) {
+    if (outcome === 'WIN') returnR = round(Math.abs(returnR), 2);
+    else if (outcome === 'LOSS') returnR = round(-Math.abs(returnR), 2);
+  }
 
   // Approval status derived from the linked signal's classification
   // and rejection codes — the outcomes table doesn't store it directly.
@@ -416,7 +448,10 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
       return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
     } catch { return []; }
   })();
-  let approvalStatus: PerformanceOutcomeRow['approvalStatus'] = 'APPROVED';
+  let approvalStatus: PerformanceOutcomeRow['approvalStatus'] =
+    ['APPROVED', 'WATCHLIST', 'REJECTED'].includes(String(r.approval_status ?? '').toUpperCase())
+      ? String(r.approval_status).toUpperCase() as PerformanceOutcomeRow['approvalStatus']
+      : 'APPROVED';
   if (classification === 'REJECTED' || classification === 'NO_TRADE') {
     approvalStatus = 'REJECTED';
   } else if (
@@ -435,7 +470,7 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     symbol:            String(r.symbol ?? ''),
     direction:         dir,
     sector:            r.sector ? String(r.sector) : safeSector(r.symbol),
-    regime:            r.market_regime ? String(r.market_regime) : null,
+    regime:            r.market_regime ?? r.regime ? String(r.market_regime ?? r.regime) : null,
     confidenceScore:   num(r.confidence_score),
     outcome,
     returnPct,
@@ -443,9 +478,9 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     targetHit,
     stopHit,
     invalidated:       outcome === 'INVALIDATED',
-    mfePct:            num(r.max_fav_excursion_pct),
-    maePct:            num(r.max_adv_excursion_pct),
-    holdingPeriodBars: num(r.days_held),
+    mfePct:            num(r.mfe_pct) ?? num(r.max_fav_excursion_pct),
+    maePct:            num(r.mae_pct) ?? num(r.max_adv_excursion_pct),
+    holdingPeriodBars: num(r.holding_period_bars) ?? num(r.days_held),
     approvalStatus,
     evaluatedAt:       toIso(r.outcome_at ?? r.resolved_at ?? r.evaluated_at),
     // Phase 2 Priority 1 — direct authored outcomes.
@@ -453,7 +488,11 @@ function directOutcomeToRow(r: any): PerformanceOutcomeRow {
     outcomeSource:     'direct',
     // signalRef points at the underlying q365_signals row so
     // dedupeOutcomesBySignal collapses any observed twin.
-    signalRef:         r.signal_id != null ? `signal:${String(r.signal_id)}` : null,
+    signalRef:         r.signal_id != null
+      ? `signal:${String(r.signal_id)}`
+      : r.source_snapshot_id != null
+        ? `snapshot:${String(r.source_snapshot_id)}`
+        : null,
     signalId:          r.signal_id != null ? Number(r.signal_id) : null,
   };
 }
@@ -969,11 +1008,11 @@ function computeMetricsForStrategy(
     .map((r) => r.holdingPeriodBars)
     .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))), 1);
 
-  const targetHits = rows.filter((r) => r.targetHit).length;
-  const stopHits   = rows.filter((r) => r.stopHit).length;
+  const targetHits = evaluated.filter((r) => r.targetHit).length;
+  const stopHits   = evaluated.filter((r) => r.stopHit).length;
 
-  const stopHitRate     = pct(rows.length > 0 ? stopHits   / rows.length : 0);
-  const targetHitRate   = pct(rows.length > 0 ? targetHits / rows.length : 0);
+  const stopHitRate     = pct(evaluatedCount > 0 ? stopHits   / evaluatedCount : 0);
+  const targetHitRate   = pct(evaluatedCount > 0 ? targetHits / evaluatedCount : 0);
 
   const falseSignalRate = pct(
     evaluatedCount > 0 ? losses.length / evaluatedCount : 0,
@@ -985,8 +1024,8 @@ function computeMetricsForStrategy(
   // R:R is derived from the absolute MFE vs MAE — falls back to 0
   // when the source rows didn't carry the excursion fields (live
   // snapshots don't, today).
-  const mfeAvg = round(avg(rows.map((r) => r.mfePct).filter((v): v is number => typeof v === 'number')), 2);
-  const maeAvg = round(avg(rows.map((r) => r.maePct).filter((v): v is number => typeof v === 'number')), 2);
+  const mfeAvg = round(avg(evaluated.map((r) => r.mfePct).filter((v): v is number => typeof v === 'number')), 2);
+  const maeAvg = round(avg(evaluated.map((r) => r.maePct).filter((v): v is number => typeof v === 'number')), 2);
   const averageRiskReward = round(
     Math.abs(maeAvg) > 0 ? Math.abs(mfeAvg) / Math.abs(maeAvg) : 0,
     2,
@@ -1418,19 +1457,21 @@ function computeProfitFactor(winPcts: number[], lossPcts: number[]): number {
 
 function computeRollingMaxDrawdownPct(rows: PerformanceOutcomeRow[]): number {
   // Walks the evaluated rows in chronological order, accumulating a
-  // synthetic equity curve from returnPct. Reports the worst peak-to-
-  // trough drawdown (signed, negative). Falls back to 0 when no
+  // synthetic compounded equity curve from returnPct. Reports the worst
+  // peak-to-trough drawdown percentage (signed, negative). Falls back to 0 when no
   // returnPct data is available.
   if (rows.length === 0) return 0;
   const chrono = [...rows]
     .filter((r) => typeof r.returnPct === 'number')
     .sort((a, b) => (a.evaluatedAt ?? '').localeCompare(b.evaluatedAt ?? ''));
   if (chrono.length === 0) return 0;
-  let equity = 0, peak = 0, maxDd = 0;
+  let equity = 100;
+  let peak = 100;
+  let maxDd = 0;
   for (const r of chrono) {
-    equity += (r.returnPct as number);
+    equity *= 1 + (r.returnPct as number) / 100;
     if (equity > peak) peak = equity;
-    const dd = equity - peak;       // signed, ≤ 0
+    const dd = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
     if (dd < maxDd) maxDd = dd;
   }
   return maxDd;

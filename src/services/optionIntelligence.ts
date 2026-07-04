@@ -32,6 +32,49 @@ export interface BuildupSignal {
   priceChange: number;
 }
 
+export interface OptionChainViewRow {
+  strikePrice: number;
+  expiryDate: string;
+  ceOi: number;
+  ceOiChange: number;
+  ceIv: number;
+  ceLtp: number;
+  ceVolume: number;
+  ceBid: number;
+  ceAsk: number;
+  peOi: number;
+  peOiChange: number;
+  peIv: number;
+  peLtp: number;
+  peVolume: number;
+  peBid: number;
+  peAsk: number;
+}
+
+export interface OptionMetrics {
+  totalCeOi: number;
+  totalPeOi: number;
+  totalCeVolume: number;
+  totalPeVolume: number;
+  atmStrike: number;
+  atmIv: number;
+  avgIv: number;
+  ivSkew: number;
+  highestCeOiStrike: number | null;
+  highestPeOiStrike: number | null;
+  chainRows: number;
+}
+
+export interface OptionSignal {
+  id: string;
+  label: string;
+  direction: 'bullish' | 'bearish' | 'neutral';
+  severity: 'high' | 'medium' | 'low';
+  optionType: 'CE' | 'PE' | 'CHAIN';
+  strike: number | null;
+  description: string;
+}
+
 export interface TrapZone {
   lower:       number;
   upper:       number;
@@ -41,6 +84,7 @@ export interface TrapZone {
 
 export interface OptionIntelligence {
   symbol:           string;
+  requestedSymbol?: string;
   underlyingValue:  number;
   expiryDate:       string;
   strongResistance: OiZone[];
@@ -56,6 +100,10 @@ export interface OptionIntelligence {
   summary:          string;
   generatedAt:      string;
   dataSource:       'live' | 'synthetic' | 'unknown';
+  expiryDates:      string[];
+  chain:            OptionChainViewRow[];
+  metrics:          OptionMetrics;
+  optionSignals:    OptionSignal[];
 }
 
 function classifyBuildup(oiChange: number, priceChange: number, optionType: 'CE' | 'PE'): BuildupSignal['buildupType'] {
@@ -81,16 +129,141 @@ const BUILD_DESC: Record<string, string> = {
   long_unwinding: 'Longs exiting — potential downside pressure',
 };
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function sum(nums: number[]): number {
+  return nums.reduce((a, b) => a + b, 0);
+}
+
+function avg(nums: number[]): number {
+  const xs = nums.filter((n) => Number.isFinite(n) && n > 0);
+  return xs.length ? sum(xs) / xs.length : 0;
+}
+
+function normalizeDataSource(source: string | undefined): OptionIntelligence['dataSource'] {
+  if (source === 'synthetic') return 'synthetic';
+  if (source === 'kite' || source === 'yahoo' || source === 'live') return 'live';
+  return 'unknown';
+}
+
+function buildOptionSignals(args: {
+  pcr: number;
+  pcrLabel: string;
+  maxPain: number;
+  spot: number;
+  resistance: OiZone[];
+  support: OiZone[];
+  buildups: BuildupSignal[];
+  ivContext: string;
+}): OptionSignal[] {
+  const signals: OptionSignal[] = [];
+
+  if (args.pcr >= 1.3) {
+    signals.push({
+      id: 'pcr-bullish',
+      label: 'Put-side OI dominance',
+      direction: 'bullish',
+      severity: args.pcr >= 1.6 ? 'high' : 'medium',
+      optionType: 'CHAIN',
+      strike: null,
+      description: `${args.pcrLabel}. Put OI exceeds call OI, suggesting support from put writers.`,
+    });
+  } else if (args.pcr <= 0.7) {
+    signals.push({
+      id: 'pcr-bearish',
+      label: 'Call-side OI dominance',
+      direction: 'bearish',
+      severity: args.pcr <= 0.5 ? 'high' : 'medium',
+      optionType: 'CHAIN',
+      strike: null,
+      description: `${args.pcrLabel}. Call OI exceeds put OI, suggesting overhead resistance.`,
+    });
+  }
+
+  const topRes = args.resistance[0];
+  if (topRes) {
+    signals.push({
+      id: `call-wall-${topRes.strike}`,
+      label: 'Call wall resistance',
+      direction: 'bearish',
+      severity: topRes.strength === 'Strong' ? 'high' : 'medium',
+      optionType: 'CE',
+      strike: topRes.strike,
+      description: `Highest call OI sits at ${topRes.strike}; upside may need a decisive breakout above this level.`,
+    });
+  }
+
+  const topSup = args.support[0];
+  if (topSup) {
+    signals.push({
+      id: `put-wall-${topSup.strike}`,
+      label: 'Put wall support',
+      direction: 'bullish',
+      severity: topSup.strength === 'Strong' ? 'high' : 'medium',
+      optionType: 'PE',
+      strike: topSup.strike,
+      description: `Highest put OI sits at ${topSup.strike}; downside may find support near this level.`,
+    });
+  }
+
+  const painDistancePct = args.spot > 0 ? ((args.maxPain - args.spot) / args.spot) * 100 : 0;
+  if (Math.abs(painDistancePct) >= 0.4) {
+    signals.push({
+      id: 'max-pain-magnet',
+      label: 'Max pain magnet',
+      direction: painDistancePct > 0 ? 'bullish' : 'bearish',
+      severity: Math.abs(painDistancePct) >= 1 ? 'medium' : 'low',
+      optionType: 'CHAIN',
+      strike: args.maxPain,
+      description: `Max pain is ${round2(Math.abs(painDistancePct))}% ${painDistancePct > 0 ? 'above' : 'below'} spot.`,
+    });
+  }
+
+  for (const b of args.buildups.slice(0, 4)) {
+    const bullish =
+      (b.optionType === 'CE' && (b.buildupType === 'long_buildup' || b.buildupType === 'short_covering')) ||
+      (b.optionType === 'PE' && (b.buildupType === 'short_buildup' || b.buildupType === 'long_unwinding'));
+    signals.push({
+      id: `${b.optionType}-${b.buildupType}-${b.strike}`,
+      label: `${b.optionType} ${b.label}`,
+      direction: bullish ? 'bullish' : 'bearish',
+      severity: Math.abs(b.oiChange) > 250_000 ? 'high' : 'medium',
+      optionType: b.optionType,
+      strike: b.strike,
+      description: b.description,
+    });
+  }
+
+  signals.push({
+    id: 'iv-context',
+    label: 'IV context',
+    direction: 'neutral',
+    severity: args.ivContext.startsWith('High') ? 'medium' : 'low',
+    optionType: 'CHAIN',
+    strike: null,
+    description: args.ivContext,
+  });
+
+  return signals.slice(0, 8);
+}
+
 export async function analyzeOptionChain(symbol: string, expiryIndex = 0): Promise<OptionIntelligence | null> {
-  const cacheKey = `optintel:${symbol}`;
+  const sym = symbol.trim().toUpperCase();
+  const safeExpiryIndex = Math.max(0, Math.floor(Number(expiryIndex) || 0));
+  const cacheKey = `optintel:${sym}:expiry:${safeExpiryIndex}`;
   const cached   = await cacheGet<OptionIntelligence>(cacheKey);
   if (cached) return cached;
 
-  const chain = await fetchOptionChain(symbol);
+  const chain = await fetchOptionChain(sym);
   if (!chain || !chain.records.length) return null;
+  const resolvedSymbol = chain.symbol ?? sym;
 
-  const expiry  = chain.expiryDates[expiryIndex] ?? chain.expiryDates[0];
-  const records = chain.records.filter(r => r.expiryDate === expiry);
+  const expiry  = chain.expiryDates[safeExpiryIndex] ?? chain.expiryDates[0];
+  const records = chain.records
+    .filter(r => r.expiryDate === expiry)
+    .sort((a, b) => a.strikePrice - b.strikePrice);
   const spot    = chain.underlyingValue;
 
   // ── OI zone detection (top CE OI = resistance, top PE OI = support) ──
@@ -179,6 +352,7 @@ export async function analyzeOptionChain(symbol: string, expiryIndex = 0): Promi
 
   // ── Expected move (using ATM IV) ──────────────────────────────────
   const atmRow   = records.reduce((best, r) => Math.abs(r.strikePrice - spot) < Math.abs(best.strikePrice - spot) ? r : best, records[0]);
+  const atmStrike = atmRow?.strikePrice ?? spot;
   const atmIv    = ((atmRow?.CE?.impliedVolatility ?? 0) + (atmRow?.PE?.impliedVolatility ?? 0)) / 2;
   const daysLeft = 7; // approximate
   const moveAmt  = atmIv > 0 ? spot * (atmIv / 100) * Math.sqrt(daysLeft / 365) : spot * 0.01;
@@ -189,6 +363,54 @@ export async function analyzeOptionChain(symbol: string, expiryIndex = 0): Promi
   const ivContext = atmIv > 30 ? 'High volatility — options expensive, prefer selling strategies'
     : atmIv > 15 ? 'Moderate volatility — balanced premium'
     : 'Low volatility — options cheap, consider buying strategies';
+
+  const chainRows: OptionChainViewRow[] = records.map((row) => ({
+    strikePrice: row.strikePrice,
+    expiryDate: row.expiryDate,
+    ceOi: row.CE?.openInterest ?? 0,
+    ceOiChange: row.CE?.changeinOpenInterest ?? 0,
+    ceIv: row.CE?.impliedVolatility ?? 0,
+    ceLtp: row.CE?.lastPrice ?? 0,
+    ceVolume: row.CE?.totalTradedVolume ?? 0,
+    ceBid: row.CE?.bidprice ?? 0,
+    ceAsk: row.CE?.askPrice ?? 0,
+    peOi: row.PE?.openInterest ?? 0,
+    peOiChange: row.PE?.changeinOpenInterest ?? 0,
+    peIv: row.PE?.impliedVolatility ?? 0,
+    peLtp: row.PE?.lastPrice ?? 0,
+    peVolume: row.PE?.totalTradedVolume ?? 0,
+    peBid: row.PE?.bidprice ?? 0,
+    peAsk: row.PE?.askPrice ?? 0,
+  }));
+
+  const ceIvs = chainRows.map((r) => r.ceIv).filter((n) => n > 0);
+  const peIvs = chainRows.map((r) => r.peIv).filter((n) => n > 0);
+  const avgCeIv = avg(ceIvs);
+  const avgPeIv = avg(peIvs);
+  const metrics: OptionMetrics = {
+    totalCeOi,
+    totalPeOi,
+    totalCeVolume: sum(chainRows.map((r) => r.ceVolume)),
+    totalPeVolume: sum(chainRows.map((r) => r.peVolume)),
+    atmStrike,
+    atmIv: round2(atmIv),
+    avgIv: round2(avg([...ceIvs, ...peIvs])),
+    ivSkew: round2(avgPeIv - avgCeIv),
+    highestCeOiStrike: strongResistance[0]?.strike ?? null,
+    highestPeOiStrike: strongSupport[0]?.strike ?? null,
+    chainRows: chainRows.length,
+  };
+
+  const optionSignals = buildOptionSignals({
+    pcr,
+    pcrLabel,
+    maxPain,
+    spot,
+    resistance: strongResistance,
+    support: strongSupport,
+    buildups: buildups.slice(0, 10),
+    ivContext,
+  });
 
   // ── Summary ───────────────────────────────────────────────────────
   const topRes = strongResistance[0];
@@ -202,12 +424,19 @@ export async function analyzeOptionChain(symbol: string, expiryIndex = 0): Promi
   ].filter(Boolean).join(' ');
 
   const intel: OptionIntelligence = {
-    symbol, underlyingValue: spot, expiryDate: expiry,
+    symbol: resolvedSymbol,
+    requestedSymbol: chain.requestedSymbol,
+    underlyingValue: spot,
+    expiryDate: expiry,
     strongResistance, strongSupport, buildups: buildups.slice(0, 10),
     trapZones, expectedMoveUp, expectedMoveDown,
     pcr, pcrLabel, maxPain, ivContext, summary,
     generatedAt: new Date().toISOString(),
-    dataSource:  (chain.source ?? 'live') as 'live' | 'synthetic' | 'unknown',
+    dataSource:  normalizeDataSource(chain.source),
+    expiryDates: chain.expiryDates,
+    chain: chainRows,
+    metrics,
+    optionSignals,
   };
 
   const cacheTtl = intel.dataSource === 'synthetic' ? 60 : 120; // synthetic: 1 min, live: 2 min

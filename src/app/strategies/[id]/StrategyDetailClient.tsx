@@ -45,7 +45,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             <p>{data.explanation}</p>
             <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
               <Badge variant="gray">{data.categoryLabel}</Badge>
-              <Badge variant={data.direction === 'BUY' ? 'green' : 'red'}>{data.direction}</Badge>
+              <Badge variant={data.direction === 'BUY' ? 'green' : data.direction === 'SELL' ? 'red' : 'gray'}>
+                {data.direction}
+              </Badge>
               <Badge variant="orange">{data.riskProfileLabel}</Badge>
               <Badge variant="gray">{data.timeframe}</Badge>
               {data.paperTradingReady && <Badge variant="green">Paper Trading Ready</Badge>}

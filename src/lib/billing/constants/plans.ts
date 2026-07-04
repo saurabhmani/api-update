@@ -7,6 +7,8 @@ export const CREDIT_TYPES: CreditType[] = [
   'backtests',
   'research_reports',
   'premium_signals',
+  'strategy_validation',
+  'market_scanner',
 ];
 
 export const PLAN_CATALOG: Record<SubscriptionPlan, PlanConfig> = {
@@ -20,9 +22,11 @@ export const PLAN_CATALOG: Record<SubscriptionPlan, PlanConfig> = {
       backtests: 2,
       research_reports: 1,
       premium_signals: 5,
+      strategy_validation: 3,
+      market_scanner: 2,
     },
-    features: ['signals_basic', 'onboarding'],
-    description: 'Essential market intelligence for getting started.',
+    features: ['signals_basic', 'watchlist_limited', 'strategies_basic', 'backtests_basic', 'onboarding'],
+    description: 'Limited signals, limited watchlist, basic strategies, and basic backtests.',
   },
   pro: {
     id: 'pro',
@@ -34,12 +38,15 @@ export const PLAN_CATALOG: Record<SubscriptionPlan, PlanConfig> = {
       backtests: 20,
       research_reports: 10,
       premium_signals: 50,
+      strategy_validation: 25,
+      market_scanner: 20,
     },
     features: [
-      'signals_basic', 'signals_advanced', 'trade_setups', 'smart_watchlist_ranking',
+      'signals_basic', 'signals_advanced', 'strategies_advanced', 'strategy_hub',
+      'backtest_engine', 'performance_reports', 'trade_setups', 'smart_watchlist_ranking',
       'smart_alerts_full', 'option_intelligence', 'onboarding',
     ],
-    description: 'Active traders — advanced signals, setups, and option intelligence.',
+    description: 'More signals, advanced strategies, Strategy Hub access, backtest engine, and reports.',
   },
   premium: {
     id: 'premium',
@@ -51,9 +58,12 @@ export const PLAN_CATALOG: Record<SubscriptionPlan, PlanConfig> = {
       backtests: 75,
       research_reports: 40,
       premium_signals: 200,
+      strategy_validation: 100,
+      market_scanner: 75,
     },
     features: [
-      'signals_basic', 'signals_advanced', 'trade_setups', 'smart_watchlist_ranking',
+      'ai_strategy_builder', 'deep_backtests', 'premium_research', 'paper_trading',
+      'strategy_deployment', 'signals_basic', 'signals_advanced', 'trade_setups', 'smart_watchlist_ranking',
       'smart_alerts_full', 'option_intelligence', 'top_opportunities',
       'trader_analytics', 'market_explanation', 'onboarding',
     ],
@@ -69,6 +79,8 @@ export const PLAN_CATALOG: Record<SubscriptionPlan, PlanConfig> = {
       backtests: 500,
       research_reports: 200,
       premium_signals: 1000,
+      strategy_validation: 500,
+      market_scanner: 500,
     },
     features: ['__all'],
     description: 'Teams and institutions — unlimited access with priority support.',
@@ -89,8 +101,10 @@ export function creditLabel(type: CreditType): string {
   const labels: Record<CreditType, string> = {
     ai_builder: 'AI Builder',
     backtests: 'Backtests',
-    research_reports: 'Research Reports',
+    research_reports: 'Premium Research',
     premium_signals: 'Premium Signals',
+    strategy_validation: 'Strategy Validation',
+    market_scanner: 'Advanced Market Scanner',
   };
   return labels[type];
 }

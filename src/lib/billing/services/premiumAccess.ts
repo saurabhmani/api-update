@@ -13,14 +13,20 @@ import type { CreditType, PremiumAccessResult, SubscriptionPlan } from '../types
 
 const FEATURE_CREDIT_MAP: Record<string, CreditType> = {
   ai_builder: 'ai_builder',
+  ai_strategy_builder: 'ai_builder',
   strategy_lab: 'ai_builder',
   backtest: 'backtests',
   backtesting: 'backtests',
+  deep_backtests: 'backtests',
   research_report: 'research_reports',
+  premium_research: 'research_reports',
   reports: 'research_reports',
   premium_signals: 'premium_signals',
   signals_advanced: 'premium_signals',
   top_opportunities: 'premium_signals',
+  strategy_validation: 'strategy_validation',
+  advanced_market_scanner: 'market_scanner',
+  market_scanner: 'market_scanner',
 };
 
 const FEATURE_PLAN_REQUIREMENT: Record<string, SubscriptionPlan> = {
@@ -31,6 +37,11 @@ const FEATURE_PLAN_REQUIREMENT: Record<string, SubscriptionPlan> = {
   top_opportunities: 'premium',
   trader_analytics: 'premium',
   market_explanation: 'premium',
+  ai_strategy_builder: 'premium',
+  deep_backtests: 'premium',
+  premium_research: 'premium',
+  paper_trading: 'premium',
+  strategy_deployment: 'premium',
 };
 
 function planRank(p: SubscriptionPlan): number {

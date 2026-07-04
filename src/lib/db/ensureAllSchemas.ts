@@ -779,6 +779,27 @@ const ENSURE_COLUMNS: Array<{ table: string; column: string; definition: string 
   // IndianAPI cutover. Older deployments need the column ALTER.
   { table: 'q365_pipeline_run_locks', column: 'force_override',  definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
   { table: 'q365_pipeline_run_locks', column: 'override_reason', definition: 'TEXT DEFAULT NULL' },
+  // Strategy performance Priority-1 outcomes. This table had an
+  // older signal-engine shape before the strategy-performance writer
+  // introduced normalized per-strategy outcome columns.
+  { table: 'q365_signal_outcomes', column: 'signal_id',          definition: 'BIGINT DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'source_snapshot_id', definition: 'BIGINT DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'symbol',             definition: "VARCHAR(40) NOT NULL DEFAULT ''" },
+  { table: 'q365_signal_outcomes', column: 'strategy',           definition: "VARCHAR(80) NOT NULL DEFAULT 'unclassified'" },
+  { table: 'q365_signal_outcomes', column: 'direction',          definition: "VARCHAR(8) NOT NULL DEFAULT 'BUY'" },
+  { table: 'q365_signal_outcomes', column: 'sector',             definition: 'VARCHAR(80) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'regime',             definition: 'VARCHAR(40) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'confidence_score',   definition: 'DECIMAL(6,2) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'outcome',            definition: "VARCHAR(20) NOT NULL DEFAULT 'INSUFFICIENT_DATA'" },
+  { table: 'q365_signal_outcomes', column: 'return_pct',         definition: 'DECIMAL(10,4) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'return_r',           definition: 'DECIMAL(8,3) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'target_hit',         definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
+  { table: 'q365_signal_outcomes', column: 'invalidated',        definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
+  { table: 'q365_signal_outcomes', column: 'mfe_pct',            definition: 'DECIMAL(10,4) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'mae_pct',            definition: 'DECIMAL(10,4) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'holding_period_bars', definition: 'INT DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'approval_status',    definition: 'VARCHAR(20) DEFAULT NULL' },
+  { table: 'q365_signal_outcomes', column: 'created_at',         definition: 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' },
 ];
 
 /** Add a column only if it's missing. Mirrors migrateSignalEngine.ts:287. */

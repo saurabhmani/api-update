@@ -7,6 +7,7 @@ import type {
   ConditionGroup,
   LabCondition,
   LabDirection,
+  LabMarket,
   LabTimeframe,
   RiskSettings,
   StopLossRule,
@@ -25,6 +26,19 @@ const OPERATORS = [
   { value: 'crosses_above', label: 'crosses above' },
   { value: 'crosses_below', label: 'crosses below' },
 ] as const;
+
+const MARKET_REGIMES = ['Bullish', 'Sideways', 'Bearish', 'High Volatility Risk'];
+const DEFAULT_UNIVERSES = ['NIFTY 500', 'NIFTY 50', 'BANKNIFTY', 'RELIANCE,TCS,HDFCBANK,INFY,ICICIBANK'];
+
+function defaultValueFor(indicator: LabCondition['indicator'], operator: LabCondition['operator']): number | [number, number] {
+  if (operator === 'between') return indicator === 'rsi' ? [45, 65] : [0, 1];
+  if (operator === 'crosses_above' || operator === 'crosses_below') return 0;
+  if (indicator === 'volume_expansion') return 1.5;
+  if (indicator === 'adx') return 20;
+  if (indicator === 'atr_pct') return 5;
+  if (indicator === 'regime_bullish' || indicator === 'price_above_ema20' || indicator === 'fib_pullback_zone') return 1;
+  return 50;
+}
 
 function newCondition(): LabCondition {
   return {
@@ -80,7 +94,12 @@ function ConditionEditor({
           <GripVertical size={14} color="#CBD5E1" />
           <select
             value={c.indicator}
-            onChange={(e) => updateCondition(idx, { indicator: e.target.value as LabCondition['indicator'] })}
+            onChange={(e) => {
+              const indicator = e.target.value as LabCondition['indicator'];
+              const meta = SUPPORTED_INDICATORS.find((ind) => ind.id === indicator);
+              const operator = (meta?.defaultOperator ?? c.operator) as LabCondition['operator'];
+              updateCondition(idx, { indicator, operator, value: defaultValueFor(indicator, operator) });
+            }}
           >
             {SUPPORTED_INDICATORS.map((ind) => (
               <option key={ind.id} value={ind.id}>{ind.label}</option>
@@ -104,6 +123,13 @@ function ConditionEditor({
               }}
               placeholder="45-65"
             />
+          ) : c.operator === 'crosses_above' || c.operator === 'crosses_below' ? (
+            <input
+              type="text"
+              value={c.indicator === 'ema_20' ? 'EMA50' : 'prior value'}
+              disabled
+              title="Cross-over rules compare against the paired indicator baseline."
+            />
           ) : (
             <input
               type="number"
@@ -125,19 +151,38 @@ function ConditionEditor({
 
 export function NoCodeBuilder({ definition, onChange }: Props) {
   const patch = (partial: Partial<StrategyDefinition>) => onChange({ ...definition, ...partial });
+  const updateRegime = (regime: string) => {
+    const current = definition.marketRegimeFilter ?? [];
+    patch({
+      marketRegimeFilter: current.includes(regime)
+        ? current.filter((r) => r !== regime)
+        : [...current, regime],
+    });
+  };
 
   return (
     <div className={styles.panel}>
       <h3 className={styles.panelTitle}>Rule Builder</h3>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
         <label style={{ fontSize: '0.8rem' }}>
-          Name
+          Strategy Name
           <input
             value={definition.name}
             onChange={(e) => patch({ name: e.target.value })}
             style={{ width: '100%', padding: 6, marginTop: 4, borderRadius: 6, border: '1px solid #E2E8F0' }}
           />
+        </label>
+        <label style={{ fontSize: '0.8rem' }}>
+          Market
+          <select
+            value={definition.market ?? 'equity'}
+            onChange={(e) => patch({ market: e.target.value as LabMarket })}
+            style={{ width: '100%', padding: 6, marginTop: 4, borderRadius: 6, border: '1px solid #E2E8F0' }}
+          >
+            <option value="equity">Equity</option>
+            <option value="options">Options</option>
+          </select>
         </label>
         <label style={{ fontSize: '0.8rem' }}>
           Timeframe
@@ -146,7 +191,9 @@ export function NoCodeBuilder({ definition, onChange }: Props) {
             onChange={(e) => patch({ timeframe: e.target.value as LabTimeframe })}
             style={{ width: '100%', padding: 6, marginTop: 4, borderRadius: 6, border: '1px solid #E2E8F0' }}
           >
+            <option value="intraday">Intraday</option>
             <option value="swing">Swing</option>
+            <option value="positional">Positional</option>
             <option value="daily">Daily</option>
           </select>
         </label>
@@ -161,6 +208,49 @@ export function NoCodeBuilder({ definition, onChange }: Props) {
             <option value="short">Short</option>
           </select>
         </label>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 16 }}>
+        <label style={{ fontSize: '0.8rem' }}>
+          Symbol Universe
+          <input
+            list="strategy-lab-universes"
+            value={(definition.symbolUniverse ?? ['NIFTY 500']).join(',')}
+            onChange={(e) => patch({
+              symbolUniverse: e.target.value.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
+            })}
+            placeholder="NIFTY 500 or RELIANCE,TCS,HDFCBANK"
+            style={{ width: '100%', padding: 6, marginTop: 4, borderRadius: 6, border: '1px solid #E2E8F0' }}
+          />
+          <datalist id="strategy-lab-universes">
+            {DEFAULT_UNIVERSES.map((u) => <option key={u} value={u} />)}
+          </datalist>
+        </label>
+        <label style={{ fontSize: '0.8rem' }}>
+          Description
+          <input
+            value={definition.description ?? ''}
+            onChange={(e) => patch({ description: e.target.value })}
+            placeholder="Optional strategy notes"
+            style={{ width: '100%', padding: 6, marginTop: 4, borderRadius: 6, border: '1px solid #E2E8F0' }}
+          />
+        </label>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <div className={styles.groupHeader} style={{ marginTop: 0 }}>Market Regime Filter</div>
+        <div className={styles.chipGroup}>
+          {MARKET_REGIMES.map((regime) => (
+            <button
+              key={regime}
+              type="button"
+              className={(definition.marketRegimeFilter ?? []).includes(regime) ? styles.chipActive : styles.chip}
+              onClick={() => updateRegime(regime)}
+            >
+              {regime}
+            </button>
+          ))}
+        </div>
       </div>
 
       <ConditionEditor

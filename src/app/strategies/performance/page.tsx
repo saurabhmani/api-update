@@ -129,6 +129,21 @@ const fmtSigned = (n: number): string => {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
 };
 
+async function readPerformanceJson(res: Response) {
+  const text = await res.text();
+  if (!text.trim()) throw new Error('Performance API returned an empty response');
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('Performance API returned invalid JSON');
+  }
+}
+
+function getInitialStrategyId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return new URLSearchParams(window.location.search).get('strategyId');
+}
+
 const toneForHealth = (l: HealthLabel): 'green' | 'amber' | 'red' | 'grey' => {
   switch (l) {
     case 'EXCELLENT':         return 'green';
@@ -186,7 +201,7 @@ const TONE_PALETTE: Record<
 export default function StrategyPerformancePage() {
   const [data, setData]       = useState<PerformancePayload | null>(null);
   const [window, setWindow]   = useState<Window>('90D');
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(getInitialStrategyId);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
@@ -199,7 +214,7 @@ export default function StrategyPerformancePage() {
       });
       if (selected) params.set('strategyId', selected);
       const res = await fetch(`/api/strategies/performance?${params.toString()}`, { cache: 'no-store' });
-      const json = await res.json();
+      const json = await readPerformanceJson(res);
       if (!res.ok) {
         setError(json?.error ?? `HTTP ${res.status}`);
         setData(null);

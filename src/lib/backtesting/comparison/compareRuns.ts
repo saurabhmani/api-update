@@ -46,6 +46,30 @@ const METRICS: Array<{ key: keyof BacktestSummary; label: string; higherIsBetter
   { key: 'calmarRatio', label: 'Calmar Ratio', higherIsBetter: true },
 ];
 
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  if (typeof value === 'object') return value as Record<string, unknown>;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function toNumber(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toIsoString(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 export async function compareBacktestRuns(runIds: string[]): Promise<BacktestComparisonResult> {
   const unique = [...new Set(runIds)].slice(0, 6);
   const runs: ComparisonRunSnapshot[] = [];
@@ -56,17 +80,21 @@ export async function compareBacktestRuns(runIds: string[]): Promise<BacktestCom
       loadEquityCurve(runId).catch(() => []),
     ]);
     if (!record) continue;
+
+    const config = parseJsonObject(record.config_json ?? record.config);
+    const summary = parseJsonObject(record.summary_json ?? record.summary);
+
     runs.push({
-      runId: record.runId,
-      name: record.config.name,
-      status: record.status,
-      startedAt: record.startedAt,
-      completedAt: record.completedAt,
-      config: record.config as unknown as Record<string, unknown>,
-      summary: record.summary,
+      runId: String(record.run_id ?? record.runId ?? runId),
+      name: String(record.name ?? config.name ?? 'Backtest Run'),
+      status: String(record.status ?? 'unknown'),
+      startedAt: toIsoString(record.started_at ?? record.startedAt),
+      completedAt: toIsoString(record.completed_at ?? record.completedAt),
+      config,
+      summary: Object.keys(summary).length ? summary as unknown as BacktestSummary : null,
       equityPoints: equity.length,
-      tradeCount: record.tradeCount,
-      signalCount: record.signalCount,
+      tradeCount: toNumber(record.trade_count ?? record.tradeCount),
+      signalCount: toNumber(record.signal_count ?? record.signalCount),
     });
   }
 

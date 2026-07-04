@@ -5,6 +5,8 @@
 import type { StrategyCategory, StrategyRiskProfile } from '@/lib/signal-engine/types/signalEngine.types';
 
 export type DeploymentStatus = 'registered' | 'staging' | 'paper_ready' | 'live';
+export type StrategyMarketType = 'Equity' | 'Options';
+export type StrategyCardStatus = 'Active' | 'Inactive' | 'Backtested' | 'Premium';
 
 export interface PaperTradingCheck {
   name: string;
@@ -32,10 +34,12 @@ export interface StrategyHubSummary {
   displayName: string;
   category: StrategyCategory;
   categoryLabel: string;
-  direction: 'BUY' | 'SELL';
+  direction: 'BUY' | 'SELL' | 'BOTH';
+  marketType: StrategyMarketType;
   riskProfile: StrategyRiskProfile;
   riskProfileLabel: string;
   timeframe: string;
+  timeframeLabel: string;
   explanation: string;
   isFeatured: boolean;
   isActiveInRunner: boolean;
@@ -43,12 +47,15 @@ export interface StrategyHubSummary {
   paperTradingReady: boolean;
   strategyMode: string;
   effectiveStrategyMode?: string;
+  cardStatus: StrategyCardStatus;
   performance?: StrategyHubPerformanceSummary | null;
 }
 
 export interface StrategyHubPerformanceSummary {
   winRate: number;
   totalSignals: number;
+  totalTrades: number;
+  maxDrawdownPct: number;
   expectancy: number;
   healthScore: number;
   healthLabel: string;
