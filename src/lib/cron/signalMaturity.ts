@@ -34,6 +34,7 @@ import {
 import { insertConfirmedSnapshotIfEligible } from '@/lib/signal-engine/repository/confirmedSnapshots';
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
+import { isDailyCandleWarehousePromotable } from '@/lib/marketData/candleFreshness';
 // Step 8 note: this worker must NEVER call resolveBatch /
 // resolvePrices. Data-quality gating is done by reading the
 // q365_data_feed_health audit table instead — a pure DB lookup.
@@ -126,11 +127,16 @@ const PROMOTION_VALID_SIGNAL_COMPOSITE_FLOOR = 50;
 function resolvePromotionClassification(row: CurrentSignalRow): string {
   const cls = String(row.classification ?? '').toUpperCase();
   if (MAIN_TABLE_CLASSIFICATIONS.has(cls)) return cls;
-  if (cls === 'DEVELOPING_SETUP' && row.signal_status !== 'NO_TRADE') {
-    const composite = numOrNull(row.composite_final_score);
-    if (composite != null && composite >= PROMOTION_VALID_SIGNAL_COMPOSITE_FLOOR) {
-      return 'VALID_SIGNAL';
-    }
+  const ss = String(row.signal_status ?? '').toUpperCase();
+  if (ss === 'NO_TRADE') return cls;
+  const composite = numOrNull(row.composite_final_score);
+  const compositeOk =
+    composite != null && composite >= PROMOTION_VALID_SIGNAL_COMPOSITE_FLOOR;
+  // DEVELOPING_SETUP / empty classification with institutional composite
+  // already computed — promote as VALID_SIGNAL when the row is not an
+  // explicit NO_TRADE rejection.
+  if (compositeOk && (cls === 'DEVELOPING_SETUP' || cls === '')) {
+    return 'VALID_SIGNAL';
   }
   return cls;
 }
@@ -647,6 +653,11 @@ async function evaluateMaturityDqGate(): Promise<MaturityDqDecision> {
   const marketStatus  = getMarketStatus();
   const marketOpen    = marketStatus.isOpen;
   const feedWindowMin = envInt('MATURITY_DQ_FRESH_WINDOW_MIN', 10, 1, 240);
+  // Legacy env caps — retained for log envelopes only. Promotion decisions
+  // on market_data_daily use isDailyCandleWarehousePromotable() which
+  // applies daily_tolerant bands (frozen only when >72h). The previous
+  // open-market 360min wall-clock check blocked every promotion after
+  // ~11:30 IST while the closed-market 48h cap unblocked them at 15:30.
   const candleLimitOpen   = envInt('MATURITY_CANDLE_FRESH_MIN',        6 * 60,  60, 7 * 24 * 60);
   const candleLimitClosed = envInt('MATURITY_CANDLE_FRESH_CLOSED_MIN', 48 * 60, 60, 14 * 24 * 60);
   const candleFreshLimit  = marketOpen ? candleLimitOpen : candleLimitClosed;
@@ -732,8 +743,12 @@ async function evaluateMaturityDqGate(): Promise<MaturityDqDecision> {
     // table missing — fall through to open-default tier.
   }
 
-  if (candleAgeMin != null) {
-    const ok = candleAgeMin <= candleFreshLimit;
+  if (candleAgeMin != null && latestCandleTs) {
+    const latestMs = Date.parse(latestCandleTs);
+    const { ok, report } = isDailyCandleWarehousePromotable(
+      Number.isFinite(latestMs) ? latestMs : null,
+      { marketOpen },
+    );
     return {
       allowPromotion: ok, mode: 'candle_fallback',
       feedHealthDq: '', feedHealthAgeMin,
@@ -741,15 +756,17 @@ async function evaluateMaturityDqGate(): Promise<MaturityDqDecision> {
       candleFreshLimitMin: candleFreshLimit,
       latestCandleTs, marketOpen,
       reason: ok
-        ? `feed-health empty; candle ${candleAgeMin}min ≤ ${candleFreshLimit}min cap (market ${marketOpen ? 'open' : 'closed'})`
-        : `feed-health empty AND candle ${candleAgeMin}min > ${candleFreshLimit}min cap — refusing to promote stale data`,
-      dqReason: ok ? 'candle_fallback=OK' : 'candle_fallback=STALE',
+        ? `feed-health empty; daily warehouse ${report.freshness_quality} ` +
+          `(age ${candleAgeMin}min, mode=${report.freshness_mode}) — promotion allowed`
+        : `feed-health empty AND daily warehouse frozen ` +
+          `(age ${candleAgeMin}min, quality=${report.freshness_quality}) — refusing to promote`,
+      dqReason: ok ? 'candle_fallback=OK' : 'candle_fallback=FROZEN',
       degradedReason: ok
         ? null
-        : `bars in market_data_daily are ${candleAgeMin}min old (limit ${candleFreshLimit}min)`,
+        : `bars in market_data_daily are ${candleAgeMin}min old (daily_tolerant frozen threshold 72h)`,
       suggestion: ok
         ? ''
-        : `run candle ingestion (POST /api/run-signal-engine?force=true) OR raise MATURITY_CANDLE_FRESH_${marketOpen ? '' : 'CLOSED_'}MIN`,
+        : 'run candle ingestion (POST /api/run-signal-engine?force=true) to refresh market_data_daily',
     };
   }
 
@@ -789,6 +806,27 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   }
   result.scanned = trackers.length;
 
+  // Prioritise mature/developing rows so each 60s tick promotes the
+  // strongest candidates before spending the batch budget on hundreds
+  // of cycle-1 candidates. Without this, a 1000-tracker backlog can
+  // starve promotion for hours even when the DQ gate allows it.
+  const stageRank = (s: string): number =>
+    s === 'mature' ? 0 : s === 'developing' ? 1 : s === 'candidate' ? 2 : 3;
+  const sortedTrackers = [...trackers].sort((a, b) => {
+    const r = stageRank(a.stage) - stageRank(b.stage);
+    if (r !== 0) return r;
+    return (b.maturity_score ?? 0) - (a.maturity_score ?? 0);
+  });
+  const batchCap = envInt('MATURITY_WORKER_BATCH_CAP', 150, 25, 1000);
+  const workTrackers =
+    sortedTrackers.length > batchCap ? sortedTrackers.slice(0, batchCap) : sortedTrackers;
+  if (sortedTrackers.length > batchCap) {
+    console.log(
+      `[MATURITY_BATCH] capped work set ${workTrackers.length}/${sortedTrackers.length} ` +
+      `(mature-first; raise MATURITY_WORKER_BATCH_CAP to process more per tick)`,
+    );
+  }
+
   // ── Step 10 — Data Quality Safety Gate (calibrated 2026-05) ──
   //
   // Spec INSTITUTIONAL §I — market-aware, fallback-tolerant DQ gate.
@@ -805,8 +843,9 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   //   1. q365_data_feed_health — primary signal. recentDq='LOW' is a
   //      hard veto (provider explicitly reported low-quality data).
   //   2. market_data_daily — if feed-health is empty/old, fall through
-  //      to candle freshness. Bars within MATURITY_CANDLE_FRESH_MIN
-  //      (default 6h when market open, 48h when closed) → DQ=OK.
+  //      to daily_tolerant candle freshness (frozen only when >72h).
+  //      Do NOT use a raw 360min open-market wall-clock cap on daily
+  //      bars — that blocked every promotion after ~11:30 IST.
   //   3. Open-by-default — if BOTH probes are empty, the gate ALLOWS
   //      promotion (the prior fail-closed behaviour permanently jammed
   //      promotion on fresh deploys / quiet periods, contrary to spec).
@@ -814,8 +853,8 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   // Operator overrides:
   //   MATURITY_DQ_GATE=disabled        — bypass entirely (NOT recommended)
   //   MATURITY_DQ_FRESH_WINDOW_MIN=10  — feed-health window minutes
-  //   MATURITY_CANDLE_FRESH_MIN=360    — open-market candle freshness cap
-  //   MATURITY_CANDLE_FRESH_CLOSED_MIN=2880 — closed-market cap (48h)
+  //   MATURITY_CANDLE_FRESH_* env vars — logged for diagnostics only;
+  //      promotion uses isDailyCandleWarehousePromotable() (72h frozen).
   if (trackers.length > 0) {
     const dqDecision = await evaluateMaturityDqGate();
     // Spec INSTITUTIONAL §I — six structured log markers for the DQ +
@@ -872,7 +911,7 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   // so [MATURITY_BLOCKERS] reports only this cycle's data.
   _maturityAudit.length = 0;
 
-  for (const t of trackers) {
+  for (const t of workTrackers) {
     try {
       const outcome = await processTracker(t);
       if (outcome === 'promoted')             result.promoted++;

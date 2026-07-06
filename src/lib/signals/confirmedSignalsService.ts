@@ -308,10 +308,24 @@ export async function loadConfirmedSignalsBundle(
   // when IndianAPI was slow; firing them in parallel halves that.
   // The synchronous gating below only reads `enriched` (the snapshot
   // result), so promoting `inProgressEnriched` up here is safe.
-  const [enrichedRaw, inProgressEnriched] = await Promise.all([
-    enrichWithLiveLtp(snapshots as ConfirmedSignalRow[]),
-    enrichWithLiveLtp(inProgress as ConfirmedSignalRow[]),
-  ]);
+  //
+  // PERF-2026-07 — when confirmed snapshots are empty the live route
+  // falls through to loadClosedMarketSignals for the main table. Live
+  // LTP enrichment on 50+ in-progress trackers (5s resolveBatch cap ×
+  // 2) was pure overhead on that path and dominated poll latency.
+  const shouldEnrichLive = snapshots.length > 0;
+  const [enrichedRaw, inProgressEnriched] = shouldEnrichLive
+    ? await Promise.all([
+        enrichWithLiveLtp(snapshots as ConfirmedSignalRow[]),
+        enrichWithLiveLtp(inProgress as ConfirmedSignalRow[]),
+      ])
+    : [snapshots as ConfirmedSignalRow[], inProgress as ConfirmedSignalRow[]];
+  if (!shouldEnrichLive && inProgress.length > 0) {
+    console.log(
+      `[PERF] enrichWithLiveLtp skipped — confirmed_snapshots=0 ` +
+      `in_progress=${inProgress.length} (relaxed/closed loader owns the main table)`,
+    );
+  }
   const enriched: ConfirmedSignalRow[] = enrichedRaw;
   // Market state — drives the freshness cap (6h open / 24h closed).
   const marketIsOpen = getMarketStatus().isOpen;

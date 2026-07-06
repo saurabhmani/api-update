@@ -21,6 +21,7 @@ import {
 
 import {
   classifyCandleFreshness,
+  isDailyCandleWarehousePromotable,
 } from '@/lib/marketData/candleFreshness';
 
 describe('institutionalHealth counters', () => {
@@ -154,5 +155,29 @@ describe('classifyCandleFreshness', () => {
       latest_candle_ms: now - 12_500, market_open: true, now_ms: now,
     });
     expect(r2.candle_age_seconds).toBe(13);
+  });
+});
+
+describe('isDailyCandleWarehousePromotable', () => {
+  const now = 1_700_000_000_000;
+
+  it('market open: 7h-old daily bar is promotable (aging, not frozen)', () => {
+    const { ok, report } = isDailyCandleWarehousePromotable(
+      now - 7 * 3_600_000,
+      { marketOpen: true, nowMs: now },
+    );
+    expect(report.freshness_mode).toBe('daily_tolerant');
+    expect(report.freshness_quality).toBe('aging');
+    expect(report.feed_frozen).toBe(false);
+    expect(ok).toBe(true);
+  });
+
+  it('market open: 80h-old daily bar is not promotable (frozen)', () => {
+    const { ok, report } = isDailyCandleWarehousePromotable(
+      now - 80 * 3_600_000,
+      { marketOpen: true, nowMs: now },
+    );
+    expect(report.feed_frozen).toBe(true);
+    expect(ok).toBe(false);
   });
 });

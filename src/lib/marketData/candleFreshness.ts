@@ -166,6 +166,29 @@ export function classifyCandleFreshness(opts: {
   };
 }
 
+/** Whether `market_data_daily` is fresh enough to permit maturity-tracker
+ *  promotion into confirmed snapshots.
+ *
+ *  Uses `daily_tolerant` bands (6h / 24h / 72h) regardless of market
+ *  hours. Daily bars are stamped once per session — by midday they are
+ *  naturally 6–8h old and must NOT trip the legacy open-market 360min
+ *  wall-clock cap that previously blocked every promotion until after
+ *  15:30 IST when the closed-market 48h cap kicked in.
+ *
+ *  Only `feed_frozen` (>72h for daily) blocks promotion. */
+export function isDailyCandleWarehousePromotable(
+  latestCandleMs: number | null,
+  opts: { marketOpen?: boolean; nowMs?: number } = {},
+): { ok: boolean; report: CandleFreshnessReport } {
+  const report = classifyCandleFreshness({
+    latest_candle_ms: latestCandleMs,
+    market_open:      opts.marketOpen ?? true,
+    now_ms:           opts.nowMs,
+    candle_source:    'daily',
+  });
+  return { ok: !report.feed_frozen, report };
+}
+
 /** Emit [CANDLE_FRESHNESS] + [CANDLE_SOURCE] + [FRESHNESS_MODE]
  *  + side-channel logs based on the report.
  *  - Always emits [CANDLE_FRESHNESS] (one line per check) with the
