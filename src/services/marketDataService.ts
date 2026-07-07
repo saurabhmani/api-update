@@ -75,11 +75,15 @@ export interface OptionChainSnapshot {
     ce_iv:          number;
     ce_ltp:         number;
     ce_volume:      number;
+    ce_bid:         number;
+    ce_ask:         number;
     pe_oi:          number;
     pe_change_oi:   number;
     pe_iv:          number;
     pe_ltp:         number;
     pe_volume:      number;
+    pe_bid:         number;
+    pe_ask:         number;
   }>;
   timestamp: number;
   source:    'live' | 'synthetic' | 'yahoo' | 'unknown'; // @deprecated marker
@@ -527,7 +531,7 @@ export async function getOptionChainSnapshot(
     if (!chain) return null;
 
     const snap: OptionChainSnapshot = {
-      symbol:           sym,
+      symbol:           chain.symbol ?? sym,
       underlying_value: chain.underlyingValue,
       expiry_dates:     chain.expiryDates,
       records:          chain.records.map(row => ({
@@ -538,11 +542,15 @@ export async function getOptionChainSnapshot(
         ce_iv:         row.CE?.impliedVolatility    ?? 0,
         ce_ltp:        row.CE?.lastPrice            ?? 0,
         ce_volume:     row.CE?.totalTradedVolume    ?? 0,
+        ce_bid:        row.CE?.bidprice             ?? 0,
+        ce_ask:        row.CE?.askPrice             ?? 0,
         pe_oi:         row.PE?.openInterest         ?? 0,
         pe_change_oi:  row.PE?.changeinOpenInterest ?? 0,
         pe_iv:         row.PE?.impliedVolatility    ?? 0,
         pe_ltp:        row.PE?.lastPrice            ?? 0,
         pe_volume:     row.PE?.totalTradedVolume    ?? 0,
+        pe_bid:        row.PE?.bidprice             ?? 0,
+        pe_ask:        row.PE?.askPrice             ?? 0,
       })),
       timestamp: Date.now(),
       source:    (chain.source ?? 'live') as 'live' | 'synthetic' | 'yahoo' | 'unknown', // @deprecated marker

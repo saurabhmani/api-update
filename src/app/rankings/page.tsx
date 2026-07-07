@@ -28,7 +28,7 @@ import { fmt, changeClass } from '@/lib/utils';
 // ─── Types ────────────────────────────────────────────────────────
 
 type MarketMode = 'live' | 'pre_open' | 'post_close' | 'holiday' | 'weekend' | 'market_closed';
-type DataSource = 'live_feed' | 'cached_rankings' | 'last_rankings_db' | 'eod_snapshot';
+type DataSource = 'live_feed' | 'cached_rankings' | 'last_rankings_db' | 'last_close_cache' | 'eod_snapshot' | 'unavailable';
 
 interface RankingRow {
   symbol?:              string;
@@ -49,6 +49,7 @@ interface RankingRow {
   risk_score?:          number | null;
   data_source?:         string | null;
   signal_age_min?:      number | null;
+  rankings_updated_at?: string | null;
 }
 
 interface RankingsApiResponse {
@@ -66,6 +67,8 @@ interface RankingsApiResponse {
   data_source?:    DataSource;
   sorted_by?:      string;
   as_of?:          string;
+  message?:        string | null;
+  rankings_max_updated_at?: string | null;
   error?:          string;
 }
 
@@ -170,9 +173,36 @@ const dataSourceLabel = (s: DataSource | undefined): string => {
     case 'live_feed':        return 'Live feed';
     case 'cached_rankings':  return 'Cached rankings';
     case 'last_rankings_db': return 'Last rankings (DB)';
+    case 'last_close_cache': return 'Last close (cached)';
     case 'eod_snapshot':     return 'EOD snapshot';
+    case 'unavailable':      return 'Unavailable';
     default:                 return '—';
   }
+};
+
+/** Relative age for rankings row sync timestamp (not signal age). */
+const fmtSyncAge = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '—';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  return fmt.datetime(iso);
+};
+
+const isRankingsDataStale = (
+  iso: string | null | undefined,
+  mode: MarketMode | undefined,
+): boolean => {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return false;
+  const ageH = (Date.now() - d.getTime()) / 3_600_000;
+  const thresholdH = mode === 'live' ? 4 : 24;
+  return ageH > thresholdH;
 };
 
 const signalBadge = (sig: string | null | undefined) => {
@@ -247,7 +277,7 @@ export default function RankingsPage() {
 
   const load = useCallback(async () => {
     try {
-      const d = await rankingsApi.get(100) as RankingsApiResponse;
+      const d = await rankingsApi.get(500) as RankingsApiResponse;
       setResp(d);
       setError(null);
     } catch (e: any) {
@@ -302,6 +332,7 @@ export default function RankingsPage() {
   const mode      = resp?.mode;
   const badge     = modeBadge(mode);
   const isClosed  = mode != null && mode !== 'live';
+  const rankingsStale = isRankingsDataStale(resp?.rankings_max_updated_at, mode);
   const ltpLabel  = isClosed ? 'Last Close LTP' : 'LTP';
   const pctLabel  = isClosed ? 'Last Close Change %' : 'Change %';
   const tableTitle = isClosed
@@ -337,9 +368,19 @@ export default function RankingsPage() {
             <p style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               {tableTitle}
               {resp?.as_of && <span style={{ color: '#94A3B8', fontSize: 12 }}>· as of {fmt.datetime(resp.as_of)}</span>}
+              {resp?.rankings_max_updated_at && (
+                <span style={{ color: rankingsStale ? '#B45309' : '#94A3B8', fontSize: 12 }}>
+                  · rankings synced {fmtSyncAge(resp.rankings_max_updated_at)}
+                </span>
+              )}
               {resp?.sorted_by && (
                 <span title={resp.sorted_by} style={{ color: '#94A3B8', fontSize: 11 }}>
                   · order: {resp.sorted_by.split(',')[0]}…
+                </span>
+              )}
+              {resp?.total != null && (
+                <span style={{ color: '#64748B', fontSize: 12 }}>
+                  · {rows.length} shown of {resp.total} ranked
                 </span>
               )}
             </p>
@@ -408,6 +449,26 @@ export default function RankingsPage() {
           </div>
         )}
 
+        {/* ── Stale rankings sync banner ─────────────────────────── */}
+        {rankingsStale && rows.length > 0 && (
+          <div style={{
+            background: '#FFF7ED', borderRadius: 10, padding: '12px 18px',
+            marginBottom: 18, border: '1px solid #FDBA74',
+            display: 'flex', alignItems: 'flex-start', gap: 12,
+          }}>
+            <AlertTriangle size={20} color="#C2410C" style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ flex: 1, fontSize: 12, color: '#9A3412' }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
+                Rankings data may be outdated
+              </div>
+              Last sync was {fmtSyncAge(resp?.rankings_max_updated_at)} (
+              {resp?.rankings_max_updated_at ? fmt.datetime(resp.rankings_max_updated_at) : 'unknown'}
+              ). During market hours the page auto-refreshes rankings older than 4 hours.
+              Use Admin → Data Management → Sync Rankings to force an update now.
+            </div>
+          </div>
+        )}
+
         {/* ── Body ───────────────────────────────────────────────── */}
         {loading && !resp ? (
           <Card flush><Loading /></Card>
@@ -417,6 +478,14 @@ export default function RankingsPage() {
               icon={ShieldAlert}
               title="Couldn't load rankings"
               description={error}
+            />
+          </Card>
+        ) : resp?.data_source === 'unavailable' || (rows.length === 0 && resp?.message) ? (
+          <Card flush>
+            <Empty
+              icon={TrendingUp}
+              title="No rankings data"
+              description={resp?.message ?? 'Go to Admin → Data Management and trigger a rankings sync.'}
             />
           </Card>
         ) : rows.length === 0 ? (
@@ -603,7 +672,8 @@ function Section({ title, subtitle, variant, rows, ltpLabel, pctLabel, startInde
               const ltp  = safeNum(r.ltp);
               const pct  = safeNum(r.pct_change);
               const vol  = safeNum(r.volume);
-              const age  = safeNum(r.signal_age_min);
+              const syncTs = r.rankings_updated_at ?? null;
+              const signalAge = safeNum(r.signal_age_min);
               return (
                 <tr key={`${sym}-${i}`}>
                   <td style={{ fontWeight: 700, color: '#94A3B8' }}>{startIndex + i}</td>
@@ -644,8 +714,11 @@ function Section({ title, subtitle, variant, rows, ltpLabel, pctLabel, startInde
                   </td>
                   <td style={{ textAlign: 'right' }}>{vol != null && vol > 0 ? fmt.volume(vol) : '—'}</td>
                   <td style={{ fontSize: 11, color: '#64748B' }}>{r.data_source || '—'}</td>
-                  <td style={{ fontSize: 11, color: '#64748B' }}>
-                    {age != null ? `${age}m ago` : '—'}
+                  <td
+                    style={{ fontSize: 11, color: '#64748B' }}
+                    title={signalAge != null ? `Signal age: ${signalAge}m` : undefined}
+                  >
+                    {fmtSyncAge(syncTs)}
                   </td>
                 </tr>
               );

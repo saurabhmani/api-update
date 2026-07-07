@@ -2,7 +2,13 @@
 
 export type SubscriptionPlan = 'free' | 'pro' | 'premium' | 'enterprise';
 export type SubscriptionStatus = 'active' | 'trialing' | 'past_due' | 'cancelled' | 'expired';
-export type CreditType = 'ai_builder' | 'backtests' | 'research_reports' | 'premium_signals';
+export type CreditType =
+  | 'ai_builder'
+  | 'backtests'
+  | 'research_reports'
+  | 'premium_signals'
+  | 'strategy_validation'
+  | 'market_scanner';
 export type InvoiceStatus = 'draft' | 'open' | 'paid' | 'void' | 'overdue';
 
 export interface PlanConfig {

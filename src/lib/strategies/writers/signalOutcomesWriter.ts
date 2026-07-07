@@ -132,13 +132,18 @@ export async function backfillSignalOutcomes(opts: { sinceIso?: string | null } 
 
       const upsert: any = await db.query(
         `INSERT INTO q365_signal_outcomes
-          (source_snapshot_id, symbol, strategy, direction, sector, regime,
+          (signal_id, source_snapshot_id, symbol, strategy, direction, sector, regime,
            confidence_score, outcome, return_pct, return_r,
            target_hit, stop_hit, invalidated,
            mfe_pct, mae_pct, holding_period_bars,
            approval_status, evaluated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
          ON DUPLICATE KEY UPDATE
+           source_snapshot_id = VALUES(source_snapshot_id),
+           symbol            = VALUES(symbol),
+           strategy          = VALUES(strategy),
+           direction         = VALUES(direction),
+           sector            = VALUES(sector),
            outcome           = VALUES(outcome),
            return_pct        = VALUES(return_pct),
            return_r          = VALUES(return_r),
@@ -148,7 +153,7 @@ export async function backfillSignalOutcomes(opts: { sinceIso?: string | null } 
            approval_status   = VALUES(approval_status),
            evaluated_at      = VALUES(evaluated_at)`,
         [
-          r.id ?? null, String(r.symbol ?? ''), String(r.strategy ?? 'unclassified'), dir,
+          r.id ?? null, r.id ?? null, String(r.symbol ?? ''), String(r.strategy ?? 'unclassified'), dir,
           sector, num(r.confidence_score), outcome, returnPct, returnR,
           targetHit, stopHit, invalidated, approvalStatus, evaluatedAt,
         ],

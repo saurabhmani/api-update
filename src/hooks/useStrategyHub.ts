@@ -8,6 +8,11 @@ export interface HubFilters {
   featuredOnly?: boolean;
   paperReadyOnly?: boolean;
   window?: string;
+  timeframe?: string | null;
+  direction?: string | null;
+  marketType?: string | null;
+  status?: string | null;
+  risk?: string | null;
 }
 
 function buildQuery(filters: HubFilters): string {
@@ -15,6 +20,11 @@ function buildQuery(filters: HubFilters): string {
   if (filters.category) params.set('category', filters.category);
   if (filters.featuredOnly) params.set('featured', '1');
   if (filters.paperReadyOnly) params.set('paperReady', '1');
+  if (filters.timeframe) params.set('timeframe', filters.timeframe);
+  if (filters.direction) params.set('direction', filters.direction);
+  if (filters.marketType) params.set('marketType', filters.marketType);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.risk) params.set('risk', filters.risk);
   params.set('window', filters.window ?? '90D');
   return params.toString();
 }

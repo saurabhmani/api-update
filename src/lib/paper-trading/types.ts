@@ -19,6 +19,7 @@ export interface PaperRiskConfig {
   riskPerTradePct: number;
   maxDailyLossPct: number;
   maxOpenPositions: number;
+  maxTradesPerDay: number;
   maxConsecutiveLosses: number;
   maxSymbolExposurePct: number;
   maxStrategyExposurePct: number;
@@ -194,6 +195,7 @@ export const DEFAULT_PAPER_RISK: PaperRiskConfig = {
   riskPerTradePct: Number(process.env.PAPER_RISK_PER_TRADE_PCT ?? 0.5),
   maxDailyLossPct: Number(process.env.PAPER_MAX_DAILY_LOSS_PCT ?? 2),
   maxOpenPositions: Number(process.env.PAPER_MAX_OPEN_POSITIONS ?? 5),
+  maxTradesPerDay: Number(process.env.PAPER_MAX_TRADES_PER_DAY ?? 20),
   maxConsecutiveLosses: Number(process.env.PAPER_MAX_CONSECUTIVE_LOSSES ?? 3),
   maxSymbolExposurePct: Number(process.env.PAPER_MAX_SYMBOL_EXPOSURE_PCT ?? 15),
   maxStrategyExposurePct: Number(process.env.PAPER_MAX_STRATEGY_EXPOSURE_PCT ?? 25),

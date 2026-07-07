@@ -24,6 +24,11 @@ export interface HubListOptions {
   featuredOnly?: boolean;
   paperReadyOnly?: boolean;
   window?: PerformanceWindow;
+  timeframe?: string | null;
+  direction?: string | null;
+  marketType?: string | null;
+  status?: string | null;
+  risk?: string | null;
 }
 
 export async function loadStrategyHub(options: HubListOptions = {}): Promise<StrategyHubListResponse> {
@@ -36,9 +41,31 @@ export async function loadStrategyHub(options: HubListOptions = {}): Promise<Str
     strategies = strategies.filter((s) => s.paperTradingReady);
   }
   strategies = filterByCategory(strategies, options.category ?? null);
+  if (options.timeframe) {
+    strategies = strategies.filter((s) => {
+      const requested = options.timeframe?.toLowerCase();
+      if (requested === 'positional') return s.timeframe.toLowerCase() === 'swing';
+      return s.timeframe.toLowerCase() === requested;
+    });
+  }
+  if (options.direction) {
+    strategies = strategies.filter((s) => s.direction === options.direction);
+  }
+  if (options.marketType) {
+    strategies = strategies.filter((s) => s.marketType.toLowerCase() === options.marketType?.toLowerCase());
+  }
+  if (options.status && options.status.toLowerCase() !== 'backtested') {
+    strategies = strategies.filter((s) => s.cardStatus.toLowerCase() === options.status?.toLowerCase());
+  }
+  if (options.risk) {
+    strategies = strategies.filter((s) => s.riskProfile === options.risk);
+  }
 
   const window = options.window ?? '90D';
   strategies = await attachMetricsToSummaries(strategies, window);
+  if (options.status?.toLowerCase() === 'backtested') {
+    strategies = strategies.filter((s) => s.cardStatus === 'Backtested');
+  }
 
   const allForCounts = await listStrategiesFromRegistry();
   const categoryCounts: Partial<Record<string, number>> = {};

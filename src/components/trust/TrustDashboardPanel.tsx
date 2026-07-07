@@ -27,10 +27,10 @@ export function TrustDashboardPanel() {
         <StatCard label="Running Strategies" value={data.runningStrategies} icon={Activity} iconVariant="green" />
         <StatCard
           label="Today's P&L"
-          value={fmt.currency(data.todayPnl)}
-          change={data.todayPnlPct}
+          value={data.hasPortfolio ? fmt.currency(data.todayPnl) : 'N/A'}
+          change={data.hasPortfolio ? data.todayPnlPct : undefined}
           icon={Wallet}
-          iconVariant={data.todayPnl >= 0 ? 'green' : 'red'}
+          iconVariant={data.hasPortfolio ? (data.todayPnl >= 0 ? 'green' : 'red') : 'blue'}
         />
         <StatCard
           label="Win Rate (90D)"
@@ -40,9 +40,14 @@ export function TrustDashboardPanel() {
         />
         <StatCard
           label="Risk Exposure"
-          value={`${data.riskExposure}`}
+          value={data.hasPortfolio ? `${data.riskExposure}` : 'N/A'}
           icon={Shield}
-          iconVariant={data.riskSeverity === 'critical' ? 'red' : data.riskSeverity === 'warning' ? 'orange' : 'blue'}
+          iconVariant={
+            !data.hasPortfolio ? 'blue' :
+            data.riskSeverity === 'critical' ? 'red' :
+            data.riskSeverity === 'warning' ? 'orange' :
+            'blue'
+          }
         />
         <StatCard
           label="Market Regime"

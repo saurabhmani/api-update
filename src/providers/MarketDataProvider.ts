@@ -446,6 +446,12 @@ export async function getMovers(opts: GetOptions = {}): Promise<ProviderResponse
       trail.push({ source: 'cache', ok: true });
       return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
     }
+    const redisCached = await redisCacheGet<MoversResult>(key);
+    if (redisCached) {
+      await cache.set(key, redisCached, MOVERS_TTL_S);
+      trail.push({ source: 'cache', ok: true });
+      return rejectIfStale(wrap(redisCached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
+    }
   }
 
   const primary = await tryStep('indian', trail, () =>

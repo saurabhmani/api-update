@@ -21,11 +21,28 @@ export async function GET(req: NextRequest) {
     const intel = await analyzeOptionChain(symbol, expiryIndex);
     if (!intel) {
       return NextResponse.json({
+        ok: false,
         intelligence: null,
         error: 'Option chain data unavailable for this symbol',
       });
     }
-    return NextResponse.json({ intelligence: intel });
+    return NextResponse.json(
+      {
+        ok: true,
+        intelligence: intel,
+        symbol: intel.symbol,
+        requested_symbol: intel.requestedSymbol,
+        expiry_dates: intel.expiryDates,
+        selected_expiry: intel.expiryDate,
+        underlying_value: intel.underlyingValue,
+        source: intel.dataSource,
+        metrics: intel.metrics,
+        records: intel.chain,
+        signals: intel.optionSignals,
+        generated_at: intel.generatedAt,
+      },
+      { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+    );
   } catch (err) {
     const e = err instanceof Error ? err : new Error(String(err));
     console.error('[MODULE_API_FAIL]', {
@@ -37,6 +54,7 @@ export async function GET(req: NextRequest) {
       stack:   e.stack?.split('\n').slice(0, 6).join('\n'),
     });
     return NextResponse.json({
+      ok: false,
       intelligence: null,
       degraded:     true,
       error:        'Option intelligence degraded',

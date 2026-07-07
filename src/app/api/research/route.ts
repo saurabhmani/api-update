@@ -18,7 +18,8 @@ export const GET = withApiHandler(async (req: NextRequest) => {
   const action = req.nextUrl.searchParams.get('action');
 
   if (action === 'market') {
-    return { sections: await explainMarketConditions() };
+    const sections = await explainMarketConditions();
+    return { sections };
   }
   if (action === 'signal') {
     const symbol = req.nextUrl.searchParams.get('symbol');

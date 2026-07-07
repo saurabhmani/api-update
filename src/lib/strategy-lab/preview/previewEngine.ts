@@ -29,6 +29,12 @@ export function previewStrategy(def: StrategyDefinition): StrategyPreviewResult 
   if (def.direction === 'short') {
     warnings.push('Short strategies require bearish regime alignment in live engine.');
   }
+  if (def.market === 'options') {
+    warnings.push('Options strategy authoring is supported; backtest execution currently uses equity/EOD data.');
+  }
+  if (def.timeframe === 'intraday') {
+    warnings.push('Intraday authoring is supported; backtest execution currently uses EOD candles.');
+  }
 
   const entryDescription = describeGroup(def.entry);
   const exitDescription = describeGroup(def.exit);
@@ -45,13 +51,15 @@ export function previewStrategy(def: StrategyDefinition): StrategyPreviewResult 
   );
 
   const riskDescription = `${def.risk.riskPerTradePct}% risk/trade, max ${def.risk.maxOpenPositions} positions, ${def.risk.maxGrossExposurePct}% gross exposure`;
+  const universe = def.symbolUniverse?.join(', ') || 'NIFTY 500';
+  const regimes = def.marketRegimeFilter?.length ? def.marketRegimeFilter.join(', ') : 'No regime filter';
 
   const freq = def.entry.conditions.length <= 2 ? 'Moderate (3–8/month est.)'
     : def.entry.conditions.length <= 4 ? 'Low (1–4/month est.)'
     : 'Very low (<2/month est.)';
 
   return {
-    summary: `${def.direction.toUpperCase()} ${def.timeframe} strategy "${def.name}" with ${def.entry.conditions.length} entry and ${def.exit.conditions.length} exit rules.`,
+    summary: `${def.direction.toUpperCase()} ${def.market.toUpperCase()} ${def.timeframe} strategy "${def.name}" for ${universe}. Regime gate: ${regimes}.`,
     entryDescription,
     exitDescription,
     stopLossDescription,

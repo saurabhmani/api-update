@@ -41,18 +41,35 @@ import { resolve as resolvePath } from 'node:path';
 
 const log = logger.child({ component: 'nifty500Universe' });
 
-/** Lower bound — NSE1000 default (950); NIFTY500 legacy mode uses 480. */
-export function getUniverseMinSize(): number {
-  const raw = Number(process.env.UNIVERSE_MIN_SIZE);
+function resolveUniverseTargetSize(): number {
+  const raw = Number(process.env.UNIVERSE_TARGET_SIZE);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return resolveUniverseMode() === 'NIFTY500' ? 480 : 950;
+  return 1000;
 }
 
-/** Upper bound — NSE1000 default (1050); NIFTY500 legacy mode uses 550. */
+function allowNse1000BandOverride(): boolean {
+  const raw = String(process.env.UNIVERSE_ALLOW_BAND ?? 'false').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
+}
+
+/** Lower bound — NSE1000 default is exact target (1000); NIFTY500 legacy mode uses 480. */
+export function getUniverseMinSize(): number {
+  if (resolveUniverseMode() !== 'NIFTY500' && !allowNse1000BandOverride()) {
+    return resolveUniverseTargetSize();
+  }
+  const raw = Number(process.env.UNIVERSE_MIN_SIZE);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return resolveUniverseMode() === 'NIFTY500' ? 480 : resolveUniverseTargetSize();
+}
+
+/** Upper bound — NSE1000 default is exact target (1000); NIFTY500 legacy mode uses 550. */
 export function getUniverseMaxSize(): number {
+  if (resolveUniverseMode() !== 'NIFTY500' && !allowNse1000BandOverride()) {
+    return resolveUniverseTargetSize();
+  }
   const raw = Number(process.env.UNIVERSE_MAX_SIZE);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return resolveUniverseMode() === 'NIFTY500' ? 550 : 1050;
+  return resolveUniverseMode() === 'NIFTY500' ? 550 : resolveUniverseTargetSize();
 }
 
 function resolveUniverseMode(): 'NIFTY500' | 'NSE1000' {

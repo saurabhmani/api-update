@@ -19,13 +19,30 @@ interface ComparisonResult {
   winner: { byReturn: string | null; bySharpe: string | null; byDrawdown: string | null };
 }
 
+async function readCompareJson(res: Response) {
+  const text = await res.text();
+  if (!text.trim()) {
+    throw new Error(`Compare API returned an empty response (status ${res.status})`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Compare API returned invalid JSON (status ${res.status})`);
+  }
+}
+
+function isCompleted(status: string): boolean {
+  const normalized = status.toLowerCase();
+  return normalized === 'completed' || normalized === 'success' || normalized === 'partial_success';
+}
+
 export function BacktestComparePanel({ runs }: Props) {
   const [selected, setSelected] = useState<string[]>([]);
   const [data, setData] = useState<ComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const completed = runs.filter((r) => r.status === 'completed');
+  const completed = runs.filter((r) => isCompleted(r.status));
 
   const toggle = (id: string) => {
     setSelected((prev) =>
@@ -38,8 +55,8 @@ export function BacktestComparePanel({ runs }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/backtest/compare?ids=${selected.join(',')}`, { cache: 'no-store' });
-      const body = await res.json();
+      const res = await fetch(`/api/backtests/compare?ids=${selected.join(',')}`, { cache: 'no-store' });
+      const body = await readCompareJson(res);
       if (!res.ok || !body.ok) throw new Error(body.error ?? 'Compare failed');
       setData(body);
     } catch (err) {

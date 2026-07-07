@@ -2,7 +2,8 @@
 //  Strategy Lab — wire types
 // ════════════════════════════════════════════════════════════════
 
-export type LabTimeframe = 'daily' | 'swing';
+export type LabMarket = 'equity' | 'options';
+export type LabTimeframe = 'intraday' | 'swing' | 'positional' | 'daily';
 export type LabDirection = 'long' | 'short';
 export type LabSource = 'no_code' | 'ai' | 'import';
 export type LabStatus = 'draft' | 'validated' | 'backtested' | 'paper_ready' | 'deployed' | 'rejected';
@@ -17,6 +18,7 @@ export type SupportedIndicator =
   | 'volume_expansion'
   | 'close_vs_ema20'
   | 'close_vs_ema50'
+  | 'fib_pullback_zone'
   | 'atr_pct'
   | 'regime_bullish'
   | 'price_above_ema20';
@@ -58,8 +60,11 @@ export interface StrategyDefinition {
   id?: string;
   name: string;
   description?: string;
+  market: LabMarket;
+  symbolUniverse: string[];
   timeframe: LabTimeframe;
   direction: LabDirection;
+  marketRegimeFilter: string[];
   source: LabSource;
   entry: ConditionGroup;
   exit: ConditionGroup;

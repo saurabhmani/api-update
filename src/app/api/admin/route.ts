@@ -26,6 +26,9 @@ import { invalidateConfig,
 import { computeScenario }              from '@/services/scenarioEngine';
 import { computeMarketStance }          from '@/services/marketStanceEngine';
 import { createUserByAdmin, updateUserByAdmin, deleteUserByAdmin } from '@/services/auth';
+import { importActiveEqSecuritiesFromCsv } from '@/lib/marketData/securitiesMaster';
+import { runCandleBackfillJob } from '@/lib/marketData/candleBackfillJob';
+import { runWeeklyNse1000UniverseRebuild } from '@/lib/marketData/weeklyNse1000UniverseRebuild';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
@@ -97,17 +100,31 @@ export async function GET(req: NextRequest) {
       }
     };
     try {
-      const [totalUsers, activeUsers, signalRows, instrumentRows] = await Promise.all([
+      const [
+        totalUsers,
+        activeUsers,
+        signalRows,
+        instrumentRows,
+        rankingRows,
+        universeRows,
+        securitiesRows,
+      ] = await Promise.all([
         safeCount(`SELECT COUNT(*) AS c FROM users`),
         safeCount(`SELECT COUNT(*) AS c FROM users WHERE is_active = 1`),
         safeCount(`SELECT COUNT(*) AS c FROM q365_signals`),
         safeCount(`SELECT COUNT(*) AS c FROM instruments`),
+        safeCount(`SELECT COUNT(*) AS c FROM rankings`),
+        safeCount(`SELECT COUNT(*) AS c FROM q365_universe WHERE is_active = 1`),
+        safeCount(`SELECT COUNT(*) AS c FROM securities_master WHERE is_active = 1 AND series = 'EQ'`),
       ]);
       return NextResponse.json({
         total_users:       totalUsers,
         active_users:      activeUsers,
         total_signals:     signalRows,
         total_instruments: instrumentRows,
+        total_rankings:    rankingRows,
+        total_universe:    universeRows,
+        total_securities_eq: securitiesRows,
       });
     } catch {
       return NextResponse.json({ total_users: 0, active_users: 0 });
@@ -281,6 +298,9 @@ export async function POST(req: NextRequest) {
     'instruments-nse': 'sync_instruments_nse',
     'instruments-bse': 'sync_instruments_bse',
     'instruments-fo':  'sync_instruments_fo',
+    'securities-master': 'load_securities_master',
+    'securities-candles': 'backfill_securities_candles',
+    'nse1000-universe': 'rebuild_nse1000_universe',
   };
   const action = ACTION_ALIASES[rawAction] ?? rawAction;
 
@@ -298,17 +318,87 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ...r });
   }
 
+  // ── NSE1000 master / universe pipeline ────────────────────────
+  if (action === 'load_securities_master') {
+    try {
+      const r = await importActiveEqSecuritiesFromCsv({
+        csvPath: typeof body.csvPath === 'string' ? body.csvPath : undefined,
+        dryRun: body.dryRun === true,
+      });
+      return NextResponse.json({
+        ok: true,
+        message: `Loaded ${r.total} active EQ securities from EQUITY_L.csv.`,
+        ...r,
+      });
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+    }
+  }
+
+  if (action === 'backfill_securities_candles') {
+    try {
+      const r = await runCandleBackfillJob({
+        symbolSource: 'securities_master',
+        universeLimit: Number.isFinite(Number(body.limit)) ? Number(body.limit) : undefined,
+        maxFetch: Number.isFinite(Number(body.maxFetch)) ? Number(body.maxFetch) : undefined,
+        resume: body.resume !== false,
+        dryRun: body.dryRun === true,
+      });
+      return NextResponse.json({
+        ok: true,
+        message:
+          `Securities-master candle backfill: fetched=${r.fetched}, ` +
+          `already_sufficient=${r.alreadySufficient}, failed=${r.failed}, ` +
+          `deferred=${r.deferredDueToBudget}.`,
+        ...r,
+      });
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+    }
+  }
+
+  if (action === 'rebuild_nse1000_universe') {
+    try {
+      const r = await runWeeklyNse1000UniverseRebuild({
+        targetSize: Number.isFinite(Number(body.targetSize)) ? Number(body.targetSize) : 1000,
+        dryRun: body.dryRun === true,
+        skipBackfill: body.skipBackfill === true,
+        maxFetch: Number.isFinite(Number(body.maxFetch)) ? Number(body.maxFetch) : undefined,
+        useChurnControl: body.useChurnControl !== false,
+        triggerSource: 'admin:nse1000-universe',
+      });
+      return NextResponse.json({
+        ok: r.ok,
+        message:
+          `NSE1000 universe rebuild ${r.ok ? 'complete' : 'completed with blockers'}: ` +
+          `${r.apply?.totalActive ?? r.churn?.selected.length ?? r.universe?.selected.length ?? 0}/` +
+          `${r.targetSize} active symbols.`,
+        ...r,
+      }, { status: r.ok ? 200 : 409 });
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+    }
+  }
+
   // ── Rankings sync ─────────────────────────────────────────────
   if (action === 'sync_rankings') {
     try {
-      // Step 1: populate rankings table from live movers
       const r = await syncRankingsFromNse();
-      // Step 2: if rankings were inserted, also prime the Redis cache
+      let dbCount = 0;
+      try {
+        const { rows } = await db.query<{ c: number }>(`SELECT COUNT(*) AS c FROM rankings`);
+        dbCount = Number(rows[0]?.c ?? 0);
+      } catch { /* non-fatal */ }
       if (r.inserted > 0) {
         const { refreshMarketUniverse } = await import('@/services/dataAggregator');
-        refreshMarketUniverse().catch(() => {}); // non-blocking
+        refreshMarketUniverse().catch(() => {});
       }
-      return NextResponse.json({ ok: true, message: r.message });
+      return NextResponse.json({
+        ok: true,
+        message: r.message,
+        inserted: r.inserted,
+        db_count: dbCount,
+      });
     } catch (e: any) {
       return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
     }

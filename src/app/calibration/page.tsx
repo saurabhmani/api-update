@@ -4,7 +4,7 @@ import AppShell from '@/components/layout/AppShell';
 import { Card, Loading } from '@/components/ui';
 import { BarChart3, RefreshCw, Target, Activity, Newspaper, Zap, Clock, TrendingUp, Shield, Brain, AlertTriangle } from 'lucide-react';
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
   LineChart, Line, ReferenceLine, Legend,
 } from 'recharts';
 import s from './calibration.module.scss';
@@ -24,29 +24,24 @@ interface CalibData {
     performance:   'snapshot' | 'live_outcomes' | 'proxy_from_signals' | 'none';
   };
   marketRegime: { label: string; confidence: number; volatilityState: string };
+  strategyParameters?: any[];
+  confidenceWeights?: any[];
+  optimizationSummary?: any[];
+  suggestedImprovements?: any[];
+  dataQuality?: {
+    source: 'normalized_outcomes' | 'learning_snapshots' | 'insufficient_data';
+    lookbackDays: number;
+    performanceWindow: string;
+    normalizedRows: number;
+    evaluatedRows: number;
+    directRows: number;
+    observedRows: number;
+    backtestRows: number;
+  };
 }
 
-// ── Demo data for empty state ───────────────────────────────
-const DEMO_STRATEGY: any[] = [
-  { strategy_name: 'bullish_breakout', regime: 'Bullish', sample_size: 34, win_rate: 0.62, avg_pnl_r: 0.45, avg_mfe: 4.2, avg_mae: 1.8, environment_fit: 'excellent' },
-  { strategy_name: 'momentum_continuation', regime: 'Bullish', sample_size: 28, win_rate: 0.58, avg_pnl_r: 0.32, avg_mfe: 3.5, avg_mae: 2.1, environment_fit: 'good' },
-  { strategy_name: 'mean_reversion_bounce', regime: 'Sideways', sample_size: 22, win_rate: 0.54, avg_pnl_r: 0.18, avg_mfe: 2.8, avg_mae: 2.4, environment_fit: 'moderate' },
-  { strategy_name: 'bullish_pullback', regime: 'Bullish', sample_size: 19, win_rate: 0.47, avg_pnl_r: -0.05, avg_mfe: 2.1, avg_mae: 2.9, environment_fit: 'moderate' },
-  { strategy_name: 'bearish_breakdown', regime: 'Bearish', sample_size: 12, win_rate: 0.42, avg_pnl_r: -0.12, avg_mfe: 1.9, avg_mae: 3.2, environment_fit: 'poor' },
-];
-const DEMO_CALIB: any[] = [
-  { bucket: '85_100', sample_size: 8, target1_hit_rate: 0.75, avg_mfe: 5.1, calibration_state: 'well_calibrated' },
-  { bucket: '70_84', sample_size: 18, target1_hit_rate: 0.61, avg_mfe: 3.8, calibration_state: 'slightly_overconfident' },
-  { bucket: '55_69', sample_size: 24, target1_hit_rate: 0.50, avg_mfe: 2.5, calibration_state: 'well_calibrated' },
-  { bucket: '0_54', sample_size: 15, target1_hit_rate: 0.33, avg_mfe: 1.2, calibration_state: 'overconfident' },
-];
-const DEMO_DIST: any[] = [
-  { bucket: 'Loss > -5%', count: 5 }, { bucket: 'Loss -5% to -1%', count: 12 },
-  { bucket: 'Flat -1% to +1%', count: 18 }, { bucket: 'Gain +1% to +5%', count: 22 },
-  { bucket: 'Gain > +5%', count: 8 },
-];
-const DEMO_KPI = { activeSignals: 12, strategyWinRate: 0.58, avgReturnPct: 3.2, riskLevel: 'Medium' };
-const DEMO_REGIME = { label: 'Bullish', confidence: 72, volatilityState: 'Normal' };
+const EMPTY_KPI = { activeSignals: 0, strategyWinRate: 0, avgReturnPct: 0, riskLevel: 'Low' };
+const EMPTY_REGIME = { label: 'Sideways', confidence: 0, volatilityState: 'Normal' };
 
 function calibClass(state: string): string {
   if (state?.includes('well')) return s.well;
@@ -70,6 +65,7 @@ function wrColor(wr: number): string {
 }
 
 function pct(v: number): string { return (v * 100).toFixed(1) + '%'; }
+function pctPoints(v: number): string { return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`; }
 
 export default function CalibrationPage() {
   const [data, setData] = useState<CalibData | null>(null);
@@ -109,11 +105,12 @@ export default function CalibrationPage() {
 
   if (loading) return <AppShell><Loading text="Loading calibration data..." /></AppShell>;
 
-  // ── Determine if using demo data ──────────────────────────
-  const isDemo = !data || (data as any).error;
-  const kpi = data?.kpiMetrics ?? DEMO_KPI;
+  const hasRealCalibrationData = (data?.dataQuality?.evaluatedRows ?? 0) > 0
+    || (data?.strategyPerformance?.length ?? 0) > 0
+    || (data?.confidenceCalibration?.length ?? 0) > 0;
+  const kpi = data?.kpiMetrics ?? EMPTY_KPI;
   const kpiSource = data?.kpiSource;
-  const regime = data?.marketRegime ?? DEMO_REGIME;
+  const regime = data?.marketRegime ?? EMPTY_REGIME;
 
   // Human-readable sublabels that reflect where each KPI came from,
   // so "Win Rate 42%" with no graded outcomes doesn't look identical
@@ -127,18 +124,22 @@ export default function CalibrationPage() {
     : kpiSource?.performance === 'proxy_from_signals' ? 'Engine estimate (awaiting outcomes)'
     : 'Awaiting first graded outcome';
   const returnSub =
-    kpiSource?.performance === 'snapshot'           ? 'Average pnlR × 100'
-    : kpiSource?.performance === 'live_outcomes'    ? 'Live pnlR × 100'
+    kpiSource?.performance === 'snapshot'           ? 'Snapshot-derived average return'
+    : kpiSource?.performance === 'live_outcomes'    ? 'Live realized return'
     : kpiSource?.performance === 'proxy_from_signals' ? 'Opportunity-score proxy'
     : 'Awaiting first graded outcome';
-  const strategyPerformance = (data?.strategyPerformance?.length ? data.strategyPerformance : DEMO_STRATEGY)
+  const strategyPerformance = (data?.strategyPerformance ?? [])
     .slice().sort((a: any, b: any) => Number(b.win_rate) - Number(a.win_rate));
-  const confidenceCalibration = data?.confidenceCalibration?.length ? data.confidenceCalibration : DEMO_CALIB;
-  const returnDistribution = data?.returnDistribution?.length ? data.returnDistribution : DEMO_DIST;
+  const confidenceCalibration = data?.confidenceCalibration ?? [];
+  const returnDistribution = data?.returnDistribution ?? [];
   const outcomeDistribution = data?.outcomeDistribution ?? [];
   const adaptiveRecommendations = data?.adaptiveRecommendations ?? [];
   const newsCalibration = data?.newsCalibration ?? [];
   const learningJobRuns = data?.learningJobRuns ?? [];
+  const strategyParameters = data?.strategyParameters ?? [];
+  const confidenceWeights = data?.confidenceWeights ?? [];
+  const optimizationSummary = data?.optimizationSummary ?? [];
+  const suggestedImprovements = data?.suggestedImprovements ?? [];
   const totalOutcomes = outcomeDistribution.reduce((s: number, o: any) => s + Number(o.count), 0);
 
   // Build calibration curve data
@@ -179,9 +180,18 @@ export default function CalibrationPage() {
         </div>
       </div>
 
-      {isDemo && (
+      {!hasRealCalibrationData && (
         <div style={{ padding:'8px 16px', background:'#FFFBEB', border:'1px solid #FDE68A', borderRadius:8, marginBottom:16, fontSize:12, color:'#92400E', display:'flex', alignItems:'center', gap:8 }}>
-          <AlertTriangle size={14} /> Showing demo data. Generate signals to populate real metrics.
+          <AlertTriangle size={14} /> No calibrated outcomes found yet. Generate signals and run recalibration to populate this dashboard.
+        </div>
+      )}
+
+      {data?.dataQuality && (
+        <div style={{ padding:'8px 16px', background:'#F8FAFC', border:'1px solid #E2E8F0', borderRadius:8, marginBottom:16, fontSize:12, color:'#475569', display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, flexWrap:'wrap' }}>
+          <span>
+            Source: <b>{data.dataQuality.source.replace(/_/g, ' ')}</b> · Evaluated rows: <b>{data.dataQuality.evaluatedRows}</b> · Window: <b>{data.dataQuality.performanceWindow}</b>
+          </span>
+          <span>Direct {data.dataQuality.directRows} · Observed {data.dataQuality.observedRows} · Backtest {data.dataQuality.backtestRows}</span>
         </div>
       )}
 
@@ -200,7 +210,7 @@ export default function CalibrationPage() {
         <div className={s.statBox}>
           <div className={s.statLabel}>Avg Return / Signal</div>
           <div className={s.statValue} style={{ color: kpi.avgReturnPct >= 0 ? '#059669' : '#DC2626' }}>
-            {kpi.avgReturnPct >= 0 ? '+' : ''}{(kpi.avgReturnPct * 100).toFixed(1)}%
+            {pctPoints(kpi.avgReturnPct)}
           </div>
           <div style={{ fontSize:10, color:'#94A3B8', marginTop:4 }}>{returnSub}</div>
         </div>
@@ -227,6 +237,113 @@ export default function CalibrationPage() {
         </div>
       </div>
 
+      {/* ═══ Strategy Parameters ═══ */}
+      {strategyParameters.length > 0 && (
+        <div className={s.section}>
+          <div className={s.sectionHead}><Target size={18} /><span>Strategy Parameters</span></div>
+          <Card>
+            <div style={{ overflowX:'auto' }}>
+              <table className={s.table}>
+                <thead><tr>
+                  <th>Strategy</th><th>EMA Period</th><th>RSI Threshold</th><th>ATR Multiplier</th>
+                  <th>Volume Filter</th><th>Stop ATR</th><th>Target ATR</th><th>Samples</th><th>Current Win %</th>
+                </tr></thead>
+                <tbody>
+                  {strategyParameters.slice(0, 16).map((p: any) => (
+                    <tr key={p.strategyId}>
+                      <td style={{ fontWeight:700 }}>{p.strategyName}</td>
+                      <td>{p.emaPeriod}</td>
+                      <td>{p.rsiThreshold}</td>
+                      <td>{p.atrMultiplier}</td>
+                      <td>
+                        {p.volumeFilter}
+                        {p.suggestedVolumeFilter !== p.volumeFilter && (
+                          <span style={{ color:'#D97706', marginLeft:6 }}>→ {p.suggestedVolumeFilter}</span>
+                        )}
+                      </td>
+                      <td>
+                        {p.stopAtr}
+                        {p.suggestedStopAtr !== p.stopAtr && (
+                          <span style={{ color:'#D97706', marginLeft:6 }}>→ {p.suggestedStopAtr}</span>
+                        )}
+                      </td>
+                      <td>{p.suggestedTargetAtr ?? p.targetAtr}</td>
+                      <td>{p.samples}</td>
+                      <td style={{ color: p.currentWinRate == null ? '#94A3B8' : wrColor(p.currentWinRate / 100), fontWeight:700 }}>
+                        {p.currentWinRate == null ? '—' : `${Number(p.currentWinRate).toFixed(1)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ═══ Confidence Weights ═══ */}
+      {confidenceWeights.length > 0 && (
+        <div className={s.section}>
+          <div className={s.sectionHead}><Brain size={18} /><span>Confidence Calibration Weights</span></div>
+          <div className={s.grid3}>
+            {confidenceWeights.map((w: any) => (
+              <div key={w.dimension} className={s.recCard}>
+                <div className={s.recHeader}>
+                  <span className={s.recStrategy}>{w.dimension}</span>
+                  <span className={s.recMod} style={{ background: w.impact > 0 ? '#D1FAE5' : w.impact < 0 ? '#FEE2E2' : '#F0F4F8', color: w.impact > 0 ? '#065F46' : w.impact < 0 ? '#991B1B' : '#5A6A7E' }}>
+                    {w.currentWeight}% → {w.suggestedWeight}%
+                  </span>
+                </div>
+                <div className={s.recReason}>{w.reason}</div>
+                <div className={s.recEvidence}>{w.impact === 0 ? 'No change' : `${w.impact > 0 ? '+' : ''}${w.impact} point adjustment`}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Before / After Optimization ═══ */}
+      {optimizationSummary.length > 0 && (
+        <div className={s.section}>
+          <div className={s.sectionHead}><TrendingUp size={18} /><span>Optimization — Before vs After Calibration</span></div>
+          <div className={s.grid4}>
+            {optimizationSummary.map((m: any) => (
+              <div key={m.metric} className={s.statBox}>
+                <div className={s.statLabel}>{m.metric}</div>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
+                  <span className={s.statValue}>{m.before}{m.unit === '%' ? '%' : m.unit}</span>
+                  <span style={{ color:'#94A3B8', fontWeight:800 }}>↓</span>
+                  <span className={s.statValue} style={{ color:'#059669' }}>{m.after}{m.unit === '%' ? '%' : m.unit}</span>
+                </div>
+                <div style={{ fontSize:10, color:'#94A3B8', marginTop:6 }}>{m.note}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Suggested Improvements ═══ */}
+      {suggestedImprovements.length > 0 && (
+        <div className={s.section}>
+          <div className={s.sectionHead}><Zap size={18} /><span>Suggested Improvements</span></div>
+          <div className={s.grid3}>
+            {suggestedImprovements.map((item: any, i: number) => (
+              <div key={`${item.strategyId}-${i}`} className={s.recCard}>
+                <div className={s.recHeader}>
+                  <span className={s.recStrategy}>{item.strategyName}</span>
+                  <span className={s.recMod} style={{ background: item.severity === 'high' ? '#FEE2E2' : item.severity === 'medium' ? '#FEF3C7' : '#D1FAE5', color: item.severity === 'high' ? '#991B1B' : item.severity === 'medium' ? '#92400E' : '#065F46' }}>
+                    {item.severity}
+                  </span>
+                </div>
+                <div style={{ fontWeight:700, fontSize:12, color:'#1E293B', marginBottom:4 }}>{item.recommendation}</div>
+                <div className={s.recReason}>{item.rationale}</div>
+                <div className={s.recEvidence}>{item.expectedImpact} · {item.sampleSize} samples</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ═══ 3. Visual Analytics — Charts Row ═══ */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:24 }}>
         {/* Return Distribution Histogram */}
@@ -240,7 +357,7 @@ export default function CalibrationPage() {
                 <Tooltip contentStyle={{ fontSize:11 }} />
                 <Bar dataKey="count" fill="#3B82F6" radius={[4,4,0,0]}>
                   {returnDistribution.map((d: any, i: number) => (
-                    <rect key={i} fill={distColors[d.bucket] ?? '#6B7280'} />
+                    <Cell key={i} fill={distColors[d.bucket] ?? '#6B7280'} />
                   ))}
                 </Bar>
               </BarChart>
@@ -317,7 +434,8 @@ export default function CalibrationPage() {
               <thead><tr>
                 <th>Strategy</th><th>Regime</th><th>Samples</th>
                 <th title="Percentage of signals that hit Target 1">Win Rate</th>
-                <th title="Average profit/loss in risk multiples">Avg pnlR</th>
+                <th title="Average realized return percentage">Avg Return</th>
+                <th title="Profit factor based on normalized wins/losses">PF</th>
                 <th title="Maximum Favorable Excursion — best unrealized gain">MFE</th>
                 <th title="Maximum Adverse Excursion — worst unrealized loss">MAE</th>
                 <th title="Strategy suitability for current market regime">Env Fit</th>
@@ -331,7 +449,8 @@ export default function CalibrationPage() {
                       <td>{r.regime}</td>
                       <td>{r.sample_size}</td>
                       <td style={{ color: wrColor(wr), fontWeight:700 }}>{pct(wr)}</td>
-                      <td style={{ fontFamily:'monospace', color: Number(r.avg_pnl_r) > 0 ? '#059669' : '#DC2626' }}>{Number(r.avg_pnl_r).toFixed(3)}</td>
+                      <td style={{ fontFamily:'monospace', color: Number(r.avg_return_pct ?? r.avg_pnl_r) > 0 ? '#059669' : '#DC2626' }}>{pctPoints(Number(r.avg_return_pct ?? r.avg_pnl_r ?? 0))}</td>
+                      <td style={{ fontFamily:'monospace' }}>{Number(r.profit_factor ?? 0).toFixed(2)}</td>
                       <td>{Number(r.avg_mfe).toFixed(3)}</td>
                       <td>{Number(r.avg_mae).toFixed(3)}</td>
                       <td><span className={`${s.envBadge} ${envClass(r.environment_fit)}`}>{r.environment_fit}</span></td>

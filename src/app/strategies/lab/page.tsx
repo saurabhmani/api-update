@@ -3,7 +3,7 @@
 import { useCallback, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  Brain, FlaskConical, Rocket, Save, ShieldCheck, Sparkles,
+  Brain, CheckCircle2, FlaskConical, Rocket, Save, ShieldCheck, Sparkles,
 } from 'lucide-react';
 import AppShell from '@/components/layout/AppShell';
 import { Button, Card } from '@/components/ui';
@@ -20,8 +20,11 @@ import styles from '@/app/strategies/lab/lab.module.scss';
 
 const DEFAULT_DEFINITION: StrategyDefinition = {
   name: 'My Strategy',
+  market: 'equity',
+  symbolUniverse: ['NIFTY 500'],
   timeframe: 'swing',
   direction: 'long',
+  marketRegimeFilter: ['Bullish'],
   source: 'no_code',
   entry: {
     operator: 'AND',
@@ -38,6 +41,12 @@ const DEFAULT_DEFINITION: StrategyDefinition = {
 
 type Tab = 'rule' | 'ai';
 
+const SAMPLE_PROMPTS = [
+  'Create a bullish Fibonacci pullback strategy for NIFTY 500 with 2% stop loss, 2R target, and 0.5% risk per trade.',
+  'Create a momentum continuation strategy when RSI is above 55, ADX above 20, and volume expands 1.5x.',
+  'Create a short bearish breakdown strategy with 3% stop loss and 2R target.',
+];
+
 export default function StrategyLabPage() {
   const [tab, setTab] = useState<Tab>('rule');
   const [definition, setDefinition] = useState<StrategyDefinition>(DEFAULT_DEFINITION);
@@ -46,6 +55,7 @@ export default function StrategyLabPage() {
   const [preview, setPreview] = useState<StrategyPreviewResult | null>(null);
   const [dsl, setDsl] = useState('');
   const [json, setJson] = useState('');
+  const [backtestConfigJson, setBacktestConfigJson] = useState('');
   const [savedId, setSavedId] = useState<string | null>(null);
   const [backtestId, setBacktestId] = useState<string | null>(null);
   const [backtestPassed, setBacktestPassed] = useState(false);
@@ -61,6 +71,20 @@ export default function StrategyLabPage() {
     { key: 'backtest', label: 'Backtest', done: backtestPassed },
     { key: 'deploy', label: 'Paper Deploy', done: deployed },
   ];
+  const activeStepIndex = pipeline.findIndex((s) => !s.done);
+  const currentStep = activeStepIndex === -1 ? pipeline.length : activeStepIndex + 1;
+
+  const updateDefinition = useCallback((next: StrategyDefinition) => {
+    setDefinition(next);
+    setValidation(null);
+    setPreview(null);
+    setDsl('');
+    setJson('');
+    setBacktestConfigJson('');
+    setBacktestId(null);
+    setBacktestPassed(false);
+    setDeployed(false);
+  }, []);
 
   const loadSaved = useCallback(async () => {
     const res = await fetch('/api/strategies/lab');
@@ -82,8 +106,24 @@ export default function StrategyLabPage() {
       setDefinition(data.definition);
       setJson(JSON.stringify(data.json, null, 2));
       setDsl(data.dsl ?? '');
-      setValidation(null);
-      setPreview(null);
+      setBacktestConfigJson(JSON.stringify(data.backtestConfig ?? {}, null, 2));
+      const [validationRes, previewRes] = await Promise.all([
+        fetch('/api/strategies/lab/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ definition: data.definition, backtestPassed, strategyId: savedId }),
+        }).then((r) => r.json()),
+        fetch('/api/strategies/lab/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ definition: data.definition }),
+        }).then((r) => r.json()),
+      ]);
+      if (validationRes.ok) setValidation(validationRes.validation);
+      if (previewRes.ok) {
+        setPreview(previewRes.preview);
+        setBacktestConfigJson(JSON.stringify(previewRes.backtestConfig ?? data.backtestConfig ?? {}, null, 2));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Parse failed');
     } finally {
@@ -95,7 +135,7 @@ export default function StrategyLabPage() {
     setLoading('validate');
     setError('');
     try {
-      const res = await fetch('/api/strategy-builder/validate', {
+      const res = await fetch('/api/strategies/lab/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ definition, backtestPassed, strategyId: savedId }),
@@ -124,6 +164,7 @@ export default function StrategyLabPage() {
       setPreview(data.preview);
       setDsl(data.dsl);
       setJson(data.json);
+      setBacktestConfigJson(JSON.stringify(data.backtestConfig ?? {}, null, 2));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Preview failed');
     } finally {
@@ -135,7 +176,7 @@ export default function StrategyLabPage() {
     setLoading('save');
     setError('');
     try {
-      const res = await fetch('/api/strategy-builder/save', {
+      const res = await fetch('/api/strategies/lab/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -144,10 +185,11 @@ export default function StrategyLabPage() {
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error);
-      setSavedId(data.strategyId);
+      setSavedId(data.strategyId ?? data.id);
       setValidation(data.validation);
       setDsl(data.dsl);
-      setJson(JSON.stringify(data.json, null, 2));
+      setJson(typeof data.json === 'string' ? data.json : JSON.stringify(data.json, null, 2));
+      setBacktestConfigJson('');
       await loadSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
@@ -161,10 +203,10 @@ export default function StrategyLabPage() {
     setLoading('backtest');
     setError('');
     try {
-      const res = await fetch('/api/strategy-builder/backtest', {
+      const res = await fetch(`/api/strategies/lab/${savedId}/backtest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategyId: savedId }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error);
@@ -172,6 +214,28 @@ export default function StrategyLabPage() {
       setBacktestPassed(data.backtestPassed);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Backtest failed');
+    } finally {
+      setLoading('');
+    }
+  };
+
+  const confirmBacktest = async () => {
+    if (!savedId || !backtestId) { setError('Run a backtest before confirming'); return; }
+    setLoading('confirm-backtest');
+    setError('');
+    try {
+      const res = await fetch(`/api/strategies/lab/${savedId}/backtest/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backtestId }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      setBacktestPassed(Boolean(data.backtestPassed));
+      if (!data.backtestPassed) setError(`Backtest is ${data.status}. Open Backtesting and wait for completion, then confirm again.`);
+      await loadSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Backtest confirmation failed');
     } finally {
       setLoading('');
     }
@@ -204,25 +268,40 @@ export default function StrategyLabPage() {
       setDeployed(data.strategy.paperDeployed);
       setBacktestId(data.strategy.lastBacktestId);
       setTab(data.strategy.source === 'ai' ? 'ai' : 'rule');
+      setDsl(data.strategy.dsl ?? '');
+      setJson(JSON.stringify(data.strategy.definition, null, 2));
+      setBacktestConfigJson('');
     }
   };
 
   return (
     <AppShell title="Strategy Lab">
       <div className="page">
-        <div className="page__header">
-          <h1>Strategy Lab</h1>
-          <p>Rule Builder and AI Builder — validate, preview, save, backtest, and deploy to paper trading.</p>
+        <div className={styles.hero}>
+          <div>
+            <div className={styles.kicker}>Strategy Lab</div>
+            <h1>Design, test, and refine trading strategies</h1>
+            <p>
+              Create no-code or AI-assisted strategies, validate rules, generate a backtest-ready config,
+              and promote only tested strategies to paper trading.
+            </p>
+          </div>
+          <div className={styles.heroCard}>
+            <span>Workflow</span>
+            <strong>Step {currentStep} of {pipeline.length}</strong>
+            <small>{activeStepIndex === -1 ? 'Ready for paper deployment' : pipeline[activeStepIndex]?.label}</small>
+          </div>
         </div>
 
         <div className={styles.pipeline}>
           {pipeline.map((step, i) => (
-            <span
+            <div
               key={step.key}
               className={step.done ? styles.pipelineStepDone : i === pipeline.findIndex((s) => !s.done) ? styles.pipelineStepActive : styles.pipelineStep}
             >
+              <span>{step.done ? <CheckCircle2 size={13} /> : i + 1}</span>
               {step.label}
-            </span>
+            </div>
           ))}
         </div>
 
@@ -237,35 +316,51 @@ export default function StrategyLabPage() {
         </div>
 
         <div className={styles.layout}>
-          <div>
+          <div className={styles.builderColumn}>
             {tab === 'rule' ? (
-              <NoCodeBuilder definition={definition} onChange={setDefinition} />
+              <NoCodeBuilder definition={definition} onChange={updateDefinition} />
             ) : (
-              <div className={styles.panel}>
-                <h3 className={styles.panelTitle}><Sparkles size={16} /> AI Builder</h3>
-                <p style={{ fontSize: '0.82rem', color: '#64748B', marginBottom: 12 }}>
-                  Converts natural language into editable strategy rules and structured JSON.
-                </p>
+              <div className={styles.aiPanel}>
+                <div className={styles.aiHeader}>
+                  <div>
+                    <h3 className={styles.panelTitle}><Sparkles size={16} /> AI Strategy Builder</h3>
+                    <p>
+                      Describe the setup in plain English. The builder generates editable rules,
+                      validation, DSL, JSON, and a backtest-ready config.
+                    </p>
+                  </div>
+                </div>
                 <textarea
                   className={styles.aiTextarea}
                   value={aiText}
                   onChange={(e) => setAiText(e.target.value)}
-                  placeholder="Example: Long swing strategy when RSI is between 45 and 65, ADX above 20, volume expansion 1.5x, stop loss 2%, target 2R..."
+                  placeholder='Example: Create a bullish Fibonacci pullback strategy for NIFTY 500 with 2% stop loss, 2R target, and 0.5% risk per trade.'
                 />
+                <div className={styles.promptChips}>
+                  {SAMPLE_PROMPTS.map((prompt) => (
+                    <button key={prompt} type="button" onClick={() => setAiText(prompt)}>
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
                 <div className={styles.actions}>
                   <Button onClick={parseAi} disabled={!aiText.trim() || loading === 'parse'}>
-                    Generate Rules
+                    {loading === 'parse' ? 'Generating…' : 'Generate Strategy'}
                   </Button>
                 </div>
                 {(definition.source === 'ai' || json) && (
-                  <div style={{ marginTop: 16 }}>
-                    <NoCodeBuilder definition={definition} onChange={setDefinition} />
+                  <div className={styles.generatedRules}>
+                    <div className={styles.generatedHeader}>
+                      <span>Generated Editable Rules</span>
+                      <small>Review and refine before saving</small>
+                    </div>
+                    <NoCodeBuilder definition={definition} onChange={updateDefinition} />
                   </div>
                 )}
               </div>
             )}
 
-            <div className={styles.actions}>
+            <div className={styles.actionBar}>
               <Button variant="secondary" onClick={runValidate} disabled={!!loading}>
                 <ShieldCheck size={14} /> Validate
               </Button>
@@ -278,17 +373,30 @@ export default function StrategyLabPage() {
               <Button variant="secondary" onClick={runBacktest} disabled={!!loading || !savedId}>
                 <FlaskConical size={14} /> Backtest
               </Button>
+              <Button variant="secondary" onClick={confirmBacktest} disabled={!!loading || !savedId || !backtestId || backtestPassed}>
+                Confirm Backtest
+              </Button>
               <Button onClick={runDeploy} disabled={!!loading || !backtestPassed}>
                 <Rocket size={14} /> Paper Deploy
               </Button>
             </div>
 
-            {error && <p style={{ color: '#DC2626', fontSize: '0.85rem' }}>{error}</p>}
+            {error && <div className={styles.errorBanner}>{error}</div>}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className={styles.resultsColumn}>
             <ValidationPanel validation={validation} />
-            <StrategyPreviewPanel preview={preview} dsl={dsl} json={json} />
+            <StrategyPreviewPanel preview={preview} dsl={dsl} json={json} backtestConfig={backtestConfigJson} />
+
+            {!validation && !preview && !dsl && !json && !backtestConfigJson && (
+              <Card compact>
+                <div className={styles.emptyResults}>
+                  <Sparkles size={20} />
+                  <strong>Results will appear here</strong>
+                  <span>Generate or preview a strategy to see validation, rule summary, DSL, JSON, and backtest config.</span>
+                </div>
+              </Card>
+            )}
 
             <Card compact>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

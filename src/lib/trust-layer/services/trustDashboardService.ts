@@ -37,25 +37,31 @@ export async function buildTrustDashboard(userId: number): Promise<TrustDashboar
   const market = getMarketStatus();
   const regime = await loadMarketRegimeSnapshot();
   const snapshots = await getActiveConfirmedSnapshots();
-
   let todayPnl = 0;
   let todayPnlPct = 0;
+  // Default posture for accounts with no portfolio yet: no exposure,
+  // no severity. The old default (`riskExposure=100`, `severity='critical'`)
+  // was inherited from an early spec that assumed a fully-invested demo
+  // account and produced misleading "CRITICAL" pills on the Trust page
+  // for every fresh signup.
   let riskExposure = 0;
   let riskSeverity: TrustDashboardPayload['riskSeverity'] = 'ok';
+  let hasPortfolio = false;
 
   const portfolioId = await resolvePortfolioId(userId);
   if (portfolioId) {
+    hasPortfolio = true;
     try {
       const pnl = await computePnl(portfolioId);
       todayPnl = pnl.totalPnl;
       todayPnlPct = pnl.totalPnlPct;
-    } catch { /* empty portfolio */ }
+    } catch { /* empty portfolio — keep zeros */ }
 
     try {
       const risk = await computeRiskSummary(portfolioId);
       riskExposure = risk.riskScore;
       riskSeverity = risk.overallSeverity;
-    } catch { /* no holdings */ }
+    } catch { /* no holdings — keep 0/ok */ }
   }
 
   let winRate = 0;
@@ -111,6 +117,7 @@ export async function buildTrustDashboard(userId: number): Promise<TrustDashboar
     winRate,
     riskExposure,
     riskSeverity,
+    hasPortfolio,
     marketRegime: regime,
     trustScore: {
       score: trustLabel === 'INSUFFICIENT_DATA' ? 0 : trustScoreRaw,

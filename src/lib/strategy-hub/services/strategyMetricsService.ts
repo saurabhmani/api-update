@@ -19,6 +19,8 @@ function mapSummary(perf: StrategyPerformance | null | undefined): StrategyHubPe
   return {
     winRate: perf.winRate,
     totalSignals: perf.totalSignals,
+    totalTrades: perf.evaluatedSignals,
+    maxDrawdownPct: perf.maxDrawdownPct,
     expectancy: perf.expectancy,
     healthScore: perf.strategyHealthScore,
     healthLabel: perf.healthLabel,
@@ -88,10 +90,15 @@ export async function loadAllStrategyMetrics(
 export async function attachMetricsToSummaries<T extends { strategyId: string }>(
   items: T[],
   window: PerformanceWindow = '90D',
-): Promise<Array<T & { performance: StrategyHubPerformanceSummary | null }>> {
+): Promise<Array<T & { performance: StrategyHubPerformanceSummary | null; cardStatus?: string }>> {
   const perfMap = await loadPerformanceMap(window);
   return items.map((item) => ({
     ...item,
     performance: mapSummary(perfMap.get(item.strategyId)),
+    cardStatus: (() => {
+      const perf = perfMap.get(item.strategyId);
+      const current = (item as { cardStatus?: string }).cardStatus;
+      return perf && perf.evaluatedSignals > 0 && current !== 'Active' ? 'Backtested' : current;
+    })(),
   }));
 }

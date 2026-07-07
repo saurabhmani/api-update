@@ -270,6 +270,31 @@ export function partitionByTier<T extends TieredRow>(rows: readonly T[]): Tiered
   return out;
 }
 
+/** Rows that cleared relaxedMainTableApproved in loadClosedMarketSignals
+ *  ship with is_relaxed=true so off-hours they stay in AWAITING. During
+ *  the cash session the live /api/signals path stamps them execution-
+ *  ready so partitionByTier routes them to APPROVED (with is_conditional
+ *  for UI badge). Floors were already enforced by the loader. */
+export function stampRelaxedMainForIntradayExecution<T extends TieredRow>(
+  rows: readonly T[],
+): T[] {
+  return rows.map((r) => {
+    const cls = String(r.classification ?? '').toUpperCase();
+    const mainCls =
+      cls && APPROVED_CLASSIFICATIONS.has(cls) ? cls : 'VALID_SIGNAL';
+    return {
+      ...r,
+      is_relaxed:            false,
+      is_developing_setup:   false,
+      is_scanner_candidate:  false,
+      is_demoted:            false,
+      classification:        mainCls,
+      signal_status:         'APPROVED_SIGNAL',
+      is_conditional:        true,
+    } as T;
+  });
+}
+
 /** Empty-state messaging — the new APPROVED tab must communicate
  *  WHY it's empty when other tiers have rows. The frontend reads
  *  `empty_state_message` and renders the banner over the empty list.

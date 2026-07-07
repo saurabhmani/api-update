@@ -25,6 +25,7 @@ import {
 } from '../repository/strategyBuilderRepository';
 import { CLIENT_DEFAULT_BACKTEST_CONFIG } from '@/lib/backtesting/config/clientDefaults';
 import type { BacktestRunConfig } from '@/lib/backtesting/types';
+import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import type {
   BacktestReadyConfig,
   StrategyDefinition,
@@ -33,9 +34,10 @@ import type {
 } from '../types';
 
 function mapRow(row: Record<string, unknown>): StrategyLabRecord {
-  const def = typeof row.definition_json === 'string'
+  const rawDef = typeof row.definition_json === 'string'
     ? JSON.parse(row.definition_json)
     : row.definition_json;
+  const def = parseStructuredDefinition(rawDef);
   const validation = row.validation_json
     ? (typeof row.validation_json === 'string' ? JSON.parse(row.validation_json) : row.validation_json)
     : null;
@@ -76,7 +78,8 @@ export function validateLabStrategy(
   strategyId?: string,
   userId?: string | null,
 ): ValidationResult {
-  const validation = validateStrategyDefinition(def, { forDeploy: false, backtestPassed });
+  const normalized = parseStructuredDefinition(def);
+  const validation = validateStrategyDefinition(normalized, { forDeploy: false, backtestPassed });
   if (strategyId) {
     void logValidation(strategyId, userId ?? null, validation);
   }
@@ -84,30 +87,32 @@ export function validateLabStrategy(
 }
 
 export function previewLabStrategy(def: StrategyDefinition) {
-  return previewStrategy(def);
+  return previewStrategy(parseStructuredDefinition(def));
 }
 
 export async function saveLabStrategy(
   def: StrategyDefinition,
   actor: string | null,
 ): Promise<{ id: string; validation: ValidationResult; dsl: string; json: string }> {
-  const validation = validateStrategyDefinition(def);
+  const normalized = parseStructuredDefinition(def);
+  const validation = validateStrategyDefinition(normalized);
   if (!validation.canSave) {
     throw new Error(validation.issues.filter((i) => i.severity === 'error').map((i) => i.message).join('; '));
   }
 
-  const id = def.id ?? uuidv4();
-  const dsl = serializeToDsl({ ...def, id });
-  const json = definitionToJson({ ...def, id });
+  const id = normalized.id ?? uuidv4();
+  const definition = { ...normalized, id };
+  const dsl = serializeToDsl(definition);
+  const json = definitionToJson(definition);
 
   await saveLabDefinition({
     id,
-    name: def.name,
-    description: def.description ?? null,
-    source: def.source,
-    timeframe: def.timeframe,
-    direction: def.direction,
-    definition: { ...def, id },
+    name: definition.name,
+    description: definition.description ?? null,
+    source: definition.source,
+    timeframe: definition.timeframe === 'positional' ? 'swing' : definition.timeframe,
+    direction: definition.direction,
+    definition,
     dsl,
     status: validation.valid ? 'validated' : 'draft',
     validated: validation.valid,
@@ -118,19 +123,19 @@ export async function saveLabStrategy(
   await upsertUserStrategy({
     id,
     userId: actor,
-    name: def.name,
-    description: def.description ?? null,
-    source: def.source,
-    timeframe: def.timeframe,
-    direction: def.direction,
-    definition: { ...def, id },
+    name: definition.name,
+    description: definition.description ?? null,
+    source: definition.source,
+    timeframe: definition.timeframe === 'positional' ? 'swing' : definition.timeframe,
+    direction: definition.direction,
+    definition,
     dsl,
     status: validation.valid ? 'validated' : 'draft',
     validated: validation.valid,
   });
 
   await logValidation(id, actor, validation);
-  await insertAudit(id, 'save', actor, { source: def.source, validation });
+  await insertAudit(id, 'save', actor, { source: definition.source, validation });
 
   return { id, validation, dsl, json };
 }
@@ -165,18 +170,31 @@ export async function getLabAudit(id: string) {
 }
 
 export function buildBacktestConfig(def: StrategyDefinition, labId: string): BacktestReadyConfig {
+  const normalized = parseStructuredDefinition(def);
+  const universe = normalized.symbolUniverse.includes('NIFTY 500')
+    ? CLIENT_DEFAULT_BACKTEST_CONFIG.universe
+    : normalized.symbolUniverse;
   const config: BacktestRunConfig = {
     ...CLIENT_DEFAULT_BACKTEST_CONFIG,
-    name: `Lab Backtest — ${def.name}`,
-    riskPerTradePct: def.risk.riskPerTradePct,
-    maxOpenPositions: def.risk.maxOpenPositions,
-    maxGrossExposurePct: def.risk.maxGrossExposurePct,
-    minRewardRisk: def.risk.minRewardRisk ?? 1.2,
-    maxStopWidthPct: def.stopLoss.type === 'percent' ? Math.max(def.stopLoss.value, 8) : 8,
-    strategies: null,
-    tags: [`lab:${labId}`, `source:${def.source}`],
+    name: `Lab Backtest — ${normalized.name}`,
+    universe,
+    riskPerTradePct: normalized.risk.riskPerTradePct,
+    maxOpenPositions: normalized.risk.maxOpenPositions,
+    maxGrossExposurePct: normalized.risk.maxGrossExposurePct,
+    minRewardRisk: normalized.risk.minRewardRisk ?? 1.2,
+    maxStopWidthPct: normalized.stopLoss.type === 'percent' ? Math.max(normalized.stopLoss.value, 8) : 8,
+    strategies: normalized.metadata?.parentStrategyId
+      ? [normalized.metadata.parentStrategyId as StrategyName]
+      : null,
+    tags: [
+      `lab:${labId}`,
+      `source:${normalized.source}`,
+      `market:${normalized.market}`,
+      `timeframe:${normalized.timeframe}`,
+      ...normalized.marketRegimeFilter.map((r) => `regime:${r}`),
+    ],
   };
-  return { name: `Lab: ${def.name}`, labStrategyId: labId, config };
+  return { name: `Lab: ${normalized.name}`, labStrategyId: labId, config };
 }
 
 export async function saveLabDraft(

@@ -24,6 +24,7 @@ export interface RiskContext {
   pendingOrders: PaperOrder[];
   priorClosePrice?: number | null;
   atrPct?: number | null;
+  todayOrderCount?: number;
   killSwitchActive: boolean;
   marketOpen: boolean;
 }
@@ -59,6 +60,10 @@ export function evaluateOrderRisk(
 
   if ((req.role ?? 'ENTRY') === 'ENTRY' && openPositions.length >= risk.maxOpenPositions) {
     return deny('MAX_POSITIONS', `Max open positions (${risk.maxOpenPositions}) reached`);
+  }
+
+  if ((req.role ?? 'ENTRY') === 'ENTRY' && (ctx.todayOrderCount ?? 0) >= risk.maxTradesPerDay) {
+    return deny('MAX_TRADES_PER_DAY', `Max trades per day (${risk.maxTradesPerDay}) reached`);
   }
 
   if (account.consecutiveLosses >= risk.maxConsecutiveLosses) {

@@ -50,8 +50,15 @@ export function RegimeScanner() {
           <div><strong>RSI:</strong> {data.details.rsi}</div>
           <div><strong>ATR %:</strong> {data.details.atrPct}</div>
           <div><strong>Bullish allowed:</strong> {data.allowBullishSignals ? 'Yes' : 'No'}</div>
-          <div><strong>Confidence modifier:</strong> {data.confidenceModifier >= 0 ? '+' : ''}{data.confidenceModifier}</div>
-          <div><strong>Impacts signals:</strong> {data.impactsConfidence ? 'Yes' : 'No'}</div>
+          {typeof data.confidenceModifier === 'number' && (
+            <div>
+              <strong>Confidence modifier:</strong>{' '}
+              {data.confidenceModifier >= 0 ? '+' : ''}{data.confidenceModifier}
+            </div>
+          )}
+          {typeof data.impactsConfidence === 'boolean' && (
+            <div><strong>Impacts signals:</strong> {data.impactsConfidence ? 'Yes' : 'No'}</div>
+          )}
           <div><strong>Source:</strong> {data.source}</div>
         </div>
       </Card>

@@ -74,12 +74,43 @@ export function validateStrategyDefinition(
     issues.push({ code: 'NAME_REQUIRED', severity: 'error', message: 'Strategy name is required', field: 'name' });
   }
 
-  if (!SUPPORTED_TIMEFRAMES.includes(def.timeframe)) {
-    issues.push({ code: 'TIMEFRAME_UNSUPPORTED', severity: 'error', message: `Timeframe must be ${SUPPORTED_TIMEFRAMES.join(' or ')}`, field: 'timeframe' });
+  if (def.market !== 'equity' && def.market !== 'options') {
+    issues.push({ code: 'MARKET_UNSUPPORTED', severity: 'error', message: 'Market must be Equity or Options', field: 'market' });
   }
 
-  if (def.timeframe === 'daily' && def.metadata?.aiPrompt?.match(/intraday|1m|5m/i)) {
-    issues.push({ code: 'TIMEFRAME_MISMATCH', severity: 'warning', message: 'Intraday mentioned but only daily/swing supported — using swing', field: 'timeframe' });
+  if (def.market === 'options') {
+    issues.push({
+      code: 'OPTIONS_BACKTEST_LIMITED',
+      severity: 'warning',
+      message: 'Options strategies can be designed here, but current backtest execution uses equity/EOD data.',
+      field: 'market',
+    });
+  }
+
+  if (!def.symbolUniverse?.length) {
+    issues.push({ code: 'UNIVERSE_REQUIRED', severity: 'error', message: 'Select at least one symbol or universe', field: 'symbolUniverse' });
+  }
+
+  if (!SUPPORTED_TIMEFRAMES.includes(def.timeframe)) {
+    issues.push({ code: 'TIMEFRAME_UNSUPPORTED', severity: 'error', message: `Timeframe must be one of ${SUPPORTED_TIMEFRAMES.join(', ')}`, field: 'timeframe' });
+  }
+
+  if (def.timeframe === 'intraday') {
+    issues.push({
+      code: 'INTRADAY_BACKTEST_LIMITED',
+      severity: 'warning',
+      message: 'Intraday strategies can be authored, but current lab backtests use EOD candles.',
+      field: 'timeframe',
+    });
+  }
+
+  if (def.marketRegimeFilter?.length && def.entry.conditions.some((c) => c.indicator === 'regime_bullish')) {
+    issues.push({
+      code: 'REGIME_DUPLICATED',
+      severity: 'warning',
+      message: 'Market regime is set both as a filter and as an entry condition.',
+      field: 'marketRegimeFilter',
+    });
   }
 
   // Entry required

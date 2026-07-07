@@ -105,6 +105,7 @@ import {
   partitionByTier,
   buildEmptyStateMessage,
   selectHighPotentialFallback,
+  stampRelaxedMainForIntradayExecution,
   HIGH_POTENTIAL_MAX_ROWS,
   CONDITIONAL_CONFIDENCE_FLOOR,
   CONDITIONAL_RR_FLOOR,
@@ -319,12 +320,12 @@ function q365Project(cols: Set<string>, col: string): string {
 // continue to override at runtime without a rebuild.
 const RELAXED_SIGNAL_FLOORS = getRelaxedSignalFloors();
 
-// Server-side auto-recovery throttle. When /api/signals sees an empty
-// DB pool we kick the Yahoo scanner once per 5 min so the dashboard
-// recovers without operator intervention. Module-level so multiple
-// concurrent requests share the same cooldown — without this, every
-// poll on a cold deployment fires a scanner request → scanner refuses
-// (in-flight cooldown) → log spam.
+// Server-side auto-recovery throttle. Normal /api/signals reads are
+// read-only: auto-recovery is disabled unless
+// SIGNALS_AUTO_RECOVERY_ENABLED=true and, for poll-driven reads,
+// SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=true. Module-level cooldown is
+// retained only for explicit/allowed recovery so concurrent requests
+// share one in-flight run.
 //
 // Cold-start uses a SHORTER cooldown (60s) instead of bypassing it
 // entirely. The previous "bypass on coldStart" path made every 5s
@@ -687,17 +688,15 @@ function pipelineHealthEnvelope(opts: {
 }
 
 /**
- * Spec FIX-DATA-PIPELINE §5: auto-scan must fire when the signals
- * pool is empty OR the latest batch is stale (>10 min). Previously
- * the function was retired to a no-op, which left the dashboard
- * stuck on `validation_status: NO_SIGNALS_CONFIRMED` indefinitely
- * with no in-process recovery path.
+ * Auto-recovery runner. This must never be called from normal read-only
+ * polling unless autoRecoveryPolicy has explicitly allowed it:
+ *   SIGNALS_AUTO_RECOVERY_ENABLED=true
+ *   and, for GET /api/signals polling, SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=true.
  *
  * Reinstated with the original 5-minute throttle + an in-flight
  * guard so a busy poll loop can't fire the scanner more than once
- * per cooldown window. Cold-start mode forces the scan even if a
- * scan already ran today (the original throttle would otherwise
- * suppress the recovery on a fresh deployment).
+ * per cooldown window. The policy layer additionally enforces once per
+ * day, candle coverage, and "no recent scheduled scan" guards.
  */
 async function runAutoScanRecovery(reason: string): Promise<void> {
   const pipelineStartedAt = Date.now();
@@ -1486,17 +1485,18 @@ async function triggerAutoScanIfEmpty(
 }
 
 // Staleness threshold for the latest batch. Above this, the route's
-// fallback path treats the data as too old to surface and triggers a
-// fresh scan instead of shipping rows from a 5-hour-old batch (the
-// `signal_age_minutes = 300+` symptom). 10 min matches the regen cron
-// cadence — every scan tick that's overdue triggers an auto-recovery.
+// fallback path treats the data as too old to surface instead of
+// shipping rows from a 5-hour-old batch (the `signal_age_minutes = 300+`
+// symptom). Any recovery from this state is separately guarded by
+// autoRecoveryPolicy and is disabled in normal read-only flow by default.
 const STALE_BATCH_THRESHOLD_MS = 10 * 60_000;
 // Hard ceiling above which q365_signals fallback rows are NEVER
 // surfaced — the operator gets an honest empty state instead of a
 // table full of stale prices that no longer reflect the live tape.
 // Picked at 30 min so a regen cron that's running on a 10-min cadence
 // gets a 3-tick grace window before fallback rows are blocked. Above
-// this, the route ships zero rows + triggers an auto-scan.
+// this, the route ships zero rows; auto-recovery only runs when explicitly
+// enabled and policy-approved.
 const FALLBACK_MAX_AGE_MS = 30 * 60_000;
 
 // Stamps the runtime identity once per process so two environments
@@ -2410,9 +2410,8 @@ export async function GET(req: NextRequest) {
       const fresh = await freezeGetFresh(cacheKey);
       const cachedIsEmpty =
         fresh != null &&
-        (fresh.payload?.empty_confirmed === true ||
-         fresh.payload?.main_signals_count === 0 ||
-         (Array.isArray(fresh.payload?.signals) && fresh.payload.signals.length === 0));
+        (fresh.payload?.main_signals_count ?? 0) === 0 &&
+        (!Array.isArray(fresh.payload?.signals) || fresh.payload.signals.length === 0);
       if (cachedIsEmpty) {
         freezeDrop(cacheKey);
       }
@@ -2440,6 +2439,17 @@ export async function GET(req: NextRequest) {
       // enrichment, strict gate, deterministic sort, cap, below-floor
       // demote, tracker enrichment) lives in confirmedSignalsService.
       // The route just forwards `limit` and consumes the bundle.
+      //
+      // PERF-2026-07 — build the REJECTED-tab funnel in parallel with
+      // the confirmed-signals bundle so its DB reads overlap the main
+      // pipeline instead of stacking at the end (+1-3s per poll).
+      const funnelPromise = buildSignalFunnel({ windowMinutes: 60, poolLimit: 50 }).catch(
+        (err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[FUNNEL] build failed: ${msg}`);
+          return null;
+        },
+      );
       let bundle = await loadConfirmedSignalsBundle({ limit });
       let enriched           = bundle.enriched;
       let finalRows          = bundle.finalRows;
@@ -2551,6 +2561,18 @@ export async function GET(req: NextRequest) {
         approvalBottleneck = bundle.approvalBottleneck;
       }
 
+      // PERF-2026-07 — when confirmed snapshots are empty, prefetch the
+      // relaxed/scanner SQL loader in parallel with freshness assembly
+      // and manipulation probes instead of awaiting it after both finish.
+      const closedMarketPromise =
+        bundle.finalRows.length === 0
+          ? loadClosedMarketSignals({ limit }).catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(`[CLOSED_MARKET] prefetch failed: ${msg}`);
+              return null;
+            })
+          : Promise.resolve(null);
+
       const buyCount  = finalRows.filter((r: ConfirmedSignalRow) => String(r.direction ?? '').toUpperCase() === 'BUY').length;
       const sellCount = finalRows.filter((r: ConfirmedSignalRow) => String(r.direction ?? '').toUpperCase() === 'SELL').length;
 
@@ -2558,7 +2580,7 @@ export async function GET(req: NextRequest) {
       // probe, universe size lookup, all of the banner fields) lives
       // in `@/lib/signals/freshnessService`. Same I/O, same fields —
       // the route just forwards the inputs.
-      const freshnessOut = await buildFreshness({
+      const freshnessPromise = buildFreshness({
         freshnessRaw,
         enrichedLength:    enriched.length,
         inProgressLength:  inProgressEnriched.length,
@@ -2566,6 +2588,23 @@ export async function GET(req: NextRequest) {
         fallbackUsed,
         fallbackBatchTs,
       });
+
+      // ── PHASE_B_MANIPULATION_INTEGRATION ──
+      const manipulationPromise = fetchManipulationRiskForSignalPools(
+        { finalRows, belowFloorDemoted, inProgressEnriched },
+        DEFAULT_PHASE1_CONFIG.universe,
+        getManipulationRiskForSymbols,
+      );
+
+      const [freshnessOut, manipulationResult] = await Promise.all([
+        freshnessPromise,
+        manipulationPromise,
+      ]);
+      const {
+        manipulationRiskMap,
+        manipulationUsedFallbackUniverse,
+        manipulationRiskMeta,
+      } = manipulationResult;
       const freshness         = freshnessOut.freshness;
       const scannerBatchId    = freshnessOut.scannerBatchId;
       const scannerEngineKind = freshnessOut.scannerEngineKind;
@@ -2590,17 +2629,6 @@ export async function GET(req: NextRequest) {
         validationStatus,
         syntheticBatchId,
       });
-
-      // ── PHASE_B_MANIPULATION_INTEGRATION ──
-      const {
-        manipulationRiskMap,
-        manipulationUsedFallbackUniverse,
-        manipulationRiskMeta,
-      } = await fetchManipulationRiskForSignalPools(
-        { finalRows, belowFloorDemoted, inProgressEnriched },
-        DEFAULT_PHASE1_CONFIG.universe,
-        getManipulationRiskForSymbols,
-      );
 
       let responsePayloadBase = await buildSignalsResponsePayload({
         finalRows,
@@ -2666,7 +2694,7 @@ export async function GET(req: NextRequest) {
       if (finalRows.length === 0) {
         try {
           console.log('[DEBUG] confirmed pool empty — querying q365_signals (strict→relaxed→candidates)');
-          const closed = await loadClosedMarketSignals({ limit });
+          const closed = await closedMarketPromise;
           if (closed) {
             signalQuality   = closed.signalQuality;
             relaxedUsed     = closed.relaxedUsed;
@@ -2689,23 +2717,37 @@ export async function GET(req: NextRequest) {
             );
             const sortedClosed = [...(nifty500Closed as ConfirmedSignalRow[])].sort(rotationCmp);
             const sectorBalanced = applySectorDiversity(sortedClosed);
-            // Spec ELITE-2026-05 — the closed-market fallback bypasses
-            // buildSignalsResponsePayload (it overwrites signals[] in-
-            // line below), so apply the elite gate explicitly here. Per
-            // spec: "No padding rows. No filler rows. No relaxed mode
-            // rows." If every closed-market candidate fails the elite
-            // floors, we ship empty rather than degrading the bar.
-            const closedElite = applyEliteGate(sectorBalanced);
-            const closedSignals = closedElite.approved;
-            if (closedElite.enabled) {
-              console.log('[ELITE_GATE]', {
-                stage:    'closed_market_fallback',
-                input:    sectorBalanced.length,
-                approved: closedSignals.length,
-                dropped:  closedElite.dropped.length,
-                bypassed: (closedElite as { bypassed?: boolean }).bypassed === true,
+            // INTRADAY-PARITY-2026-07 — the closed-market branch partitions
+            // relaxed-main rows directly. The live open-hours branch was
+            // running applyEliteGate (75+ confidence) on the same relaxed
+            // pool first, zeroing every row before partitionByTier. During
+            // the cash session, stamp relaxed-main rows execution-ready
+            // (they already passed relaxedMainTableApproved) and skip the
+            // elite gate so APPROVED is populated intraday.
+            let shipRows: ConfirmedSignalRow[];
+            if (relaxedUsed) {
+              shipRows = stampRelaxedMainForIntradayExecution(
+                sectorBalanced as unknown as TieredRow[],
+              ) as unknown as ConfirmedSignalRow[];
+              console.log('[INTRADAY_RELAXED]', {
+                input:  sectorBalanced.length,
+                stamped: shipRows.length,
+                quality: signalQuality,
               });
+            } else {
+              const closedElite = applyEliteGate(sectorBalanced);
+              shipRows = closedElite.approved as ConfirmedSignalRow[];
+              if (closedElite.enabled) {
+                console.log('[ELITE_GATE]', {
+                  stage:    'closed_market_fallback',
+                  input:    sectorBalanced.length,
+                  approved: shipRows.length,
+                  dropped:  closedElite.dropped.length,
+                  bypassed: (closedElite as { bypassed?: boolean }).bypassed === true,
+                });
+              }
             }
+            const closedSignals = shipRows;
             if (closedSignals.length > 0) {
               const newBuy  = closedSignals.filter(
                 (r) => String((r as any).direction ?? '').toUpperCase() === 'BUY',
@@ -3014,7 +3056,12 @@ export async function GET(req: NextRequest) {
       // (or the cache hit, if any) so we can attach a coverage label
       // to the response without recomputing from market_data.length.
       let liveCoveragePercent: number | null = null;
-      if (finalRows.length === 0) {
+      const shippedMainCount =
+        Number(responsePayloadBase.main_signals_count ?? 0)
+        || (Array.isArray(responsePayloadBase.signals) ? responsePayloadBase.signals.length : 0);
+      const signalsAlreadyShipped =
+        finalRows.length > 0 || usedRelaxedSignals || shippedMainCount > 0;
+      if (!signalsAlreadyShipped) {
         // ── 0. Skip live-empty fan-out when a scan is in flight ────
         // Spec "FIX 81s POLL DURING SCAN" — when /api/run-signal-engine
         // is currently scanning (isInFlight()=true), the live-empty
@@ -3277,6 +3324,11 @@ export async function GET(req: NextRequest) {
             putLiveMarketCache(cacheKey, liveMarketData, liveMarketDataSource);
           }
         }
+      } else {
+        console.log(
+          `[DATA] live-empty SKIPPED — signals_already_shipped count=${shippedMainCount} ` +
+          `(avoiding ${LIVE_RESOLVE_TIMEOUT_MS}ms IndianAPI fan-out on top of relaxed/strict rows)`,
+        );
       }
       console.log(`[DATA] signals generated count=${finalRows.length} buy=${buyCount} sell=${sellCount} emerging=${responsePayloadBase.emerging_count}`);
 
@@ -3597,11 +3649,7 @@ export async function GET(req: NextRequest) {
       // render with explicit reason codes per row. NEVER promotes a
       // non-approved row into signals[].
       let funnelBundle: Awaited<ReturnType<typeof buildSignalFunnel>> | null = null;
-      try {
-        funnelBundle = await buildSignalFunnel({ windowMinutes: 60, poolLimit: 50 });
-      } catch (err: any) {
-        console.warn(`[FUNNEL] build failed: ${err?.message ?? String(err)}`);
-      }
+      funnelBundle = await funnelPromise;
       // ── INSTITUTIONAL_TIER_2026-05 — partition into 5 professional tiers ──
       // The legacy fallback paths above (relaxed override, scanner-candidate
       // promotion, best-available probe) intentionally inject weaker rows
@@ -4158,7 +4206,12 @@ export async function GET(req: NextRequest) {
       // firing on every poll. We also actively drop any stale cached
       // entry for this key so a now-empty answer doesn't lose to a
       // previously-cached non-empty one.
-      if (finalRows.length > 0) {
+      const cacheablePayload =
+        finalRows.length > 0
+        || usedRelaxedSignals
+        || shippedMainCount > 0
+        || (Array.isArray(responsePayload.signals) && responsePayload.signals.length > 0);
+      if (cacheablePayload) {
         await freezePut(cacheKey, responsePayload);
       } else {
         freezeDrop(cacheKey);

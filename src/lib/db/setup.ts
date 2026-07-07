@@ -444,6 +444,8 @@ async function setup() {
         outcome       VARCHAR(20),
         pnl           DECIMAL(12,2),
         pnl_pct       DECIMAL(8,4),
+        emotion_entry VARCHAR(50),
+        emotion_exit  VARCHAR(50),
         tags          JSON,
         created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_tj_user (user_id, entry_date)

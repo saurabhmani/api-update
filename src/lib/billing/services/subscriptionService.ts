@@ -1,6 +1,6 @@
 // Subscription service — plans, upgrades, billing
 
-import { canUpgrade, PLAN_CATALOG } from '../constants/plans';
+import { PLAN_CATALOG } from '../constants/plans';
 import {
   createInvoice,
   getOrCreateSubscription,
@@ -20,6 +20,7 @@ export async function subscribeToPlan(
   plan: SubscriptionPlan,
 ): Promise<{ ok: boolean; subscription?: Awaited<ReturnType<typeof upsertSubscription>>; invoice?: Awaited<ReturnType<typeof createInvoice>>; error?: string }> {
   const config = PLAN_CATALOG[plan];
+  if (!config) return { ok: false, error: 'Invalid subscription plan' };
   if (config.priceInr <= 0) {
     const sub = await upsertSubscription(userId, plan);
     return { ok: true, subscription: sub };
@@ -40,8 +41,11 @@ export async function upgradeSubscription(
   targetPlan: SubscriptionPlan,
 ): Promise<{ ok: boolean; error?: string; subscription?: Awaited<ReturnType<typeof upsertSubscription>>; invoice?: Awaited<ReturnType<typeof createInvoice>> }> {
   const current = await getOrCreateSubscription(userId);
-  if (!canUpgrade(current.plan, targetPlan)) {
-    return { ok: false, error: `Cannot upgrade from ${current.plan} to ${targetPlan}` };
+  if (!PLAN_CATALOG[targetPlan]) {
+    return { ok: false, error: 'Invalid subscription plan' };
+  }
+  if (current.plan === targetPlan) {
+    return { ok: true, subscription: current };
   }
   return subscribeToPlan(userId, targetPlan);
 }

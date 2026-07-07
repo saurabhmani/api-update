@@ -32,6 +32,16 @@
   border-color: #1E40AF;
 }
 
+.filterLabel {
+  align-self: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748B;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -75,6 +85,21 @@
   margin: 0;
 }
 
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+
+  &:hover {
+    color: #1E40AF;
+  }
+}
+
+.cardSubTitle {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #64748B;
+}
+
 .cardMeta {
   display: flex;
   flex-wrap: wrap;
@@ -106,6 +131,30 @@
 .metricValue {
   font-weight: 600;
   color: #1E293B;
+}
+
+.cardActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: auto;
+
+  a,
+  button {
+    justify-content: center;
+    text-align: center;
+    width: 100%;
+  }
+}
+
+.cardMessage {
+  border-radius: 8px;
+  background: #F8FAFC;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .detailGrid {

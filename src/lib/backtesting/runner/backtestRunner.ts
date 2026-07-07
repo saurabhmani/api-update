@@ -48,6 +48,10 @@ export interface BacktestRunResult extends BacktestRunRecord {
   auditEntries: BacktestAuditEntry[];
   performance: PerformanceMetrics;
 }
+
+export interface BacktestRunOptions {
+  onProgress?: (progressPercent: number, currentStep: string) => void | Promise<void>;
+}
 import { validateBacktestConfig } from '../utils/validation';
 import { preloadCandleData, buildDataStoreFromMap, DEFAULT_PRELOAD_CONCURRENCY } from '../data/historicalCandleProvider';
 import { validateDataStore } from '../data/candleValidator';
@@ -71,11 +75,21 @@ import { setBacktestMode } from '../../marketData/tickStore';
  * Run a full backtest with the given configuration.
  * This is the main entry point for the backtesting engine.
  */
-export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRunResult> {
+export async function runBacktest(
+  config: BacktestRunConfig,
+  options: BacktestRunOptions = {},
+): Promise<BacktestRunResult> {
   const runId = config.runId || uuidv4();
   const startedAt = new Date().toISOString();
   const runStartMs = Date.now();
   const memBefore = typeof process !== 'undefined' && process.memoryUsage ? process.memoryUsage() : null;
+  const reportProgress = async (progressPercent: number, currentStep: string) => {
+    try {
+      await options.onProgress?.(progressPercent, currentStep);
+    } catch (err) {
+      console.warn('[Backtest] progress callback failed:', err);
+    }
+  };
 
   // Structured logger bound to this run (Section 4).
   const log = createLogger(
@@ -140,6 +154,7 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
     let dataStore = await preloadCandleData(allSymbols, config.startDate, config.endDate, concurrency);
     const preloadMs = Date.now() - preloadStartMs;
     log.info('preload_done', { ms: preloadMs, symbols: dataStore.symbolsLoaded, candles: dataStore.candlesLoaded, concurrency });
+    await reportProgress(25, 'Validating market data');
 
     console.log(`[Backtest] Loaded ${dataStore.candlesLoaded} candles for ${dataStore.symbolsLoaded} symbols`);
     console.log(`[Backtest] ${dataStore.tradingDates.length} trading dates in range`);
@@ -265,6 +280,8 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
     // ── Step 3: Day-by-day simulation ───────────────────────
     log.setStep('simulation');
     const simulationStartMs = Date.now();
+    let lastSimulationProgress = 30;
+    await reportProgress(lastSimulationProgress, `Running simulation (0/${dataStore.tradingDates.length} days)`);
     for (let dayIdx = 0; dayIdx < dataStore.tradingDates.length; dayIdx++) {
       const date = dataStore.tradingDates[dayIdx];
       const provider = dataStore.getProviderForDate(date);
@@ -691,9 +708,18 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
       if (dayIdx % 50 === 0) {
         console.log(`[Backtest] Day ${dayIdx}/${dataStore.tradingDates.length}: equity=${Math.round(equity)}, positions=${openPositions.length}, trades=${allTrades.length}`);
       }
+      const simulationProgress = 30 + Math.floor(((dayIdx + 1) / Math.max(1, dataStore.tradingDates.length)) * 45);
+      if (simulationProgress >= lastSimulationProgress + 5) {
+        lastSimulationProgress = simulationProgress;
+        await reportProgress(
+          Math.min(75, simulationProgress),
+          `Running simulation (${dayIdx + 1}/${dataStore.tradingDates.length} days)`,
+        );
+      }
     }
 
     // ── Step 4: Force-close remaining positions at last bar ──
+    await reportProgress(75, 'Closing open positions');
     for (const pos of openPositions) {
       const lastDate = dataStore.tradingDates[dataStore.tradingDates.length - 1];
       const provider = dataStore.getProviderForDate(lastDate);
@@ -727,6 +753,7 @@ export async function runBacktest(config: BacktestRunConfig): Promise<BacktestRu
     lastSuccessfulStep = 'simulation_completed';
 
     // ── Phase 5: Compute all metrics ────────────────────────
+    await reportProgress(78, 'Computing metrics');
     const summary = computeBacktestSummary(allTrades, equityCurve, config, totalSignalsGenerated);
     const strategyBreakdown = computeStrategyBreakdown(allTrades);
     const regimeBreakdown = computeRegimeBreakdown(allTrades);

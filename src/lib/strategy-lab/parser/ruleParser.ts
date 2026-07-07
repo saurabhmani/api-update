@@ -14,14 +14,41 @@ function defaultRisk() {
   return { riskPerTradePct: 0.5, maxOpenPositions: 5, maxGrossExposurePct: 40, minRewardRisk: 1.5 };
 }
 
+function normalizeUniverse(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    const symbols = value.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+    return symbols.length ? [...new Set(symbols)] : ['NIFTY 500'];
+  }
+  if (typeof value === 'string') {
+    const symbols = value.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    return symbols.length ? [...new Set(symbols)] : ['NIFTY 500'];
+  }
+  return ['NIFTY 500'];
+}
+
+function normalizeRegimes(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((s) => String(s).trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function normalizeTimeframe(value: unknown): StrategyDefinition['timeframe'] {
+  return value === 'intraday' || value === 'positional' || value === 'daily' ? value : 'swing';
+}
+
 export function parseStructuredDefinition(raw: unknown): StrategyDefinition {
   const o = raw as Partial<StrategyDefinition>;
   if (!o.name?.trim()) throw new Error('Strategy name is required');
   return {
+    id: o.id,
     name: o.name.trim(),
     description: o.description,
-    timeframe: o.timeframe === 'daily' ? 'daily' : 'swing',
+    market: o.market === 'options' ? 'options' : 'equity',
+    symbolUniverse: normalizeUniverse(o.symbolUniverse),
+    timeframe: normalizeTimeframe(o.timeframe),
     direction: o.direction === 'short' ? 'short' : 'long',
+    marketRegimeFilter: normalizeRegimes(o.marketRegimeFilter),
     source: o.source ?? 'no_code',
     entry: normalizeGroup(o.entry, 'entry'),
     exit: normalizeGroup(o.exit, 'exit'),
@@ -51,8 +78,42 @@ function normalizeGroup(group: ConditionGroup | undefined, kind: string): Condit
 /** Pattern-based NL → structured rules (deterministic; no direct deploy) */
 export function parseNaturalLanguageStrategy(text: string, name = 'AI Strategy'): StrategyDefinition {
   const lower = text.toLowerCase();
+  const isFibonacciPullback = /fib|fibonacci/.test(lower) && /pullback|retracement|retrace/.test(lower);
   const entryConditions: LabCondition[] = [];
   const exitConditions: LabCondition[] = [];
+
+  if (isFibonacciPullback) {
+    entryConditions.push(
+      {
+        id: cid(),
+        indicator: 'fib_pullback_zone',
+        operator: 'eq',
+        value: 1,
+        label: 'Price pulls back into the 38.2%-61.8% Fibonacci zone',
+      },
+      {
+        id: cid(),
+        indicator: 'price_above_ema20',
+        operator: 'eq',
+        value: 1,
+        label: 'Price remains above EMA20 trend support',
+      },
+      {
+        id: cid(),
+        indicator: 'rsi',
+        operator: 'between',
+        value: [45, 65],
+        label: 'RSI confirms controlled pullback',
+      },
+      {
+        id: cid(),
+        indicator: 'volume_expansion',
+        operator: 'gte',
+        value: 1.1,
+        label: 'Volume confirms renewed demand',
+      },
+    );
+  }
 
   // RSI patterns
   const rsiBetween = lower.match(/rsi\s*(?:between|from)\s*(\d+)\s*(?:and|to|-)\s*(\d+)/);
@@ -112,7 +173,13 @@ export function parseNaturalLanguageStrategy(text: string, name = 'AI Strategy')
     exitConditions.push({ id: cid(), indicator: 'ema_20', operator: 'crosses_below', value: 0, label: 'EMA20 crosses below EMA50' });
   }
   if (exitConditions.length === 0) {
-    exitConditions.push({ id: cid(), indicator: 'rsi', operator: 'gt', value: 75, label: 'RSI overbought exit' });
+    exitConditions.push({
+      id: cid(),
+      indicator: 'rsi',
+      operator: 'gt',
+      value: isFibonacciPullback ? 70 : 75,
+      label: isFibonacciPullback ? 'Exit when pullback becomes extended' : 'RSI overbought exit',
+    });
   }
 
   // Stop loss
@@ -145,17 +212,45 @@ export function parseNaturalLanguageStrategy(text: string, name = 'AI Strategy')
     riskPerTradePct: riskPct ? Number(riskPct[1]) : 0.5,
   };
 
+  const market = /option|options|nifty option|banknifty option/i.test(lower) ? 'options' : 'equity';
+  const timeframe: StrategyDefinition['timeframe'] =
+    /intraday|1m|3m|5m|15m|30m/i.test(lower) ? 'intraday'
+    : /positional|position/i.test(lower) ? 'positional'
+    : /daily|eod|end of day/i.test(lower) ? 'daily'
+    : 'swing';
+  const universeMatch = text.match(/(?:universe|symbols?)\s*(?:is|are|:)?\s*([A-Z0-9,&\s-]{2,80})/i);
+  const symbolUniverse = universeMatch
+    ? normalizeUniverse(universeMatch[1].replace(/\band\b/gi, ','))
+    : ['NIFTY 500'];
+  const marketRegimeFilter = [
+    /bullish|uptrend|bull market/i.test(lower) ? 'Bullish' : null,
+    /sideways|range bound|range-bound/i.test(lower) ? 'Sideways' : null,
+    /bearish|downtrend|bear market/i.test(lower) ? 'Bearish' : null,
+    /high volatility/i.test(lower) ? 'High Volatility Risk' : null,
+  ].filter((v): v is string => Boolean(v));
+  if (isFibonacciPullback && !marketRegimeFilter.includes('Bullish')) {
+    marketRegimeFilter.push('Bullish');
+  }
+
   return {
-    name,
-    description: text.slice(0, 500),
-    timeframe: /intraday|1m|5m|15m/i.test(text) ? 'daily' : 'swing', // intraday not supported — downgrade
+    name: isFibonacciPullback && name === 'AI Strategy' ? 'Bullish Fibonacci Pullback' : name,
+    description: isFibonacciPullback
+      ? 'Bullish pullback strategy that looks for price reacting from a Fibonacci retracement zone inside an intact uptrend.'
+      : text.slice(0, 500),
+    market,
+    symbolUniverse,
+    timeframe,
     direction: /short|sell|bearish/i.test(lower) && !/long|buy|bullish/i.test(lower) ? 'short' : 'long',
+    marketRegimeFilter,
     source: 'ai',
     entry: { operator: 'AND', conditions: entryConditions },
     exit: { operator: 'OR', conditions: exitConditions },
     stopLoss,
     targets,
     risk,
-    metadata: { aiPrompt: text },
+    metadata: {
+      aiPrompt: text,
+      parentStrategyId: isFibonacciPullback ? 'fibonacci_pullback' : undefined,
+    },
   };
 }

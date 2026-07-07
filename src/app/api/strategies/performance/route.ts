@@ -39,6 +39,7 @@ import {
   type PerformanceWindow,
   type StrategyPerformance,
   type StrategyPerformanceReport,
+  type PerformanceOutcomeRow,
 } from '@/lib/strategies/strategyPerformance';
 
 export const dynamic    = 'force-dynamic';
@@ -60,6 +61,47 @@ interface PerformanceApiEnvelope extends StrategyPerformanceReport {
     strategySnapshots:    number;
     priorityChain:        string[];
   };
+  overall: OverallPerformanceMetrics;
+  charts: PerformanceCharts;
+  filters: {
+    strategyId: string | null;
+    symbol: string | null;
+    timeframe: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    marketRegime: string | null;
+  };
+  filterOptions: {
+    strategies: Array<{ id: string; name: string }>;
+    symbols: string[];
+    regimes: string[];
+    timeframes: string[];
+  };
+}
+
+interface OverallPerformanceMetrics {
+  winRate: number;
+  totalTrades: number;
+  runningTrades: number;
+  closedTrades: number;
+  averageProfit: number;
+  averageLoss: number;
+  bestTrade: number;
+  worstTrade: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  targetHitRate: number;
+  stopLossHitRate: number;
+  averageRiskReward: number;
+}
+
+interface PerformanceCharts {
+  equityCurve: Array<{ date: string; equity: number; pnl: number }>;
+  drawdown: Array<{ date: string; drawdown: number }>;
+  monthlyReturns: Array<{ month: string; returnPct: number; trades: number }>;
+  yearlyReturns: Array<{ year: string; returnPct: number; trades: number }>;
+  dailyHeatmap: Array<{ date: string; returnPct: number; trades: number }>;
+  winLossDistribution: Array<{ bucket: string; wins: number; losses: number }>;
 }
 
 interface StrategyDetailBlock {
@@ -93,6 +135,11 @@ export async function GET(req: NextRequest) {
   const url        = new URL(req.url);
   const window     = parseWindow(url.searchParams.get('window'));
   const strategyId = url.searchParams.get('strategyId')?.trim() || null;
+  const symbol = url.searchParams.get('symbol')?.trim().toUpperCase() || null;
+  const timeframe = url.searchParams.get('timeframe')?.trim() || null;
+  const startDate = url.searchParams.get('startDate')?.trim() || url.searchParams.get('from')?.trim() || null;
+  const endDate = url.searchParams.get('endDate')?.trim() || url.searchParams.get('to')?.trim() || null;
+  const marketRegime = url.searchParams.get('marketRegime')?.trim() || url.searchParams.get('regime')?.trim() || null;
   const include    = parseInclude(url.searchParams.get('include'));
   const minSignals = (() => {
     const n = Number(url.searchParams.get('minSignals'));
@@ -123,7 +170,15 @@ export async function GET(req: NextRequest) {
   // carry the same signalRef, so dedupeOutcomesBySignal collapses the
   // pair to the higher-priority direct row. Backtest rows have
   // signalRef=null and pass through untouched.
-  const outcomes = dedupeOutcomesBySignal([...direct, ...observed, ...backtests]);
+  const unfilteredOutcomes = dedupeOutcomesBySignal([...direct, ...observed, ...backtests]);
+  const filterOptions = buildFilterOptions(unfilteredOutcomes);
+  const outcomes = applyOutcomeFilters(unfilteredOutcomes, {
+    strategyId,
+    symbol,
+    startDate,
+    endDate,
+    marketRegime,
+  });
 
   // Priority-2 snapshot override is applied inside buildPerformanceReport:
   // when a strategy has fewer live evaluated signals than the snapshot
@@ -131,6 +186,9 @@ export async function GET(req: NextRequest) {
   // live ones and performanceSource flips to 'strategy_snapshot' /
   // 'mixed'. Honest disclosure — operator sees the source flip.
   const { report } = buildPerformanceReport(outcomes, window, snapshotsByStrategy);
+  if (timeframe) {
+    report.warnings.push('Timeframe filtering is not applied because persisted strategy outcome rows do not currently store timeframe.');
+  }
 
   // Optional per-strategy floor (display only — never alters the
   // health score or recommendations).
@@ -225,6 +283,17 @@ export async function GET(req: NextRequest) {
         'backtest_trades (completed runs only)',
       ],
     },
+    overall: buildOverallMetrics(outcomes),
+    charts: buildPerformanceCharts(outcomes),
+    filters: {
+      strategyId,
+      symbol,
+      timeframe,
+      startDate,
+      endDate,
+      marketRegime,
+    },
+    filterOptions,
     ...(Object.keys(detail).length > 0 ? { detail } : {}),
     ...(selectedStrategy !== undefined ? { selectedStrategy } : {}),
   };
@@ -234,8 +303,205 @@ export async function GET(req: NextRequest) {
   });
 }
 
+function applyOutcomeFilters(
+  rows: PerformanceOutcomeRow[],
+  filters: {
+    strategyId: string | null;
+    symbol: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    marketRegime: string | null;
+  },
+): PerformanceOutcomeRow[] {
+  const start = filters.startDate ? new Date(`${filters.startDate}T00:00:00`).getTime() : null;
+  const end = filters.endDate ? new Date(`${filters.endDate}T23:59:59`).getTime() : null;
+  return rows.filter((row) => {
+    if (filters.strategyId && row.strategyId !== filters.strategyId) return false;
+    if (filters.symbol && row.symbol.toUpperCase() !== filters.symbol) return false;
+    if (filters.marketRegime && String(row.regime ?? '').toLowerCase() !== filters.marketRegime.toLowerCase()) return false;
+    if (start != null || end != null) {
+      const ts = row.evaluatedAt ? new Date(row.evaluatedAt).getTime() : NaN;
+      if (!Number.isFinite(ts)) return false;
+      if (start != null && ts < start) return false;
+      if (end != null && ts > end) return false;
+    }
+    return true;
+  });
+}
+
+function buildFilterOptions(rows: PerformanceOutcomeRow[]) {
+  const strategyNames = new Map<string, string>();
+  for (const row of rows) {
+    if (!strategyNames.has(row.strategyId)) strategyNames.set(row.strategyId, row.strategyId.replace(/_/g, ' '));
+  }
+  return {
+    strategies: Array.from(strategyNames.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    symbols: Array.from(new Set(rows.map((r) => r.symbol).filter(Boolean))).sort(),
+    regimes: Array.from(new Set(rows.map((r) => r.regime).filter(Boolean) as string[])).sort(),
+    timeframes: ['intraday', 'swing', 'positional', 'daily'],
+  };
+}
+
+function buildOverallMetrics(rows: PerformanceOutcomeRow[]): OverallPerformanceMetrics {
+  const evaluated = rows.filter((r) => r.outcome === 'WIN' || r.outcome === 'LOSS');
+  const tradeRows = rows.filter((r) => r.outcome === 'WIN' || r.outcome === 'LOSS' || r.outcome === 'OPEN');
+  const wins = evaluated.filter((r) => r.outcome === 'WIN');
+  const losses = evaluated.filter((r) => r.outcome === 'LOSS');
+  const winReturns = wins.map((r) => r.returnPct).filter(isFiniteNumber);
+  const lossReturns = losses.map((r) => r.returnPct).filter(isFiniteNumber);
+  const allReturns = evaluated.map((r) => r.returnPct).filter(isFiniteNumber);
+  const grossProfit = winReturns.reduce((sum, value) => sum + Math.max(0, value), 0);
+  const grossLoss = Math.abs(lossReturns.reduce((sum, value) => sum + Math.min(0, value), 0));
+  const mfeAvg = avg(evaluated.map((r) => r.mfePct).filter(isFiniteNumber));
+  const maeAvg = avg(evaluated.map((r) => r.maePct).filter(isFiniteNumber));
+  return {
+    winRate: pct(evaluated.length ? wins.length / evaluated.length : 0),
+    totalTrades: tradeRows.length,
+    runningTrades: rows.filter((r) => r.outcome === 'OPEN').length,
+    closedTrades: evaluated.length,
+    averageProfit: round(avg(winReturns), 2),
+    averageLoss: round(avg(lossReturns), 2),
+    bestTrade: round(allReturns.length ? Math.max(...allReturns) : 0, 2),
+    worstTrade: round(allReturns.length ? Math.min(...allReturns) : 0, 2),
+    profitFactor: round(grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0, 2),
+    maxDrawdown: round(Math.min(...buildDrawdownSeries(evaluated).map((p) => p.drawdown), 0), 2),
+    targetHitRate: pct(evaluated.length ? evaluated.filter((r) => r.targetHit).length / evaluated.length : 0),
+    stopLossHitRate: pct(evaluated.length ? evaluated.filter((r) => r.stopHit).length / evaluated.length : 0),
+    averageRiskReward: round(Math.abs(maeAvg) > 0 ? Math.abs(mfeAvg) / Math.abs(maeAvg) : 0, 2),
+  };
+}
+
+function buildPerformanceCharts(rows: PerformanceOutcomeRow[]): PerformanceCharts {
+  const evaluated = rows
+    .filter((r) => (r.outcome === 'WIN' || r.outcome === 'LOSS') && isFiniteNumber(r.returnPct))
+    .sort((a, b) => String(a.evaluatedAt ?? '').localeCompare(String(b.evaluatedAt ?? '')));
+  return {
+    equityCurve: buildEquityCurve(evaluated),
+    drawdown: buildDrawdownSeries(evaluated),
+    monthlyReturns: buildMonthlyReturns(evaluated),
+    yearlyReturns: buildYearlyReturns(evaluated),
+    dailyHeatmap: buildDailyHeatmap(evaluated),
+    winLossDistribution: buildWinLossDistribution(evaluated),
+  };
+}
+
+function buildEquityCurve(rows: PerformanceOutcomeRow[]) {
+  let equity = 100;
+  return rows.map((row, index) => {
+    const pnl = row.returnPct ?? 0;
+    equity = round(equity * (1 + pnl / 100), 2);
+    return {
+      date: row.evaluatedAt?.slice(0, 10) ?? `Trade ${index + 1}`,
+      equity,
+      pnl: round(pnl, 2),
+    };
+  });
+}
+
+function buildDrawdownSeries(rows: PerformanceOutcomeRow[]) {
+  let equity = 100;
+  let peak = 100;
+  return rows.map((row, index) => {
+    equity = round(equity * (1 + (row.returnPct ?? 0) / 100), 2);
+    peak = Math.max(peak, equity);
+    const drawdownPct = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
+    return {
+      date: row.evaluatedAt?.slice(0, 10) ?? `Trade ${index + 1}`,
+      drawdown: round(drawdownPct, 2),
+    };
+  });
+}
+
+function buildMonthlyReturns(rows: PerformanceOutcomeRow[]): PerformanceCharts['monthlyReturns'] {
+  const grouped = new Map<string, { returnPct: number; trades: number }>();
+  for (const row of rows) {
+    const key = (row.evaluatedAt ?? '').slice(0, 7);
+    if (!key) continue;
+    const current = grouped.get(key) ?? { returnPct: 0, trades: 0 };
+    current.returnPct = round(current.returnPct + (row.returnPct ?? 0), 2);
+    current.trades += 1;
+    grouped.set(key, current);
+  }
+  return Array.from(grouped.entries()).map(([month, value]) => ({
+    month,
+    ...value,
+  }));
+}
+
+function buildYearlyReturns(rows: PerformanceOutcomeRow[]): PerformanceCharts['yearlyReturns'] {
+  const grouped = new Map<string, { returnPct: number; trades: number }>();
+  for (const row of rows) {
+    const key = (row.evaluatedAt ?? '').slice(0, 4);
+    if (!key) continue;
+    const current = grouped.get(key) ?? { returnPct: 0, trades: 0 };
+    current.returnPct = round(current.returnPct + (row.returnPct ?? 0), 2);
+    current.trades += 1;
+    grouped.set(key, current);
+  }
+  return Array.from(grouped.entries()).map(([year, value]) => ({
+    year,
+    ...value,
+  }));
+}
+
+function buildDailyHeatmap(rows: PerformanceOutcomeRow[]) {
+  const grouped = new Map<string, { returnPct: number; trades: number }>();
+  for (const row of rows) {
+    const date = (row.evaluatedAt ?? '').slice(0, 10);
+    if (!date) continue;
+    const current = grouped.get(date) ?? { returnPct: 0, trades: 0 };
+    current.returnPct = round(current.returnPct + (row.returnPct ?? 0), 2);
+    current.trades += 1;
+    grouped.set(date, current);
+  }
+  return Array.from(grouped.entries()).map(([date, value]) => ({ date, ...value }));
+}
+
+function buildWinLossDistribution(rows: PerformanceOutcomeRow[]) {
+  const buckets = [
+    { bucket: '< -5%', min: -Infinity, max: -5 },
+    { bucket: '-5% to -2%', min: -5, max: -2 },
+    { bucket: '-2% to 0%', min: -2, max: 0 },
+    { bucket: '0% to 2%', min: 0, max: 2 },
+    { bucket: '2% to 5%', min: 2, max: 5 },
+    { bucket: '> 5%', min: 5, max: Infinity },
+  ];
+  return buckets.map((bucket) => {
+    const matches = rows.filter((row) => {
+      const value = row.returnPct ?? 0;
+      return value >= bucket.min && value < bucket.max;
+    });
+    return {
+      bucket: bucket.bucket,
+      wins: matches.filter((row) => row.outcome === 'WIN').length,
+      losses: matches.filter((row) => row.outcome === 'LOSS').length,
+    };
+  });
+}
+
 function avgIgnoreZero(xs: number[]): number {
   const filtered = xs.filter((v) => v > 0);
   if (filtered.length === 0) return 0;
   return filtered.reduce((a, b) => a + b, 0) / filtered.length;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function avg(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function round(value: number, precision = 1): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+}
+
+function pct(value: number): number {
+  return round(value * 100, 1);
 }

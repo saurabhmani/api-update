@@ -30,6 +30,7 @@ export async function ensurePaperTradingTables(): Promise<void> {
         unrealized_pnl DECIMAL(18,2) NOT NULL DEFAULT 0,
         max_daily_loss_pct DECIMAL(6,2) NOT NULL DEFAULT 2,
         max_open_positions INT NOT NULL DEFAULT 5,
+        max_trades_per_day INT NOT NULL DEFAULT 20,
         risk_per_trade_pct DECIMAL(6,2) NOT NULL DEFAULT 0.5,
         max_consecutive_losses INT NOT NULL DEFAULT 3,
         max_symbol_exposure_pct DECIMAL(6,2) NOT NULL DEFAULT 15,
@@ -155,6 +156,7 @@ export async function ensurePaperTradingTables(): Promise<void> {
         risk_per_trade_pct DECIMAL(6,2) NOT NULL DEFAULT 0.5,
         max_daily_loss_pct DECIMAL(6,2) NOT NULL DEFAULT 2,
         max_open_positions INT NOT NULL DEFAULT 5,
+        max_trades_per_day INT NOT NULL DEFAULT 20,
         max_consecutive_losses INT NOT NULL DEFAULT 3,
         max_symbol_exposure_pct DECIMAL(6,2) NOT NULL DEFAULT 15,
         max_strategy_exposure_pct DECIMAL(6,2) NOT NULL DEFAULT 25,
@@ -184,6 +186,8 @@ export async function ensurePaperTradingTables(): Promise<void> {
         INDEX idx_risk_events_account (account_id, created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+    await db.query(`ALTER TABLE paper_accounts ADD COLUMN max_trades_per_day INT NOT NULL DEFAULT 20`).catch(() => null);
+    await db.query(`ALTER TABLE risk_profiles ADD COLUMN max_trades_per_day INT NOT NULL DEFAULT 20`).catch(() => null);
     migrated = true;
   } catch {
     migrated = true;
@@ -196,6 +200,7 @@ function mapRisk(row: Record<string, unknown>): PaperRiskConfig {
     riskPerTradePct: Number(row.risk_per_trade_pct ?? DEFAULT_PAPER_RISK.riskPerTradePct),
     maxDailyLossPct: Number(row.max_daily_loss_pct ?? DEFAULT_PAPER_RISK.maxDailyLossPct),
     maxOpenPositions: Number(row.max_open_positions ?? DEFAULT_PAPER_RISK.maxOpenPositions),
+    maxTradesPerDay: Number(row.max_trades_per_day ?? DEFAULT_PAPER_RISK.maxTradesPerDay),
     maxConsecutiveLosses: Number(row.max_consecutive_losses ?? DEFAULT_PAPER_RISK.maxConsecutiveLosses),
     maxSymbolExposurePct: Number(row.max_symbol_exposure_pct ?? DEFAULT_PAPER_RISK.maxSymbolExposurePct),
     maxStrategyExposurePct: Number(row.max_strategy_exposure_pct ?? DEFAULT_PAPER_RISK.maxStrategyExposurePct),
@@ -306,13 +311,13 @@ export async function insertAccount(
   await db.query(
     `INSERT INTO paper_accounts
        (id, user_id, name, virtual_capital, cash_balance, equity,
-        max_daily_loss_pct, max_open_positions, risk_per_trade_pct, max_consecutive_losses,
+        max_daily_loss_pct, max_open_positions, max_trades_per_day, risk_per_trade_pct, max_consecutive_losses,
         max_symbol_exposure_pct, max_strategy_exposure_pct, slippage_bps,
         circuit_breaker_drop_pct, high_volatility_atr_pct)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, userId, name, capital, capital, capital,
-      r.maxDailyLossPct, r.maxOpenPositions, r.riskPerTradePct, r.maxConsecutiveLosses,
+      r.maxDailyLossPct, r.maxOpenPositions, r.maxTradesPerDay, r.riskPerTradePct, r.maxConsecutiveLosses,
       r.maxSymbolExposurePct, r.maxStrategyExposurePct, r.slippageBps,
       r.circuitBreakerDropPct, r.highVolatilityAtrPct,
     ],
@@ -613,14 +618,15 @@ export async function upsertRiskProfile(
   await db.query(
     `INSERT INTO risk_profiles
        (id, user_id, account_id, virtual_capital, risk_per_trade_pct, max_daily_loss_pct,
-        max_open_positions, max_consecutive_losses, max_symbol_exposure_pct,
+        max_open_positions, max_trades_per_day, max_consecutive_losses, max_symbol_exposure_pct,
         max_strategy_exposure_pct, slippage_bps, circuit_breaker_drop_pct,
         high_volatility_atr_pct, kill_switch_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        account_id=VALUES(account_id), virtual_capital=VALUES(virtual_capital),
        risk_per_trade_pct=VALUES(risk_per_trade_pct), max_daily_loss_pct=VALUES(max_daily_loss_pct),
-       max_open_positions=VALUES(max_open_positions), max_consecutive_losses=VALUES(max_consecutive_losses),
+       max_open_positions=VALUES(max_open_positions), max_trades_per_day=VALUES(max_trades_per_day),
+       max_consecutive_losses=VALUES(max_consecutive_losses),
        max_symbol_exposure_pct=VALUES(max_symbol_exposure_pct),
        max_strategy_exposure_pct=VALUES(max_strategy_exposure_pct), slippage_bps=VALUES(slippage_bps),
        circuit_breaker_drop_pct=VALUES(circuit_breaker_drop_pct),
@@ -628,7 +634,7 @@ export async function upsertRiskProfile(
        kill_switch_active=VALUES(kill_switch_active), updated_at=NOW()`,
     [
       id, userId, accountId, r.virtualCapital, r.riskPerTradePct, r.maxDailyLossPct,
-      r.maxOpenPositions, r.maxConsecutiveLosses, r.maxSymbolExposurePct,
+      r.maxOpenPositions, r.maxTradesPerDay, r.maxConsecutiveLosses, r.maxSymbolExposurePct,
       r.maxStrategyExposurePct, r.slippageBps, r.circuitBreakerDropPct,
       r.highVolatilityAtrPct, killActive,
     ],
@@ -636,13 +642,13 @@ export async function upsertRiskProfile(
   if (accountId) {
     const acctSets = [
       'virtual_capital=?', 'risk_per_trade_pct=?', 'max_daily_loss_pct=?',
-      'max_open_positions=?', 'max_consecutive_losses=?', 'max_symbol_exposure_pct=?',
+      'max_open_positions=?', 'max_trades_per_day=?', 'max_consecutive_losses=?', 'max_symbol_exposure_pct=?',
       'max_strategy_exposure_pct=?', 'slippage_bps=?', 'circuit_breaker_drop_pct=?',
       'high_volatility_atr_pct=?',
     ];
     const acctVals: unknown[] = [
       r.virtualCapital, r.riskPerTradePct, r.maxDailyLossPct, r.maxOpenPositions,
-      r.maxConsecutiveLosses, r.maxSymbolExposurePct, r.maxStrategyExposurePct,
+      r.maxTradesPerDay, r.maxConsecutiveLosses, r.maxSymbolExposurePct, r.maxStrategyExposurePct,
       r.slippageBps, r.circuitBreakerDropPct, r.highVolatilityAtrPct,
     ];
     if (risk.killSwitchActive != null) {

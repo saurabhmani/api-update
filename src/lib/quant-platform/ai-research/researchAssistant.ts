@@ -69,9 +69,9 @@ export async function explainMarketConditions(): Promise<ResearchSection[]> {
 
 export async function explainSignal(symbol: string): Promise<ResearchSection[]> {
   const { rows } = await db.query(
-    `SELECT symbol, direction, confidence_score, strategy_group, market_regime, risk_score,
-            portfolio_fit_score, stress_survival_score, explanation_json, updated_at
-       FROM q365_signals WHERE symbol = ? ORDER BY updated_at DESC LIMIT 1`,
+    `SELECT symbol, direction, confidence_score, scenario_tag, signal_type, market_regime, risk_score,
+            portfolio_fit_score, stress_survival_score, explanation_json, generated_at, last_rescored_at
+       FROM q365_signals WHERE symbol = ? ORDER BY generated_at DESC LIMIT 1`,
     [symbol.toUpperCase()],
   );
   const sig = rows[0] as any;
@@ -84,6 +84,9 @@ export async function explainSignal(symbol: string): Promise<ResearchSection[]> 
       riskWarnings: ['No signal data — cannot assess trade risk'],
     }];
   }
+
+  const strategyLabel = sig.scenario_tag ?? sig.signal_type ?? 'unknown strategy';
+  const asOf = sig.last_rescored_at ?? sig.generated_at ?? 'unknown';
 
   const riskWarnings: string[] = [];
   const riskScore = Number(sig.risk_score ?? 0);
@@ -98,9 +101,9 @@ export async function explainSignal(symbol: string): Promise<ResearchSection[]> 
   const sections: ResearchSection[] = [
     {
       title: 'Signal Overview',
-      content: `${sig.symbol} — ${sig.direction} signal via ${sig.strategy_group ?? 'unknown strategy'}. Confidence: ${sig.confidence_score ?? 'N/A'}%.`,
+      content: `${sig.symbol} — ${sig.direction} signal via ${strategyLabel}. Confidence: ${sig.confidence_score ?? 'N/A'}%.`,
       confidence: Number(sig.confidence_score ?? 50) / 100,
-      dataSources: [`q365_signals (updated ${sig.updated_at ?? 'unknown'})`],
+      dataSources: [`q365_signals (as of ${asOf})`],
       riskWarnings,
     },
     {

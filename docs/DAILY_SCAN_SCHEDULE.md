@@ -24,6 +24,9 @@ PREOPEN_CANDLE_WARMUP_ENABLED=false
 SIGNAL_INTRADAY_REGEN_ENABLED=false
 SIGNALS_AUTO_RECOVERY_ENABLED=false
 SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=false
+UNIVERSE_MODE=NSE1000
+UNIVERSE_TARGET_SIZE=1000
+UNIVERSE_ALLOW_BAND=false
 ```
 
 ### Purpose
@@ -132,6 +135,9 @@ PREOPEN_CANDLE_WARMUP_ENABLED=false
 SIGNAL_INTRADAY_REGEN_ENABLED=false
 SIGNALS_AUTO_RECOVERY_ENABLED=false
 SIGNALS_AUTO_RECOVERY_ALLOW_ON_READ=false
+UNIVERSE_MODE=NSE1000
+UNIVERSE_TARGET_SIZE=1000
+UNIVERSE_ALLOW_BAND=false
 
 # Optional legacy duplicate Phase-4 scan at 18:30 IST (off by default)
 SIGNAL_LEGACY_EVENING_SCAN_1830=false
@@ -141,6 +147,9 @@ SIGNAL_LEGACY_EVENING_SCAN_CRON="30 18 * * 1-5"
 ## Manual triggers
 
 ```bash
+npx tsx scripts/loadSecuritiesMaster.ts
+npx tsx scripts/weeklyNse1000UniverseRebuild.ts --target 1000
+npx tsx scripts/validateNse1000UniverseAcceptance.ts
 npx tsx scripts/runDailyScanJob.ts readiness-check
 npx tsx scripts/runDailyScanJob.ts first-morning-scan
 npx tsx scripts/runDailyScanJob.ts main-morning-scan

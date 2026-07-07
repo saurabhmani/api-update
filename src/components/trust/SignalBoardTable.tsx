@@ -7,7 +7,11 @@ import type { SignalBoardFilters } from '@/hooks/trust/useTrustSignals';
 import { fmt } from '@/lib/utils';
 
 export function SignalBoardTable() {
-  const [filters, setFilters] = useState<SignalBoardFilters>({ status: 'active', limit: 50 });
+  // Default to `all` so users see something on the first page load even when
+  // the confirmed-signals table has no live rows yet. The old default was
+  // `active`, which returned an empty list off-hours and made the tab look
+  // broken.
+  const [filters, setFilters] = useState<SignalBoardFilters>({ status: 'all', limit: 50 });
   const { data: signals, isLoading } = useTrustSignals(filters);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const { data: reasons } = useSignalReasons(selectedId);
@@ -17,6 +21,10 @@ export function SignalBoardTable() {
 
   const rows = signals ?? [];
   const strategies = [...new Set(rows.map((r) => r.strategy).filter(Boolean))] as string[];
+  const activeCount = rows.filter((r) => r.lifecycle === 'active').length;
+  const closedCount = rows.length - activeCount;
+  const showingAllHint =
+    filters.status === 'all' && activeCount === 0 && closedCount > 0;
 
   return (
     <div>
@@ -30,9 +38,9 @@ export function SignalBoardTable() {
               value={filters.status ?? 'active'}
               onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value as SignalBoardFilters['status'] }))}
             >
+              <option value="all">All</option>
               <option value="active">Active</option>
               <option value="closed">Closed</option>
-              <option value="all">All</option>
             </select>
             <select
               className="input"
@@ -63,6 +71,15 @@ export function SignalBoardTable() {
         }
         flush
       >
+        {showingAllHint && (
+          <div style={{
+            padding: '8px 16px', fontSize: 12, color: '#64748B',
+            background: '#F8FAFC', borderBottom: '1px solid #E2E8F0',
+          }}>
+            No active signals right now — showing {closedCount} recent closed rows.
+            Switch the filter above to <strong>Active</strong> once new signals confirm.
+          </div>
+        )}
         <div style={{ overflowX: 'auto' }}>
           <table className="table table--compact">
             <thead>
@@ -80,12 +97,14 @@ export function SignalBoardTable() {
                 <th>Conf</th>
                 <th>Regime adj</th>
                 <th>Reason</th>
+                <th>Sources</th>
                 <th>Warning</th>
+                <th>Inst. warning</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && (
-                <tr><td colSpan={14} style={{ textAlign: 'center', padding: 24, color: '#94A3B8' }}>No signals match filters</td></tr>
+                <tr><td colSpan={16} style={{ textAlign: 'center', padding: 24, color: '#94A3B8' }}>No signals match filters</td></tr>
               )}
               {rows.map((row) => (
                 <tr
@@ -116,7 +135,24 @@ export function SignalBoardTable() {
                     {row.regimeModifier >= 0 ? '+' : ''}{row.regimeModifier}
                   </td>
                   <td style={{ maxWidth: 140, fontSize: '0.8rem' }}>{row.reasons[0] ?? '—'}</td>
+                  <td style={{ maxWidth: 120 }}>
+                    {(row.reasonSources ?? []).length === 0 ? (
+                      <span style={{ fontSize: '0.75rem', color: '#94A3B8' }}>—</span>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {(row.reasonSources ?? []).map((s) => (
+                          <Badge key={s} variant="gray">{s}</Badge>
+                        ))}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ maxWidth: 120, fontSize: '0.8rem', color: '#B45309' }}>{row.warnings[0] ?? '—'}</td>
+                  <td
+                    style={{ maxWidth: 140, fontSize: '0.8rem', color: '#DC2626' }}
+                    title={row.institutionalWarnings.join(' • ')}
+                  >
+                    {row.institutionalWarnings[0] ?? '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

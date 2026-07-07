@@ -26,7 +26,18 @@ export async function saveBacktestRun(
   await db.query(
     `INSERT INTO backtest_runs (run_id, name, config_json, status, started_at, completed_at, duration_ms, error, summary_json, strategy_breakdown_json, regime_breakdown_json, signal_count, trade_count)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE status=VALUES(status), completed_at=VALUES(completed_at), error=VALUES(error), summary_json=VALUES(summary_json), strategy_breakdown_json=VALUES(strategy_breakdown_json), regime_breakdown_json=VALUES(regime_breakdown_json)`,
+     ON DUPLICATE KEY UPDATE
+       name=VALUES(name),
+       config_json=VALUES(config_json),
+       status=VALUES(status),
+       completed_at=VALUES(completed_at),
+       duration_ms=VALUES(duration_ms),
+       error=VALUES(error),
+       summary_json=VALUES(summary_json),
+       strategy_breakdown_json=VALUES(strategy_breakdown_json),
+       regime_breakdown_json=VALUES(regime_breakdown_json),
+       signal_count=VALUES(signal_count),
+       trade_count=VALUES(trade_count)`,
     [
       run.runId, run.config.name, JSON.stringify(run.config),
       run.status, toMysqlDatetime(run.startedAt), toMysqlDatetime(run.completedAt), run.durationMs, run.error,

@@ -10,6 +10,7 @@ import {
   loadStrategyPerformanceSnapshots,
   buildPerformanceReport,
   dedupeOutcomesBySignal,
+  MIN_FOR_LIMITED,
   type PerformanceWindow,
 } from '@/lib/strategies/strategyPerformance';
 import type { TrustStrategyPerformanceRow } from '../types';
@@ -29,15 +30,33 @@ export async function loadTrustStrategyPerformance(
   const deduped = dedupeOutcomesBySignal([...direct, ...observed, ...backtest]);
   const { report } = buildPerformanceReport(deduped, w, snapshots);
 
-  return report.strategies.map((s) => ({
-    strategyId: s.strategyId,
-    displayName: s.strategyName,
-    winRate: s.winRate,
-    totalTrades: s.evaluatedSignals,
-    averageProfit: s.averageWinPct,
-    averageLoss: s.averageLossPct,
-    bestTrade: s.bestReturnPct,
-    worstTrade: s.worstReturnPct,
-    dataStatus: s.evaluatedSignals >= 3 ? 'AVAILABLE' as const : 'INSUFFICIENT' as const,
-  }));
+  // Use the ranked leaderboard — same contract as /strategies/performance.
+  // Do NOT dump the full registry: empty strategies were showing 0.0%
+  // win rates that looked like real metrics.
+  const detailById = new Map(report.strategies.map((s) => [s.strategyId, s]));
+
+  return report.leaderboard
+    .filter((e) => e.evaluatedSignals > 0)
+    .map((e) => {
+      const detail = detailById.get(e.strategyId);
+      const performanceStatus = e.performanceStatus;
+      const hasReliableSample =
+        performanceStatus !== 'INSUFFICIENT_DATA' &&
+        e.evaluatedSignals >= MIN_FOR_LIMITED;
+
+      return {
+        strategyId: e.strategyId,
+        displayName: e.strategyName,
+        winRate: e.winRate,
+        totalTrades: e.evaluatedSignals,
+        averageProfit: detail?.averageWinPct ?? 0,
+        averageLoss: Math.abs(detail?.averageLossPct ?? 0),
+        bestTrade: detail?.bestReturnPct ?? 0,
+        worstTrade: detail?.worstReturnPct ?? 0,
+        dataStatus: hasReliableSample ? 'AVAILABLE' as const : 'INSUFFICIENT' as const,
+        performanceStatus,
+        performanceSource: detail?.performanceSource ?? 'insufficient_data',
+        healthLabel: e.healthLabel,
+      };
+    });
 }

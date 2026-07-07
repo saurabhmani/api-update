@@ -4,10 +4,63 @@ import { db } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
+const DIRECTIONS = new Set(['BUY', 'SELL']);
+const OUTCOMES = new Set(['open', 'win', 'loss', 'breakeven']);
+
+function clampLimit(raw: string | null): number {
+  const n = Number.parseInt(raw || '50', 10);
+  if (!Number.isFinite(n)) return 50;
+  return Math.min(200, Math.max(1, n));
+}
+
+function asNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asDateString(value: unknown): string | null {
+  if (!value) return null;
+  const d = new Date(String(value));
+  return Number.isFinite(d.getTime()) ? String(value) : null;
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      return normalizeTags(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((tag) => String(tag).trim())
+      .filter(Boolean)
+      .slice(0, 20),
+  ));
+}
+
+function computeOutcome(direction: string, entryPrice: number, exitPrice: number | null, quantity: number) {
+  if (exitPrice == null) return { outcome: 'open', pnl: null as number | null, pnl_pct: null as number | null };
+  const pnl = direction === 'BUY'
+    ? (exitPrice - entryPrice) * quantity
+    : (entryPrice - exitPrice) * quantity;
+  const basis = entryPrice * quantity;
+  const pnl_pct = basis > 0 ? (pnl / basis) * 100 : 0;
+  const outcome = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
+  return {
+    outcome,
+    pnl: Number(pnl.toFixed(2)),
+    pnl_pct: Number(pnl_pct.toFixed(4)),
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const user = await requireSession();
-    const limit = parseInt(req.nextUrl.searchParams.get('limit') || '50');
+    const limit = clampLimit(req.nextUrl.searchParams.get('limit'));
     const { rows } = await db.query(
       `SELECT * FROM trade_journal WHERE user_id=? ORDER BY entry_date DESC LIMIT ?`,
       [user.id, limit]
@@ -28,24 +81,27 @@ export async function POST(req: NextRequest) {
       emotion_entry, emotion_exit, tags,
     } = body;
 
-    if (!tradingsymbol || !direction || !entry_price || !quantity || !entry_date) {
+    const symbol = String(tradingsymbol || '').trim().toUpperCase();
+    const dir = String(direction || '').trim().toUpperCase();
+    const entryNum = asNumber(entry_price);
+    const exitNum = asNumber(exit_price);
+    const qtyNum = Number.parseInt(String(quantity ?? ''), 10);
+    const entryDate = asDateString(entry_date);
+    const exitDate = asDateString(exit_date);
+
+    if (!symbol || !dir || entryNum == null || !qtyNum || !entryDate) {
       return NextResponse.json({ error: 'tradingsymbol, direction, entry_price, quantity, entry_date required' }, { status: 400 });
     }
-
-    // Compute P&L if exit provided
-    let pnl: number | null = null;
-    let pnl_pct: number | null = null;
-    let outcome = 'open';
-    if (exit_price && entry_price && quantity) {
-      const exitNum  = parseFloat(exit_price);
-      const entryNum = parseFloat(entry_price);
-      const qtyNum   = parseInt(quantity);
-      pnl     = direction === 'BUY'
-        ? (exitNum - entryNum) * qtyNum
-        : (entryNum - exitNum) * qtyNum;
-      pnl_pct = ((pnl / (entryNum * qtyNum)) * 100);
-      outcome = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
+    if (!DIRECTIONS.has(dir)) return NextResponse.json({ error: 'direction must be BUY or SELL' }, { status: 400 });
+    if (entryNum <= 0) return NextResponse.json({ error: 'entry_price must be greater than 0' }, { status: 400 });
+    if (qtyNum <= 0) return NextResponse.json({ error: 'quantity must be greater than 0' }, { status: 400 });
+    if (exit_price !== undefined && exit_price !== '' && (exitNum == null || exitNum <= 0)) {
+      return NextResponse.json({ error: 'exit_price must be greater than 0 when provided' }, { status: 400 });
     }
+    if (exitNum != null && !exitDate) return NextResponse.json({ error: 'exit_date required when exit_price is provided' }, { status: 400 });
+
+    const { outcome, pnl, pnl_pct } = computeOutcome(dir, entryNum, exitNum, qtyNum);
+    const normalizedTags = normalizeTags(tags);
 
     const insert = await db.query(`
       INSERT INTO trade_journal
@@ -53,19 +109,19 @@ export async function POST(req: NextRequest) {
          entry_date, exit_date, strategy, timeframe, notes, outcome, pnl, pnl_pct,
          emotion_entry, emotion_exit, tags)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [user.id, tradingsymbol.toUpperCase(), exchange || 'NSE', direction,
-       parseFloat(entry_price), exit_price ? parseFloat(exit_price) : null,
-       parseInt(quantity), entry_date, exit_date || null, strategy || null,
+      [user.id, symbol, exchange || 'NSE', dir,
+       entryNum, exitNum,
+       qtyNum, entryDate, exitDate, strategy || null,
        timeframe || null, notes || null, outcome, pnl, pnl_pct,
-       emotion_entry || null, emotion_exit || null, JSON.stringify(tags || [])]
+       emotion_entry || null, emotion_exit || null, JSON.stringify(normalizedTags)]
     );
 
     // db.query() returns { rows: [], insertId, affectedRows } for INSERTs.
     // rows is always empty, so we must re-SELECT to return the row.
     const insertId = insert.insertId;
     console.log(
-      `[TRADE_JOURNAL] INSERT user=${user.id} symbol=${tradingsymbol.toUpperCase()} ` +
-      `dir=${direction} qty=${quantity} entry=${entry_price} insertId=${insertId ?? 'undefined'}`
+      `[TRADE_JOURNAL] INSERT user=${user.id} symbol=${symbol} ` +
+      `dir=${dir} qty=${qtyNum} entry=${entryNum} insertId=${insertId ?? 'undefined'}`
     );
     if (!insertId) {
       console.error('[TRADE_JOURNAL] ❌ insertId undefined — INSERT did not return an id');
@@ -90,33 +146,60 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const user = await requireSession();
-    const { id, exit_price, exit_date, notes, emotion_exit } = await req.json();
+    const body = await req.json();
+    const { id } = body;
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    // Re-compute outcome
     const { rows: existing } = await db.query(`SELECT * FROM trade_journal WHERE id=? AND user_id=?`, [id, user.id]);
     if (!existing.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    const t      = existing[0];
-    let pnl      = t.pnl;
-    let pnl_pct  = t.pnl_pct;
-    let outcome  = t.outcome;
+    const t = existing[0];
+    const exitPrice = Object.prototype.hasOwnProperty.call(body, 'exit_price')
+      ? asNumber(body.exit_price)
+      : asNumber(t.exit_price);
+    const exitDate = Object.prototype.hasOwnProperty.call(body, 'exit_date')
+      ? asDateString(body.exit_date)
+      : (t.exit_date ?? null);
 
-    if (exit_price) {
-      const exitNum  = parseFloat(exit_price);
-      const entryNum = parseFloat(t.entry_price);
-      pnl     = t.direction === 'BUY' ? (exitNum - entryNum) * t.quantity : (entryNum - exitNum) * t.quantity;
-      pnl_pct = (pnl / (entryNum * t.quantity)) * 100;
-      outcome = pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven';
+    if (Object.prototype.hasOwnProperty.call(body, 'exit_price') && body.exit_price !== '' && (exitPrice == null || exitPrice <= 0)) {
+      return NextResponse.json({ error: 'exit_price must be greater than 0 when provided' }, { status: 400 });
     }
+    if (exitPrice != null && !exitDate) return NextResponse.json({ error: 'exit_date required when exit_price is provided' }, { status: 400 });
+
+    const computed = computeOutcome(
+      String(t.direction).toUpperCase(),
+      Number(t.entry_price),
+      exitPrice,
+      Number(t.quantity),
+    );
+    const outcome = Object.prototype.hasOwnProperty.call(body, 'outcome') && OUTCOMES.has(String(body.outcome))
+      ? String(body.outcome)
+      : computed.outcome;
+    const notes = Object.prototype.hasOwnProperty.call(body, 'notes') ? String(body.notes ?? '') : t.notes;
+    const emotionEntry = Object.prototype.hasOwnProperty.call(body, 'emotion_entry') ? (body.emotion_entry || null) : t.emotion_entry;
+    const emotionExit = Object.prototype.hasOwnProperty.call(body, 'emotion_exit') ? (body.emotion_exit || null) : t.emotion_exit;
+    const strategy = Object.prototype.hasOwnProperty.call(body, 'strategy') ? (body.strategy || null) : t.strategy;
+    const timeframe = Object.prototype.hasOwnProperty.call(body, 'timeframe') ? (body.timeframe || null) : t.timeframe;
+    const tags = Object.prototype.hasOwnProperty.call(body, 'tags') ? normalizeTags(body.tags) : normalizeTags(t.tags);
 
     await db.query(
-      `UPDATE trade_journal SET exit_price=?, exit_date=?, notes=?, emotion_exit=?, outcome=?, pnl=?, pnl_pct=? WHERE id=? AND user_id=?`,
-      [exit_price ? parseFloat(exit_price) : t.exit_price, exit_date || t.exit_date, notes || t.notes, emotion_exit || t.emotion_exit, outcome, pnl, pnl_pct, id, user.id]
+      `UPDATE trade_journal
+          SET exit_price=?, exit_date=?, notes=?, emotion_entry=?, emotion_exit=?,
+              strategy=?, timeframe=?, tags=?, outcome=?, pnl=?, pnl_pct=?
+        WHERE id=? AND user_id=?`,
+      [exitPrice, exitDate, notes, emotionEntry, emotionExit,
+       strategy, timeframe, JSON.stringify(tags), outcome, computed.pnl, computed.pnl_pct, id, user.id]
     );
 
-    return NextResponse.json({ success: true, outcome, pnl, pnl_pct });
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { rows: fresh } = await db.query(
+      `SELECT * FROM trade_journal WHERE id=? AND user_id=?`,
+      [id, user.id],
+    );
+
+    return NextResponse.json({ success: true, trade: fresh[0] ?? null });
+  } catch (e: any) {
+    if (e.status === 401) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    console.error('[TRADE_JOURNAL] PATCH failed:', e?.message ?? e);
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }

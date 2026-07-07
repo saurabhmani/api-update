@@ -15,7 +15,6 @@ import { cacheGet }        from '@/lib/redis';
 // applyLiveSanity import removed: read repos are read-only.
 // Live validation is owned by runConfirmedSnapshotLifecycle (cron).
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
-import { getActiveConfirmedSnapshots } from '@/lib/signal-engine/repository/readConfirmedSnapshots';
 
 // ════════════════════════════════════════════════════════════════
 //  Signal-status derivation
@@ -988,6 +987,19 @@ function resolveMarketContextTag(regime: string): string {
   return 'Neutral';
 }
 
+/** Map DB confidence_band labels to the four conviction_dist keys. */
+function normalizeConvictionBand(band: string | null | undefined, confidence: number): string {
+  const key = String(band ?? '').toLowerCase().replace(/\s+/g, '_');
+  if (key === 'high_conviction' || key === 'high') return 'high_conviction';
+  if (key === 'actionable' || key === 'medium') return 'actionable';
+  if (key === 'watchlist' || key === 'low') return 'watchlist';
+  if (key === 'reject' || key === 'avoid' || key === 'ignore') return 'reject';
+  if (confidence >= 85) return 'high_conviction';
+  if (confidence >= 70) return 'actionable';
+  if (confidence >= 55) return 'watchlist';
+  return 'reject';
+}
+
 export async function getIntelligenceSignals(): Promise<{
   buySignals:    Record<string, IntelligenceSignal[]>;
   sellSignals:   Record<string, IntelligenceSignal[]>;
@@ -1001,43 +1013,12 @@ export async function getIntelligenceSignals(): Promise<{
     conviction_distribution: Record<string, number>;
   };
 }> {
-  // Two-layer split: intelligence reads from confirmed snapshots, the
-  // same source the main /signals page reads from. Snapshots have
-  // already cleared every gate (rejection engine, live validation, rr
-  // / conf / edge floor) so there is no per-call gate-recheck here —
-  // the previous applyLiveSanity + strict classification/score gate
-  // applied to q365_signals (the live scanner) and is no longer
-  // appropriate against locked snapshots.
-  //
-  // Snapshot rows don't carry every legacy q365_signals column —
-  // adapt the few fields downstream code reads so the existing
-  // grouping / aggregation logic keeps working without a rewrite.
-  const rawSnapshots = await getActiveConfirmedSnapshots({ limit: 200 });
-  const signals: any[] = rawSnapshots.map((r) => {
-    const gate = (r.gate_details ?? {}) as Record<string, unknown>;
-    const klass = String(r.classification ?? '').toUpperCase();
-    const conviction =
-      klass === 'INSTITUTIONAL_HIGH_CONVICTION' || klass === 'HIGH_CONVICTION_BUY'
-        ? 'high_conviction'
-        : klass === 'HIGH_CONVICTION'
-          ? 'high_conviction'
-          : klass === 'VALID_SIGNAL' || klass === 'VALID_BUY'
-            ? 'actionable'
-            : 'watchlist';
-    return {
-      ...r,
-      regime:            (gate.regime as string)        ?? 'NEUTRAL',
-      market_stance:     (gate.market_stance as string) ?? 'selective',
-      scenario_tag:      r.strategy ?? 'NO_STRATEGY',
-      conviction_band:   (gate.confidence_band as string) ?? conviction,
-      risk_score:        Number(gate.risk_score ?? 50),
-      risk:              (gate.confidence_band as string) ?? 'medium',
-      opportunity_score: Number(r.confidence_score ?? 0),
-      timeframe:         'swing',
-      ltp:               r.entry_price,
-      pct_change:        null,
-    };
-  });
+  // Intelligence Hub is the strategy-grouped analytical view over the
+  // live scanner pool (q365_signals), not the tradeable confirmed-
+  // snapshot table. /signals reads confirmed snapshots; this page
+  // surfaces APPROVED + DEVELOPING_SETUP rows (per SIGNAL_RELAX_MODE)
+  // with reasons/warnings from q365_signal_reasons keyed by signal id.
+  const signals = await getActiveSignals(200);
 
   // Batch-fetch reasons for all signals
   const signalIds = signals.map((s: any) => s.id).filter(Boolean);
@@ -1085,7 +1066,7 @@ export async function getIntelligenceSignals(): Promise<{
     const regime   = s.regime || 'NEUTRAL';
     const scenario = s.scenario_tag || 'NO_STRATEGY';
     const conf     = s.confidence_score || 0;
-    const band     = s.conviction_band || 'watchlist';
+    const band     = normalizeConvictionBand(s.conviction_band, conf);
 
     const signalType   = (s.signal_type ?? s.strategy ?? '').toString();
     const stratGroup   = signalType === 'fibonacci_pullback'

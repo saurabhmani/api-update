@@ -9,10 +9,11 @@ interface Props {
   preview: StrategyPreviewResult | null;
   dsl?: string;
   json?: string;
+  backtestConfig?: string;
 }
 
-export function StrategyPreviewPanel({ preview, dsl, json }: Props) {
-  if (!preview && !dsl && !json) return null;
+export function StrategyPreviewPanel({ preview, dsl, json, backtestConfig }: Props) {
+  if (!preview && !dsl && !json && !backtestConfig) return null;
 
   return (
     <>
@@ -20,27 +21,41 @@ export function StrategyPreviewPanel({ preview, dsl, json }: Props) {
         <Card compact>
           <h3 className={styles.panelTitle}><Eye size={16} /> Strategy Preview</h3>
           <div className={styles.previewBlock}>
-            <p>{preview.summary}</p>
-            <h4>Entry</h4>
-            <p>{preview.entryDescription}</p>
-            <h4>Exit</h4>
-            <p>{preview.exitDescription}</p>
-            <h4>Stop Loss</h4>
-            <p>{preview.stopLossDescription}</p>
-            <h4>Targets</h4>
-            <p>{preview.targetDescriptions.join(', ')}</p>
-            <h4>Risk</h4>
-            <p>{preview.riskDescription}</p>
-            <h4>Signal Frequency</h4>
-            <p>{preview.estimatedSignalsPerMonth}</p>
+            <p className={styles.previewSummary}>{preview.summary}</p>
+            <div className={styles.previewGrid}>
+              <div className={styles.previewItem}>
+                <h4>Entry Rules</h4>
+                <p>{preview.entryDescription}</p>
+              </div>
+              <div className={styles.previewItem}>
+                <h4>Exit Rules</h4>
+                <p>{preview.exitDescription}</p>
+              </div>
+              <div className={styles.previewItem}>
+                <h4>Stop Loss</h4>
+                <p>{preview.stopLossDescription}</p>
+              </div>
+              <div className={styles.previewItem}>
+                <h4>Targets</h4>
+                <p>{preview.targetDescriptions.join(', ')}</p>
+              </div>
+              <div className={styles.previewItem}>
+                <h4>Risk</h4>
+                <p>{preview.riskDescription}</p>
+              </div>
+              <div className={styles.previewItem}>
+                <h4>Signal Frequency</h4>
+                <p>{preview.estimatedSignalsPerMonth}</p>
+              </div>
+            </div>
             {preview.warnings.map((w) => (
-              <p key={w} style={{ color: '#D97706' }}>{w}</p>
+              <p key={w} className={styles.warningText}>{w}</p>
             ))}
           </div>
         </Card>
       )}
 
-      {(dsl || json) && (
+      {(dsl || json || backtestConfig) && (
         <Card compact>
           {dsl && (
             <>
@@ -52,6 +67,12 @@ export function StrategyPreviewPanel({ preview, dsl, json }: Props) {
             <>
               <h3 className={styles.panelTitle} style={{ marginTop: dsl ? 12 : 0 }}>Structured JSON</h3>
               <pre className={styles.codeBlock}>{json}</pre>
+            </>
+          )}
+          {backtestConfig && (
+            <>
+              <h3 className={styles.panelTitle} style={{ marginTop: dsl || json ? 12 : 0 }}>Backtest-Ready Configuration</h3>
+              <pre className={styles.codeBlock}>{backtestConfig}</pre>
             </>
           )}
         </Card>

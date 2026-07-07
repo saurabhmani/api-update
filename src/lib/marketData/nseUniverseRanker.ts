@@ -65,8 +65,11 @@ export function scoreUniverseCandidate(input: {
   candleCompleteness: number;
   maxTradedValue:     number;
 }): number {
+  // Log-normalise traded value so the top few mega-caps do not dominate
+  // the whole NSE1000 cut. Liquidity still carries the largest weight,
+  // but mid/liquid symbols can rank on consistency + data completeness.
   const tvNorm = input.maxTradedValue > 0
-    ? input.tradedValue / input.maxTradedValue
+    ? Math.log1p(Math.max(0, input.tradedValue)) / Math.log1p(input.maxTradedValue)
     : 0;
   const vc = Math.max(0, Math.min(1, input.volumeConsistency));
   const cc = Math.max(0, Math.min(1, input.candleCompleteness));
@@ -336,11 +339,20 @@ export async function rankNseUniverseCandidates(
   for (const symbol of eligibleSymbols) {
     const agg = candleAggs.get(symbol);
     const barCount = agg?.bar_count ?? 0;
+    const totalBarCount = totalBars.get(symbol) ?? 0;
     const tradedValue = agg?.traded_value ?? 0;
     const activeDays = agg?.active_volume_days ?? 0;
-    const volumeConsistency = lookbackDays > 0 ? activeDays / lookbackDays : 0;
+    // Consistency is "how many observed recent bars had volume", not
+    // active days divided by calendar days. Calendar-day division penalised
+    // every symbol for weekends/holidays and pushed otherwise liquid names
+    // below thin names with fewer rows.
+    const volumeConsistency = barCount > 0 ? activeDays / barCount : 0;
+    // Completeness is based on total EOD history available in the warehouse,
+    // not only the rolling liquidity window. A 90-calendar-day rank window
+    // has ~60 trading bars, so comparing recent bars to a 200-bar target made
+    // complete symbols look incomplete.
     const candleCompleteness = minBarsTarget > 0
-      ? Math.min(1, barCount / minBarsTarget)
+      ? Math.min(1, totalBarCount / minBarsTarget)
       : 0;
     ranked.push({
       symbol,
@@ -364,6 +376,8 @@ export async function rankNseUniverseCandidates(
   ranked.sort((a, b) => {
     const d = b.compositeScore - a.compositeScore;
     if (d !== 0) return d;
+    const tv = b.tradedValue - a.tradedValue;
+    if (tv !== 0) return tv;
     return a.symbol.localeCompare(b.symbol);
   });
 
@@ -393,6 +407,13 @@ export async function buildNseTopUniverse(
   }
 
   const ranked = await rankNseUniverseCandidates(options);
+  if (ranked.length < targetSize) {
+    throw new Error(
+      `Cannot build NSE top-${targetSize}: only ${ranked.length} eligible EQ symbols ` +
+      `have sufficient candle history. Run securities_master candle backfill until ` +
+      `at least ${targetSize} symbols pass eligibility.`,
+    );
+  }
   const selected = ranked.slice(0, targetSize).map((r) => r.symbol);
   return { ranked, selected, candidates: ranked.length };
 }

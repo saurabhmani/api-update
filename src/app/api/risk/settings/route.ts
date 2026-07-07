@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
       riskPerTradePct: body.riskPerTradePct != null ? Number(body.riskPerTradePct) : undefined,
       maxDailyLossPct: body.maxDailyLossPct != null ? Number(body.maxDailyLossPct) : undefined,
       maxOpenPositions: body.maxOpenPositions != null ? Number(body.maxOpenPositions) : undefined,
+      maxTradesPerDay: body.maxTradesPerDay != null ? Number(body.maxTradesPerDay) : undefined,
       maxConsecutiveLosses: body.maxConsecutiveLosses != null ? Number(body.maxConsecutiveLosses) : undefined,
       maxSymbolExposurePct: body.maxSymbolExposurePct != null ? Number(body.maxSymbolExposurePct) : undefined,
       maxStrategyExposurePct: body.maxStrategyExposurePct != null ? Number(body.maxStrategyExposurePct) : undefined,

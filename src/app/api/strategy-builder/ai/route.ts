@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
-import { parseStrategy, definitionToJson, serializeToDsl } from '@/lib/strategy-lab';
+import { parseStrategy, definitionToJson, serializeToDsl, buildBacktestConfig } from '@/lib/strategy-lab';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,7 +16,8 @@ export async function POST(req: NextRequest) {
     const definition = parseStrategy({ text, name: body.name ?? 'AI Strategy' });
     const json = definitionToJson(definition);
     const dsl = serializeToDsl(definition);
-    return NextResponse.json({ ok: true, definition, json: JSON.parse(json), dsl });
+    const backtestConfig = buildBacktestConfig(definition, definition.id ?? 'unsaved-ai-strategy');
+    return NextResponse.json({ ok: true, definition, json: JSON.parse(json), dsl, backtestConfig });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'AI parse failed';
     return NextResponse.json({ ok: false, error: message }, { status: 400 });

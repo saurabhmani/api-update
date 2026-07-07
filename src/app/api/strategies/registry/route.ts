@@ -26,12 +26,22 @@ export async function GET(req: NextRequest) {
     const category = url.searchParams.get('category');
     const featuredOnly = url.searchParams.get('featured') === '1';
     const paperReadyOnly = url.searchParams.get('paperReady') === '1';
+    const timeframe = url.searchParams.get('timeframe');
+    const direction = url.searchParams.get('direction');
+    const marketType = url.searchParams.get('marketType');
+    const status = url.searchParams.get('status');
+    const risk = url.searchParams.get('risk');
 
     const hub = await loadStrategyHub({
       category,
       featuredOnly,
       paperReadyOnly,
       window,
+      timeframe,
+      direction,
+      marketType,
+      status,
+      risk,
     });
 
     return NextResponse.json({
