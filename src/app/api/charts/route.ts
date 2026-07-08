@@ -17,6 +17,10 @@ const VALID_INTERVALS = new Set<ChartInterval>([
   '1day','1week','1month',
 ]);
 
+const INTRADAY_BUCKET = new Set<ChartInterval>([
+  '1minute','5minute','15minute','30minute','60minute',
+]);
+
 export async function GET(req: NextRequest) {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
@@ -42,7 +46,9 @@ export async function GET(req: NextRequest) {
 
   const from  = searchParams.get('from') ?? undefined;
   const to    = searchParams.get('to')   ?? undefined;
-  const limit = Math.min(parseInt(searchParams.get('limit') ?? '200'), 1000);
+  const isIntraday = type === 'intraday' || (INTRADAY_BUCKET.has(interval) && interval !== '1day');
+  const defaultLimit = interval === '1day' ? 120 : isIntraday ? 500 : 200;
+  const limit = Math.min(parseInt(searchParams.get('limit') ?? String(defaultLimit), 10) || defaultLimit, 1000);
 
   const result = await getChartData(rawSymbol, interval, from, to, limit);
 

@@ -36,6 +36,11 @@ interface SignalData {
   regime_alignment?: string;
   rejection_reasons?: string[];
   factor_scores?: Record<string, number>;
+  entry_price?: number | null;
+  stop_loss?: number | null;
+  target1?: number | null;
+  target2?: number | null;
+  risk_reward?: number | null;
   // Live-vs-stored revalidation envelope. When `live_invalidated` is
   // true the stored signal is being shown but the live engine
   // disagrees — render the banner instead of a hard REJECTED pill so
@@ -67,6 +72,7 @@ interface SignalHistory {
 interface NewsItem {
   id: number; title: string; source: string;
   url: string; published_at: string; sentiment?: string;
+  summary?: string | null;
 }
 
 // Constants
@@ -113,6 +119,14 @@ function reasonSent(text: string) {
   if (t.includes('above') || t.includes('bullish') || t.includes('strong')) return 'pos';
   if (t.includes('below') || t.includes('bearish') || t.includes('weak'))  return 'neg';
   return 'neu';
+}
+
+function tradeLevel(...values: unknown[]): number | null {
+  for (const v of values) {
+    const x = Number(v);
+    if (Number.isFinite(x) && x > 0) return x;
+  }
+  return null;
 }
 
 // Ring
@@ -163,6 +177,32 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
   const [candles, setCandles]     = useState<Candle[]>([]);
   const [interval, setIv]         = useState('1minute');
   const [signalData, setSignal]   = useState<SignalData | null>(null);
+  const [tradeFallback, setTrade] = useState<{
+    entry_price?: number | null;
+    stop_loss?: number | null;
+    target1?: number | null;
+    target2?: number | null;
+    risk_reward?: number | null;
+    signal_type?: string | null;
+  } | null>(null);
+  const [metaRefreshAttempted, setMetaRefresh] = useState(false);
+  const [portfolioFit, setPortfolioFit] = useState<{
+    fitScore: number;
+    sectorPenalty?: number;
+    correlationPenalty?: number;
+    strategyPenalty?: number;
+    drawdownPenalty?: number;
+    capacityScore?: number;
+    warnings?: string[];
+    notes?: string;
+    sector?: string;
+    portfolioContext?: {
+      totalPositions?: number;
+      sectorExposure?: Record<string, number>;
+      drawdownPct?: number;
+      correlationAvg?: number;
+    };
+  } | null>(null);
   const [sigHistory, setSigHist]  = useState<SignalHistory[]>([]);
   const [news, setNews]           = useState<NewsItem[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -212,23 +252,45 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
   const hasSignalData = signalData != null;
   const conf    = signalData?.confidence_score ?? sig?.confidence ?? 0;
   const risk    = signalData?.risk_score ?? sig?.risk_score ?? 0;
-  const fitScore = signalData?.portfolio_fit_score ?? sig?.portfolio_fit ?? 0;
-  const sigDir  = sig?.direction ?? null;
-  const entry   = sig?.entry_price ?? null;
-  const sl      = sig?.stop_loss ?? null;
-  const t1      = sig?.target1 ?? null;
-  const t2      = sig?.target2 ?? null;
-  const rr      = sig?.risk_reward ?? null;
+  // Prefer live portfolio-fit evaluation, then signal payload, then
+  // the same min(100, conf+5) backfill used by /signals so the ring
+  // is never blank for an approved institutional row.
+  const fitFromSignal =
+    (signalData?.portfolio_fit_score != null && signalData.portfolio_fit_score > 0
+      ? signalData.portfolio_fit_score
+      : null)
+    ?? (sig?.portfolio_fit != null && Number(sig.portfolio_fit) > 0
+      ? Number(sig.portfolio_fit)
+      : null)
+    ?? (tradeFallback && (tradeFallback as any).portfolio_fit != null
+      ? Number((tradeFallback as any).portfolio_fit)
+      : null);
+  const fitScore =
+    (portfolioFit?.fitScore != null && portfolioFit.fitScore > 0
+      ? portfolioFit.fitScore
+      : null)
+    ?? fitFromSignal
+    ?? (conf > 0 ? Math.min(100, conf + 5) : 0);
+  const sigDir  = sig?.direction ?? tradeFallback?.signal_type ?? null;
+  const entry   = tradeLevel(sig?.entry_price, signalData?.entry_price, tradeFallback?.entry_price);
+  const sl      = tradeLevel(sig?.stop_loss, signalData?.stop_loss, tradeFallback?.stop_loss);
+  const t1      = tradeLevel(sig?.target1, signalData?.target1, tradeFallback?.target1);
+  const t2      = tradeLevel(sig?.target2, signalData?.target2, tradeFallback?.target2);
+  const rr      = tradeLevel(sig?.risk_reward, signalData?.risk_reward, tradeFallback?.risk_reward);
 
   // ── Load ───────────────────────────────────────────────────────
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const [iRes, cRes, qRes, sRes] = await Promise.allSettled([
+      setMetaRefresh(false);
+      setPortfolioFit(null);
+      const [iRes, cRes, qRes, sRes, stockRes] = await Promise.allSettled([
         fetch(`/api/instruments?key=${encodeURIComponent(instrumentKey)}`).then(r => r.json()),
         chartsApi.intraday(instrumentKey, '1minute'),
         fetch(`/api/market?resource=quote&symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
         fetch(`/api/signals?action=instrument&symbol=${encodeURIComponent(symbol)}`)
+          .then(r => r.ok ? r.json() : null),
+        fetch(`/api/stocks/${encodeURIComponent(symbol)}?interval=1day&limit=5`)
           .then(r => r.ok ? r.json() : null),
       ]);
 
@@ -243,6 +305,17 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       if (sRes.status === 'fulfilled' && sRes.value && !sRes.value.error) {
         setSignal(sRes.value);
       }
+      if (stockRes.status === 'fulfilled' && stockRes.value && !stockRes.value.error) {
+        setTrade({
+          entry_price:  stockRes.value.entry_price ?? null,
+          stop_loss:    stockRes.value.stop_loss ?? null,
+          target1:      stockRes.value.target1 ?? null,
+          target2:      stockRes.value.target2 ?? null,
+          risk_reward:  stockRes.value.risk_reward ?? null,
+          signal_type:  stockRes.value.signal_type ?? null,
+          portfolio_fit: stockRes.value.portfolio_fit ?? null,
+        } as any);
+      }
 
       setLoading(false);
     }
@@ -251,11 +324,19 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
 
   // Lazy load per tab
   useEffect(() => {
-    if (activeTab === 'news' && news.length === 0) {
-      fetch(`/api/news?q=${encodeURIComponent(symbol)}&limit=10`)
+    if (activeTab === 'news') {
+      const company = meta?.companyName && meta.companyName !== symbol
+        ? meta.companyName
+        : '';
+      const qs = new URLSearchParams({
+        symbol,
+        limit: '15',
+      });
+      if (company) qs.set('company', company);
+      fetch(`/api/news?${qs.toString()}`)
         .then(r => r.json())
         .then(d => setNews(d.news ?? d.articles ?? []))
-        .catch(() => {});
+        .catch(() => setNews([]));
     }
     if (activeTab === 'history' && sigHistory.length === 0) {
       fetch(`/api/signals?action=history&symbol=${encodeURIComponent(symbol)}`)
@@ -263,7 +344,62 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
         .then(d => setSigHist(d.history ?? []))
         .catch(() => {});
     }
-  }, [activeTab, symbol, news.length, sigHistory.length]);
+  }, [activeTab, symbol, meta?.companyName, sigHistory.length]);
+
+  // Portfolio Fit tab — evaluate against current holdings.
+  useEffect(() => {
+    if (activeTab !== 'fit' || portfolioFit != null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/portfolio-fit/evaluate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ticker: symbol,
+            strategy: signalData?.scenario_tag ?? sig?.scenario_tag ?? 'swing',
+            direction: sigDir ?? 'BUY',
+          }),
+        });
+        if (!res.ok) return;
+        const body = await res.json();
+        const data = body?.data ?? body;
+        if (cancelled || data?.fitScore == null) return;
+        setPortfolioFit({
+          fitScore:             Number(data.fitScore) || 0,
+          sectorPenalty:        data.sectorPenalty,
+          correlationPenalty:   data.correlationPenalty,
+          strategyPenalty:      data.strategyPenalty,
+          drawdownPenalty:      data.drawdownPenalty,
+          capacityScore:        data.capacityScore,
+          warnings:             data.warnings ?? [],
+          notes:                data.notes ?? '',
+          sector:               data.sector,
+          portfolioContext:     data.portfolioContext,
+        });
+      } catch { /* keep signal-derived fallback */ }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, symbol, signalData?.scenario_tag, sig?.scenario_tag, sigDir, portfolioFit]);
+
+  // Financials tab — retry fundamentals if the initial quote load had empty meta.
+  useEffect(() => {
+    if (activeTab !== 'financials' || metaRefreshAttempted) return;
+    const missingFundamentals =
+      pe == null
+      && meta?.eps == null
+      && meta?.marketCap == null
+      && meta?.roe == null;
+    if (!missingFundamentals) return;
+
+    setMetaRefresh(true);
+    fetch(`/api/market?resource=quote&symbol=${encodeURIComponent(symbol)}&force=1`)
+      .then(r => r.ok ? r.json() : null)
+      .then((d) => {
+        if (d?.meta) setMeta(d.meta);
+      })
+      .catch(() => {});
+  }, [activeTab, symbol, pe, meta?.eps, meta?.marketCap, meta?.roe, metaRefreshAttempted]);
 
   // Chart interval switch
   const switchInterval = useCallback(async (iv: string) => {
@@ -650,10 +786,12 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
                     </Card>
                     <Card title="Support & Resistance">
                       {([
-                        ['Entry Zone', entry ? fmt.currency(entry) : '-'],
-                        ['Stop Loss', sl ? fmt.currency(sl) : '-'],
-                        ['Target 1', t1 ? fmt.currency(t1) : '-'],
-                        ['Target 2', t2 ? fmt.currency(t2) : '-'],
+                        ['Entry Zone', entry != null ? fmt.currency(entry) : '-'],
+                        ['Stop Loss', sl != null ? fmt.currency(sl) : '-'],
+                        ['Target 1', t1 != null ? fmt.currency(t1) : '-'],
+                        ['Target 2', t2 != null ? fmt.currency(t2) : '-'],
+                        ['52W Support', week52L != null ? fmt.currency(week52L) : '-'],
+                        ['52W Resistance', week52H != null ? fmt.currency(week52H) : '-'],
                       ] as [string, string][]).map(([n, v]) => (
                         <div key={n} className={s.techRow}>
                           <span className={s.techN}>{n}</span>
@@ -681,6 +819,7 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
                       ['Beta', meta?.beta != null ? Number(meta.beta).toFixed(2) : '-'],
                       ['Div Yield', meta?.dividendYield != null ? `${Number(meta.dividendYield).toFixed(2)}%` : '-'],
                       ['Market Cap', marketCap != null ? fmt.volume(marketCap) : '-'],
+                      ['Debt/Equity', meta?.debtToEquity != null ? Number(meta.debtToEquity).toFixed(2) : '-'],
                     ] as [string, string][]).map(([l, v]) => (
                       <div key={l} className={s.kv}>
                         <span className={s.kvL}>{l}</span>
@@ -703,12 +842,17 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
                       <div className={s.emptyDesc}>News aggregates from financial APIs and exchange disclosures.</div>
                     </div>
                   ) : (
-                    <Card title="Latest News" flush>
+                    <Card title={`${symbol} · Latest News`} flush>
                       {news.map(item => (
                         <a key={item.id} href={item.url} target="_blank" rel="noopener noreferrer" className={s.newsItem}>
                           <div className={s.newsIcon}><Newspaper size={14} /></div>
                           <div className={s.newsBody}>
                             <div className={s.newsTitle}>{item.title}</div>
+                            {(item.summary) && (
+                              <div style={{ fontSize: 12, color: '#64748B', marginTop: 2, lineHeight: 1.4 }}>
+                                {String(item.summary).slice(0, 160)}
+                              </div>
+                            )}
                             <div className={s.newsMeta}>
                               <span>{item.source}</span><span>&middot;</span>
                               <span>{new Date(item.published_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
@@ -740,26 +884,66 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
                           </div>
                         </div>
                         <div className={s.fitRingCap}>
-                          {fitScore >= 65 ? 'Strong Fit' : fitScore >= 40 ? 'Moderate' : 'Weak Fit'}
+                          {fitScore >= 65 ? 'Strong Fit' : fitScore >= 40 ? 'Moderate Fit' : fitScore > 0 ? 'Weak Fit' : 'Unavailable'}
                         </div>
+                        {portfolioFit?.notes && (
+                          <div style={{ fontSize: 12, color: '#64748B', marginTop: 8, textAlign: 'center', lineHeight: 1.4 }}>
+                            {portfolioFit.notes}
+                          </div>
+                        )}
                       </div>
                     </Card>
                     <Card title="Factors">
                       {([
-                        ['Sector Exposure', Math.min(100, fitScore * 0.85)],
-                        ['Correlation Risk', Math.min(100, 100 - risk * 0.6)],
-                        ['Capital Impact',   Math.min(100, fitScore * 0.75)],
-                      ] as [string, number][]).map(([l, v]) => (
-                        <div key={l} className={s.fitFactor}>
-                          <span className={s.fitFN}>{l}</span>
-                          <div className={s.fitFBar}>
-                            <div className={s.fitFBarFill} style={{ width: `${v}%`, background: v >= 55 ? '#16A34A' : '#D97706' }} />
+                        ['Sector Exposure', Math.max(0, 100 - (portfolioFit?.sectorPenalty ?? 0) * 2), portfolioFit?.sectorPenalty != null],
+                        ['Strategy Conc.', Math.max(0, 100 - (portfolioFit?.strategyPenalty ?? 0) * 4), portfolioFit?.strategyPenalty != null],
+                        ['Correlation Risk', Math.max(0, 100 - (portfolioFit?.correlationPenalty ?? 0) * 4), portfolioFit?.correlationPenalty != null],
+                        ['Capacity', portfolioFit?.capacityScore ?? Math.min(100, fitScore * 0.9), portfolioFit?.capacityScore != null],
+                        ['Drawdown Buffer', Math.max(0, 100 - (portfolioFit?.drawdownPenalty ?? 0) * 4), portfolioFit?.drawdownPenalty != null],
+                      ] as [string, number, boolean][]).map(([l, v]) => {
+                        const val = Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+                        return (
+                          <div key={l} className={s.fitFactor}>
+                            <span className={s.fitFN}>{l}</span>
+                            <div className={s.fitFBar}>
+                              <div className={s.fitFBarFill} style={{ width: `${val}%`, background: val >= 55 ? '#16A34A' : '#D97706' }} />
+                            </div>
+                            <span className={s.fitFV}>{val.toFixed(0)}</span>
                           </div>
-                          <span className={s.fitFV}>{v.toFixed(0)}</span>
+                        );
+                      })}
+                    </Card>
+                  </div>
+
+                  <Card title="Capital Allocation">
+                    {([
+                      ['Sector', portfolioFit?.sector ?? meta?.sector ?? '-'],
+                      ['Recommended Size', fitScore >= 70 ? '2-3% of capital' : fitScore >= 40 ? '1-2% of capital' : 'Skip / size down'],
+                      ['Open Positions', portfolioFit?.portfolioContext?.totalPositions != null
+                        ? String(portfolioFit.portfolioContext.totalPositions)
+                        : '-'],
+                      ['Portfolio Corr.', portfolioFit?.portfolioContext?.correlationAvg != null
+                        ? Number(portfolioFit.portfolioContext.correlationAvg).toFixed(2)
+                        : (risk < 40 ? 'Low' : risk < 60 ? 'Moderate' : 'High')],
+                      ['Portfolio Decision', fitScore >= 60 ? 'Approved' : fitScore >= 40 ? 'Review Required' : fitScore > 0 ? 'Blocked' : '-'],
+                    ] as [string, string][]).map(([l, v]) => (
+                      <div key={l} className={s.kv}>
+                        <span className={s.kvL}>{l}</span>
+                        <span className={s.kvV}>{v}</span>
+                      </div>
+                    ))}
+                  </Card>
+
+                  {portfolioFit?.warnings && portfolioFit.warnings.length > 0 && (
+                    <Card title="Fit Warnings">
+                      {portfolioFit.warnings.map((w, i) => (
+                        <div key={i} style={{ fontSize: 12, color: '#92400E', marginBottom: 6, display: 'flex', gap: 6 }}>
+                          <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                          <span>{w}</span>
                         </div>
                       ))}
                     </Card>
-                  </div>
+                  )}
                 </div>
               </Fade>
             )}
@@ -987,8 +1171,12 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
           <div className={s.dpCard}>
             <div className={s.dpSectionLabel}>Portfolio Fit</div>
             <div className={s.dpRow}><span className={s.dpRowL}>Score</span><span className={s.dpRowV}>{fitScore > 0 ? `${fitScore.toFixed(0)}/100` : '-'}</span></div>
-            <div className={s.dpRow}><span className={s.dpRowL}>Size</span><span className={s.dpRowV}>2-3%</span></div>
-            <div className={s.dpRow}><span className={s.dpRowL}>Correlation</span><span className={s.dpRowV}>{risk < 40 ? 'Low' : risk < 60 ? 'Moderate' : 'High'}</span></div>
+            <div className={s.dpRow}><span className={s.dpRowL}>Size</span><span className={s.dpRowV}>{fitScore >= 70 ? '2-3%' : fitScore >= 40 ? '1-2%' : fitScore > 0 ? 'Skip' : '-'}</span></div>
+            <div className={s.dpRow}><span className={s.dpRowL}>Correlation</span><span className={s.dpRowV}>{
+              portfolioFit?.portfolioContext?.correlationAvg != null
+                ? Number(portfolioFit.portfolioContext.correlationAvg).toFixed(2)
+                : (risk < 40 ? 'Low' : risk < 60 ? 'Moderate' : 'High')
+            }</span></div>
           </div>
 
           {/* Event Risk */}

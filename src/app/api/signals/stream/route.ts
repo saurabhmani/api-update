@@ -325,7 +325,12 @@ export async function GET(req: NextRequest) {
               main_signals_count:     0,
               buy_count:              0,
               sell_count:             0,
-              empty_confirmed:        true,
+              // Match the live-hours SSE fix: never claim empty_confirmed
+              // when this transport only reads confirmed_snapshots (empty
+              // here) while HTTP may still surface last_close_signals /
+              // q365_signals fallback rows. Authoritative empty wipes
+              // the /signals table on fresh load when SSE beats HTTP.
+              empty_confirmed:        false,
               validation_status:      'MARKET_CLOSED',
               market_open:            false,
               cached_off_hours:       true,

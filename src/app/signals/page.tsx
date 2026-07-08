@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useRef, Fragment } from 'react';
+import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading } from '@/components/ui';
 import { fmt, changeClass } from '@/lib/utils';
@@ -52,6 +52,23 @@ const DIR_STYLE: Record<string, { bg: string; color: string }> = {
   SELL: { bg: '#FEF2F2', color: '#DC2626' },
   HOLD: { bg: '#FFFBEB', color: '#D97706' },
 };
+
+/** APPROVED-tab row count after the same hard-veto filter the table uses. */
+function approvedDisplayCount(signals: SignalRow[]): number {
+  return signals.filter((r) => {
+    if ((r as { is_relaxed?: boolean }).is_relaxed) return false;
+    if ((r as { is_conditional?: boolean }).is_conditional) return false;
+    if ((r as { is_scanner_candidate?: boolean }).is_scanner_candidate) return false;
+    if ((r as { live_invalidated?: boolean }).live_invalidated === true) return false;
+    if ((r as { invalidation_reason?: string }).invalidation_reason) return false;
+    if ((r as { execution_allowed?: boolean }).execution_allowed === false) return false;
+    const tradeability = String((r as { tradeability_status?: string }).tradeability_status ?? '').toLowerCase();
+    if (tradeability === 'blocked' || tradeability === 'restricted') return false;
+    const conv = String((r as { conviction_band?: string }).conviction_band ?? '').toLowerCase();
+    if (conv === 'avoid') return false;
+    return true;
+  }).length;
+}
 
 // ── Live-cell animation ───────────────────────────────────────────
 // Kite-style tick flash: on every price CHANGE we paint a translucent // @deprecated marker
@@ -117,6 +134,8 @@ function LiveCell({
     kite:      ['#10B981', '#fff', 'K', 'Kite • Live'], // @deprecated marker
     kite_ws:   ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'], // @deprecated marker
     kite_rest: ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'], // @deprecated marker
+    indianapi: ['#059669', '#fff', 'IA', 'IndianAPI • Live'],
+    yahoo:     ['#7C3AED', '#fff', 'Y', 'Yahoo • Delayed'],
   };
   const srcCfg = source ? sourceMap[source] : null;
 
@@ -824,10 +843,10 @@ export default function SignalsPage() {
   // the effect is a no-op for the rest of the mount.
   const didAutoSelectRef = useRef(false);
 
-  // Persist activeTab to localStorage whenever it changes.
+  // Persist activeTab to sessionStorage (same store as init + tab clicks).
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('q365_signals_active_tab', activeTab);
+      sessionStorage.setItem('q365_signals_active_tab', activeTab);
     }
   }, [activeTab]);
   // Direction filter inside the APPROVED tab. Kept separate from the
@@ -969,7 +988,12 @@ export default function SignalsPage() {
   const watchlistTotal =
     developing.length + scannerCandidates.length + watchlist.length;
   const rejectedTotal = rejected.length + riskRestricted.length;
+  const approvedTabCount = useMemo(
+    () => approvedDisplayCount(signals),
+    [signals],
+  );
 
+  // ── Tab auto-selection (continued) ──────────────────────────────
   // SIGNAL-ENGINE-COPY-2026-05 — Single source of truth for the
   // provider-fallback state. /api/data-feed/health and /api/signals
   // each carry an independent fallback flag, and historically the
@@ -987,6 +1011,7 @@ export default function SignalsPage() {
     // TAB-BOUNCE-FIX (2026-05) — Once we have already auto-decided once,
     // the effect is a no-op for the rest of this mount.
     if (didAutoSelectRef.current)   return;
+    const approvedCount = approvedTabCount;
     // EMPTY-TAB-RESCUE (2026-05) — userSelectedTabRef is set both by an
     // in-session click AND by a sessionStorage restoration. The original
     // gate was unconditional — any saved tab was a hard lock, so a user
@@ -1002,7 +1027,7 @@ export default function SignalsPage() {
     // bounces the user away from their explicit choice.
     if (userSelectedTabRef.current) {
       const currentTabRows = (
-        activeTab === 'APPROVED'       ? signals.length
+        activeTab === 'APPROVED'       ? approvedCount
       : activeTab === 'HIGH_POTENTIAL' ? highPotential.length
       : activeTab === 'WATCHLIST'      ? watchlistTotal
       : activeTab === 'REJECTED'       ? rejectedTotal
@@ -1013,7 +1038,7 @@ export default function SignalsPage() {
         return;
       }
       const haveRowsElsewhere =
-        signals.length > 0 || highPotential.length > 0
+        approvedCount > 0 || highPotential.length > 0
         || watchlistTotal > 0 || rejectedTotal > 0;
       if (!haveRowsElsewhere) return;
       // eslint-disable-next-line no-console
@@ -1024,12 +1049,12 @@ export default function SignalsPage() {
     // to point at; transient empty frames (everything is []) wait for
     // the next poll instead of jumping straight to REJECTED.
     const haveAnyRows =
-      signals.length > 0
+      approvedCount > 0
       || highPotential.length > 0
       || watchlistTotal > 0
       || rejectedTotal > 0;
     if (!haveAnyRows && !defaultTab) return;
-    if (signals.length > 0) {
+    if (approvedCount > 0) {
       didAutoSelectRef.current = true;
       if (activeTab !== 'APPROVED') {
         // eslint-disable-next-line no-console
@@ -1080,7 +1105,7 @@ export default function SignalsPage() {
       setActiveTab('REJECTED');
     }
   }, [
-    signals.length, highPotential.length,
+    approvedTabCount, highPotential.length,
     watchlistTotal, rejectedTotal, defaultTab, activeTab,
   ]);
 
@@ -1444,18 +1469,30 @@ export default function SignalsPage() {
     const serverLive   = typeof sig.livePrice === 'number' ? sig.livePrice : null;
     const serverSource = (sig as any).liveSource ?? null;
     const entry        = typeof sig.entry_price === 'number' ? sig.entry_price : null;
+    const trustedLiveSources = new Set([
+      'kite_ws', 'kite_rest', 'kite', // @deprecated marker
+      'indianapi', 'yahoo',
+    ]);
     const serverPriceAcceptable =
       serverLive != null &&
       serverLive > 0 &&
-      (serverSource === 'kite_ws' || serverSource === 'kite_rest' || serverSource === 'kite') && // @deprecated marker
-      (entry == null || serverLive !== entry);
+      (serverSource == null || trustedLiveSources.has(serverSource)) &&
+      (entry == null || Math.abs(serverLive - entry) > 0.01);
 
     if (serverPriceAcceptable) {
+      const prevClose = typeof (sig as any).previous_close === 'number'
+        ? (sig as any).previous_close
+        : (typeof (sig as any).prev_close === 'number' ? (sig as any).prev_close : null);
+      let livePChange: number | null =
+        typeof (sig as any).livePChange === 'number' ? (sig as any).livePChange : null;
+      if (livePChange == null && prevClose != null && prevClose > 0) {
+        livePChange = ((serverLive! - prevClose) / prevClose) * 100;
+      }
       return {
         ...sig,
         livePrice:   serverLive,
-        livePChange: typeof (sig as any).livePChange === 'number' ? (sig as any).livePChange : null,
-        liveSource:  serverSource, // 'kite_ws' | 'kite_rest' | 'kite' // @deprecated marker
+        livePChange,
+        liveSource:  serverSource ?? 'indianapi',
         liveTickTs:  (sig as any).liveTickTs ?? null,
       };
     }
@@ -3698,7 +3735,7 @@ export default function SignalsPage() {
                           <DueDiligencePanel
                             dueDiligence={ddRow}
                             performanceReview={perfRow}
-                            manipulationRisk={(row as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
+                            manipulationRisk={(s as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
                           />
                         </td>
                       </tr>

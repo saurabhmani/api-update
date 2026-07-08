@@ -16,6 +16,7 @@ import { db }                         from '@/lib/db';
 import { cacheGet }                   from '@/lib/redis';
 import { fetchQuote,
          fetchQuoteFull,
+         fetchInstrumentMeta,
          fetchMultipleQuotes,
          fetchGainersLosers,
          fetchIndices }               from '@/services/marketQuote';
@@ -152,19 +153,7 @@ export async function GET(req: NextRequest) {
     const result = await fetchQuoteFull(symbol.toUpperCase(), { bypassCache: force });
     if (!result) return NextResponse.json({ error: 'Quote not available' }, { status: 503 });
     const { quote, fetchedAt } = result;
-    const meta = {
-      companyName: quote.symbol,
-      industry: null, sector: null, macro: null, isin: null,
-      listingDate: null, faceValue: null, issuedSize: null,
-      lowerCP: null, upperCP: null, priceBand: null,
-      surveillance: null, survDesc: null,
-      isFNO: false, derivatives: null, slb: null, lastUpdateTime: null,
-      pe: null, sectorPe: null, forwardPe: null, eps: null, beta: null,
-      pbRatio: null, dividendYield: null, roe: null, debtToEquity: null,
-      marketCap: null, avgVolume: null,
-      week52High: quote.fiftyTwoWeekHigh ?? null,
-      week52Low:  quote.fiftyTwoWeekLow  ?? null,
-    };
+    const meta = await fetchInstrumentMeta(symbol.toUpperCase(), quote);
     const res = NextResponse.json({ quote, meta, fetched_at: fetchedAt, last_updated: null, source: force ? 'live' : 'cached' });
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     return res;

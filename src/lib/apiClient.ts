@@ -62,10 +62,10 @@ export const instrumentApi = {
 
 // ── Charts ────────────────────────────────────────────────────────
 export const chartsApi = {
-  intraday:   (instrumentKey: string, interval = '1minute') =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}`),
-  historical: (instrumentKey: string, unit = 'days', interval = '1', from?: string, to?: string) =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&unit=${unit}&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}`),
+  intraday:   (instrumentKey: string, interval = '1minute', limit = 500) =>
+    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}&limit=${limit}`),
+  historical: (instrumentKey: string, _unit = 'days', interval = '1day', from?: string, to?: string, limit = 120) =>
+    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}&limit=${limit}`),
 };
 
 // ── Watchlist ─────────────────────────────────────────────────────

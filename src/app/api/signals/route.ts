@@ -4267,10 +4267,15 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: 'Instrument not found' }, { status: 404 });
       }
 
+      // Read-only by default — market detail + search must not mutate
+      // q365_signals while the operator is browsing. Pass ?persist=1 to
+      // opt into the legacy write path (live disagreement → invalidation).
+      const persistInvalidation = searchParams.get('persist') === '1';
       const result = await revalidateInstrument(
         inst.instrument_key,
         inst.tradingsymbol,
         inst.exchange,
+        { persistInvalidation },
       );
 
       // 503 only when neither stored nor live produced a usable

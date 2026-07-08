@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
 import { cacheGet } from '@/lib/redis';
-import { fetchQuote } from '@/services/marketQuote';
+import { fetchQuote, resolveInstrumentProfile } from '@/services/marketQuote';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,19 +44,20 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Layer 3: Live quote via Kite+Yahoo resolver
+  // Layer 3: rankings / synthetic profile + live quote (NIFTY500-external symbols)
   try {
+    const profile = await resolveInstrumentProfile(sym);
     const quote = await fetchQuote(sym);
-    if (quote) {
+    if (quote || profile.name !== sym) {
       return NextResponse.json({
         instrument: {
           instrument_key:  key,
           exchange:        exch,
           tradingsymbol:   sym,
-          name:            sym,
+          name:            profile.name,
+          sector:          profile.sector,
           instrument_type: 'EQ',
-          ltp:             quote.lastPrice,
-          pct_change:      quote.pChange,
+          ...(quote ? { ltp: quote.lastPrice, pct_change: quote.pChange } : {}),
         },
       });
     }

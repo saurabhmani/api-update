@@ -149,7 +149,7 @@ export default function StockDetail({ symbol }: Props) {
   // ── Load news ─────────────────────────────────────────────────
   const loadNews = useCallback(async () => {
     try {
-      const res = await fetch(`/api/news?q=${encodeURIComponent(symbol)}&limit=10`);
+      const res = await fetch(`/api/news?symbol=${encodeURIComponent(symbol)}&limit=10`);
       const d   = await res.json();
       setNews(d.news ?? d.articles ?? []);
     } catch { setNews([]); }
