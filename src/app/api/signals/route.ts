@@ -105,7 +105,6 @@ import {
   partitionByTier,
   buildEmptyStateMessage,
   selectHighPotentialFallback,
-  stampRelaxedMainForIntradayExecution,
   HIGH_POTENTIAL_MAX_ROWS,
   CONDITIONAL_CONFIDENCE_FLOOR,
   CONDITIONAL_RR_FLOOR,
@@ -1859,7 +1858,15 @@ export async function GET(req: NextRequest) {
           // the locked NIFTY 500 set. Stale rows from before the lock
           // landed are dropped here.
           const closedSignalRowsRaw = closedSignals?.signals ?? [];
-          const closedSignalRows = filterSignalsToNifty500(closedSignalRowsRaw, 'closedMarketSignals');
+          const closedSignalQuality = closedSignals?.signalQuality ?? 'NONE';
+          const closedStrictCount   = closedSignals?.strictCount   ?? 0;
+          const closedRelaxedUsed   = closedSignals?.relaxedUsed   ?? false;
+
+          const closedSignalRows = filterSignalsToNifty500(
+            closedSignalRowsRaw,
+            'closedMarketSignals',
+          );
+
           const closedSignalSource = closedSignals?.source ?? 'none';
           const closedBuyCount  = closedSignalRows.length === closedSignalRowsRaw.length
             ? (closedSignals?.buyCount ?? 0)
@@ -1867,9 +1874,6 @@ export async function GET(req: NextRequest) {
           const closedSellCount = closedSignalRows.length === closedSignalRowsRaw.length
             ? (closedSignals?.sellCount ?? 0)
             : closedSignalRows.filter((r) => String((r as any).direction ?? '').toUpperCase() === 'SELL').length;
-          const closedSignalQuality = closedSignals?.signalQuality ?? 'NONE';
-          const closedStrictCount   = closedSignals?.strictCount   ?? 0;
-          const closedRelaxedUsed   = closedSignals?.relaxedUsed   ?? false;
           // Spec MAIN-TABLE-STRICT §4 — q365_signals strict rows that
           // didn't clear the main-table gate (or confirmed snapshots
           // that fell short on maturity/cycles/stability) get surfaced
@@ -2717,22 +2721,16 @@ export async function GET(req: NextRequest) {
             );
             const sortedClosed = [...(nifty500Closed as ConfirmedSignalRow[])].sort(rotationCmp);
             const sectorBalanced = applySectorDiversity(sortedClosed);
-            // INTRADAY-PARITY-2026-07 — the closed-market branch partitions
-            // relaxed-main rows directly. The live open-hours branch was
-            // running applyEliteGate (75+ confidence) on the same relaxed
-            // pool first, zeroing every row before partitionByTier. During
-            // the cash session, stamp relaxed-main rows execution-ready
-            // (they already passed relaxedMainTableApproved) and skip the
-            // elite gate so APPROVED is populated intraday.
+            // Relaxed-tier rows are tagged is_conditional / is_relaxed by the
+            // loader — partitionByTier routes them to HIGH_POTENTIAL, not
+            // APPROVED. Strict-tier closed-market rows still pass elite gate.
             let shipRows: ConfirmedSignalRow[];
             if (relaxedUsed) {
-              shipRows = stampRelaxedMainForIntradayExecution(
-                sectorBalanced as unknown as TieredRow[],
-              ) as unknown as ConfirmedSignalRow[];
-              console.log('[INTRADAY_RELAXED]', {
-                input:  sectorBalanced.length,
-                stamped: shipRows.length,
+              shipRows = sectorBalanced as ConfirmedSignalRow[];
+              console.log('[RELAXED_FALLBACK]', {
+                input:   sectorBalanced.length,
                 quality: signalQuality,
+                note:    'rows partition to HIGH_POTENTIAL via is_conditional',
               });
             } else {
               const closedElite = applyEliteGate(sectorBalanced);

@@ -1,20 +1,17 @@
-// ════════════════════════════════════════════════════════════════
-//  POST /api/market-data/subscribe — compatibility no-op
-//
-//  Pre-Kite-removal this endpoint registered symbols with the Kite // @deprecated marker
-//  WebSocket ticker. The WebSocket path has been removed; live
-//  prices now come from Yahoo Finance polled per-request by the // @deprecated marker
-//  components that need them (see useLivePrice, /market page). There
-//  is nothing to subscribe to anymore, so this endpoint returns a
-//  success envelope with the input symbols marked resolved. The
-//  client-side hook will keep polling Yahoo on its own cadence and // @deprecated marker
-//  doesn't need a server-side subscription to do so.
-// ════════════════════════════════════════════════════════════════
-
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  registerDemand,
+  getLiveMarketFeedStats,
+} from '@/lib/marketData/liveMarketFeed';
+import { getStreamServerStats } from '@/lib/ws/streamServer';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+const DEMAND_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.MARKET_FEED_DEMAND_TTL_MS) || 120_000,
+);
 
 export async function POST(req: NextRequest) {
   let body: { symbols?: unknown } = {};
@@ -30,12 +27,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'no symbols' }, { status: 400 });
   }
 
+  const resolved = registerDemand(symbols, DEMAND_TTL_MS);
+  const feed = getLiveMarketFeedStats();
+  const ws = getStreamServerStats();
+
   return NextResponse.json({
     ok: true,
-    resolved: symbols,
-    unknown: [],
-    subscribed: symbols.length,
+    resolved,
+    unknown: symbols.filter((s) => !resolved.includes(s)),
+    subscribed: feed.subscribedCount,
     tickSnapshot: {},
-    source: 'yahoo-poll', // @deprecated marker
+    source: 'websocket',
+    ws: {
+      running: ws.running,
+      port: ws.port,
+      clients: ws.clientCount,
+    },
   });
 }

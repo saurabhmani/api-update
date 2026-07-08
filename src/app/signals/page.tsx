@@ -1496,11 +1496,17 @@ export default function SignalsPage() {
   };
   const eliteRowApproved = (r: SignalRow): EliteCheck => {
     const isRelaxed     = (r as any).is_relaxed === true;
+    const isConditional = (r as any).is_conditional === true;
     const isScannerCand = (r as any).is_scanner_candidate === true;
     const sq = String(signalQuality ?? '').toUpperCase();
     const qualityRelaxed = sq === 'RELAXED' || sq === 'SCANNER_CANDIDATES';
-    if (isRelaxed || isScannerCand || qualityRelaxed) {
-      return { passed: true, reasons: ['relaxed_bypass'] };
+    if (isRelaxed || isConditional || isScannerCand || qualityRelaxed) {
+      return {
+        passed: false,
+        reasons: [
+          isRelaxed ? 'is_relaxed' : isConditional ? 'is_conditional' : isScannerCand ? 'scanner_candidate' : 'signal_quality_relaxed',
+        ],
+      };
     }
     const hardReasons = eliteHardVetoReasons(r);
     if (hardReasons.length > 0) {

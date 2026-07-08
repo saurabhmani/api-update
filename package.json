@@ -66,6 +66,7 @@
     "validate:provider-quota": "tsx scripts/validateProviderQuotaGuard.ts",
     "validate:provider-request-policy": "tsx scripts/validateProviderRequestPolicy.ts",
     "ws-server": "tsx src/lib/ws/streamServerCli.ts",
+    "verify:market-ws": "tsx scripts/verifyMarketWebSocket.ts",
     "db:setup": "ts-node -P tsconfig.node.json src/lib/db/setup.ts",
     "test:phase1": "tsx src/__tests__/backtestingPhase1.test.ts",
     "test:phase2": "tsx src/__tests__/backtestingPhase2.test.ts",

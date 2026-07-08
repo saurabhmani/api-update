@@ -974,9 +974,15 @@ function resolveStrategyGroup(scenarioTag: string, direction: string): string {
   return direction === 'SELL' ? mapping.sell : mapping.buy;
 }
 
-function resolveStrengthTag(confidence: number): string {
+function resolveStrengthTag(
+  confidence: number,
+  convictionBand: ReturnType<typeof normalizeConvictionBand>,
+): string {
+  if (convictionBand === 'high_conviction') return 'High Conviction';
+  if (convictionBand === 'actionable')      return 'Actionable';
+  if (convictionBand === 'watchlist')       return 'Watchlist';
   if (confidence >= 85) return 'High Conviction';
-  if (confidence >= 70) return 'Actionable';
+  if (confidence >= 60) return 'Actionable';
   if (confidence >= 55) return 'Watchlist';
   return 'Ignore';
 }
@@ -987,17 +993,175 @@ function resolveMarketContextTag(regime: string): string {
   return 'Neutral';
 }
 
-/** Map DB confidence_band labels to the four conviction_dist keys. */
-function normalizeConvictionBand(band: string | null | undefined, confidence: number): string {
+/** Map DB / engine labels to the four conviction_dist keys used by
+ *  Intelligence Hub + ConvictionGrid. Uses classification and
+ *  institutional score when the engine's confidence_band was downgraded
+ *  to Avoid by live-tape decay while the row remains APPROVED. */
+export function normalizeConvictionBand(
+  band: string | null | undefined,
+  confidence: number,
+  opts?: {
+    classification?:  string | null;
+    finalScore?:      number | null;
+    signalStatus?:    string | null;
+  },
+): 'high_conviction' | 'actionable' | 'watchlist' | 'reject' {
+  const cls = String(opts?.classification ?? '').toUpperCase().trim();
+  const ss  = String(opts?.signalStatus ?? '').toUpperCase();
+  const fs  = opts?.finalScore != null && Number.isFinite(Number(opts.finalScore))
+    ? Number(opts.finalScore)
+    : null;
+  const approved = ss === 'APPROVED_SIGNAL';
+
+  // Classification is the strongest quality signal — it survives
+  // confidence decay on approved rows.
+  if (cls.includes('INSTITUTIONAL') || cls === 'HIGH_CONVICTION' || cls === 'HIGH_CONVICTION_BUY') {
+    return 'high_conviction';
+  }
+  if ((cls === 'VALID_SIGNAL' || cls === 'VALID_BUY') && approved) {
+    return 'actionable';
+  }
+
   const key = String(band ?? '').toLowerCase().replace(/\s+/g, '_');
   if (key === 'high_conviction' || key === 'high') return 'high_conviction';
   if (key === 'actionable' || key === 'medium') return 'actionable';
   if (key === 'watchlist' || key === 'low') return 'watchlist';
-  if (key === 'reject' || key === 'avoid' || key === 'ignore') return 'reject';
+
+  // Avoid on an APPROVED row is usually decayed confidence — use
+  // institutional score / classification floor instead of reject.
+  if (key === 'reject' || key === 'avoid' || key === 'ignore') {
+    if (approved) {
+      const score = fs ?? confidence;
+      if (score >= 75 || confidence >= 65) return 'actionable';
+      if (confidence >= 55 || score >= 65) return 'watchlist';
+    }
+    return 'reject';
+  }
+
+  if (approved) {
+    const score = fs ?? confidence;
+    if (score >= 75 || confidence >= 65) return 'actionable';
+    if (confidence >= 55 || score >= 65) return 'watchlist';
+  }
+
+  // Align with engine band thresholds (60 actionable, not 70).
   if (confidence >= 85) return 'high_conviction';
-  if (confidence >= 70) return 'actionable';
+  if (confidence >= 60) return 'actionable';
   if (confidence >= 55) return 'watchlist';
   return 'reject';
+}
+
+/** Intelligence Hub pool — approved quality rows first, scanner Avoid
+ *  noise excluded unless the row passed Phase 3. */
+async function loadIntelligenceSignalPool(limit = 200): Promise<any[]> {
+  const cap = Math.min(Math.max(limit, 1), 500);
+  let approvedRows: any[] = [];
+  try {
+    const { rows } = await db.query(
+      `SELECT
+        s.id, s.instrument_key, s.symbol, s.exchange, s.direction, s.timeframe,
+        s.signal_type, s.confidence_score, s.confidence_band,
+        s.risk_score, s.risk_band, s.opportunity_score,
+        s.portfolio_fit_score, s.regime_alignment,
+        s.entry_price, s.stop_loss, s.target1, s.target2, s.risk_reward,
+        s.market_regime, s.market_stance, s.scenario_tag,
+        s.factor_scores_json, s.ltp, s.pct_change,
+        s.status, s.signal_status, s.batch_id, s.generated_at,
+        s.final_score, s.composite_final_score, s.classification,
+        s.freshness_score, s.decay_state, s.age_bars,
+        s.overextension_pct, s.invalidation_reason, s.last_rescored_at, s.expires_at
+      FROM q365_signals s
+      WHERE s.direction IN ('BUY','SELL')
+        AND UPPER(COALESCE(s.signal_status, '')) = 'APPROVED_SIGNAL'
+        AND s.status IN ('active', 'flagged')
+        AND COALESCE(s.invalidation_reason, '') = ''
+        AND (s.expires_at IS NULL OR s.expires_at > NOW())
+      ORDER BY COALESCE(s.composite_final_score, s.final_score, s.confidence_score, 0) DESC,
+               s.confidence_score DESC, s.generated_at DESC
+      LIMIT ?`,
+      [Math.min(100, cap)],
+    );
+    approvedRows = rows as any[];
+  } catch (err: unknown) {
+    console.warn('[readSignals] intelligence approved pool failed:', (err as Error)?.message);
+  }
+
+  const general = await getActiveSignals(cap);
+  const seen = new Set<string>();
+  const merged: any[] = [];
+
+  const keyOf = (r: { symbol?: string; tradingsymbol?: string; direction?: string }) =>
+    `${String(r.symbol ?? r.tradingsymbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`;
+
+  const mapApprovedRow = (r: any) => ({
+    id:                r.id,
+    instrument_key:    r.instrument_key,
+    tradingsymbol:     r.symbol,
+    symbol:            r.symbol,
+    exchange:          r.exchange,
+    direction:         r.direction,
+    timeframe:         r.timeframe,
+    signal_type:       r.signal_type,
+    confidence:        r.confidence_score,
+    confidence_score:  r.confidence_score,
+    conviction_band:   r.confidence_band,
+    risk_score:        r.risk_score,
+    risk:              r.risk_band,
+    opportunity_score: r.opportunity_score,
+    portfolio_fit:     r.portfolio_fit_score,
+    regime_alignment:  r.regime_alignment,
+    entry_price:       Number(r.entry_price),
+    stop_loss:         Number(r.stop_loss),
+    target1:           Number(r.target1),
+    target2:           r.target2 ? Number(r.target2) : null,
+    risk_reward:       Number(r.risk_reward),
+    regime:            r.market_regime,
+    market_stance:     r.market_stance,
+    scenario_tag:      r.scenario_tag,
+    factor_scores:     typeof r.factor_scores_json === 'string'
+      ? JSON.parse(r.factor_scores_json) : r.factor_scores_json,
+    ltp:               r.ltp ? Number(r.ltp) : null,
+    pct_change:        r.pct_change ? Number(r.pct_change) : null,
+    status:            r.status,
+    signal_status:     r.signal_status ?? 'APPROVED_SIGNAL',
+    approved:          true,
+    batch_id:          r.batch_id,
+    generated_at:      r.generated_at,
+    final_score:       r.final_score != null ? Number(r.final_score) : null,
+    composite_final_score: r.composite_final_score != null ? Number(r.composite_final_score) : null,
+    classification:    r.classification,
+    freshness_score:   r.freshness_score != null ? Number(r.freshness_score) : null,
+    decay_state:       r.decay_state ?? null,
+    age_bars:          r.age_bars != null ? Number(r.age_bars) : null,
+    invalidation_reason: r.invalidation_reason ?? null,
+    expires_at:        r.expires_at ?? null,
+    is_new:            r.age_bars != null ? Number(r.age_bars) <= 1 : false,
+    is_fresh:          r.decay_state === 'fresh',
+    is_aging:          r.decay_state === 'actionable_but_aging',
+    is_stale:          r.decay_state === 'stale' || r.decay_state === 'expired',
+  });
+
+  for (const r of approvedRows) {
+    const k = keyOf(r);
+    if (!k.startsWith('|') && !seen.has(k)) {
+      seen.add(k);
+      merged.push(mapApprovedRow(r));
+    }
+  }
+
+  for (const r of general) {
+    const k = keyOf(r);
+    if (seen.has(k)) continue;
+    const band = String(r.conviction_band ?? '').toLowerCase();
+    const isApproved = String(r.signal_status ?? '').toUpperCase() === 'APPROVED_SIGNAL';
+    // Drop scanner Avoid noise — it drowns the conviction grid.
+    if (band === 'avoid' && !isApproved) continue;
+    seen.add(k);
+    merged.push(r);
+    if (merged.length >= cap) break;
+  }
+
+  return merged;
 }
 
 export async function getIntelligenceSignals(): Promise<{
@@ -1018,7 +1182,9 @@ export async function getIntelligenceSignals(): Promise<{
   // snapshot table. /signals reads confirmed snapshots; this page
   // surfaces APPROVED + DEVELOPING_SETUP rows (per SIGNAL_RELAX_MODE)
   // with reasons/warnings from q365_signal_reasons keyed by signal id.
-  const signals = await getActiveSignals(200);
+  // Approved rows are loaded first; undifferentiated Avoid-band scanner
+  // noise is excluded so conviction tiers reflect real opportunities.
+  const signals = await loadIntelligenceSignalPool(200);
 
   // Batch-fetch reasons for all signals
   const signalIds = signals.map((s: any) => s.id).filter(Boolean);
@@ -1066,14 +1232,19 @@ export async function getIntelligenceSignals(): Promise<{
     const regime   = s.regime || 'NEUTRAL';
     const scenario = s.scenario_tag || 'NO_STRATEGY';
     const conf     = s.confidence_score || 0;
-    const band     = normalizeConvictionBand(s.conviction_band, conf);
+    const instScore = s.composite_final_score ?? s.final_score ?? null;
+    const band     = normalizeConvictionBand(s.conviction_band, conf, {
+      classification: s.classification,
+      finalScore:     instScore,
+      signalStatus:   s.signal_status,
+    });
 
     const signalType   = (s.signal_type ?? s.strategy ?? '').toString();
     const stratGroup   = signalType === 'fibonacci_pullback'
       ? 'fibonacci_pullback'
       : resolveStrategyGroup(scenario, dir);
     const stratDisplay = STRATEGY_DISPLAY[stratGroup] || stratGroup.replace(/_/g, ' ');
-    const strengthTag  = resolveStrengthTag(conf);
+    const strengthTag  = resolveStrengthTag(conf, band);
     const contextTag   = resolveMarketContextTag(regime);
 
     const enriched: IntelligenceSignal = {

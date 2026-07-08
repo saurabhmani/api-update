@@ -1520,7 +1520,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     }, FALLBACK_POLL_MS);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsConnected, wsLastAt, wsPrices, kiteStatus, freshness, stream.connected, stream.lastPushAt]); // @deprecated marker
+  }, [wsConnected, wsLastAt, wsPrices.size, kiteStatus, freshness, stream.connected, stream.lastPushAt]); // @deprecated marker
 
   // ── triggerAutoRebuild ─────────────────────────────────────────
   const AUTO_REBUILD_COOLDOWN_MS = 5 * 60_000;

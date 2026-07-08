@@ -370,6 +370,7 @@ export default function IntelligencePage() {
   const [loading, setLoading] = useState(true);
   const [lastAt,  setLastAt]  = useState<string | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineMsg, setPipelineMsg] = useState<string | null>(null);
 
   const loadingRef = useRef(false);
   // Fingerprint of the last applied payload — id + direction + final_score
@@ -444,10 +445,47 @@ export default function IntelligencePage() {
 
   const runPipeline = async () => {
     setPipelineRunning(true);
+    setPipelineMsg(null);
     try {
-      await fetch('/api/run-signal-engine', { method: 'POST' });
+      const res = await fetch('/api/run-signal-engine', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 202) {
+        setPipelineMsg(`Pipeline started (batch ${data.batch_id ?? 'unknown'}) — refreshing…`);
+        await load(false);
+        return;
+      }
+
+      if (res.status === 409 && data?.code === 'EXECUTION_LOCKED') {
+        setPipelineMsg('Another pipeline run is in progress — refreshing current data.');
+        await load(false);
+        return;
+      }
+
+      if (res.status === 409 && data?.code === 'WEEKEND_BLOCKED') {
+        setPipelineMsg(data.message ?? 'Pipeline runs are disabled on weekends.');
+        return;
+      }
+
+      if (res.status === 409 && data?.code === 'MANUAL_RUN_USED') {
+        setPipelineMsg(data.message ?? 'Manual run already used today.');
+        return;
+      }
+
+      if (!res.ok) {
+        setPipelineMsg(data?.error ?? data?.message ?? `Pipeline failed (${res.status})`);
+        return;
+      }
+
+      setPipelineMsg(
+        `Pipeline complete — scanned ${data.total_scanned ?? '?'}, approved ${data.total_approved ?? '?'}.`,
+      );
       await load(false);
-    } finally { setPipelineRunning(false); }
+    } catch (e: unknown) {
+      setPipelineMsg((e as Error)?.message ?? 'Pipeline request failed');
+    } finally {
+      setPipelineRunning(false);
+    }
   };
 
   // Derived
@@ -481,7 +519,8 @@ export default function IntelligencePage() {
               <Brain size={22} style={{ color: '#2E75B6' }} /> Intelligence Hub
             </h1>
             <p style={{ color: '#64748B', fontSize: 13, marginTop: 4 }}>
-              Strategy-grouped signals with conviction bands, reasons, and warnings
+              Strategy-grouped signals with conviction bands, reasons, and warnings.
+              Conviction tiers prioritize Phase-3 approved opportunities — undifferentiated scanner noise is excluded.
               {lastAt && <span style={{ marginLeft: 8, color: '#94A3B8' }}>Updated {lastAt}</span>}
             </p>
           </div>
@@ -494,6 +533,15 @@ export default function IntelligencePage() {
             </button>
           </div>
         </div>
+
+        {pipelineMsg && (
+          <div style={{
+            background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8,
+            padding: '10px 14px', marginBottom: 14, fontSize: 12, color: '#1E40AF',
+          }}>
+            {pipelineMsg}
+          </div>
+        )}
 
         {loading ? <Loading text="Loading intelligence..." /> : (
           <div style={{ display: 'grid', gap: 16 }}>

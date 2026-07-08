@@ -1548,6 +1548,16 @@ export async function POST(req: NextRequest) {
   // Local inFlight guards work per-process (Next.js), but multiple 
   // PM2 replicas can still race. The distributed lock via MySQL 
   // ensures exactly one executor owns the pipe.
+  //
+  // LOCK-STALE-FIX — sweep stuck execution locks BEFORE attempting
+  // acquisition. recoverStaleExecutionLock() was previously called
+  // later (after the manual-run claim), so a row left in
+  // status='started' by a crashed run blocked every click with 409
+  // even when the lock was days old.
+  try { await recoverStaleExecutionLock(); } catch (err: any) {
+    console.warn('[EXECUTION_LOCK_STALE_SWEEP_FAILED]', err?.message ?? String(err));
+  }
+
   const batchId = `batch_${Date.now()}`;
   const lockAcquired = await tryAcquireExecutionLock(batchId).catch(() => false);
   const releaseDistributedLock = async () => {

@@ -1187,15 +1187,15 @@ export async function loadClosedMarketSignals(
   }
 
   // Spec SMART-RELAXED §2 — strict empty → try relaxed tier on the
-  // same snapshot pool. Confirmed-snapshot rows keep is_relaxed=false
-  // so they route to APPROVED; q365 early rows stay is_relaxed=true.
+  // same snapshot pool. These rows cleared relaxedMainTableApproved but
+  // NOT mainTableApproved — tag is_conditional so partitionByTier routes
+  // them to HIGH_POTENTIAL (via selectHighPotentialFallback), not APPROVED.
   const relaxedMain = snapRows
     .filter((r) => relaxedMainTableApproved(r, closedMarketOpts))
     .map((r) => ({
       ...r,
-      is_relaxed: (r as { source_kind?: string }).source_kind === 'confirmed_snapshot'
-        ? false
-        : true,
+      is_relaxed: true,
+      is_conditional: true,
     } as ConfirmedSignalRow));
   approvedRowCount += relaxedMain.length;
 
@@ -1274,7 +1274,11 @@ export async function loadClosedMarketSignals(
       const relaxedActive = (SIGNAL_RELAX_MODE_ENABLED
         ? relaxedQ365
         : relaxedQ365.filter(earlySignalApproved)
-      ).map((r) => ({ ...r, is_relaxed: true } as ConfirmedSignalRow));
+      ).map((r) => ({
+        ...r,
+        is_relaxed: true,
+        is_conditional: true,
+      } as ConfirmedSignalRow));
       console.log(
         `[RELAXED] mode=${SIGNAL_RELAX_MODE_ENABLED ? 'on' : 'off'} ` +
         `sql_in=${relaxedQ365.length} ts_out=${relaxedActive.length} ` +

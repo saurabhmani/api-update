@@ -122,6 +122,7 @@ const FORBIDDEN_DECAY = new Set<string>([
 export function isExecutionReady(r: TieredRow): boolean {
   // Soft-flag rejections — these tags exist precisely to mark a row as
   // NOT execution-ready. The strict gate upstream may have set them.
+  if (r.is_conditional === true)        return false;
   if (r.is_relaxed === true)            return false;
   if (r.is_scanner_candidate === true)  return false;
   if (r.is_demoted === true)            return false;
@@ -173,6 +174,7 @@ export function isExecutionReady(r: TieredRow): boolean {
 /** Soft tier — a row that's tracking toward APPROVED but isn't there
  *  yet (relaxed-tier surfaced, below-floor demoted, DEVELOPING_SETUP). */
 export function isAwaitingConfirmation(r: TieredRow): boolean {
+  if (r.is_conditional === true)       return true;
   if (r.is_relaxed === true)           return true;
   if (r.is_demoted === true)           return true;
   if (r.is_developing_setup === true)  return true;
@@ -270,11 +272,9 @@ export function partitionByTier<T extends TieredRow>(rows: readonly T[]): Tiered
   return out;
 }
 
-/** Rows that cleared relaxedMainTableApproved in loadClosedMarketSignals
- *  ship with is_relaxed=true so off-hours they stay in AWAITING. During
- *  the cash session the live /api/signals path stamps them execution-
- *  ready so partitionByTier routes them to APPROVED (with is_conditional
- *  for UI badge). Floors were already enforced by the loader. */
+/** @deprecated Do not use — strips is_relaxed and falsely promotes rows into
+ *  APPROVED. Relaxed-tier rows belong in HIGH_POTENTIAL via
+ *  selectHighPotentialFallback (is_conditional=true). Kept for reference only. */
 export function stampRelaxedMainForIntradayExecution<T extends TieredRow>(
   rows: readonly T[],
 ): T[] {

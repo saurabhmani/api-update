@@ -129,6 +129,14 @@ export const reportsApi = {
 // ── Rankings ─────────────────────────────────────────────────────
 export const rankingsApi = {
   get: (limit = 50) => get(`/rankings?limit=${limit}`),
+  opportunities: (params: Record<string, string | number | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return get(`/rankings/opportunities${q ? `?${q}` : ''}`);
+  },
 };
 
 // ── User / Preferences ───────────────────────────────────────────

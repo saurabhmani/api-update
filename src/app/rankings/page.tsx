@@ -1,25 +1,17 @@
 'use client';
 /**
- * Rankings page — Quantorus365.
+ * Rankings page — approved trading opportunities leaderboard.
  *
- * Audit fixes (2026-05):
- *   • Header used to read "Top stocks by Quantorus365 score" while the
- *     backend actually sorted by `opportunity_rank`, so a row with a
- *     higher visible score could appear far below a row with a lower
- *     one (ASHOKLEY 75.3 at rank 38 below ADANIGREEN 73.7 at rank 2).
- *     The header now matches the comparator and surfaces the
- *     `sorted_by` field returned by /api/rankings.
- *   • Page reads /api/market-status (single source of truth) and
- *     refuses to show a LIVE badge when the wall clock says closed.
- *     Refresh cadence drops from 10 s → 5 min when off-hours.
- *   • Rows are bucketed into High Conviction / Actionable Watchlist /
- *     Momentum Leaders / Filtered Out so a momentum mover never gets
- *     mistaken for a high-quality institutional opportunity.
- *   • Numeric formatters never emit NaN; missing fields render as "—".
+ * Shows only signals that passed the Phase-3 approval gateway and
+ * confirmed snapshots (maturity-promoted). Ranked by opportunity score
+ * with conviction, confidence, portfolio fit, and risk tie-breakers.
  */
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { RefreshCw, TrendingUp, AlertTriangle, ShieldAlert } from 'lucide-react';
+import {
+  RefreshCw, TrendingUp, AlertTriangle, ShieldAlert,
+  Search, ChevronLeft, ChevronRight, Info,
+} from 'lucide-react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading, Empty, Button } from '@/components/ui';
 import { rankingsApi } from '@/lib/apiClient';
@@ -28,49 +20,86 @@ import { fmt, changeClass } from '@/lib/utils';
 // ─── Types ────────────────────────────────────────────────────────
 
 type MarketMode = 'live' | 'pre_open' | 'post_close' | 'holiday' | 'weekend' | 'market_closed';
-type DataSource = 'live_feed' | 'cached_rankings' | 'last_rankings_db' | 'last_close_cache' | 'eod_snapshot' | 'unavailable';
+type DataSource = 'live_feed' | 'cached_rankings' | 'last_rankings_db' | 'last_close_cache' | 'unavailable';
 
-interface RankingRow {
-  symbol?:              string;
-  tradingsymbol?:       string;
-  name?:                string;
-  exchange?:            string;
-  sector?:              string | null;
-  score?:               number | null;
-  rank_position?:       number | null;
-  opportunity_rank?:    number | null;
-  ltp?:                 number | null;
-  pct_change?:          number | null;
-  volume?:              number | null;
-  signal_type?:         'BUY' | 'SELL' | 'HOLD' | null;
-  confidence?:          number | null;
-  confidence_score?:    number | null;
-  conviction_band?:     string | null;
-  risk_score?:          number | null;
-  data_source?:         string | null;
-  signal_age_min?:      number | null;
-  rankings_updated_at?: string | null;
+interface OpportunityRow {
+  id:                    number;
+  symbol:                string;
+  exchange:              string;
+  sector:                string | null;
+  direction:             'BUY' | 'SELL';
+  strategy:              string | null;
+  timeframe:             string | null;
+  classification:        string | null;
+  conviction_band:       string | null;
+  opportunity_rank:      number;
+  final_score:           number | null;
+  confidence_score:      number | null;
+  risk_score:            number | null;
+  risk_reward:           number | null;
+  portfolio_fit_score:   number | null;
+  market_stance:         string | null;
+  entry_price:           number | null;
+  ltp:                   number | null;
+  pct_change:            number | null;
+  source:                'confirmed' | 'phase3_approved';
+  rank_position:         number;
+  rank_explanation:      string;
+  rank_factors:          string[];
+  signal_age_min:        number | null;
+  confirmed_at:          string | null;
+  generated_at:          string | null;
 }
 
-interface RankingsApiResponse {
-  data?:           RankingRow[];
-  count?:          number;
-  total?:          number;
-  mode?:           MarketMode;
-  market_state?:   string;
-  market_label?:   string;
-  market_reason?:  string | null;
-  is_holiday?:     boolean;
-  now_ist?:        string;
-  bypass_active?:  boolean;
-  bypass_reason?:  string | null;
-  data_source?:    DataSource;
-  sorted_by?:      string;
-  as_of?:          string;
-  message?:        string | null;
-  rankings_max_updated_at?: string | null;
-  error?:          string;
+interface FilterOptions {
+  sectors:     string[];
+  strategies:  string[];
+  timeframes:  string[];
+  convictions: string[];
+  exchanges:   string[];
 }
+
+interface OpportunitiesApiResponse {
+  data?:            OpportunityRow[];
+  total?:           number;
+  count?:           number;
+  page?:            number;
+  limit?:           number;
+  has_more?:        boolean;
+  confirmed_count?: number;
+  phase3_count?:    number;
+  filter_options?:  FilterOptions;
+  mode?:            MarketMode;
+  market_label?:    string;
+  market_reason?:   string | null;
+  data_source?:     DataSource;
+  sorted_by?:       string;
+  as_of?:           string;
+  message?:         string | null;
+  error?:           string;
+}
+
+interface Filters {
+  search:     string;
+  sector:     string;
+  exchange:   string;
+  direction:  string;
+  strategy:   string;
+  timeframe:  string;
+  conviction: string;
+  risk:       string;
+  market:     string;
+  sort:       string;
+  sortDir:    'asc' | 'desc';
+}
+
+const PAGE_SIZE = 25;
+
+const DEFAULT_FILTERS: Filters = {
+  search: '', sector: '', exchange: '', direction: '',
+  strategy: '', timeframe: '', conviction: '', risk: '',
+  market: '', sort: 'opportunity_rank', sortDir: 'desc',
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -79,170 +108,43 @@ const safeNum = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-const symbolOf = (r: RankingRow): string =>
-  String(r.symbol || r.tradingsymbol || '').toUpperCase();
+const refreshIntervalMs = (mode: MarketMode | undefined): number =>
+  mode === 'live' ? 15_000 : 5 * 60_000;
 
-const opportunityOf = (r: RankingRow): number | null =>
-  safeNum(r.opportunity_rank) ?? safeNum(r.score);
-
-const isMomentumMover = (r: RankingRow): boolean => {
-  const pct = safeNum(r.pct_change);
-  return pct != null && Math.abs(pct) >= 4;
-};
-
-const isFilteredOut = (r: RankingRow): boolean => {
-  const conv = (r.conviction_band ?? '').toLowerCase();
-  if (conv === 'reject') return true;
-  const risk = safeNum(r.risk_score);
-  if (risk != null && risk >= 70) return true;
-  const conf = safeNum(r.confidence_score ?? r.confidence);
-  if (conf != null && conf < 50) return true;
-  return false;
-};
-
-const isHighConviction = (r: RankingRow): boolean => {
-  const opp  = safeNum(opportunityOf(r));
-  const conf = safeNum(r.confidence_score ?? r.confidence);
-  const risk = safeNum(r.risk_score);
-  if (opp == null || opp < 75) return false;
-  if (conf != null && conf < 80) return false;
-  if (risk != null && risk > 35) return false;
-  return true;
-};
-
-const isActionable = (r: RankingRow): boolean => {
-  const opp  = safeNum(opportunityOf(r));
-  const conf = safeNum(r.confidence_score ?? r.confidence);
-  if (opp == null) return false;
-  if (opp < 65 || opp >= 75) return false;
-  if (conf != null && (conf < 65 || conf >= 80)) return false;
-  return true;
-};
-
-interface Bucketed {
-  highConviction: RankingRow[];
-  actionable:     RankingRow[];
-  momentum:       RankingRow[];
-  filtered:       RankingRow[];
-  remaining:      RankingRow[];
-}
-
-const bucket = (rows: RankingRow[]): Bucketed => {
-  const out: Bucketed = {
-    highConviction: [], actionable: [], momentum: [], filtered: [], remaining: [],
-  };
-  const claimed = new Set<string>();
-  const claim = (r: RankingRow, list: RankingRow[]) => {
-    list.push(r);
-    claimed.add(symbolOf(r));
-  };
-  for (const r of rows) {
-    if (isFilteredOut(r))   { claim(r, out.filtered);       continue; }
-    if (isHighConviction(r)){ claim(r, out.highConviction); continue; }
-    if (isActionable(r))    { claim(r, out.actionable);     continue; }
-  }
-  for (const r of rows) {
-    if (claimed.has(symbolOf(r))) continue;
-    if (isMomentumMover(r))  { claim(r, out.momentum);   continue; }
-    out.remaining.push(r);
-  }
-  return out;
-};
-
-// Refresh cadence — open market polls fast (live LTP overlay is meaningful);
-// closed market polls slowly (rows are last-close, no point hammering).
-const refreshIntervalMs = (mode: MarketMode | undefined): number => {
-  if (mode === 'live') return 15_000;
-  return 5 * 60_000;
-};
-
-const modeBadge = (mode: MarketMode | undefined): { label: string; bg: string; fg: string; live: boolean } => {
+const modeBadge = (mode: MarketMode | undefined) => {
   switch (mode) {
-    case 'live':         return { label: 'LIVE',          bg: '#DCFCE7', fg: '#15803D', live: true  };
-    case 'pre_open':     return { label: 'PRE-OPEN',      bg: '#FEF3C7', fg: '#92400E', live: false };
-    case 'post_close':   return { label: 'MARKET CLOSED', bg: '#FEF3C7', fg: '#92400E', live: false };
-    case 'weekend':      return { label: 'WEEKEND',       bg: '#FEF3C7', fg: '#92400E', live: false };
-    case 'holiday':      return { label: 'HOLIDAY',       bg: '#FEF3C7', fg: '#92400E', live: false };
-    case 'market_closed':return { label: 'MARKET CLOSED', bg: '#FEF3C7', fg: '#92400E', live: false };
-    default:             return { label: '—',             bg: '#E2E8F0', fg: '#475569', live: false };
+    case 'live':          return { label: 'LIVE',           bg: '#DCFCE7', fg: '#15803D', live: true };
+    case 'pre_open':      return { label: 'PRE-OPEN',       bg: '#FEF3C7', fg: '#92400E', live: false };
+    case 'post_close':
+    case 'weekend':
+    case 'holiday':
+    case 'market_closed': return { label: 'MARKET CLOSED',  bg: '#FEF3C7', fg: '#92400E', live: false };
+    default:              return { label: '—',              bg: '#E2E8F0', fg: '#475569', live: false };
   }
 };
 
-const dataSourceLabel = (s: DataSource | undefined): string => {
-  switch (s) {
-    case 'live_feed':        return 'Live feed';
-    case 'cached_rankings':  return 'Cached rankings';
-    case 'last_rankings_db': return 'Last rankings (DB)';
-    case 'last_close_cache': return 'Last close (cached)';
-    case 'eod_snapshot':     return 'EOD snapshot';
-    case 'unavailable':      return 'Unavailable';
-    default:                 return '—';
-  }
-};
-
-/** Relative age for rankings row sync timestamp (not signal age). */
-const fmtSyncAge = (iso: string | null | undefined): string => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return '—';
-  const mins = Math.floor((Date.now() - d.getTime()) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 48) return `${hrs}h ago`;
-  return fmt.datetime(iso);
-};
-
-const isRankingsDataStale = (
-  iso: string | null | undefined,
-  mode: MarketMode | undefined,
-): boolean => {
-  if (!iso) return false;
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return false;
-  const ageH = (Date.now() - d.getTime()) / 3_600_000;
-  const thresholdH = mode === 'live' ? 4 : 24;
-  return ageH > thresholdH;
-};
-
-const signalBadge = (sig: string | null | undefined) => {
-  const s = (sig ?? 'HOLD').toUpperCase();
-  if (s === 'BUY')  return <Badge variant="green">BUY</Badge>;
-  if (s === 'SELL') return <Badge variant="red">SELL</Badge>;
-  if (s === 'HOLD') return <Badge variant="gray">HOLD</Badge>;
-  return <Badge>{s}</Badge>;
-};
-
-// Conviction band vocabulary varies by source:
-//   - rankingsService.interpretRankingSignal → 'high_conviction' / 'actionable' / 'watchlist' / 'reject'
-//   - q365_signals.confidence_band            → 'HIGH' / 'MEDIUM' / 'LOW' / 'INSTITUTIONAL'
-//   - bootstrapped legacy rows                → 'high' / 'medium' / 'low'
-// Normalising on the way in so the Conviction column never falls
-// through to "—" when the DB carries a perfectly valid value in
-// a different casing/synonym.
 const convictionBadge = (band: string | null | undefined) => {
   const raw = (band ?? '').trim().toLowerCase();
   if (!raw) return <Badge variant="gray">—</Badge>;
+  if (raw === 'high_conviction' || raw === 'institutional') return <Badge variant="dark">High</Badge>;
+  if (raw === 'actionable' || raw === 'medium') return <Badge variant="green">Actionable</Badge>;
+  if (raw === 'watchlist' || raw === 'low') return <Badge variant="orange">Watchlist</Badge>;
+  return <Badge variant="gray">{band}</Badge>;
+};
 
-  // High conviction tier
-  if (raw === 'high_conviction' || raw === 'high' || raw === 'institutional') {
-    return <Badge variant="dark">High</Badge>;
+const sourceBadge = (source: OpportunityRow['source']) => {
+  if (source === 'confirmed') {
+    return (
+      <span title="Maturity-promoted confirmed snapshot">
+        <Badge variant="green">Confirmed</Badge>
+      </span>
+    );
   }
-  // Actionable / Medium tier
-  if (raw === 'actionable' || raw === 'medium' || raw === 'med') {
-    return <Badge variant="green">Actionable</Badge>;
-  }
-  // Watchlist / Low tier
-  if (raw === 'watchlist' || raw === 'low' || raw === 'developing') {
-    return <Badge variant="orange">Watchlist</Badge>;
-  }
-  // Rejected / NO_TRADE tier
-  if (raw === 'reject' || raw === 'rejected' || raw === 'no_trade') {
-    return <Badge variant="red">Rejected</Badge>;
-  }
-  // Unknown vocabulary — surface the raw value so operators see the
-  // band rather than a silent "—" that hides a data-quality issue.
-  return <Badge variant="gray">{(band ?? '').toString().slice(0, 12) || '—'}</Badge>;
+  return (
+    <span title="Phase-3 approved, awaiting promotion">
+      <Badge variant="orange">Phase 3</Badge>
+    </span>
+  );
 };
 
 const riskBadge = (risk: number | null) => {
@@ -252,108 +154,100 @@ const riskBadge = (risk: number | null) => {
   return <Badge variant="green">{risk.toFixed(0)} Low</Badge>;
 };
 
-// Conviction-band numeric rank used by the defensive client-side sort
-// (mirrors compareRanked in rankingsService.ts). Defined at module
-// level so it is a stable reference and never triggers exhaustive-deps.
-const CONVICTION_RANK_LOCAL: Record<string, number> = {
-  high_conviction: 4, actionable: 3, watchlist: 2, reject: 0,
+const dirBadge = (dir: string) => {
+  if (dir === 'BUY')  return <Badge variant="green">BUY</Badge>;
+  if (dir === 'SELL') return <Badge variant="red">SELL</Badge>;
+  return <Badge>{dir}</Badge>;
 };
 
 // ─── Page ─────────────────────────────────────────────────────────
 
 export default function RankingsPage() {
-  const [resp,    setResp]    = useState<RankingsApiResponse | null>(null);
+  const [resp, setResp]       = useState<OpportunitiesApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
-  // View mode — default 'flat' so the page matches the dashboard's
-  // Top Rankings panel byte-for-byte: a single ordered table sorted
-  // strictly by opportunity_rank DESC. The 'grouped' view buckets
-  // rows into High Conviction / Actionable / Momentum / Other /
-  // Filtered tiers; useful for review but breaks global ordering
-  // (an Actionable row at opp=72 can sit above a Momentum row at
-  // opp=85 because Momentum is a later section). Operators who
-  // want the categorical breakdown can opt in.
-  const [view, setView] = useState<'flat' | 'grouped'>('flat');
+  const [error, setError]     = useState<string | null>(null);
+  const [page, setPage]       = useState(1);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [draftSearch, setDraftSearch] = useState('');
 
   const load = useCallback(async () => {
     try {
-      const d = await rankingsApi.get(500) as RankingsApiResponse;
+      const d = await rankingsApi.opportunities({
+        limit: PAGE_SIZE,
+        page,
+        search:     filters.search || undefined,
+        sector:     filters.sector || undefined,
+        exchange:   filters.exchange || undefined,
+        direction:  filters.direction || undefined,
+        strategy:   filters.strategy || undefined,
+        timeframe:  filters.timeframe || undefined,
+        conviction: filters.conviction || undefined,
+        risk:       filters.risk || undefined,
+        market:     filters.market || undefined,
+        sort:       filters.sort || undefined,
+        sortDir:    filters.sortDir,
+      }) as OpportunitiesApiResponse;
       setResp(d);
       setError(null);
-    } catch (e: any) {
-      setError(e?.message || 'Failed to load rankings');
+    } catch (e: unknown) {
+      setError((e as Error)?.message || 'Failed to load rankings');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, filters]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Market-aware refresh: 15 s when open, 5 min when closed.
   useEffect(() => {
     const ms = refreshIntervalMs(resp?.mode);
     const id = setInterval(() => { if (!document.hidden) load(); }, ms);
     return () => clearInterval(id);
   }, [load, resp?.mode]);
 
-  // Defensive client-side sort. Mirrors compareRanked in
-  // rankingsService.ts so a stale 60s redis cache (or a future
-  // backend regression) can never make the visible RANK column
-  // disagree with the row order. Sort keys, in priority order:
-  //   1. opportunity_rank DESC (falls back to score)
-  //   2. conviction band rank DESC
-  //   3. confidence_score DESC
-  //   4. risk_score ASC (lower wins ties)
-  //   5. volume DESC
-  //   6. symbol ASC
-  const rows = useMemo(() => {
-    const rawRows = resp?.data ?? [];
-    return [...rawRows].sort((a, b) => {
-      const aOpp = Number(opportunityOf(a) ?? 0);
-      const bOpp = Number(opportunityOf(b) ?? 0);
-      if (aOpp !== bOpp) return bOpp - aOpp;
-      const cb = (CONVICTION_RANK_LOCAL[(b.conviction_band ?? '').toLowerCase()] ?? 1)
-               - (CONVICTION_RANK_LOCAL[(a.conviction_band ?? '').toLowerCase()] ?? 1);
-      if (cb !== 0) return cb;
-      const aConf = safeNum(a.confidence_score ?? a.confidence) ?? -1;
-      const bConf = safeNum(b.confidence_score ?? b.confidence) ?? -1;
-      if (aConf !== bConf) return bConf - aConf;
-      const aRisk = safeNum(a.risk_score) ?? Number.POSITIVE_INFINITY;
-      const bRisk = safeNum(b.risk_score) ?? Number.POSITIVE_INFINITY;
-      if (aRisk !== bRisk) return aRisk - bRisk;
-      const aVol = safeNum(a.volume) ?? 0;
-      const bVol = safeNum(b.volume) ?? 0;
-      if (aVol !== bVol) return bVol - aVol;
-      return symbolOf(a).localeCompare(symbolOf(b));
-    });
-  }, [resp?.data]);
-  const buckets = useMemo(() => bucket(rows), [rows]);
+  const rows = resp?.data ?? [];
+  const total = resp?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const opts = resp?.filter_options;
+  const mode = resp?.mode;
+  const badge = modeBadge(mode);
+  const isClosed = mode != null && mode !== 'live';
 
-  const mode      = resp?.mode;
-  const badge     = modeBadge(mode);
-  const isClosed  = mode != null && mode !== 'live';
-  const rankingsStale = isRankingsDataStale(resp?.rankings_max_updated_at, mode);
-  const ltpLabel  = isClosed ? 'Last Close LTP' : 'LTP';
-  const pctLabel  = isClosed ? 'Last Close Change %' : 'Change %';
-  const tableTitle = isClosed
-    ? 'Last Close Rankings — sorted by Opportunity Rank'
-    : 'Top stocks by Opportunity Rank';
+  const applySearch = () => {
+    setPage(1);
+    setFilters((f) => ({ ...f, search: draftSearch.trim() }));
+  };
+
+  const setFilter = (key: keyof Filters, value: string) => {
+    setPage(1);
+    setFilters((f) => ({ ...f, [key]: value }));
+  };
+
+  const clearFilters = () => {
+    setPage(1);
+    setDraftSearch('');
+    setFilters(DEFAULT_FILTERS);
+  };
+
+  const hasActiveFilters = useMemo(
+    () => Object.entries(filters).some(([k, v]) => k !== 'sort' && k !== 'sortDir' && v !== ''),
+    [filters],
+  );
 
   return (
     <AppShell title="Rankings">
       <div className="page">
-        {/* ── Header ─────────────────────────────────────────────── */}
+        {/* Header */}
         <div className="page__header">
           <div>
-            <h1 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              Rankings
+            <h1 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              Opportunity Rankings
               <span
-                title={resp?.market_label ?? 'Market status loading…'}
+                title={resp?.market_label ?? 'Market status'}
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   padding: '2px 10px', borderRadius: 99,
                   background: badge.bg, color: badge.fg,
-                  fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+                  fontSize: 11, fontWeight: 700,
                 }}
               >
                 <span style={{
@@ -363,369 +257,277 @@ export default function RankingsPage() {
                 }} />
                 {badge.label}
               </span>
-              <Badge variant="gray">{dataSourceLabel(resp?.data_source)}</Badge>
             </h1>
-            <p style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {tableTitle}
-              {resp?.as_of && <span style={{ color: '#94A3B8', fontSize: 12 }}>· as of {fmt.datetime(resp.as_of)}</span>}
-              {resp?.rankings_max_updated_at && (
-                <span style={{ color: rankingsStale ? '#B45309' : '#94A3B8', fontSize: 12 }}>
-                  · rankings synced {fmtSyncAge(resp.rankings_max_updated_at)}
-                </span>
+            <p style={{ color: '#64748B', fontSize: 13, marginTop: 4 }}>
+              Best approved trading opportunities — Phase-3 gateway pass and confirmed snapshots only.
+              {resp?.confirmed_count != null && (
+                <span> · {resp.confirmed_count} confirmed, {resp.phase3_count ?? 0} Phase-3 approved</span>
               )}
-              {resp?.sorted_by && (
-                <span title={resp.sorted_by} style={{ color: '#94A3B8', fontSize: 11 }}>
-                  · order: {resp.sorted_by.split(',')[0]}…
-                </span>
-              )}
-              {resp?.total != null && (
-                <span style={{ color: '#64748B', fontSize: 12 }}>
-                  · {rows.length} shown of {resp.total} ranked
-                </span>
-              )}
+              {resp?.as_of && <span> · as of {fmt.datetime(resp.as_of)}</span>}
             </p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {/* View toggle — Flat (single sorted table, matches the
-                dashboard's Top Rankings panel exactly) vs Grouped
-                (bucketed by tier). Default is Flat so /rankings and
-                the dashboard agree on row order. */}
-            <div role="group" aria-label="View mode" style={{
-              display: 'inline-flex', borderRadius: 6,
-              border: '1px solid #E2E8F0', overflow: 'hidden', fontSize: 12,
-            }}>
-              {(['flat', 'grouped'] as const).map((m) => {
-                const active = view === m;
-                return (
-                  <button
-                    key={m}
-                    onClick={() => setView(m)}
-                    style={{
-                      padding: '6px 12px', border: 'none',
-                      background: active ? '#1E293B' : 'white',
-                      color:      active ? 'white'   : '#475569',
-                      fontWeight: 600, cursor: 'pointer',
-                    }}
-                  >
-                    {m === 'flat' ? 'Flat' : 'Grouped'}
-                  </button>
-                );
-              })}
-            </div>
-            <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
-              <RefreshCw size={13} /> Refresh
-            </Button>
-          </div>
+          <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw size={13} /> Refresh
+          </Button>
         </div>
 
-        {/* ── Closed-market banner ───────────────────────────────── */}
         {isClosed && (
           <div style={{
             background: '#FEF3C7', borderRadius: 10, padding: '12px 18px',
-            marginBottom: 18, border: '1px solid #FDE68A',
-            display: 'flex', alignItems: 'flex-start', gap: 12,
+            marginBottom: 16, border: '1px solid #FDE68A',
+            display: 'flex', gap: 12, alignItems: 'flex-start',
           }}>
-            <AlertTriangle size={20} color="#B45309" style={{ flexShrink: 0, marginTop: 2 }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: '#92400E', marginBottom: 4 }}>
-                Market Closed — Showing last available rankings
-              </div>
-              <div style={{ fontSize: 12, color: '#92400E' }}>
-                {resp?.market_label ?? 'Market is closed'}
-                {resp?.market_reason ? ` · ${resp.market_reason}` : ''}.
-                This is cached / EOD data and should not be treated as live intraday data.
-                Auto-refresh is throttled to once every 5 minutes.
-              </div>
-              {resp?.bypass_active && (
-                <div style={{
-                  marginTop: 6, fontSize: 11, color: '#7C2D12',
-                  background: '#FEE2E2', padding: '2px 8px', borderRadius: 6,
-                  display: 'inline-block', fontWeight: 700,
-                }} title={resp?.bypass_reason ?? ''}>
-                  ⚠️ Market-hours bypass env detected ({resp?.bypass_reason})
-                </div>
-              )}
+            <AlertTriangle size={18} color="#B45309" style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 12, color: '#92400E' }}>
+              Market closed — showing last approved opportunities. Auto-refresh every 5 minutes.
             </div>
           </div>
         )}
 
-        {/* ── Stale rankings sync banner ─────────────────────────── */}
-        {rankingsStale && rows.length > 0 && (
-          <div style={{
-            background: '#FFF7ED', borderRadius: 10, padding: '12px 18px',
-            marginBottom: 18, border: '1px solid #FDBA74',
-            display: 'flex', alignItems: 'flex-start', gap: 12,
-          }}>
-            <AlertTriangle size={20} color="#C2410C" style={{ flexShrink: 0, marginTop: 2 }} />
-            <div style={{ flex: 1, fontSize: 12, color: '#9A3412' }}>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                Rankings data may be outdated
-              </div>
-              Last sync was {fmtSyncAge(resp?.rankings_max_updated_at)} (
-              {resp?.rankings_max_updated_at ? fmt.datetime(resp.rankings_max_updated_at) : 'unknown'}
-              ). During market hours the page auto-refreshes rankings older than 4 hours.
-              Use Admin → Data Management → Sync Rankings to force an update now.
+        {/* Filters */}
+        <Card style={{ marginBottom: 16, padding: '14px 18px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 6, flex: '1 1 200px', minWidth: 200 }}>
+              <input
+                type="text"
+                placeholder="Search symbol, sector, strategy…"
+                value={draftSearch}
+                onChange={(e) => setDraftSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && applySearch()}
+                style={{
+                  flex: 1, padding: '8px 12px', borderRadius: 6,
+                  border: '1px solid #E2E8F0', fontSize: 13,
+                }}
+              />
+              <Button variant="secondary" size="sm" onClick={applySearch}>
+                <Search size={14} />
+              </Button>
             </div>
-          </div>
-        )}
 
-        {/* ── Body ───────────────────────────────────────────────── */}
+            <FilterSelect label="Sector" value={filters.sector} options={opts?.sectors ?? []}
+              onChange={(v) => setFilter('sector', v)} />
+            <FilterSelect label="Exchange" value={filters.exchange} options={opts?.exchanges ?? []}
+              onChange={(v) => setFilter('exchange', v)} />
+            <FilterSelect label="Direction" value={filters.direction}
+              options={['BUY', 'SELL']} onChange={(v) => setFilter('direction', v)} />
+            <FilterSelect label="Strategy" value={filters.strategy} options={opts?.strategies ?? []}
+              onChange={(v) => setFilter('strategy', v)} />
+            <FilterSelect label="Timeframe" value={filters.timeframe} options={opts?.timeframes ?? []}
+              onChange={(v) => setFilter('timeframe', v)} />
+            <FilterSelect label="Conviction" value={filters.conviction} options={opts?.convictions ?? []}
+              onChange={(v) => setFilter('conviction', v)} />
+            <FilterSelect label="Risk" value={filters.risk}
+              options={[{ v: 'low', l: 'Low' }, { v: 'medium', l: 'Medium' }, { v: 'high', l: 'High' }]}
+              onChange={(v) => setFilter('risk', v)} />
+            <FilterSelect label="Sort" value={filters.sort}
+              options={[
+                { v: 'opportunity_rank', l: 'Opportunity Rank' },
+                { v: 'confidence', l: 'Confidence' },
+                { v: 'final_score', l: 'Final Score' },
+                { v: 'risk', l: 'Risk' },
+                { v: 'freshness', l: 'Freshness' },
+              ]}
+              onChange={(v) => setFilter('sort', v)} />
+
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                style={{
+                  padding: '6px 12px', fontSize: 12, border: '1px solid #E2E8F0',
+                  borderRadius: 6, background: 'white', cursor: 'pointer', color: '#64748B',
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </Card>
+
+        {/* Body */}
         {loading && !resp ? (
           <Card flush><Loading /></Card>
         ) : error ? (
           <Card flush>
-            <Empty
-              icon={ShieldAlert}
-              title="Couldn't load rankings"
-              description={error}
-            />
-          </Card>
-        ) : resp?.data_source === 'unavailable' || (rows.length === 0 && resp?.message) ? (
-          <Card flush>
-            <Empty
-              icon={TrendingUp}
-              title="No rankings data"
-              description={resp?.message ?? 'Go to Admin → Data Management and trigger a rankings sync.'}
-            />
+            <Empty icon={ShieldAlert} title="Couldn't load rankings" description={error} />
           </Card>
         ) : rows.length === 0 ? (
           <Card flush>
             <Empty
               icon={TrendingUp}
-              title="No rankings data"
-              description="Go to Admin → Data Management and trigger a rankings sync."
+              title="No approved opportunities"
+              description={resp?.message ?? 'No signals have passed the Phase-3 approval gateway yet.'}
             />
           </Card>
-        ) : view === 'flat' ? (
-          // Flat view — same sort order as the dashboard's Top
-          // Rankings panel: rows already arrived from the API in
-          // strict opportunity_rank DESC order (compareRanked in
-          // rankingsService.ts). No bucketing, no per-section
-          // re-numbering. The Tier column makes the categorical
-          // breakdown visible without breaking global ordering.
-          <Section
-            title={isClosed ? 'Last Close Rankings' : 'Top Stocks by Opportunity Rank'}
-            subtitle="Sorted strictly by opportunity_rank DESC — global order matches every other ranking surface in the platform"
-            variant="slate"
-            rows={rows}
-            ltpLabel={ltpLabel}
-            pctLabel={pctLabel}
-            startIndex={1}
-            showTier
-          />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <Section
-              title="High Conviction Opportunities"
-              subtitle={`Opportunity Rank ≥ 75 · confidence ≥ 80 · risk ≤ 35`}
-              variant="emerald"
-              rows={buckets.highConviction}
-              ltpLabel={ltpLabel}
-              pctLabel={pctLabel}
-              startIndex={1}
-            />
-            <Section
-              title="Actionable Watchlist"
-              subtitle={`Opportunity Rank 65–75 · confidence 65–80 · needs confirmation`}
-              variant="amber"
-              rows={buckets.actionable}
-              ltpLabel={ltpLabel}
-              pctLabel={pctLabel}
-              startIndex={1 + buckets.highConviction.length}
-            />
-            <Section
-              title="Momentum Leaders"
-              subtitle="Strong intraday move (≥ 4% absolute) — momentum signal, not a buy/sell call"
-              variant="blue"
-              rows={buckets.momentum}
-              ltpLabel={ltpLabel}
-              pctLabel={pctLabel}
-              startIndex={1 + buckets.highConviction.length + buckets.actionable.length}
-            />
-            {buckets.remaining.length > 0 && (
-              <Section
-                title="Other Ranked Stocks"
-                subtitle="Did not match the High Conviction / Actionable / Momentum criteria"
-                variant="slate"
-                rows={buckets.remaining}
-                ltpLabel={ltpLabel}
-                pctLabel={pctLabel}
-                startIndex={
-                  1 + buckets.highConviction.length + buckets.actionable.length + buckets.momentum.length
-                }
+          <Card flush>
+            <div style={{
+              padding: '12px 18px', borderBottom: '1px solid #E2E8F0',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              flexWrap: 'wrap', gap: 8,
+            }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>Approved Opportunities Leaderboard</div>
+                <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                  Sorted by {resp?.sorted_by?.split(',')[0] ?? 'opportunity rank'} · {total} total
+                </div>
+              </div>
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                onPage={(p) => setPage(p)}
               />
-            )}
-            {buckets.filtered.length > 0 && (
-              <Section
-                title="Filtered Out / Risk Watch"
-                subtitle="Rejected, high risk, or low confidence — surfaced for transparency, not as opportunities"
-                variant="red"
-                rows={buckets.filtered}
-                ltpLabel={ltpLabel}
-                pctLabel={pctLabel}
-                startIndex={
-                  1
-                  + buckets.highConviction.length
-                  + buckets.actionable.length
-                  + buckets.momentum.length
-                  + buckets.remaining.length
-                }
-              />
-            )}
-          </div>
+            </div>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Symbol</th>
+                    <th>Dir</th>
+                    <th>Source</th>
+                    <th>Sector</th>
+                    <th>Strategy</th>
+                    <th style={{ textAlign: 'right' }}>Opp. Rank</th>
+                    <th style={{ textAlign: 'right' }}>Final</th>
+                    <th>Conviction</th>
+                    <th style={{ textAlign: 'right' }}>Conf.</th>
+                    <th style={{ textAlign: 'right' }}>R:R</th>
+                    <th style={{ textAlign: 'right' }}>Port. Fit</th>
+                    <th>Risk</th>
+                    <th>Stance</th>
+                    <th style={{ textAlign: 'right' }}>{isClosed ? 'Entry' : 'LTP'}</th>
+                    <th style={{ textAlign: 'right' }}>Chg %</th>
+                    <th>Age</th>
+                    <th>Why ranked here</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const ltp = safeNum(r.ltp) ?? safeNum(r.entry_price);
+                    const pct = safeNum(r.pct_change);
+                    const conf = safeNum(r.confidence_score);
+                    const final = safeNum(r.final_score);
+                    const rr = safeNum(r.risk_reward);
+                    const fit = safeNum(r.portfolio_fit_score);
+                    const risk = safeNum(r.risk_score);
+                    const age = safeNum(r.signal_age_min);
+                    return (
+                      <tr key={`${r.symbol}-${r.id}-${r.rank_position}`}>
+                        <td style={{ fontWeight: 700, color: '#94A3B8' }}>{r.rank_position}</td>
+                        <td><strong style={{ color: '#1E3A5F' }}>{r.symbol}</strong></td>
+                        <td>{dirBadge(r.direction)}</td>
+                        <td>{sourceBadge(r.source)}</td>
+                        <td style={{ fontSize: 12, color: '#64748B' }}>{r.sector || '—'}</td>
+                        <td style={{ fontSize: 11, color: '#64748B' }}>{fmt.truncate(r.strategy, 16) || '—'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{r.opportunity_rank}</td>
+                        <td style={{ textAlign: 'right' }}>{final != null ? final.toFixed(0) : '—'}</td>
+                        <td>{convictionBadge(r.conviction_band)}</td>
+                        <td style={{ textAlign: 'right' }}>{conf != null ? `${conf.toFixed(0)}%` : '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{rr != null ? rr.toFixed(1) : '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{fit != null ? fit.toFixed(0) : '—'}</td>
+                        <td>{riskBadge(risk)}</td>
+                        <td style={{ fontSize: 11, color: '#64748B' }}>{r.market_stance || '—'}</td>
+                        <td style={{ textAlign: 'right' }}>{ltp != null && ltp > 0 ? fmt.currency(ltp) : '—'}</td>
+                        <td
+                          style={{ textAlign: 'right' }}
+                          className={pct != null ? changeClass(pct) : ''}
+                        >
+                          {pct != null ? fmt.percent(pct) : '—'}
+                        </td>
+                        <td style={{ fontSize: 11, color: '#64748B' }}>
+                          {age != null ? `${age}m` : '—'}
+                        </td>
+                        <td style={{ fontSize: 11, color: '#475569', maxWidth: 280 }}>
+                          <span title={r.rank_explanation} style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+                            <Info size={12} style={{ flexShrink: 0, marginTop: 2, color: '#94A3B8' }} />
+                            <span>{fmt.truncate(r.rank_explanation, 90)}</span>
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{
+              padding: '12px 18px', borderTop: '1px solid #E2E8F0',
+              display: 'flex', justifyContent: 'flex-end',
+            }}>
+              <Pagination page={page} totalPages={totalPages} onPage={(p) => setPage(p)} />
+            </div>
+          </Card>
         )}
       </div>
     </AppShell>
   );
 }
 
-// ─── Section table ────────────────────────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────
 
-interface SectionProps {
-  title:      string;
-  subtitle:   string;
-  variant:    'emerald' | 'amber' | 'blue' | 'slate' | 'red';
-  rows:       RankingRow[];
-  ltpLabel:   string;
-  pctLabel:   string;
-  startIndex: number;
-  /** When true, render an extra "Tier" column showing which bucket
-   *  each row would belong to (High Conviction / Actionable /
-   *  Momentum / Other / Filtered). Used by the flat view so the
-   *  categorical breakdown is still visible without breaking the
-   *  global opportunity_rank ordering. */
-  showTier?:  boolean;
-}
-
-// Tier classification (mirrors the bucketing predicates above) so the
-// flat view can label each row with its tier without re-running the
-// bucketing logic and without any chance of disagreeing with it.
-function tierOf(r: RankingRow): { label: string; bg: string; fg: string } {
-  if (isFilteredOut(r))    return { label: 'Filtered',  bg: '#FEE2E2', fg: '#B91C1C' };
-  if (isHighConviction(r)) return { label: 'High Conv', bg: '#D1FAE5', fg: '#065F46' };
-  if (isActionable(r))     return { label: 'Actionable',bg: '#DBEAFE', fg: '#1D4ED8' };
-  if (isMomentumMover(r))  return { label: 'Momentum',  bg: '#EDE9FE', fg: '#5B21B6' };
-  return { label: 'Other', bg: '#F1F5F9', fg: '#475569' };
-}
-
-const SECTION_BG: Record<SectionProps['variant'], string> = {
-  emerald: '#ECFDF5',
-  amber:   '#FFFBEB',
-  blue:    '#EFF6FF',
-  slate:   '#F8FAFC',
-  red:     '#FEF2F2',
-};
-
-const SECTION_BORDER: Record<SectionProps['variant'], string> = {
-  emerald: '#A7F3D0',
-  amber:   '#FDE68A',
-  blue:    '#BFDBFE',
-  slate:   '#E2E8F0',
-  red:     '#FECACA',
-};
-
-function Section({ title, subtitle, variant, rows, ltpLabel, pctLabel, startIndex, showTier }: SectionProps) {
-  if (!rows.length) return null;
+function FilterSelect({
+  label, value, options, onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[] | Array<{ v: string; l: string }>;
+  onChange: (v: string) => void;
+}) {
+  const normalized = options.map((o) =>
+    typeof o === 'string' ? { v: o, l: o } : o,
+  );
   return (
-    <Card flush>
-      <div style={{
-        background: SECTION_BG[variant],
-        borderBottom: `1px solid ${SECTION_BORDER[variant]}`,
-        padding: '12px 18px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{title}</h3>
-          <span style={{ fontSize: 11, color: '#475569' }}>· {rows.length} stock{rows.length === 1 ? '' : 's'}</span>
-        </div>
-        <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>{subtitle}</div>
-      </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Symbol</th>
-              <th>Name</th>
-              <th>Exchange</th>
-              <th>Sector</th>
-              {showTier && <th>Tier</th>}
-              <th style={{ textAlign: 'right' }}>Opp. Rank</th>
-              <th style={{ textAlign: 'right' }}>Q365 Score</th>
-              <th>Signal</th>
-              <th>Conviction</th>
-              <th style={{ textAlign: 'right' }}>Confidence</th>
-              <th>Risk</th>
-              <th style={{ textAlign: 'right' }}>{ltpLabel}</th>
-              <th style={{ textAlign: 'right' }}>{pctLabel}</th>
-              <th style={{ textAlign: 'right' }}>Volume</th>
-              <th>Source</th>
-              <th>Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => {
-              const sym  = symbolOf(r);
-              const opp  = safeNum(opportunityOf(r));
-              const sc   = safeNum(r.score);
-              const conf = safeNum(r.confidence_score ?? r.confidence);
-              const risk = safeNum(r.risk_score);
-              const ltp  = safeNum(r.ltp);
-              const pct  = safeNum(r.pct_change);
-              const vol  = safeNum(r.volume);
-              const syncTs = r.rankings_updated_at ?? null;
-              const signalAge = safeNum(r.signal_age_min);
-              return (
-                <tr key={`${sym}-${i}`}>
-                  <td style={{ fontWeight: 700, color: '#94A3B8' }}>{startIndex + i}</td>
-                  <td><strong style={{ color: '#1E3A5F' }}>{sym || '—'}</strong></td>
-                  <td style={{ color: '#64748B', fontSize: 12 }}>{fmt.truncate(r.name, 24) || '—'}</td>
-                  <td><Badge>{r.exchange || 'NSE'}</Badge></td>
-                  <td style={{ color: '#64748B', fontSize: 12 }}>{r.sector || '—'}</td>
-                  {showTier && (() => {
-                    const t = tierOf(r);
-                    return (
-                      <td>
-                        <span style={{
-                          background: t.bg, color: t.fg,
-                          fontSize: 10, fontWeight: 700, padding: '2px 8px',
-                          borderRadius: 99, letterSpacing: 0.3,
-                        }}>
-                          {t.label}
-                        </span>
-                      </td>
-                    );
-                  })()}
-                  <td style={{ textAlign: 'right', fontWeight: 700, color: '#0F172A' }}>
-                    {opp != null ? opp.toFixed(0) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', color: '#475569' }}>
-                    {sc != null ? sc.toFixed(1) : '—'}
-                  </td>
-                  <td>{signalBadge(r.signal_type)}</td>
-                  <td>{convictionBadge(r.conviction_band)}</td>
-                  <td style={{ textAlign: 'right' }}>{conf != null ? `${conf.toFixed(0)}%` : '—'}</td>
-                  <td>{riskBadge(risk)}</td>
-                  <td style={{ textAlign: 'right' }}>{ltp != null && ltp > 0 ? fmt.currency(ltp) : '—'}</td>
-                  <td
-                    style={{ textAlign: 'right' }}
-                    className={pct != null ? changeClass(pct) : ''}
-                  >
-                    {pct != null ? fmt.percent(pct) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right' }}>{vol != null && vol > 0 ? fmt.volume(vol) : '—'}</td>
-                  <td style={{ fontSize: 11, color: '#64748B' }}>{r.data_source || '—'}</td>
-                  <td
-                    style={{ fontSize: 11, color: '#64748B' }}
-                    title={signalAge != null ? `Signal age: ${signalAge}m` : undefined}
-                  >
-                    {fmtSyncAge(syncTs)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </Card>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      title={label}
+      style={{
+        padding: '6px 10px', fontSize: 12, borderRadius: 6,
+        border: '1px solid #E2E8F0', background: 'white', color: '#334155',
+        maxWidth: 140,
+      }}
+    >
+      <option value="">{label}</option>
+      {normalized.map((o) => (
+        <option key={o.v} value={o.v}>{o.l}</option>
+      ))}
+    </select>
+  );
+}
+
+function Pagination({
+  page, totalPages, onPage,
+}: {
+  page: number;
+  totalPages: number;
+  onPage: (p: number) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+      <button
+        disabled={page <= 1}
+        onClick={() => onPage(page - 1)}
+        style={{
+          padding: '4px 8px', border: '1px solid #E2E8F0', borderRadius: 6,
+          background: 'white', cursor: page <= 1 ? 'not-allowed' : 'pointer',
+          opacity: page <= 1 ? 0.5 : 1,
+        }}
+      >
+        <ChevronLeft size={14} />
+      </button>
+      <span style={{ color: '#64748B' }}>Page {page} of {totalPages}</span>
+      <button
+        disabled={page >= totalPages}
+        onClick={() => onPage(page + 1)}
+        style={{
+          padding: '4px 8px', border: '1px solid #E2E8F0', borderRadius: 6,
+          background: 'white', cursor: page >= totalPages ? 'not-allowed' : 'pointer',
+          opacity: page >= totalPages ? 0.5 : 1,
+        }}
+      >
+        <ChevronRight size={14} />
+      </button>
+    </div>
   );
 }

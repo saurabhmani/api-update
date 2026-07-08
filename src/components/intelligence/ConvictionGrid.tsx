@@ -5,7 +5,7 @@ import { Target, TrendingUp, Eye, XCircle, ArrowUpRight, ArrowDownRight } from '
 /* ─── Band config ─────────────────────────────────────────────── */
 const BANDS = [
   { key: 'high_conviction', label: 'High Conviction', short: 'HC', range: '85–100', color: '#059669', dark: '#065F46', light: '#D1FAE5', surface: '#F0FDF4', grad: 'linear-gradient(135deg, #059669, #34D399)', icon: Target, dots: 4 },
-  { key: 'actionable',      label: 'Actionable',      short: 'ACT', range: '70–84',  color: '#2563EB', dark: '#1D4ED8', light: '#DBEAFE', surface: '#EFF6FF', grad: 'linear-gradient(135deg, #2563EB, #60A5FA)', icon: TrendingUp, dots: 3 },
+  { key: 'actionable',      label: 'Actionable',      short: 'ACT', range: '60–84',  color: '#2563EB', dark: '#1D4ED8', light: '#DBEAFE', surface: '#EFF6FF', grad: 'linear-gradient(135deg, #2563EB, #60A5FA)', icon: TrendingUp, dots: 3 },
   { key: 'watchlist',        label: 'Watchlist',        short: 'WL',  range: '55–69',  color: '#D97706', dark: '#92400E', light: '#FEF3C7', surface: '#FFFBEB', grad: 'linear-gradient(135deg, #D97706, #FBBF24)', icon: Eye,        dots: 2 },
   { key: 'reject',           label: 'Filtered',         short: 'FLT', range: '<55',    color: '#94A3B8', dark: '#64748B', light: '#F1F5F9', surface: '#F8FAFC', grad: 'linear-gradient(135deg, #94A3B8, #CBD5E1)', icon: XCircle,    dots: 1 },
 ] as const;
