@@ -205,6 +205,31 @@ function tagAsEarly(r: ConfirmedSignalRow): ConfirmedSignalRow {
   return r;
 }
 
+/** Phase-3 APPROVED_SIGNAL rows from q365_signals that should surface in
+ *  signals[] when confirmed snapshots are empty (maturity worker lag). */
+function isPhase3MainTableCandidate(r: ConfirmedSignalRow): boolean {
+  const row = r as ConfirmedSignalRow & {
+    signal_status?: string;
+    effective_signal_status?: string;
+    raw_classification?: string | null;
+  };
+  const ss  = String(row.signal_status ?? row.effective_signal_status ?? '').toUpperCase();
+  const cls = String(r.classification ?? '').toUpperCase();
+  const raw = String(row.raw_classification ?? '').toUpperCase();
+  if (ss !== 'APPROVED_SIGNAL') return false;
+  if (cls === 'NO_TRADE' || cls === 'WATCHLIST_ONLY') return false;
+  if (raw === 'NO_TRADE' || raw === 'WATCHLIST_ONLY') return false;
+  return true;
+}
+
+function clearEarlyTagsForMainTable(r: ConfirmedSignalRow): ConfirmedSignalRow {
+  const row = { ...r } as ConfirmedSignalRow & Record<string, unknown>;
+  row.is_relaxed = false;
+  row.is_conditional = false;
+  row.is_scanner_candidate = false;
+  return row;
+}
+
 /**
  * Spec INSTITUTIONAL §H + §A — final-score-driven classification.
  * Aligned with the institutional 6-band scheme so closed-market rows
@@ -1068,7 +1093,12 @@ async function loadQ365SignalsStrict(limit: number): Promise<ConfirmedSignalRow[
       Math.max(1, Math.min(limit, 200)),
     ]);
     logQ365ScoreProvenance(rows as RawSignalRow[], 'q365_strict');
-    return (rows as any[]).map(shapeQ365Row).map(tagAsEarly);
+    return (rows as any[]).map(shapeQ365Row).map((r) => {
+      // APPROVED_SIGNAL rows that cleared strict SQL floors are eligible
+      // for the main table when snapshots are empty — do not tag as early.
+      if (isPhase3MainTableCandidate(r)) return r;
+      return tagAsEarly(r);
+    });
   } catch (err) {
     console.warn('[closedMarketSignals] strict query failed:', (err as Error).message);
     return [];
@@ -1226,6 +1256,44 @@ export async function loadClosedMarketSignals(
       scannedRowCount, approvedRowCount,
     );
     bundle.scannerCandidates = candidatesCapped;
+    return bundle;
+  }
+
+  // Phase-3 bridge — confirmed snapshots empty but q365_signals still
+  // holds strict APPROVED_SIGNAL rows (same pool /rankings reads). Without
+  // this, open-market /api/signals ships signals[]=0 while rankings shows
+  // opportunities; scanner_candidates-only paths tag is_relaxed=true and
+  // the UI elite filter drops every row.
+  const q365ApprovedMain = q365Strict
+    .filter(isPhase3MainTableCandidate)
+    .map(clearEarlyTagsForMainTable);
+
+  if (q365ApprovedMain.length > 0) {
+    const keyOf = (r: ConfirmedSignalRow): string =>
+      `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`;
+    const shippedKeys = new Set(q365ApprovedMain.map(keyOf));
+    const candidates: ConfirmedSignalRow[] = [
+      ...snapRows.filter((r) => !shippedKeys.has(keyOf(r))),
+      ...q365Strict.filter((r) => !shippedKeys.has(keyOf(r))),
+    ];
+    const candidatesUniq   = dedupeLatestPerSymbolDirection(candidates);
+    const candidatesSorted = candidatesUniq.sort(confirmedSnapshotCmp);
+    const candidatesCapped = applyConfirmedCap(candidatesSorted)
+      .map(asScannerCandidate);
+    const bundle = finalizeBundle(
+      q365ApprovedMain,
+      'q365_signals_strict',
+      'STRICT',
+      q365ApprovedMain.length,
+      false,
+      scannedRowCount,
+      approvedRowCount + q365ApprovedMain.length,
+    );
+    bundle.scannerCandidates = candidatesCapped;
+    console.log(
+      `[Q365_PHASE3] surfacing ${bundle.signals.length} APPROVED_SIGNAL row(s) ` +
+      `from q365_signals (snapshots empty, scanner_candidates=${candidatesCapped.length})`,
+    );
     return bundle;
   }
 

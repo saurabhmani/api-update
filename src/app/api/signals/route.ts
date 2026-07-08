@@ -2732,6 +2732,17 @@ export async function GET(req: NextRequest) {
                 quality: signalQuality,
                 note:    'rows partition to HIGH_POTENTIAL via is_conditional',
               });
+            } else if (closed.source === 'q365_signals_strict') {
+              // Phase-3 q365 rows already passed strict SQL + response
+              // validation. applyEliteGate's stress backfill (100-conf)
+              // rejects high-confidence rows and zeroes the open-market UI.
+              shipRows = sectorBalanced as ConfirmedSignalRow[];
+              console.log('[Q365_PHASE3]', {
+                stage:    'open_market_fallback',
+                input:    sectorBalanced.length,
+                approved: shipRows.length,
+                source:   closed.source,
+              });
             } else {
               const closedElite = applyEliteGate(sectorBalanced);
               shipRows = closedElite.approved as ConfirmedSignalRow[];

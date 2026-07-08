@@ -859,10 +859,11 @@ export default function SignalsPage() {
     lastConfirmedSignalUpdateAt: string | null;
     freshness:                   string | null;
     fallbackUsed:                string | null;
+    healthLoaded:                boolean;
   }>({
     dataSource: null, lastApiRequestAt: null, lastSuccessAt: null,
     lastPipelineRunAt: null, lastConfirmedSignalUpdateAt: null,
-    freshness: null, fallbackUsed: null,
+    freshness: null, fallbackUsed: null, healthLoaded: false,
   });
 
   useEffect(() => {
@@ -881,6 +882,7 @@ export default function SignalsPage() {
             lastConfirmedSignalUpdateAt: j.lastConfirmedSignalUpdateAt ?? null,
             freshness:                   j.freshness ?? null,
             fallbackUsed:                j.fallbackUsed ?? null,
+            healthLoaded:                true,
           });
         }
       } catch { /* ignore */ }
@@ -1906,12 +1908,16 @@ export default function SignalsPage() {
               }).replace(',', '') + ' IST';
             };
             const freshnessPalette: Record<string, { bg: string; color: string; border: string }> = {
-              Fresh:    { bg: '#F0FDF4', color: '#15803D', border: '#BBF7D0' },
-              Stale:    { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
-              Degraded: { bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
-              Offline:  { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+              Fresh:      { bg: '#F0FDF4', color: '#15803D', border: '#BBF7D0' },
+              Stale:      { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
+              Degraded:   { bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
+              Offline:    { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+              'Starting…': { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' },
             };
-            const f = freshnessPalette[feedHealth.freshness ?? 'Offline']
+            const freshnessLabel = feedHealth.healthLoaded
+              ? (feedHealth.freshness ?? 'Offline')
+              : 'Starting…';
+            const f = freshnessPalette[freshnessLabel]
                    ?? freshnessPalette.Offline;
             return (
               <div
@@ -1947,7 +1953,7 @@ export default function SignalsPage() {
                     letterSpacing: 0.3,
                   }}
                 >
-                  {feedHealth.freshness ?? 'Offline'}
+                  {freshnessLabel}
                 </span>
                 {(() => {
                   // SIGNAL-ENGINE-COPY-2026-05 — read the unified

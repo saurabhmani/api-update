@@ -30,8 +30,31 @@ export const revalidate = 0;
 
 type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline';
 
-function freshnessFromAgeMs(ageMs: number | null, latestQuality: string | null): Freshness {
-  if (ageMs == null) return 'Offline';
+function freshnessFromAgeMs(
+  ageMs: number | null,
+  latestQuality: string | null,
+  opts: {
+    marketOpen: boolean;
+    coarseHealth: ReturnType<typeof getMarketDataHealth>;
+    lastPipelineRunAt: string | null;
+  },
+): Freshness {
+  if (ageMs == null) {
+    const coarse = opts.coarseHealth;
+    const tickAge = coarse.lastTickAgeMs;
+    // Live WS feed is pushing — ring buffer may lag on cold boot.
+    if (tickAge != null && tickAge < 120_000) return 'Fresh';
+    if (coarse.subscribedCount > 0 && coarse.tickRatePerSec > 0) return 'Fresh';
+    // Provider configured and market open — not "offline", just no logged batch yet.
+    if (opts.marketOpen && coarse.health === 'OK') return 'Stale';
+    if (!opts.marketOpen && coarse.health === 'DEGRADED') return 'Stale';
+    // Signal pipeline ran recently — engine is alive even if quotes aren't logged.
+    if (opts.lastPipelineRunAt) {
+      const pipelineAge = Date.now() - new Date(opts.lastPipelineRunAt).getTime();
+      if (Number.isFinite(pipelineAge) && pipelineAge < 2 * 3_600_000) return 'Stale';
+    }
+    return 'Offline';
+  }
   if (ageMs < 60_000   && latestQuality === 'HIGH')   return 'Fresh';
   if (ageMs < 300_000  && latestQuality !== 'LOW')    return 'Fresh';
   if (ageMs < 900_000)                                 return 'Stale';
@@ -52,6 +75,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const flags = getProviderFlagsSummary();
   const coarse = getMarketDataHealth();
+  const manual = await getManualRunStatus().catch(() => null);
 
   // Determine the active provider label. The flag wins when present;
   // when no requests have run yet (cold boot) we fall back to flags.
@@ -71,7 +95,11 @@ export async function GET(req: NextRequest): Promise<Response> {
   // batch. If the last invocation was a single-symbol call we surface
   // its coverage but mark the freshness from its quality field.
   const coverage = lastSuc?.coverage_percent ?? 0;
-  let freshness = freshnessFromAgeMs(ageSinceLastSuccessMs, lastSuc?.data_quality ?? null);
+  let freshness = freshnessFromAgeMs(ageSinceLastSuccessMs, lastSuc?.data_quality ?? null, {
+    marketOpen: coarse.market.isOpen,
+    coarseHealth: coarse,
+    lastPipelineRunAt: manual?.lastRunAt ?? null,
+  });
 
   // Market-closed mode: the resolver gate correctly suppresses upstream
   // calls outside session hours, so `lastSuccessAt` ages indefinitely
@@ -90,8 +118,6 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Manual run last timestamp — the dashboard renders these next to
   // "Last Pipeline Run" so the operator sees the manual-vs-cron split.
-  const manual = await getManualRunStatus().catch(() => null);
-
   // Last confirmed-signal write — the dashboard's "Last Confirmed
   // Signal Update" field reads this. We pick MAX(updated_at) over
   // active rows because the lifecycle worker bumps updated_at on
