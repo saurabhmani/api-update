@@ -129,7 +129,10 @@ export async function GET(req: NextRequest) {
         try {
           const sig = await loadSignalGateFields(sym);
           if (!sig) continue;
-          const conf = Number(sig.confidence_score ?? 0);
+          // Use the confidence stored on the setup row (validated at creation).
+          // Re-checking against the latest q365_signals score empties the UI when
+          // live signal confidence decays after the setup was written.
+          const conf = Number(setup.confidence ?? 0);
           if (conf < confFloor) continue;
           if (!passesInstitutionalGates({
             classification: sig.classification as string | null,

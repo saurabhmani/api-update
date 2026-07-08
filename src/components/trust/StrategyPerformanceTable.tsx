@@ -31,22 +31,31 @@ function sourceLabel(source?: string): string {
 
 export function StrategyPerformanceTable() {
   const [window, setWindow] = useState<string>('90D');
-  const [showThinSample, setShowThinSample] = useState(false);
+  const [showThinSample, setShowThinSample] = useState(true);
   const { data, isLoading, error } = useTrustStrategyPerformance(window);
 
   if (isLoading) return <Loading text="Loading strategy performance…" />;
   if (error) {
     return (
       <Card title="Strategy Performance">
-        <p style={{ padding: 16, color: '#DC2626' }}>Failed to load strategy performance.</p>
+        <p style={{ padding: 16, color: '#DC2626' }}>
+          {error instanceof Error ? error.message : 'Failed to load strategy performance.'}
+        </p>
       </Card>
     );
   }
 
-  const rows = data ?? [];
+  const rows = data?.rows ?? [];
   const reliable = rows.filter((r) => r.dataStatus === 'AVAILABLE');
   const thinSample = rows.filter((r) => r.dataStatus !== 'AVAILABLE');
   const visibleRows = showThinSample ? rows : reliable;
+  const sources = data?.sourceStatus;
+  const noClosedOutcomes =
+    rows.length === 0 &&
+    (sources?.directOutcomeRows ?? 0) === 0 &&
+    (sources?.observedSnapshotRows ?? 0) === 0 &&
+    (sources?.backtestTradeRows ?? 0) === 0 &&
+    (sources?.strategySnapshots ?? 0) === 0;
 
   return (
     <Card
@@ -63,10 +72,34 @@ export function StrategyPerformanceTable() {
       }
       flush
     >
-      {rows.length === 0 && (
+      {noClosedOutcomes && (
+        <div style={{
+          padding: '12px 20px', fontSize: 13, color: '#92400E',
+          background: '#FFFBEB', borderBottom: '1px solid #FDE68A',
+        }}>
+          No closed signal outcomes found for {window}. This usually means the
+          learning scheduler has not populated <code>q365_signal_outcomes</code> /
+          confirmed snapshot terminals on this environment yet. Run{' '}
+          <code>npm run learning-scheduler</code> (or wait for the daily PM2 cron)
+          after signals have aged enough to grade.
+        </div>
+      )}
+      {!noClosedOutcomes && rows.length === 0 && (
         <div style={{ padding: '16px 20px', fontSize: 13, color: '#64748B' }}>
-          No closed signal outcomes in the last {window}. Metrics appear after
-          confirmed signals reach TARGET_HIT or STOP_LOSS_HIT.
+          Outcome rows exist, but none resolve to WIN/LOSS for {window}. Confirm
+          learning evaluations completed and try a wider window (90D / 180D / 1Y).
+        </div>
+      )}
+      {sources && (sources.directOutcomeRows > 0 || sources.observedSnapshotRows > 0) && (
+        <div style={{
+          padding: '8px 20px', fontSize: 11, color: '#94A3B8',
+          borderBottom: '1px solid #F1F5F9',
+        }}>
+          Sources — direct: {sources.directOutcomeRows}
+          {' · '}observed: {sources.observedSnapshotRows}
+          {' · '}backtest: {sources.backtestTradeRows}
+          {' · '}snapshots: {sources.strategySnapshots}
+          {' · '}evaluated trades: {sources.evaluatedTrades}
         </div>
       )}
       {thinSample.length > 0 && (
