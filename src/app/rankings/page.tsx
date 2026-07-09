@@ -165,12 +165,14 @@ const dirBadge = (dir: string) => {
 export default function RankingsPage() {
   const [resp, setResp]       = useState<OpportunitiesApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError]     = useState<string | null>(null);
   const [page, setPage]       = useState(1);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [draftSearch, setDraftSearch] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true);
     try {
       const d = await rankingsApi.opportunities({
         limit: PAGE_SIZE,
@@ -193,6 +195,7 @@ export default function RankingsPage() {
       setError((e as Error)?.message || 'Failed to load rankings');
     } finally {
       setLoading(false);
+      if (manual) setRefreshing(false);
     }
   }, [page, filters]);
 
@@ -266,8 +269,8 @@ export default function RankingsPage() {
               {resp?.as_of && <span> · as of {fmt.datetime(resp.as_of)}</span>}
             </p>
           </div>
-          <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
-            <RefreshCw size={13} /> Refresh
+          <Button variant="secondary" size="sm" onClick={() => load(true)} disabled={loading || refreshing}>
+            <RefreshCw size={13} className={refreshing ? 'spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
           </Button>
         </div>
 
