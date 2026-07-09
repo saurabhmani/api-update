@@ -116,6 +116,28 @@ describe('classifyCandleFreshness', () => {
     expect(r.freshness_quality).toBe('aging');
   });
 
+  it('market open + daily source: 27h old bar → aging (prior-session lag)', () => {
+    const r = classifyCandleFreshness({
+      latest_candle_ms: now - 27 * 3_600_000,
+      market_open:      true,
+      candle_source:    'daily',
+      now_ms:           now,
+    });
+    expect(r.freshness_quality).toBe('aging');
+    expect(r.feed_frozen).toBe(false);
+  });
+
+  it('market open + daily source: 50h old bar → stale (not frozen)', () => {
+    const r = classifyCandleFreshness({
+      latest_candle_ms: now - 50 * 3_600_000,
+      market_open:      true,
+      candle_source:    'daily',
+      now_ms:           now,
+    });
+    expect(r.freshness_quality).toBe('stale');
+    expect(r.feed_frozen).toBe(false);
+  });
+
   it('market open: candle 2h old → stale', () => {
     const r = classifyCandleFreshness({
       latest_candle_ms: now - 2 * 3_600_000, market_open: true, now_ms: now,

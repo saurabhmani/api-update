@@ -13,6 +13,7 @@
  */
 import { NextRequest, NextResponse }  from 'next/server';
 import { requireSession }             from '@/lib/session';
+import { ensureLiveMarketStack }      from '@/lib/marketData/ensureLiveMarketStack';
 import { db }                         from '@/lib/db';
 // Legacy q365_signals readers (getActiveSignals, getTopSignals,
 // getSignalStats, getStrategyBreakdownsBatch, getDevelopingSetupBackfill)
@@ -86,6 +87,7 @@ import {
   buildSignalDueDiligence,
   buildPerformanceReview,
   buildDueDiligenceSummary,
+  enrichRowsWithDueDiligence,
   type DueDiligenceContext,
   type DueDiligenceReview,
   type DueDiligenceSummary,
@@ -1557,6 +1559,10 @@ export async function GET(req: NextRequest) {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
 
+  // Boot live feed stack so freshness + engine-health preview see the
+  // same WS poll state as /api/market-data/live-feed-status.
+  await ensureLiveMarketStack().catch(() => {});
+
   // Spec STEP 2 — universe init guard. Idempotent + race-safe via
   // the shared promise lock in initOnce(). On a cold instrumentation
   // boot (or if instrumentation's universe load failed transiently)
@@ -2099,8 +2105,19 @@ export async function GET(req: NextRequest) {
           };
           const closedApprovedOutcome = countClosedOutcome(closedEnrichedApproved as Array<{ performanceReview?: PerformanceReview }>);
           const closedHpOutcome       = countClosedOutcome(closedEnrichedHighPotential as Array<{ performanceReview?: PerformanceReview }>);
+          const { filterDisplayableApproved: filterClosedDisplayable } = await import('@/lib/signals/filterDisplayableApproved');
+          const closedDisplayableApproved = filterClosedDisplayable(
+            closedEnrichedApproved as Array<Record<string, unknown>>,
+            closedSignalQuality,
+          );
+          const closedDisplayableBuy = closedDisplayableApproved.filter(
+            (r) => String(r.direction ?? '').toUpperCase() === 'BUY',
+          ).length;
+          const closedDisplayableSell = closedDisplayableApproved.filter(
+            (r) => String(r.direction ?? '').toUpperCase() === 'SELL',
+          ).length;
           const closedDailyReportPreview = buildLightweightDailyReportPreview({
-            approvedTotal:          closedEnrichedApproved.length,
+            approvedTotal:          closedDisplayableApproved.length,
             approvedSuccess:        closedApprovedOutcome.success,
             approvedFailed:         closedApprovedOutcome.failed,
             highPotentialTotal:     closedEnrichedHighPotential.length,
@@ -2122,7 +2139,7 @@ export async function GET(req: NextRequest) {
             freshnessMode:      closedCandleFreshness.freshness_mode,
             feedFrozen:         closedCandleFreshness.feed_frozen,
             freshnessQuality:   closedCandleFreshness.freshness_quality,
-            approvedTotal:      closedEnrichedApproved.length,
+            approvedTotal:      closedDisplayableApproved.length,
             candidateTotal:     closedEnrichedHighPotential.length
                               + closedEnrichedWatchlist.length
                               + closedEnrichedDeveloping.length
@@ -2159,14 +2176,14 @@ export async function GET(req: NextRequest) {
             // ── STRUCTURED_SIGNALS_2026-05 ──
             // PHASE_1_RANKING + PHASE_2_DUE_DILIGENCE — enriched lists.
             approvedSignals:      closedEnrichedApproved as typeof closedTieredApproved,
-            approvedCount:        closedTieredApproved.length,
+            approvedCount:        closedDisplayableApproved.length,
             highPotentialSignals: closedEnrichedHighPotential as typeof closedHighPotential,
             watchlistSignals:     closedEnrichedWatchlist as typeof closedTieredWatchlist,
             rejectedSignals:      closedEnrichedRisk as typeof closedTieredRisk,
             counters: {
-              approvedTotal:       closedTieredApproved.length,
-              approvedBuy:         closedTieredBuy,
-              approvedSell:        closedTieredSell,
+              approvedTotal:       closedDisplayableApproved.length,
+              approvedBuy:         closedDisplayableBuy,
+              approvedSell:        closedDisplayableSell,
               highPotentialTotal:  closedHighPotential.length,
               watchlistTotal:      closedTieredWatchlist.length + closedTieredDeveloping.length + closedTieredScanner.length,
               rejectedTotal:       closedTieredRisk.length,
@@ -2333,8 +2350,13 @@ export async function GET(req: NextRequest) {
           // and enrich each row with per-row due diligence so the
           // nearest-signal cards can render explainability.
           {
-            const closestRows: ClosestToApprovalRow[] = closedTieredApproved.length === 0
-              ? buildClosestToApprovalSignals(
+            // DASHBOARD-NEAREST-2026-07 — compute nearest candidates even
+            // when approved rows exist. The dashboard's "Nearest Trade
+            // Opportunities" card is a candidate view, not an approved
+            // view; returning [] whenever approvedTotal > 0 left it
+            // permanently empty on healthy days.
+            const closestRows: ClosestToApprovalRow[] =
+              buildClosestToApprovalSignals(
                   {
                     highPotential:    closedHighPotential as unknown as RankableSignal[],
                     watchlist:        closedTieredWatchlist as unknown as RankableSignal[],
@@ -2379,8 +2401,7 @@ export async function GET(req: NextRequest) {
                     dueDiligence:           dd,
                     performanceReview:      performance,
                   };
-                })
-              : [];
+                });
             const closestReason = closedTieredApproved.length === 0
               ? 'Market Closed — nearest candidates from last close. Awaiting fresh market confirmation.'
               : 'Approved signals available — closest-to-approval surfaced for reference only.';
@@ -3970,7 +3991,7 @@ export async function GET(req: NextRequest) {
         .filter((r) => String(r.direction ?? '').toUpperCase() === 'BUY').length;
       const finalSell = (tieredApproved as Array<{ direction?: string | null }>)
         .filter((r) => String(r.direction ?? '').toUpperCase() === 'SELL').length;
-      const finalCounters = {
+      let finalCounters = {
         approvedTotal:       tieredApproved.length,
         approvedBuy:         finalBuy,
         approvedSell:        finalSell,
@@ -3988,7 +4009,10 @@ export async function GET(req: NextRequest) {
       // when approvedTotal=0 but trackers exist. Same helper the closed-
       // market path uses (buildClosestToApprovalSignals).
       let finalNearestSignals: ClosestToApprovalRow[] = [];
-      if (tieredApproved.length === 0) {
+      // DASHBOARD-NEAREST-2026-07 — compute nearest candidates even when
+      // approved rows exist (the dashboard card is a candidate view; it
+      // was permanently empty whenever approvedTotal > 0).
+      {
         try {
           finalNearestSignals = buildClosestToApprovalSignals(
             {
@@ -4055,6 +4079,49 @@ export async function GET(req: NextRequest) {
         },
       });
 
+      // PHASE_2_DUE_DILIGENCE — tier partition + fallback merges can
+      // surface rows that never passed buildSignalsResponsePayload's
+      // enrichRowsWithDiligence pass. Re-attach (or preserve) per-row
+      // dueDiligence on every shipped tier so the "Why?" toggle works.
+      const ms = (responsePayloadBase as {
+        marketStatus?: { isOpen?: boolean; label?: string };
+        dataFreshness?: { ageMinutes?: number };
+        freshness?: { freshness_mode?: string };
+      });
+      const ddContextBase: Omit<DueDiligenceContext, 'tier'> = {
+        marketOpen:       ms.marketStatus?.isOpen ?? getMarketStatus().isOpen,
+        marketLabel:      ms.marketStatus?.label ?? getMarketStatus().label,
+        isBootstrap:      false,
+        isFallback:       usedRelaxedSignals || relaxedUsed || signalQuality !== 'STRICT',
+        freshnessMode:    (ms.freshness as { freshness_mode?: string } | undefined)?.freshness_mode
+                          ?? 'daily_tolerant',
+        candleAgeMinutes: Number(ms.dataFreshness?.ageMinutes ?? 0),
+      };
+      const shippedApproved          = enrichRowsWithDueDiligence(tieredApproved as RankableSignal[], 'approved', ddContextBase);
+      const shippedHighPotential     = enrichRowsWithDueDiligence(tieredHighPotential as RankableSignal[], 'high_potential', ddContextBase);
+      const shippedDeveloping        = enrichRowsWithDueDiligence(tieredDeveloping as RankableSignal[], 'developing', ddContextBase);
+      const shippedScannerCandidates = enrichRowsWithDueDiligence(tieredScannerCandidates as RankableSignal[], 'scanner_candidate', ddContextBase);
+      const shippedWatchlist         = enrichRowsWithDueDiligence(tieredWatchlist as RankableSignal[], 'watchlist', ddContextBase);
+      const shippedRiskRestricted    = enrichRowsWithDueDiligence(tieredRiskRestricted as RankableSignal[], 'risk_restricted', ddContextBase);
+
+      const { filterDisplayableApproved } = await import('@/lib/signals/filterDisplayableApproved');
+      const displayableApproved = filterDisplayableApproved(
+        shippedApproved as unknown as Array<Record<string, unknown>>,
+        signalQuality,
+      );
+      const displayableBuy = displayableApproved.filter(
+        (r) => String(r.direction ?? '').toUpperCase() === 'BUY',
+      ).length;
+      const displayableSell = displayableApproved.filter(
+        (r) => String(r.direction ?? '').toUpperCase() === 'SELL',
+      ).length;
+      finalCounters = {
+        ...finalCounters,
+        approvedTotal: displayableApproved.length,
+        approvedBuy:   displayableBuy,
+        approvedSell:  displayableSell,
+      };
+
       const responsePayload = {
         ...responsePayloadBase,
         // INSTITUTIONAL_TIER_2026-05 — strict-only signals[]. The lite
@@ -4062,18 +4129,18 @@ export async function GET(req: NextRequest) {
         // we preserve whatever shape was produced there. compactness
         // is preserved because partitionByTier only reads the discrim
         // fields and shallow-clones the rows.
-        signals:               tieredApproved as unknown as typeof responsePayloadBase.signals,
-        approved:              tieredApproved as unknown as typeof responsePayloadBase.approved,
-        main_signals_count:    tieredApproved.length,
+        signals:               shippedApproved as unknown as typeof responsePayloadBase.signals,
+        approved:              shippedApproved as unknown as typeof responsePayloadBase.approved,
+        main_signals_count:    shippedApproved.length,
         buy_count:             tieredBuy,
         sell_count:            tieredSell,
         direction_breakdown:   { BUY: tieredBuy, SELL: tieredSell },
-        count:                 tieredApproved.length,
-        empty_confirmed:       tieredApproved.length === 0,
+        count:                 shippedApproved.length,
+        empty_confirmed:       shippedApproved.length === 0,
         // Five-tier wire shape — frontend tabs read these directly.
-        developing:            tieredDeveloping,
-        watchlist:             tieredWatchlist,
-        risk_restricted:       tieredRiskRestricted,
+        developing:            shippedDeveloping,
+        watchlist:             shippedWatchlist,
+        risk_restricted:       shippedRiskRestricted,
         // CONDITIONAL_FALLBACK_2026-05 — Tier 1.5 promotion. When
         // signals[] is empty and the engine produced rows that
         // clear the conditional floors, up to 3 are surfaced here
@@ -4082,7 +4149,7 @@ export async function GET(req: NextRequest) {
         // banner so the dashboard never feels dead while the strict
         // tier remains pure. Empty array when signals[] is non-empty
         // OR no candidate cleared the conditional floors.
-        high_potential:           tieredHighPotential,
+        high_potential:           shippedHighPotential,
         high_potential_buy:       tieredConditionalBuy,
         high_potential_sell:      tieredConditionalSell,
         conditional_mode_active:  conditionalModeActive,
@@ -4122,7 +4189,7 @@ export async function GET(req: NextRequest) {
         // INSTITUTIONAL_TIER_2026-05 — scanner_candidates ships the
         // tier-stamped + deduped Tier-3 array so the EMERGING tab
         // reads from the same source the partition logic produced.
-        scanner_candidates:  tieredScannerCandidates,
+        scanner_candidates:  shippedScannerCandidates,
         // Diagnostic-only — present only when ?debug=signals OR
         // SIGNAL_INCLUDE_INVALIDATED=true. Never modifies signals[].
         // `debug.raw_signals` is the unfiltered q365_signals dump so
@@ -4189,8 +4256,8 @@ export async function GET(req: NextRequest) {
         counters:            finalCounters,
         closestToApproval:   finalClosestToApproval,
         nearestSignals:      finalNearestSignals,
-        approvedSignals:     tieredApproved      as unknown as typeof responsePayloadBase.approvedSignals,
-        approvedCount:       tieredApproved.length,
+        approvedSignals:     shippedApproved      as unknown as typeof responsePayloadBase.approvedSignals,
+        approvedCount:       displayableApproved.length,
         highPotentialSignals: tieredHighPotential as unknown as typeof responsePayloadBase.highPotentialSignals,
         // watchlistSignals legacy alias = developing ∪ scanner ∪ watchlist
         // matches the counters.watchlistTotal formula and what the

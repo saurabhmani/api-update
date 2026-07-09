@@ -90,8 +90,8 @@ describe('eliteApproved', () => {
     expect(eliteApproved({ ...baseEliteRow, classification: 'MEDIUM_CONVICTION' })).toBe(false);
   });
 
-  it('rejects VALID_SIGNAL classification (above strict, below elite)', () => {
-    expect(eliteApproved({ ...baseEliteRow, classification: 'VALID_SIGNAL' })).toBe(false);
+  it('approves VALID_SIGNAL classification (MATURATION_AUDIT_2026-05 — added back to elite set)', () => {
+    expect(eliteApproved({ ...baseEliteRow, classification: 'VALID_SIGNAL' })).toBe(true);
   });
 
   it('approves HIGH_CONVICTION classification', () => {
@@ -202,18 +202,36 @@ describe('applyEliteGate', () => {
     }
   });
 
-  it('NEVER-EMPTY default — bypasses with is_relaxed tag when 0 rows pass', () => {
+  it('default — returns empty when 0 rows qualify (strict-only signals[])', () => {
+    // INSTITUTIONAL_TIER_2026-05 — SIGNAL_ELITE_NEVER_EMPTY now
+    // defaults OFF: signals[] is strict-only and empty is acceptable;
+    // weaker rows ship in the lower-tier arrays instead.
     const rows = [
       { ...baseEliteRow, symbol: 'WEAK1', final_score: 50 },
       { ...baseEliteRow, symbol: 'WEAK2', confidence_score: 40 },
       { ...baseEliteRow, symbol: 'WEAK3', rr_ratio: 1.0 },
     ];
-    const result = applyEliteGate(rows) as ReturnType<typeof applyEliteGate> & { bypassed?: boolean };
-    expect(result.approved).toHaveLength(3);
-    expect(result.bypassed).toBe(true);
+    const result = applyEliteGate(rows);
+    expect(result.approved).toEqual([]);
     expect(result.dropped).toHaveLength(3);
-    for (const r of result.approved) {
-      expect((r as { is_relaxed?: boolean }).is_relaxed).toBe(true);
+  });
+
+  it('SIGNAL_ELITE_NEVER_EMPTY=1 restores the is_relaxed-tagged fallback', () => {
+    process.env.SIGNAL_ELITE_NEVER_EMPTY = '1';
+    try {
+      const rows = [
+        { ...baseEliteRow, symbol: 'WEAK1', final_score: 50 },
+        { ...baseEliteRow, symbol: 'WEAK2', confidence_score: 40 },
+        { ...baseEliteRow, symbol: 'WEAK3', rr_ratio: 1.0 },
+      ];
+      const result = applyEliteGate(rows) as ReturnType<typeof applyEliteGate> & { bypassed?: boolean };
+      expect(result.approved).toHaveLength(3);
+      expect(result.dropped).toHaveLength(3);
+      for (const r of result.approved) {
+        expect((r as { is_relaxed?: boolean }).is_relaxed).toBe(true);
+      }
+    } finally {
+      delete process.env.SIGNAL_ELITE_NEVER_EMPTY;
     }
   });
 });

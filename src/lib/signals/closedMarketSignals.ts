@@ -1212,7 +1212,9 @@ export async function loadClosedMarketSignals(
       matureMain, 'confirmed_snapshots', 'STRICT', matureMain.length, false,
       scannedRowCount, approvedRowCount,
     );
-    bundle.scannerCandidates = candidatesCapped;
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
     return bundle;
   }
 
@@ -1255,7 +1257,9 @@ export async function loadClosedMarketSignals(
       relaxedMain, 'confirmed_snapshots', 'RELAXED', 0, true,
       scannedRowCount, approvedRowCount,
     );
-    bundle.scannerCandidates = candidatesCapped;
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
     return bundle;
   }
 
@@ -1289,10 +1293,12 @@ export async function loadClosedMarketSignals(
       scannedRowCount,
       approvedRowCount + q365ApprovedMain.length,
     );
-    bundle.scannerCandidates = candidatesCapped;
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
     console.log(
       `[Q365_PHASE3] surfacing ${bundle.signals.length} APPROVED_SIGNAL row(s) ` +
-      `from q365_signals (snapshots empty, scanner_candidates=${candidatesCapped.length})`,
+      `from q365_signals (snapshots empty, scanner_candidates=${bundle.scannerCandidates.length})`,
     );
     return bundle;
   }
@@ -1413,6 +1419,45 @@ export async function loadClosedMarketSignals(
     scannedRowCount, approvedRowCount,
     scannerCandidates: candidatesCapped,
   };
+}
+
+/**
+ * DASHBOARD-NEAREST-2026-07 — relaxed scanner-candidate supplement.
+ *
+ * The three "approved rows exist" branches build their side-panel
+ * candidates only from snapshot/strict leftovers. On days when every
+ * strict row ships in the main table, that leftover pool is EMPTY —
+ * the dashboard's "Nearest Trade Opportunities" card then has no
+ * candidates to rank even though q365_signals holds hundreds of
+ * developing/watchlist rows from the same session. When the leftover
+ * pool is empty, top it up from the relaxed loader (conf>=55,
+ * final>=60, rr>=1.2 defaults) minus anything already shipped.
+ */
+async function loadRelaxedScannerSupplement(
+  shippedKeys: Set<string>,
+  limit: number,
+): Promise<ConfirmedSignalRow[]> {
+  try {
+    const relaxed = await loadQ365SignalsRelaxed(limit);
+    const leftover = relaxed.filter((r) =>
+      !shippedKeys.has(
+        `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
+      ),
+    );
+    if (leftover.length === 0) return [];
+    const uniq   = dedupeLatestPerSymbolDirection(leftover);
+    const sorted = uniq.sort(confirmedSnapshotCmp);
+    const capped = applyConfirmedCap(sorted).map(asScannerCandidate);
+    console.log(
+      `[SCANNER_SUPPLEMENT] relaxed loader topped up empty candidate pool: ` +
+      `sql_in=${relaxed.length} shipped_excluded=${relaxed.length - leftover.length} ` +
+      `out=${capped.length}`,
+    );
+    return capped;
+  } catch (err) {
+    console.warn('[SCANNER_SUPPLEMENT] relaxed supplement failed:', (err as Error).message);
+    return [];
+  }
 }
 
 /** Tag a row that's about to land in the scanner-candidates side

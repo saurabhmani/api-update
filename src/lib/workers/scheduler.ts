@@ -454,6 +454,39 @@ setInterval(() => {
   })();
 }, MATURITY_INTERVAL_MS);
 
+// 7b. Production alert monitor — every 5 min, 24x7.
+//
+// PRODUCTION-READINESS 2026-07 §6.2 — evaluates the signal-pipeline
+// alert rules (no confirmed signals during market hours, live feed
+// stale, scanner stuck in-flight, IndianAPI quota >90%) plus the
+// PRODUCTION-ALERTS-2026-05 set, and delivers warning/critical hits
+// via Slack / email / system notifications. The q365_alerts store
+// dedups by rule id so persistent conditions don't spam.
+// Disable with ALERT_MONITOR_DISABLED=true.
+let alertMonitorInFlight: Promise<void> | null = null;
+const ALERT_MONITOR_INTERVAL_MS = 5 * 60_000;
+if (process.env.ALERT_MONITOR_DISABLED !== 'true') {
+  setInterval(() => {
+    if (alertMonitorInFlight) return;
+    alertMonitorInFlight = (async () => {
+      try {
+        const { dispatchAlerts } = await import('@/lib/reliability/alertDispatcher');
+        const r = await dispatchAlerts();
+        if (r.dispatched > 0) {
+          log.warn('[ALERT-MONITOR] dispatched alerts', {
+            evaluated: r.evaluated, dispatched: r.dispatched,
+            deliveries: r.deliveries,
+          });
+        }
+      } catch (err: any) {
+        log.error('[ALERT-MONITOR] failed', { err: err?.message ?? String(err) });
+      } finally {
+        alertMonitorInFlight = null;
+      }
+    })();
+  }, ALERT_MONITOR_INTERVAL_MS);
+}
+
 // 8. Backtest queue drain — every 1 min, 24x7.
 //
 // Recovery path for the queued-backtest execution flow added in the
@@ -528,6 +561,9 @@ log.info('worker-scheduler ready', {
   alwaysOn: [
     '30s snapshot-lifecycle (24x7)',
     '60s maturity-worker (24x7)',
+    process.env.ALERT_MONITOR_DISABLED !== 'true'
+      ? '5m production-alert-monitor (24x7)'
+      : 'production-alert-monitor disabled',
     BACKTEST_QUEUE_SCHEDULER_ENABLED
       ? '60s backtest-queue-drain (24x7)'
       : 'backtest-queue-drain disabled',

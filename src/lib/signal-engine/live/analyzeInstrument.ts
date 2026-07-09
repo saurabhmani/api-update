@@ -142,31 +142,8 @@ export interface Signal {
 // ════════════════════════════════════════════════════════════════
 
 async function fetchDailyCandles(symbol: string): Promise<Candle[]> {
-  // Fetch the NEWEST 300 bars, then return them in ASC order for
-  // the indicator code (which scans forward). Using
-  // `ORDER BY ts ASC LIMIT 300` is a trap — it returns the
-  // *oldest* 300 rows, so once a symbol has more than 300 bars
-  // the engine silently reads year-old data. Wrap a DESC+LIMIT
-  // subquery and re-sort ASC to get the right semantics.
-  const { rows } = await db.query(
-    `SELECT ts, open, high, low, close, volume FROM (
-       SELECT ts, open, high, low, close, volume
-         FROM market_data_daily
-        WHERE symbol = ?
-        ORDER BY ts DESC
-        LIMIT 300
-     ) t
-     ORDER BY ts ASC`,
-    [symbol],
-  );
-  return (rows as any[]).map((r) => ({
-    ts:     r.ts,
-    open:   Number(r.open),
-    high:   Number(r.high),
-    low:    Number(r.low),
-    close:  Number(r.close),
-    volume: Number(r.volume),
-  }));
+  const { fetchCandlesForSignalEngine } = await import('@/lib/marketData/resolveMarketCandles');
+  return fetchCandlesForSignalEngine(symbol);
 }
 
 interface BenchmarkSnapshot {

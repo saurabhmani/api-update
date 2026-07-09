@@ -810,6 +810,25 @@ export function buildSignalDueDiligence(
   };
 }
 
+/** Attach per-row dueDiligence + performanceReview (idempotent). */
+export function enrichRowsWithDueDiligence<T extends RankableSignal>(
+  rows: readonly T[],
+  tier: SignalTierContext,
+  baseContext: Omit<DueDiligenceContext, 'tier'>,
+): Array<T & { dueDiligence: DueDiligenceReview; performanceReview: PerformanceReview }> {
+  if (!rows || rows.length === 0) return [];
+  return rows.map((r) => {
+    if ((r as { dueDiligence?: DueDiligenceReview }).dueDiligence
+        && (r as { performanceReview?: PerformanceReview }).performanceReview) {
+      return r as T & { dueDiligence: DueDiligenceReview; performanceReview: PerformanceReview };
+    }
+    const ctx: DueDiligenceContext = { ...baseContext, tier };
+    const performance = buildPerformanceReview(r, ctx);
+    const dd          = buildSignalDueDiligence(r, ctx, performance);
+    return { ...r, dueDiligence: dd, performanceReview: performance };
+  });
+}
+
 // ── Daily due-diligence summary aggregator ──────────────────────
 
 export interface DueDiligenceBlockedReason {

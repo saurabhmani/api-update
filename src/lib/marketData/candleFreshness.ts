@@ -14,13 +14,19 @@
 //    stale    — candle_age <= 4 h
 //    frozen   — candle_age >  4 h  (refuse to ship elite rows)
 //
-//  Closed-market bands (DAILY/FALLBACK_DAILY/CACHED_DAILY ALWAYS use
-//  these regardless of market hours — a daily candle is naturally
-//  ~18h old at the open and that is NOT a frozen feed):
-//    fresh    — <=  6 h since close
-//    aging    — <= 24 h
-//    stale    — <= 72 h
-//    frozen   — >  72 h
+//  Daily-tolerant bands (DAILY/FALLBACK_DAILY/CACHED_DAILY):
+//    Off-hours / closed market:
+//      fresh    — <=  6 h
+//      aging    — <= 24 h
+//      stale    — <= 72 h
+//      frozen   — >  72 h
+//    Market open (session-aware — prior-session EOD bar is still the
+//    live warehouse row until today's bar lands, so midday can be
+//    24–30h old without the feed being broken):
+//      fresh    — <=  6 h
+//      aging    — <= 48 h
+//      stale    — <= 72 h
+//      frozen   — >  72 h
 //
 //  Source-blind classification used to fire `feed_frozen=true` for
 //  every market-hours poll on daily-only deployments, blocking the
@@ -96,9 +102,12 @@ export interface CandleFreshnessReport {
 const OPEN_FRESH_S    = 5    * 60;
 const OPEN_AGING_S    = 30   * 60;
 const OPEN_STALE_S    = 4    * 60 * 60;
-const CLOSED_FRESH_S  = 6    * 60 * 60;
-const CLOSED_AGING_S  = 24   * 60 * 60;
-const CLOSED_STALE_S  = 72   * 60 * 60;
+const CLOSED_FRESH_S       = 6    * 60 * 60;
+const CLOSED_AGING_S       = 24   * 60 * 60;
+const CLOSED_STALE_S       = 72   * 60 * 60;
+/** Prior-session daily bar during the cash session — widened so a
+ *  27h-old warehouse row at noon is "aging", not "stale". */
+const OPEN_DAILY_AGING_S   = 48   * 60 * 60;
 
 /** Pure categorisation. Given a latest candle timestamp, market state,
  *  and candle source, return the quality band.
@@ -111,9 +120,9 @@ const CLOSED_STALE_S  = 72   * 60 * 60;
  *  market-hours frozen-feed.
  *
  *  Daily-class sources (`daily` / `fallback_daily` / `cached_daily`)
- *  ALWAYS use the closed-market thresholds (6h/24h/72h) regardless
- *  of market_open. A daily candle is naturally 18+h old at the open
- *  and that is NOT a frozen feed — it's the expected cadence. */
+ *  use daily_tolerant bands. During market hours the aging ceiling is
+ *  widened to 48h so the prior session's EOD row is not mis-labelled
+ *  stale at midday. Off-hours keeps the tighter 24h aging band. */
 export function classifyCandleFreshness(opts: {
   latest_candle_ms: number | null;
   now_ms?:          number;
@@ -142,12 +151,14 @@ export function classifyCandleFreshness(opts: {
     };
   }
   const ageS = Math.max(0, Math.round((now - opts.latest_candle_ms) / 1000));
+  const tolerantAgingS =
+    dailyClass && opts.market_open ? OPEN_DAILY_AGING_S : CLOSED_AGING_S;
   let quality: CandleFreshnessQuality;
   if (useTolerant) {
-    if (ageS <= CLOSED_FRESH_S)      quality = 'fresh';
-    else if (ageS <= CLOSED_AGING_S) quality = 'aging';
-    else if (ageS <= CLOSED_STALE_S) quality = 'stale';
-    else                              quality = 'frozen';
+    if (ageS <= CLOSED_FRESH_S)        quality = 'fresh';
+    else if (ageS <= tolerantAgingS)  quality = 'aging';
+    else if (ageS <= CLOSED_STALE_S)  quality = 'stale';
+    else                               quality = 'frozen';
   } else {
     if (ageS <= OPEN_FRESH_S)      quality = 'fresh';
     else if (ageS <= OPEN_AGING_S) quality = 'aging';

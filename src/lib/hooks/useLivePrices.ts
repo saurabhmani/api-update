@@ -44,6 +44,19 @@ export interface UseLivePricesResult {
 const HEALTH_POLL_MS =
   Number(process.env.NEXT_PUBLIC_HEALTH_POLL_MS) || 5_000;
 const LIVE_FRESH_MS = 10_000;
+const SUBSCRIBE_HEARTBEAT_MS = 60_000;
+
+async function subscribeSymbols(symbols: string[]): Promise<void> {
+  if (symbols.length === 0) return;
+  try {
+    await fetch('/api/market-data/subscribe', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({ symbols }),
+      keepalive: true,
+    });
+  } catch { /* retry on next heartbeat */ }
+}
 
 function toLivePrice(tick: MarketStreamTick): LivePrice {
   return {
@@ -91,6 +104,34 @@ export function useLivePrices(): UseLivePricesResult {
     const id = setInterval(poll, HEALTH_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
+
+  // Register server-side poll demand for visible signal symbols so the
+  // upstream loop fetches ticks even in receive-all WS mode (which
+  // intentionally sends an empty symbol list to the stream server).
+  useEffect(() => {
+    if (!marketOpen || isMarketWsDisabled()) return;
+    let cancelled = false;
+
+    const pullAndSubscribe = async () => {
+      try {
+        const res = await fetch('/api/signals?action=all&limit=50', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const syms = new Set<string>();
+        for (const row of [...(data.signals ?? []), ...(data.approved ?? [])]) {
+          const s = String(row?.tradingsymbol ?? row?.symbol ?? '').trim().toUpperCase();
+          if (s) syms.add(s);
+        }
+        if (!cancelled && syms.size > 0) {
+          await subscribeSymbols([...syms]);
+        }
+      } catch { /* heartbeat retries */ }
+    };
+
+    void pullAndSubscribe();
+    const id = setInterval(() => { void pullAndSubscribe(); }, SUBSCRIBE_HEARTBEAT_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [marketOpen]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1_000);

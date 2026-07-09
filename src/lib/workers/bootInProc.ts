@@ -56,6 +56,9 @@ interface InProcState {
   /** setInterval handle for the 60s signal-maturity worker. */
   maturityHandle:           ReturnType<typeof setInterval> | null;
   maturityInFlight:         Promise<void> | null;
+  /** setInterval handle for the 5-min production alert monitor. */
+  alertMonitorHandle:       ReturnType<typeof setInterval> | null;
+  alertMonitorInFlight:     Promise<void> | null;
   /** setInterval handle for the 60s pipeline heartbeat. Bumps the
    *  Redis `scheduler:heartbeat:pipeline` key so the freshness probe
    *  in /api/signals can surface a non-null `last_pipeline_run` even
@@ -82,6 +85,8 @@ function getState(): InProcState {
       snapshotLifecycleInFlight:  null,
       maturityHandle:             null,
       maturityInFlight:           null,
+      alertMonitorHandle:         null,
+      alertMonitorInFlight:       null,
       heartbeatHandle:            null,
       heartbeatInFlight:          null,
       regenInFlight:              null,
@@ -204,6 +209,10 @@ export function bootInProcScheduler(): void {
   if (state.maturityHandle) {
     try { clearInterval(state.maturityHandle); } catch { /* already cleared */ }
     state.maturityHandle = null;
+  }
+  if (state.alertMonitorHandle) {
+    try { clearInterval(state.alertMonitorHandle); } catch { /* already cleared */ }
+    state.alertMonitorHandle = null;
   }
   if (state.heartbeatHandle) {
     try { clearInterval(state.heartbeatHandle); } catch { /* already cleared */ }
@@ -422,6 +431,41 @@ export function bootInProcScheduler(): void {
     })();
   }, MATURITY_INTERVAL_MS);
 
+  // ── 5-minute production alert monitor ────────────────────────
+  //
+  // PRODUCTION-READINESS 2026-07 §6.2 — evaluates the alert rules
+  // (no confirmed signals, live feed stale, stuck in-flight, quota
+  // near limit, plus the PRODUCTION-ALERTS-2026-05 set) and pushes
+  // warning/critical hits through the delivery channels (Slack /
+  // email / system notifications) via dispatchAlerts(). The alert
+  // store dedups by rule id, so a persistent condition increments
+  // occurrence_count instead of spamming a new row per tick.
+  // Disable with ALERT_MONITOR_DISABLED=true.
+  if (process.env.ALERT_MONITOR_DISABLED !== 'true') {
+    const ALERT_MONITOR_INTERVAL_MS = 5 * 60_000;
+    state.alertMonitorHandle = setInterval(() => {
+      if (state.alertMonitorInFlight) return;
+      state.alertMonitorInFlight = (async () => {
+        try {
+          const { dispatchAlerts } = await import('@/lib/reliability/alertDispatcher');
+          const r = await dispatchAlerts();
+          if (r.dispatched > 0) {
+            log.warn('[INPROC ALERT-MONITOR] dispatched alerts', {
+              evaluated: r.evaluated, dispatched: r.dispatched,
+              deliveries: r.deliveries,
+            });
+          }
+        } catch (err: any) {
+          log.error('[INPROC ALERT-MONITOR] failed', { err: err?.message ?? String(err) });
+        } finally {
+          state.alertMonitorInFlight = null;
+        }
+      })();
+    }, ALERT_MONITOR_INTERVAL_MS);
+  } else {
+    log.info('[INPROC ALERT-MONITOR] disabled via ALERT_MONITOR_DISABLED=true');
+  }
+
   // ── 60-second pipeline heartbeat ─────────────────────────────
   //
   // Spec FIX-DATA-PIPELINE §4: the freshness probe in /api/signals
@@ -492,6 +536,7 @@ export function bootInProcScheduler(): void {
       '30s confirmed-snapshot lifecycle (24x7)',
       '60s signal-maturity worker (24x7)',
       '60s pipeline heartbeat (24x7)',
+      '5-min production alert monitor (24x7)',
       'controlled daily scan schedule (08:30 readiness, 09:20/09:45/16:30 scans, 12:30/14:45 rescore)',
       'manipulation auto-heal on stale snapshots (90s after boot)',
     ],
@@ -594,6 +639,7 @@ export function stopInProcScheduler(): void {
   if (state.snapshotLifecycleHandle) clearInterval(state.snapshotLifecycleHandle);
   if (state.maturityHandle) clearInterval(state.maturityHandle);
   if (state.heartbeatHandle) clearInterval(state.heartbeatHandle);
+  if (state.alertMonitorHandle) clearInterval(state.alertMonitorHandle);
   state.rescoreTask = null;
   state.regenTask = null;
   state.hourlyScanTask = null;
@@ -602,6 +648,7 @@ export function stopInProcScheduler(): void {
   state.snapshotLifecycleHandle = null;
   state.maturityHandle = null;
   state.heartbeatHandle = null;
+  state.alertMonitorHandle = null;
   state.bootedAt = null;
   log.info('in-proc scheduler stopped');
 }

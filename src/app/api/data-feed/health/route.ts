@@ -22,7 +22,8 @@ import {
   getLastSuccessRow,
 } from '@/lib/marketData/feedHealthLog';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
-import { getProviderFlagsSummary } from '@/lib/marketData/providerFlags';
+import { getProviderFlagsSummary, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
+import { getLiveFeedState } from '@/lib/marketData/liveFeedState';
 import { getManualRunStatus } from '@/lib/pipeline/runLockRepo';
 
 export const dynamic = 'force-dynamic';
@@ -88,7 +89,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
-    lastReq?.provider === 'yahoo'     ? 'Emergency Yahoo' : // @deprecated marker
+    lastReq?.provider === 'yahoo' && !isDualSourceEnabled() ? 'Emergency Yahoo' : // @deprecated marker
     'No';
 
   // Coverage / freshness — computed from the most recent successful
@@ -114,6 +115,16 @@ export async function GET(req: NextRequest): Promise<Response> {
       && coarse.source === 'indianapi'
       && (freshness === 'Offline' || freshness === 'Degraded')) {
     freshness = 'Stale';
+  }
+
+  // Live WS poll loop (Yahoo + IndianAPI dual-source) is the operator-
+  // visible feed. When it is ingesting ticks, do not mark the header
+  // "Stale" just because the resolver ring buffer logged MEDIUM/LOW
+  // quality on the last IndianAPI batch.
+  const liveFeed = getLiveFeedState();
+  if (coarse.market.isOpen
+      && (liveFeed.quality === 'fresh' || liveFeed.quality === 'delayed')) {
+    freshness = 'Fresh';
   }
 
   // Manual run last timestamp — the dashboard renders these next to

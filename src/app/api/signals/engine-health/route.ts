@@ -319,6 +319,8 @@ export async function GET(req: NextRequest) {
                             ?? payload?.freshness?.latest_batch_symbols
                             ?? null,
       candleAgeHours:     payload?.freshness?.candle_age_hours ?? null,
+      liveFeedQuality:    (payload?.freshness?.live_feed_quality as EngineHealthContext['feed']['liveFeedQuality'])
+                            ?? null,
       candleCoverage,
     },
     transport: {

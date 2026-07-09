@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  liveMarketFeed — server-side polling loop for subscribed symbols
 //
-//  Polls IndianAPI (via resolveBatch) for every symbol demanded by
+//  Polls Yahoo (default) or IndianAPI for every symbol demanded by
 //  WebSocket clients or HTTP /api/market-data/subscribe heartbeats,
 //  then fans ticks into tickBus + tickPropagator so WS and SSE stay
 //  in sync.
@@ -9,9 +9,21 @@
 
 import { logger } from '@/lib/logger';
 import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
+import { getLiveFeedProvider, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
+import { normalizedToMarketSnapshot } from '@/lib/marketData/dualSource/feedNormalizer';
+import { fetchYahooPublicQuotesBatch, type YahooPublicQuote } from '@/lib/marketData/yahooChartPublic';
 import { propagateTick } from '@/lib/marketData/tickPropagator';
 import { tickBus } from '@/lib/marketData/tickBus';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
+import { getBaselineSymbols } from '@/lib/marketData/liveFeedBaseline';
+import {
+  recordLiveFeedPollStart,
+  recordLiveFeedPollSuccess,
+  recordLiveFeedPollError,
+  recordLiveFeedPollStopped,
+  recordLiveFeedTick,
+  setLiveFeedReconnecting,
+} from '@/lib/marketData/liveFeedState';
 import type { MarketSnapshot } from '@/types/market';
 import {
   MARKET_TICK_EVENT,
@@ -32,24 +44,53 @@ const BATCH_SIZE = Math.max(
   1,
   Number(process.env.INDIANAPI_EMULATED_BATCH_MAX) || 50,
 );
+const YAHOO_CONCURRENCY = Math.max(
+  1,
+  Math.min(20, Number(process.env.YAHOO_LIVE_CONCURRENCY) || 10),
+);
+const YAHOO_GAP_MS = Math.max(0, Number(process.env.YAHOO_LIVE_GAP_MS) || 120);
 const CLOSED_POLL_MS = Math.max(
   POLL_MS,
   Number(process.env.MARKET_FEED_CLOSED_POLL_MS) || 60_000,
 );
 
-/** HTTP view-demand expiry — symbol → expiresAt */
-const demandExpiry = new Map<string, number>();
-/** WS union — symbols any connected client asked for */
-const wsSymbols = new Set<string>();
+const GLOBAL_KEY = '__q365_live_market_feed__';
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let pollInFlight = false;
-let lastPollAt = 0;
-let lastTickTs: number | null = null;
-let ticksEmitted = 0;
-let cyclesRun = 0;
-let lastError: string | null = null;
-let subscribedCount = 0;
+interface LiveMarketFeedGlobal {
+  demandExpiry: Map<string, number>;
+  wsSymbols: Set<string>;
+  pollTimer: ReturnType<typeof setInterval> | null;
+  pollIntervalMs: number;
+  pollInFlight: boolean;
+  lastPollAt: number;
+  lastTickTs: number | null;
+  ticksEmitted: number;
+  cyclesRun: number;
+  lastError: string | null;
+  subscribedCount: number;
+}
+
+function createFeedGlobal(): LiveMarketFeedGlobal {
+  return {
+    demandExpiry: new Map(),
+    wsSymbols: new Set(),
+    pollTimer: null,
+    pollIntervalMs: 0,
+    pollInFlight: false,
+    lastPollAt: 0,
+    lastTickTs: null,
+    ticksEmitted: 0,
+    cyclesRun: 0,
+    lastError: null,
+    subscribedCount: 0,
+  };
+}
+
+function feed(): LiveMarketFeedGlobal {
+  const g = globalThis as unknown as Record<string, LiveMarketFeedGlobal | undefined>;
+  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = createFeedGlobal();
+  return g[GLOBAL_KEY]!;
+}
 
 function normalizeSymbol(raw: string): string | null {
   const up = String(raw ?? '').trim().toUpperCase();
@@ -112,89 +153,204 @@ function resolverRowToSnapshot(sym: string, row: {
 }
 
 function pruneDemand(now = Date.now()): void {
-  for (const [sym, exp] of demandExpiry) {
-    if (exp <= now) demandExpiry.delete(sym);
+  const store = feed();
+  for (const [sym, exp] of store.demandExpiry) {
+    if (exp <= now) store.demandExpiry.delete(sym);
   }
 }
 
 function activeSymbols(): string[] {
+  const store = feed();
   pruneDemand();
-  const set = new Set<string>(wsSymbols);
-  for (const sym of demandExpiry.keys()) set.add(sym);
-  subscribedCount = set.size;
+  const set = new Set<string>(store.wsSymbols);
+  for (const sym of store.demandExpiry.keys()) set.add(sym);
+  if (isMarketOpen()) {
+    for (const sym of getBaselineSymbols()) set.add(sym);
+  }
+  store.subscribedCount = set.size;
   return [...set];
 }
 
 function publishTick(tick: MarketStreamTick): void {
-  lastTickTs = tick.ts;
-  ticksEmitted += 1;
+  const store = feed();
+  const receivedAt = Date.now();
+  store.lastTickTs = receivedAt;
+  store.ticksEmitted += 1;
+  recordLiveFeedTick(receivedAt, tick.ts);
   tickBus.emit(MARKET_TICK_EVENT, tick);
 }
 
+function yahooQuoteToSnapshot(q: YahooPublicQuote): MarketSnapshot {
+  return {
+    symbol:        q.symbol,
+    price:         q.lastPrice,
+    ltp:           q.lastPrice,
+    change:        q.change,
+    changePercent: q.pChange,
+    volume:        q.volume,
+    open:          q.open,
+    high:          q.dayHigh,
+    low:           q.dayLow,
+    prevClose:     q.previousClose,
+    timestamp:     q.timestamp,
+  };
+}
+
+async function pollIndianApiBatch(symbols: string[]): Promise<number> {
+  let published = 0;
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const result = await resolveBatch(batch, { quiet: true });
+    for (const sym of batch) {
+      const row = result.data[`NSE:${sym}`];
+      if (!row || !Number.isFinite(row.ltp) || row.ltp <= 0) continue;
+      const snap = resolverRowToSnapshot(sym, row);
+      const tick = snapshotToStreamTick(snap, row.source);
+      publishTick(tick);
+      void propagateTick(snap);
+      published += 1;
+    }
+  }
+  return published;
+}
+
+async function pollDualSourceBatch(symbols: string[]): Promise<number> {
+  const { ingestDualSourceBatch } = await import('@/lib/marketData/dualSource/dataSourceManager');
+  const results = await ingestDualSourceBatch(symbols);
+  let published = 0;
+  for (const row of results) {
+    if (!row.publishTick) continue;
+    const snap = normalizedToMarketSnapshot(row.publishTick);
+    const source = `dual:${row.validation.status}`;
+    const tick = snapshotToStreamTick(snap, source);
+    publishTick(tick);
+    if (row.approval.allowed) {
+      void propagateTick(snap);
+      published += 1;
+    }
+  }
+  return published;
+}
+
+async function pollYahooBatch(symbols: string[]): Promise<number> {
+  const quotes = await fetchYahooPublicQuotesBatch(symbols, {
+    concurrency: YAHOO_CONCURRENCY,
+    gapMs: YAHOO_GAP_MS,
+  });
+  let published = 0;
+  for (const q of quotes) {
+    const snap = yahooQuoteToSnapshot(q);
+    const tick = snapshotToStreamTick(snap, 'yahoo');
+    publishTick(tick);
+    void propagateTick(snap);
+    published += 1;
+  }
+  return published;
+}
+
 async function pollOnce(): Promise<void> {
-  if (pollInFlight) return;
+  const store = feed();
+  if (store.pollInFlight) return;
   const symbols = activeSymbols();
   if (symbols.length === 0) return;
 
-  pollInFlight = true;
-  lastPollAt = Date.now();
+  store.pollInFlight = true;
+  store.lastPollAt = Date.now();
+  recordLiveFeedPollStart(symbols.length);
   try {
-    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-      const batch = symbols.slice(i, i + BATCH_SIZE);
-      const result = await resolveBatch(batch, { quiet: true });
-      for (const sym of batch) {
-        const row = result.data[`NSE:${sym}`];
-        if (!row || !Number.isFinite(row.ltp) || row.ltp <= 0) continue;
-        const snap = resolverRowToSnapshot(sym, row);
-        const tick = snapshotToStreamTick(snap, row.source);
-        publishTick(tick);
-        void propagateTick(snap);
-      }
+    const provider = getLiveFeedProvider();
+    const marketOpen = isMarketOpen();
+    let published = 0;
+    if (!marketOpen) {
+      // Off-hours: daily bars are frozen, so never spend IndianAPI
+      // quota here — Yahoo's public chart API alone keeps last-close
+      // prices flowing to the UI. This also protects the 16:00 IST
+      // EOD candle cron from being starved by live-poll 429s.
+      published = await pollYahooBatch(symbols);
+    } else if (isDualSourceEnabled()) {
+      published = await pollDualSourceBatch(symbols);
+    } else if (provider === 'yahoo') {
+      published = await pollYahooBatch(symbols);
+    } else if (provider === 'indianapi') {
+      published = await pollIndianApiBatch(symbols);
+    } else {
+      published = await pollIndianApiBatch(symbols);
+      if (published === 0) published = await pollYahooBatch(symbols);
     }
-    lastError = null;
+    if (published === 0) {
+      store.lastError = `no_ticks_${provider}`;
+    } else {
+      store.lastError = null;
+    }
+    recordLiveFeedPollSuccess();
+    setLiveFeedReconnecting(false);
   } catch (err) {
-    lastError = err instanceof Error ? err.message : String(err);
-    log.warn('poll cycle failed', { error: lastError, symbols: symbols.length });
+    store.lastError = err instanceof Error ? err.message : String(err);
+    recordLiveFeedPollError(store.lastError);
+    log.warn('poll cycle failed', { error: store.lastError, symbols: symbols.length });
   } finally {
-    pollInFlight = false;
-    cyclesRun += 1;
+    store.pollInFlight = false;
+    store.cyclesRun += 1;
   }
 }
 
+function desiredPollInterval(): number {
+  return isMarketOpen() ? POLL_MS : CLOSED_POLL_MS;
+}
+
 function ensurePollLoop(): void {
-  if (pollTimer) return;
+  const store = feed();
+  const interval = desiredPollInterval();
+  if (store.pollTimer) {
+    // Market open/closed transition: re-arm the timer at the new
+    // cadence instead of keeping the boot-time interval forever.
+    if (store.pollIntervalMs !== interval) {
+      clearInterval(store.pollTimer);
+      store.pollTimer = setInterval(() => { void pollOnce(); }, interval);
+      store.pollIntervalMs = interval;
+      log.info('poll loop interval adjusted', { intervalMs: interval, marketOpen: isMarketOpen() });
+    }
+    return;
+  }
   const tick = () => { void pollOnce(); };
+  recordLiveFeedPollStart(activeSymbols().length);
   tick();
-  const interval = isMarketOpen() ? POLL_MS : CLOSED_POLL_MS;
-  pollTimer = setInterval(tick, interval);
+  store.pollTimer = setInterval(tick, interval);
+  store.pollIntervalMs = interval;
   log.info('poll loop started', { intervalMs: interval });
 }
 
 function stopPollLoop(): void {
-  if (!pollTimer) return;
-  clearInterval(pollTimer);
-  pollTimer = null;
+  const store = feed();
+  if (!store.pollTimer) return;
+  clearInterval(store.pollTimer);
+  store.pollTimer = null;
+  store.pollIntervalMs = 0;
+  recordLiveFeedPollStopped();
   log.info('poll loop stopped');
 }
 
 function syncPollLoop(): void {
+  const store = feed();
   const symbols = activeSymbols();
   if (symbols.length === 0) {
     stopPollLoop();
     return;
   }
-  if (!pollTimer) ensurePollLoop();
-  else void pollOnce();
+  const hadTimer = store.pollTimer != null;
+  ensurePollLoop();
+  if (hadTimer) void pollOnce();
 }
 
 /** Register HTTP view-demand (subscribe route heartbeats). */
 export function registerDemand(symbolsRaw: string[], ttlMs = DEMAND_TTL_MS): string[] {
+  const store = feed();
   const now = Date.now();
   const added: string[] = [];
   for (const raw of symbolsRaw) {
     const sym = normalizeSymbol(raw);
     if (!sym) continue;
-    demandExpiry.set(sym, now + ttlMs);
+    store.demandExpiry.set(sym, now + ttlMs);
     if (!added.includes(sym)) added.push(sym);
   }
   syncPollLoop();
@@ -203,49 +359,66 @@ export function registerDemand(symbolsRaw: string[], ttlMs = DEMAND_TTL_MS): str
 
 /** Replace the WS union set (called by streamServer on client changes). */
 export function setWsSymbolUnion(symbolsRaw: string[]): void {
-  wsSymbols.clear();
+  const store = feed();
+  store.wsSymbols.clear();
   for (const raw of symbolsRaw) {
     const sym = normalizeSymbol(raw);
-    if (sym) wsSymbols.add(sym);
+    if (sym) store.wsSymbols.add(sym);
   }
   syncPollLoop();
 }
 
 export function startLiveMarketFeed(): void {
   syncPollLoop();
-  log.info('live market feed ready', { pollMs: POLL_MS });
+  if (isMarketOpen()) {
+    void import('@/lib/marketData/liveFeedBaseline').then((m) => m.refreshLiveFeedBaseline());
+  }
+  log.info('live market feed ready', {
+    pollMs: POLL_MS,
+    provider: isDualSourceEnabled() ? 'dual' : getLiveFeedProvider(),
+  });
 }
 
 export function stopLiveMarketFeed(): void {
+  const store = feed();
   stopPollLoop();
-  demandExpiry.clear();
-  wsSymbols.clear();
-  subscribedCount = 0;
+  store.demandExpiry.clear();
+  store.wsSymbols.clear();
+  store.subscribedCount = 0;
 }
 
 export function getLiveMarketFeedStats() {
+  const store = feed();
   const now = Date.now();
-  const age = lastTickTs == null ? null : now - lastTickTs;
-  const windowSec = Math.max(1, (now - (lastPollAt || now)) / 1000);
+  const age = store.lastTickTs == null ? null : now - store.lastTickTs;
+  const windowSec = Math.max(1, (now - (store.lastPollAt || now)) / 1000);
   return {
-    subscribedCount,
-    lastTickTs,
+    subscribedCount: store.subscribedCount,
+    lastTickTs: store.lastTickTs,
     lastTickAgeMs: age,
-    tickRatePerSec: ticksEmitted > 0 && age != null && age < 10_000
-      ? Math.min(ticksEmitted, subscribedCount) / windowSec
+    tickRatePerSec: store.ticksEmitted > 0 && age != null && age < 10_000
+      ? Math.min(store.ticksEmitted, store.subscribedCount) / windowSec
       : 0,
-    cyclesRun,
-    lastError,
+    cyclesRun: store.cyclesRun,
+    lastError: store.lastError,
     pollMs: isMarketOpen() ? POLL_MS : CLOSED_POLL_MS,
-    running: pollTimer != null,
+    running: store.pollTimer != null,
+    // Off-hours the loop always polls Yahoo only (no IndianAPI quota
+    // spend on frozen prices); dual applies during the live session.
+    provider: !isMarketOpen()
+      ? 'yahoo'
+      : isDualSourceEnabled() ? 'dual' : getLiveFeedProvider(),
+    dualSourceEnabled: isDualSourceEnabled(),
   };
 }
 
 /** Test helper */
 export function _resetLiveMarketFeedForTests(): void {
+  const store = feed();
   stopLiveMarketFeed();
-  lastTickTs = null;
-  ticksEmitted = 0;
-  cyclesRun = 0;
-  lastError = null;
+  store.lastTickTs = null;
+  store.ticksEmitted = 0;
+  store.cyclesRun = 0;
+  store.lastError = null;
+  delete (globalThis as unknown as Record<string, unknown>)[GLOBAL_KEY];
 }

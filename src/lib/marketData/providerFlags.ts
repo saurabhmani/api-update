@@ -145,7 +145,22 @@ export function isLegacyRollbackActive(): boolean {
  */
 export function mayUseYahoo(): boolean { // @deprecated marker
   if (getMarketDataProvider() === 'yahoo') return true; // @deprecated marker
+  if (getLiveFeedProvider() === 'yahoo') return true;
   return isYahooEmergencyFallbackEnabled(); // @deprecated marker
+}
+
+export type LiveFeedProvider = 'yahoo' | 'indianapi' | 'auto';
+
+/**
+ * Upstream for the live WS poll loop (IndianAPI REST poll → tickBus → WS).
+ * Default `yahoo` — public chart API, no API-key rate limits.
+ * `indianapi` — original path via resolveBatch.
+ * `auto` — try IndianAPI first, fall back to Yahoo when a cycle returns zero ticks.
+ */
+export function getLiveFeedProvider(): LiveFeedProvider {
+  const raw = (process.env.LIVE_FEED_PROVIDER ?? 'yahoo').trim().toLowerCase();
+  if (raw === 'indianapi' || raw === 'auto') return raw;
+  return 'yahoo';
 }
 
 /**
@@ -185,6 +200,29 @@ export function getNseDirectFallbackConfig(): NseDirectFallbackConfig {
   };
 }
 
+/** True when Yahoo + IndianAPI run in parallel with cross-validation. */
+export function isDualSourceEnabled(): boolean {
+  return asBool(process.env.DUAL_SOURCE_ENABLED, false);
+}
+
+export function getDualSourceConfig(): import('@/lib/marketData/dualSource/types').DualSourceConfig {
+  return {
+    enabled: isDualSourceEnabled(),
+    priceToleranceBps: asInt(process.env.DUAL_SOURCE_PRICE_TOLERANCE_BPS, 50, 1),
+    volumeTolerancePct: asInt(process.env.DUAL_SOURCE_VOLUME_TOLERANCE_PCT, 25, 0),
+    timestampToleranceMs: asInt(process.env.DUAL_SOURCE_TIMESTAMP_TOLERANCE_MS, 120_000, 5_000),
+    outlierSpikeBps: asInt(process.env.DUAL_SOURCE_OUTLIER_SPIKE_BPS, 200, 10),
+    allowSingleSourceSignals: asBool(process.env.DUAL_SOURCE_ALLOW_SINGLE_SOURCE, false),
+    authoritativeOnConflict: (() => {
+      const raw = (process.env.DUAL_SOURCE_AUTHORITATIVE ?? 'indianapi').trim().toLowerCase();
+      return raw === 'yahoo' ? 'yahoo' : raw === 'indianapi' ? 'indianapi' : null;
+    })(),
+    minConfidenceForSignal: asInt(process.env.DUAL_SOURCE_MIN_CONFIDENCE, 80, 0),
+    yahooConcurrency: asInt(process.env.YAHOO_LIVE_CONCURRENCY, 10, 1),
+    indianConcurrency: asInt(process.env.INDIANAPI_EMULATED_BATCH_MAX, 50, 1),
+  };
+}
+
 /**
  * One-shot boot summary. Called from instrumentation.ts so operators
  * can see the resolved feature-flag state in the boot log without
@@ -192,8 +230,11 @@ export function getNseDirectFallbackConfig(): NseDirectFallbackConfig {
  */
 export function getProviderFlagsSummary(): Record<string, unknown> {
   const nse = getNseDirectFallbackConfig();
+  const dual = getDualSourceConfig();
   return {
     marketDataProvider:               getMarketDataProvider(),
+    liveFeedProvider:                 getLiveFeedProvider(),
+    dualSourceEnabled:                dual.enabled,
     yahooEmergencyFallbackEnabled:    isYahooEmergencyFallbackEnabled(), // @deprecated marker
     kiteEnabled:                      isKiteEnabled(), // @deprecated marker
     nseDirectFallbackEnabled:         nse.enabled,

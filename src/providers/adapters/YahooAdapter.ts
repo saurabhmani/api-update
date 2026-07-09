@@ -1,15 +1,11 @@
-// ════════════════════════════════════════════════════════════════
-//  YahooAdapter — NEUTRALIZED STUB // @deprecated marker
-//  @deprecated — only invoked from MarketDataProvider when
-//  YAHOO_EMERGENCY_FALLBACK_ENABLED=true. New code must not import.
-//
-//  Yahoo Finance integration has been removed. The provider-framework // @deprecated marker
-//  adapter's public surface is preserved so the orchestrator
-//  (MarketDataProvider, etc.) compiles, but every method throws
-//  `yahoo_removed` — the chain naturally falls through to the next // @deprecated marker
-//  adapter (cache → DB) on every call.
-// ════════════════════════════════════════════════════════════════
+// Yahoo adapter — public chart API (no API key).
+// Used by the live feed poll loop and resolver emergency fallback.
 
+import {
+  fetchYahooPublicQuote,
+  fetchYahooPublicQuotesBatch,
+  type YahooPublicQuote,
+} from '@/lib/marketData/yahooChartPublic';
 import type {
   CorporateIntel,
   HistoricalRange,
@@ -20,12 +16,30 @@ import type {
   SymbolSearchHit,
 } from '@/types/market';
 
-function removed(op: string): never {
-  throw new Error(`YahooAdapter.${op}: yahoo_removed`); // @deprecated marker
+function toSnapshot(q: YahooPublicQuote): MarketSnapshot {
+  return {
+    symbol:        q.symbol,
+    price:         q.lastPrice,
+    ltp:           q.lastPrice,
+    change:        q.change,
+    changePercent: q.pChange,
+    volume:        q.volume,
+    open:          q.open,
+    high:          q.dayHigh,
+    low:           q.dayLow,
+    prevClose:     q.previousClose,
+    timestamp:     q.timestamp,
+  };
 }
 
-export async function getQuote(_symbol: string): Promise<MarketSnapshot> { // @deprecated marker
-  return removed('getQuote'); // @deprecated marker
+function removed(op: string): never {
+  throw new Error(`YahooAdapter.${op}: not implemented — use fetchYahooQuotesBatch for live quotes`);
+}
+
+export async function getQuote(symbol: string): Promise<MarketSnapshot> {
+  const q = await fetchYahooPublicQuote(symbol);
+  if (!q || q.lastPrice <= 0) throw new Error(`YahooAdapter.getQuote: no data for ${symbol}`);
+  return toSnapshot(q);
 }
 
 export async function getHistorical(
@@ -52,8 +66,17 @@ export async function getIndustryPeers(_symbol: string): Promise<IndustryPeer[]>
 }
 
 export async function fetchYahooQuotesBatch(
-  _symbols: string[],
-  _signal?: AbortSignal,
+  symbols: string[],
+  signal?: AbortSignal,
 ): Promise<MarketSnapshot[]> {
-  return removed('fetchYahooQuotesBatch');
+  const concurrency = Math.max(
+    1,
+    Math.min(20, Number(process.env.YAHOO_LIVE_CONCURRENCY) || 10),
+  );
+  const quotes = await fetchYahooPublicQuotesBatch(symbols, {
+    concurrency,
+    gapMs: Math.max(0, Number(process.env.YAHOO_LIVE_GAP_MS) || 120),
+    signal,
+  });
+  return quotes.map(toSnapshot);
 }

@@ -14,6 +14,9 @@ const DEMAND_TTL_MS = Math.max(
 );
 
 export async function POST(req: NextRequest) {
+  const { ensureLiveMarketStack } = await import('@/lib/marketData/ensureLiveMarketStack');
+  await ensureLiveMarketStack();
+
   let body: { symbols?: unknown } = {};
   try { body = await req.json(); } catch { /* empty body is fine */ }
 

@@ -533,6 +533,7 @@ export interface UseSignalsPollingResult {
   wsConnected:  boolean;
   wsLastAt:     number | null;
   wsMarketOpen: boolean;
+  wsStreamStatus: ReturnType<typeof useLivePrices>['streamStatus'];
   // Always null in Yahoo-only mode, but typed as a wide nullable // @deprecated marker
   // union so render code that does `kiteStatus?.marketIsOpen`, // @deprecated marker
   // `kiteStatus?.connected`, etc. type-checks. Mirrors the original // @deprecated marker
@@ -1277,6 +1278,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     connected: wsConnected,
     lastAt: wsLastAt,
     marketOpen: wsMarketOpen,
+    streamStatus: wsStreamStatus,
   } = useLivePrices();
 
   const stream = useSignalStream(true);
@@ -1696,7 +1698,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
-    wsPrices, wsConnected, wsLastAt, wsMarketOpen, kiteStatus, stream, // @deprecated marker
+    wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load, triggerAutoRebuild,
     lkgBatchIdRef,
   };

@@ -4,6 +4,8 @@
  * NSE equities map to SYMBOL.NS tickers.
  */
 
+import { toYahooSymbol, isPreEncodedYahoo } from '@/lib/marketData/symbolNormalize';
+
 export interface PublicOhlcvBar {
   ts:     string;
   open:   number;
@@ -30,10 +32,10 @@ export interface YahooPublicQuote {
   timestamp:     number;
 }
 
-function toYahooTicker(symbol: string): string {
-  const sym = symbol.toUpperCase().replace(/^(NSE|BSE):/, '');
-  if (sym.includes('.')) return sym;
-  return `${sym}.NS`;
+function yahooTickerForUrl(symbol: string): string {
+  const sym = symbol.toUpperCase().replace(/^(NSE|BSE):/, '').split(':').pop() ?? symbol;
+  const ticker = toYahooSymbol(sym);
+  return isPreEncodedYahoo(ticker) ? ticker : encodeURIComponent(ticker);
 }
 
 interface YahooChartResponse {
@@ -66,8 +68,8 @@ async function fetchYahooChartRaw(
   interval: YahooChartInterval,
   range: YahooChartRange,
 ): Promise<YahooChartResponse | null> {
-  const ticker = toYahooTicker(symbol);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=${interval}&range=${range}`;
+  const ticker = yahooTickerForUrl(symbol);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=${interval}&range=${range}`;
   try {
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Quantorus365/2.1)' },
@@ -134,6 +136,40 @@ export async function fetchYahooPublicQuote(symbol: string): Promise<YahooPublic
     volume,
     timestamp: num(meta.regularMarketTime) * 1000 || Date.now(),
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Batch live quotes via the public Yahoo chart API (no API key). */
+export async function fetchYahooPublicQuotesBatch(
+  symbolsRaw: string[],
+  opts: { concurrency?: number; gapMs?: number; signal?: AbortSignal } = {},
+): Promise<YahooPublicQuote[]> {
+  const symbols = [...new Set(
+    symbolsRaw.map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean),
+  )];
+  if (symbols.length === 0) return [];
+
+  const concurrency = Math.max(1, Math.min(20, opts.concurrency ?? 10));
+  const gapMs = Math.max(0, opts.gapMs ?? 120);
+  const out: YahooPublicQuote[] = [];
+
+  for (let i = 0; i < symbols.length; i += concurrency) {
+    if (opts.signal?.aborted) break;
+    const chunk = symbols.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map((sym) => fetchYahooPublicQuote(sym)),
+    );
+    for (const q of results) {
+      if (q && q.lastPrice > 0) out.push(q);
+    }
+    if (gapMs > 0 && i + concurrency < symbols.length) {
+      await sleep(gapMs);
+    }
+  }
+  return out;
 }
 
 /** OHLCV bars from Yahoo chart API. */

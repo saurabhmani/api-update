@@ -153,6 +153,82 @@ describe('alertRules', () => {
     expect(evaluateAlerts(i).find((a) => a.id === 'approval_ratio_collapse')?.severity).toBe('warning');
   });
 
+  // ── PRODUCTION-READINESS 2026-07 — four minimum signals alerts ──
+
+  it('no_confirmed_signals fires when market open, 0 active, last run past threshold', () => {
+    const i = inputBase();
+    recordFullScanStart({ universe_size: 503 });
+    recordFullScanComplete({ ok: true, scanned: 500 });
+    i.snapshot = getInstitutionalHealthSnapshot();
+    i.signalsPipeline = {
+      market_open:            true,
+      active_confirmed_count: 0,
+      last_pipeline_run_ms:   Date.now() - 45 * 60_000,
+    };
+    expect(evaluateAlerts(i).find((a) => a.id === 'no_confirmed_signals')?.severity).toBe('critical');
+  });
+
+  it('no_confirmed_signals suppressed inside the 30-min grace window', () => {
+    const i = inputBase();
+    i.signalsPipeline = {
+      market_open:            true,
+      active_confirmed_count: 0,
+      last_pipeline_run_ms:   Date.now() - 5 * 60_000,
+    };
+    expect(evaluateAlerts(i).find((a) => a.id === 'no_confirmed_signals')).toBeUndefined();
+  });
+
+  it('no_confirmed_signals suppressed when market closed or count > 0', () => {
+    const i = inputBase();
+    i.signalsPipeline = { market_open: false, active_confirmed_count: 0, last_pipeline_run_ms: null };
+    expect(evaluateAlerts(i).find((a) => a.id === 'no_confirmed_signals')).toBeUndefined();
+
+    i.signalsPipeline = { market_open: true, active_confirmed_count: 7, last_pipeline_run_ms: null };
+    expect(evaluateAlerts(i).find((a) => a.id === 'no_confirmed_signals')).toBeUndefined();
+  });
+
+  it('live_feed_stale fires as critical during market hours', () => {
+    const i = inputBase();
+    i.liveFeed = { quality: 'stale', market_open: true, approvals_blocked: true, tick_age_ms: 200_000 };
+    expect(evaluateAlerts(i).find((a) => a.id === 'live_feed_stale')?.severity).toBe('critical');
+  });
+
+  it('live_feed_stale suppressed when market closed or feed fresh', () => {
+    const i = inputBase();
+    i.liveFeed = { quality: 'closed_market', market_open: false, approvals_blocked: false, tick_age_ms: null };
+    expect(evaluateAlerts(i).find((a) => a.id === 'live_feed_stale')).toBeUndefined();
+
+    i.liveFeed = { quality: 'fresh', market_open: true, approvals_blocked: false, tick_age_ms: 3_000 };
+    expect(evaluateAlerts(i).find((a) => a.id === 'live_feed_stale')).toBeUndefined();
+  });
+
+  it('pipeline_stuck_in_flight fires past the 5-min threshold', () => {
+    const i = inputBase();
+    i.scanner = { in_flight: true, elapsed_ms: 6 * 60_000 };
+    expect(evaluateAlerts(i).find((a) => a.id === 'pipeline_stuck_in_flight')?.severity).toBe('critical');
+  });
+
+  it('pipeline_stuck_in_flight suppressed for short-lived locks', () => {
+    const i = inputBase();
+    i.scanner = { in_flight: true, elapsed_ms: 90_000 };
+    expect(evaluateAlerts(i).find((a) => a.id === 'pipeline_stuck_in_flight')).toBeUndefined();
+  });
+
+  it('api_quota_near_limit warns above 90% and escalates at 100%', () => {
+    const i = inputBase();
+    i.quota = { daily_percent: 0.92, monthly_percent: 0.4, state: 'CRITICAL' };
+    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')?.severity).toBe('warning');
+
+    i.quota = { daily_percent: 1.0, monthly_percent: 0.5, state: 'BLOCKED' };
+    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')?.severity).toBe('critical');
+  });
+
+  it('api_quota_near_limit suppressed below the warning band', () => {
+    const i = inputBase();
+    i.quota = { daily_percent: 0.6, monthly_percent: 0.3, state: 'SAFE' };
+    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')).toBeUndefined();
+  });
+
   it('summariseAlerts rolls up severity counts', () => {
     const alerts = [
       { id: 'a', severity: 'critical' as const, title: 't', detail: 'd', context: {}, triggered_at: '' },

@@ -568,22 +568,33 @@ export async function buildSignalsResponsePayload(
   // refuse to ship elite rows when the feed is frozen — without live
   // bars, every score on the response is referencing yesterday's tape.
   const marketOpenForDecay = isMarketOpen();
-  const candleAgeMs = freshness?.candle_age_hours != null
+  const candleFeedSource =
+    (freshness?.candle_feed_source as 'live_tick' | 'daily' | undefined)
+    ?? (marketOpenForDecay ? 'live_tick' : 'daily');
+  const liveTickAgeMs = freshness?.live_tick_age_seconds != null
+    ? freshness.live_tick_age_seconds * 1000
+    : null;
+  const warehouseAgeMs = freshness?.candle_age_hours != null
     ? freshness.candle_age_hours * 3_600_000
     : null;
-  // Spec CANDLE-FRESHNESS-2026-05 §source-axis. We don't get the
-  // candle source threaded in here yet — the freshness envelope is
-  // built upstream and doesn't carry source. We pass undefined and
-  // let `classifyCandleFreshness` fall back to the CANDLE_FEED_SOURCE
-  // env var, which deployments must set when their candle layer is
-  // daily-only (CANDLE_FEED_SOURCE=daily). Future intraday wiring
-  // should pass `candle_source` explicitly here.
+  const liveFeedQuality = freshness?.live_feed_quality;
+  const liveFeedActive = marketOpenForDecay
+    && (liveFeedQuality === 'fresh' || liveFeedQuality === 'delayed')
+    && liveTickAgeMs != null
+    && freshness?.live_approvals_blocked !== true;
+  const candleAgeMs = liveFeedActive
+    ? liveTickAgeMs
+    : (candleFeedSource === 'live_tick' && liveTickAgeMs != null
+      ? liveTickAgeMs
+      : warehouseAgeMs);
+  const candleSourceForReport: 'live_tick' | 'daily' = liveFeedActive
+    || candleFeedSource === 'live_tick'
+    ? 'live_tick'
+    : 'daily';
   const candleReport = classifyCandleFreshness({
     latest_candle_ms: candleAgeMs != null ? Date.now() - candleAgeMs : null,
     market_open:      marketOpenForDecay,
-    // IndianAPI layer is daily-only; explicit source avoids intraday
-    // false-positives when CANDLE_FEED_SOURCE env is unset.
-    candle_source:    'daily',
+    candle_source:    candleSourceForReport,
   });
   logCandleFreshness(candleReport, 'responseAssembly');
 
@@ -631,14 +642,15 @@ export async function buildSignalsResponsePayload(
 
   if (marketOpenForDecay) {
     if (candleReport.freshness_mode === 'daily_tolerant') {
-      // Daily bars age 18+h between sessions — use quality bands, not 15/45m intraday gates.
       if (candleReport.feed_frozen) {
         freshnessMode = 'APPROVAL_FREEZE_MODE';
-      } else if (candleReport.freshness_quality === 'stale') {
-        freshnessMode = 'WATCHLIST_ONLY_MODE';
       } else {
         freshnessMode = 'NORMAL_OPERATION';
       }
+    } else if (freshness?.live_approvals_blocked === true) {
+      freshnessMode = 'APPROVAL_FREEZE_MODE';
+    } else if (candleReport.freshness_quality === 'stale' || candleReport.freshness_quality === 'frozen') {
+      freshnessMode = 'WATCHLIST_ONLY_MODE';
     } else if (candleAgeMins <= 15) {
       freshnessMode = 'NORMAL_OPERATION';
     } else if (candleAgeMins <= 45) {
@@ -1350,13 +1362,15 @@ export async function buildSignalsResponsePayload(
   const healthPreview = buildLightweightEngineHealthPreview({
     marketOpen:         marketOpenForDecay,
     isBootstrap:        false,
-    // Provider fallback is surfaced separately via /api/data-feed/health;
-    // stale daily candles must not mark engine health DEGRADED.
     isFallback:         false,
-    staleMinutes:       Math.round(candleAgeMins),
+    staleMinutes:       liveFeedActive
+      ? Math.round((liveTickAgeMs ?? 0) / 60_000)
+      : Math.round(candleAgeMins),
+    candleAgeHours:     freshness?.candle_age_hours ?? null,
+    liveFeedQuality:    freshness?.live_feed_quality ?? null,
     freshnessMode:      candleReport.freshness_mode,
-    feedFrozen:         candleReport.feed_frozen,
-    freshnessQuality:   candleReport.freshness_quality,
+    feedFrozen:         liveFeedActive ? false : candleReport.feed_frozen,
+    freshnessQuality:   liveFeedActive ? 'fresh' : candleReport.freshness_quality,
     approvedTotal:      enrichedApproved.length,
     candidateTotal:     enrichedHighPotential.length
                       + enrichedWatchlist.length
@@ -1402,9 +1416,17 @@ export async function buildSignalsResponsePayload(
       state:  marketOpenForDecay ? 'open' : 'closed',
     },
     dataFreshness: {
-      isStale:    candleReport.freshness_quality === 'stale' || candleReport.freshness_quality === 'frozen',
-      ageMinutes: Math.round(candleAgeMins),
-      label:      candleReport.freshness_quality,
+      isStale:    freshness?.live_approvals_blocked === true
+               || candleReport.feed_frozen
+               || (candleReport.freshness_mode === 'intraday_strict'
+                   && (candleReport.freshness_quality === 'stale'
+                       || candleReport.freshness_quality === 'frozen')),
+      ageMinutes: candleReport.freshness_mode === 'intraday_strict'
+        ? Math.round((candleAgeMs ?? 0) / 60_000)
+        : Math.round(candleAgeMins),
+      label:      marketOpenForDecay && candleFeedSource === 'live_tick'
+        ? (freshness?.live_feed_quality ?? candleReport.freshness_quality)
+        : candleReport.freshness_quality,
     },
     provider:          freshness.kite_health.source ?? 'unknown',
     isBootstrap:       false, // Overridden in route.ts if applicable

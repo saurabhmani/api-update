@@ -30,6 +30,10 @@ import {
   type EngineHealthPreview,
 } from './useSignalsPolling';
 import {
+  filterDisplayableApproved,
+  getDisplayableApprovedVetoReasons,
+} from '@/lib/signals/filterDisplayableApproved';
+import {
   ClassificationBadge,
   FinalScorePill,
   RiskScorePill,
@@ -52,23 +56,6 @@ const DIR_STYLE: Record<string, { bg: string; color: string }> = {
   SELL: { bg: '#FEF2F2', color: '#DC2626' },
   HOLD: { bg: '#FFFBEB', color: '#D97706' },
 };
-
-/** APPROVED-tab row count after the same hard-veto filter the table uses. */
-function approvedDisplayCount(signals: SignalRow[]): number {
-  return signals.filter((r) => {
-    if ((r as { is_relaxed?: boolean }).is_relaxed) return false;
-    if ((r as { is_conditional?: boolean }).is_conditional) return false;
-    if ((r as { is_scanner_candidate?: boolean }).is_scanner_candidate) return false;
-    if ((r as { live_invalidated?: boolean }).live_invalidated === true) return false;
-    if ((r as { invalidation_reason?: string }).invalidation_reason) return false;
-    if ((r as { execution_allowed?: boolean }).execution_allowed === false) return false;
-    const tradeability = String((r as { tradeability_status?: string }).tradeability_status ?? '').toLowerCase();
-    if (tradeability === 'blocked' || tradeability === 'restricted') return false;
-    const conv = String((r as { conviction_band?: string }).conviction_band ?? '').toLowerCase();
-    if (conv === 'avoid') return false;
-    return true;
-  }).length;
-}
 
 // ── Live-cell animation ───────────────────────────────────────────
 // Kite-style tick flash: on every price CHANGE we paint a translucent // @deprecated marker
@@ -976,7 +963,7 @@ export default function SignalsPage() {
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
-    wsPrices, wsConnected, wsLastAt, wsMarketOpen, kiteStatus, stream, // @deprecated marker
+    wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load,
     lkgBatchIdRef,
   } = useSignalsPolling({ pipelineRunning });
@@ -989,8 +976,8 @@ export default function SignalsPage() {
     developing.length + scannerCandidates.length + watchlist.length;
   const rejectedTotal = rejected.length + riskRestricted.length;
   const approvedTabCount = useMemo(
-    () => approvedDisplayCount(signals),
-    [signals],
+    () => filterDisplayableApproved(signals as unknown as Record<string, unknown>[], signalQuality).length,
+    [signals, signalQuality],
   );
 
   // ── Tab auto-selection (continued) ──────────────────────────────
@@ -1006,7 +993,12 @@ export default function SignalsPage() {
     && feedHealth.fallbackUsed !== ''
     && feedHealth.fallbackUsed.toUpperCase() !== 'NO'
     && feedHealth.fallbackUsed.toUpperCase() !== 'NONE';
-  const providerInFallback = isFallback || healthFallbackActive;
+  const liveFeedHealthy = freshness?.live_feed_quality === 'fresh'
+    || freshness?.live_feed_quality === 'delayed';
+  // Dual-source Yahoo is a shadow leg, not emergency fallback. When the
+  // live WS poll is healthy, show Live Mode even if the resolver ring
+  // buffer last logged a yahoo row.
+  const providerInFallback = (isFallback || healthFallbackActive) && !liveFeedHealthy;
   useEffect(() => {
     // TAB-BOUNCE-FIX (2026-05) — Once we have already auto-decided once,
     // the effect is a no-op for the rest of this mount.
@@ -1518,38 +1510,13 @@ export default function SignalsPage() {
   // also cleared the UI elite bar. Trust the server bucket; keep only
   // hard-veto checks so an invalidated/blocked row cannot slip through.
   type EliteCheck = { passed: boolean; reasons: string[] };
-  const eliteHardVetoReasons = (r: SignalRow): string[] => {
-    const reasons: string[] = [];
-    if ((r as any).execution_allowed === false) reasons.push('execution_allowed=false');
-    if ((r as any).live_invalidated === true)   reasons.push('live_invalidated=true');
-    if ((r as any).invalidation_reason) {
-      reasons.push(`invalidated:${(r as any).invalidation_reason}`);
-    }
-    const tradeability = String((r as any).tradeability_status ?? '').toLowerCase();
-    if (tradeability === 'blocked' || tradeability === 'restricted') {
-      reasons.push(`tradeability=${tradeability}`);
-    }
-    const conv = String((r as any).conviction_band ?? '').toLowerCase();
-    if (conv === 'avoid') reasons.push('conviction_band=avoid');
-    return reasons;
-  };
   const eliteRowApproved = (r: SignalRow): EliteCheck => {
-    const isRelaxed     = (r as any).is_relaxed === true;
-    const isConditional = (r as any).is_conditional === true;
-    const isScannerCand = (r as any).is_scanner_candidate === true;
-    const sq = String(signalQuality ?? '').toUpperCase();
-    const qualityRelaxed = sq === 'RELAXED' || sq === 'SCANNER_CANDIDATES';
-    if (isRelaxed || isConditional || isScannerCand || qualityRelaxed) {
-      return {
-        passed: false,
-        reasons: [
-          isRelaxed ? 'is_relaxed' : isConditional ? 'is_conditional' : isScannerCand ? 'scanner_candidate' : 'signal_quality_relaxed',
-        ],
-      };
-    }
-    const hardReasons = eliteHardVetoReasons(r);
-    if (hardReasons.length > 0) {
-      return { passed: false, reasons: hardReasons };
+    const reasons = getDisplayableApprovedVetoReasons(
+      r as unknown as Record<string, unknown>,
+      signalQuality,
+    );
+    if (reasons.length > 0) {
+      return { passed: false, reasons };
     }
     return { passed: true, reasons: ['server_signals_tier'] };
   };
@@ -2010,7 +1977,7 @@ export default function SignalsPage() {
               </div>
             );
           })()}
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             {/*
               Three-state badge to avoid the scary "OFFLINE" flash on
               first paint while the SSE connection is being negotiated:
@@ -2201,12 +2168,32 @@ export default function SignalsPage() {
             kiteStatus?.marketLabel ?? // @deprecated marker
             freshness?.market_label ??
             (marketOpen ? 'Open' : 'Closed');
-          // Kite-only mode: tick telemetry available via the WS layer // @deprecated marker
-          // when subscribed; for the dashboard summary we keep the
-          // simple two-state badge (live vs no-stream).
-          const lastTickIST: string | null = null;
-          const tickDot = '#10B981';
-          const tickDotLabel = 'kite stream'; // @deprecated marker
+          const fmtTickIst = (ts: number | string | null | undefined): string | null => {
+            if (ts == null) return null;
+            const d = typeof ts === 'number' ? new Date(ts) : new Date(ts);
+            if (Number.isNaN(d.getTime())) return null;
+            return d.toLocaleTimeString('en-IN', {
+              timeZone: 'Asia/Kolkata',
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+            }) + ' IST';
+          };
+          const lastTickIST =
+            fmtTickIst(freshness?.live_last_tick_at)
+            ?? (wsLastAt ? fmtTickIst(wsLastAt) : null)
+            ?? fmtTickIst(kiteStatus?.lastTickIST); // @deprecated marker
+          const tickAgeMs = freshness?.live_tick_age_seconds != null
+            ? freshness.live_tick_age_seconds * 1000
+            : (wsLastAt ? Math.max(0, Date.now() - wsLastAt) : kiteStatus?.tickAgeMs ?? null); // @deprecated marker
+          const tickDot = tickAgeMs == null
+            ? '#94A3B8'
+            : tickAgeMs < 3_000
+              ? '#10B981'
+              : tickAgeMs < 30_000
+                ? '#F59E0B'
+                : '#EF4444';
+          const tickDotLabel = tickAgeMs == null
+            ? 'no ticks yet'
+            : `${Math.round(tickAgeMs / 1000)}s ago`;
 
           let bg = '#FFFBEB', fg = '#92400E', border = '#FDE68A';
           let dot = '#F59E0B';

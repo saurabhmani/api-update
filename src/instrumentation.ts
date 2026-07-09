@@ -215,8 +215,14 @@ export async function register() {
     }
     const { startLiveMarketFeed } = await import('@/lib/marketData/liveMarketFeed');
     const { startStreamServer } = await import('@/lib/ws/streamServer');
+    const { installLiveSessionBarStore } = await import('@/lib/marketData/liveSessionBarStore');
+    const { installLiveSignalRecalc } = await import('@/lib/signal-engine/live/liveSignalRecalc');
+    installLiveSessionBarStore();
     startLiveMarketFeed();
     const wsState = startStreamServer();
+    await installLiveSignalRecalc();
+    const { refreshLiveFeedBaseline } = await import('@/lib/marketData/liveFeedBaseline');
+    await refreshLiveFeedBaseline(true);
     log.info('Live market WebSocket feed started', {
       wsPort: wsState.port,
       wsRunning: wsState.running,

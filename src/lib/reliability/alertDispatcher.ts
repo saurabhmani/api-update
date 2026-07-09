@@ -5,6 +5,9 @@ import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealt
 import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
+import { getLiveFeedState } from '@/lib/marketData/liveFeedState';
+import { isInFlight, getInFlightElapsedMs } from '@/lib/scanner/scannerState';
+import { getQuotaReport } from '@/lib/monitor/apiQuota';
 import { publishAlert } from '@/services/alertService';
 import { db } from '@/lib/db';
 import { deliverAlert } from './alertDelivery';
@@ -19,6 +22,29 @@ async function probeLatestCandleMs(): Promise<number | null> {
     return Number.isFinite(n) ? n * 1000 : null;
   } catch {
     return null;
+  }
+}
+
+async function probeConfirmedSnapshots(): Promise<{
+  active_confirmed_count: number | null;
+  last_pipeline_run_ms:   number | null;
+}> {
+  try {
+    const r = await db.query(`
+      SELECT
+        (SELECT COUNT(*) FROM q365_confirmed_signal_snapshots
+          WHERE status = 'ACTIVE' AND valid_until > NOW())        AS active_count,
+        (SELECT UNIX_TIMESTAMP(MAX(confirmed_at))
+           FROM q365_confirmed_signal_snapshots)                  AS latest_confirmed_ts
+    `);
+    const row = (r.rows[0] as { active_count?: number | string | null; latest_confirmed_ts?: number | string | null }) ?? {};
+    const lastTs = Number(row.latest_confirmed_ts);
+    return {
+      active_confirmed_count: row.active_count != null ? Number(row.active_count) : null,
+      last_pipeline_run_ms:   Number.isFinite(lastTs) && lastTs > 0 ? lastTs * 1000 : null,
+    };
+  } catch {
+    return { active_confirmed_count: null, last_pipeline_run_ms: null };
   }
 }
 
@@ -40,6 +66,38 @@ export async function evaluateProductionAlerts(): Promise<{
     breaker = { open: b.open, state: b.state, auth_failed: b.auth_failed };
   } catch { /* optional */ }
 
+  // PRODUCTION-READINESS 2026-07 — signals-pipeline probes for the
+  // four minimum alerts (no confirmed signals, stale live feed,
+  // stuck in-flight, quota near limit). Each probe degrades to null
+  // rather than failing the whole evaluation.
+  const confirmed = await probeConfirmedSnapshots();
+
+  let liveFeed: { quality: string; market_open: boolean; approvals_blocked: boolean; tick_age_ms: number | null } | null = null;
+  try {
+    const feed = getLiveFeedState();
+    liveFeed = {
+      quality:           feed.quality,
+      market_open:       feed.marketOpen,
+      approvals_blocked: feed.approvalsBlocked,
+      tick_age_ms:       feed.lastTickAgeMs,
+    };
+  } catch { /* optional */ }
+
+  let scanner: { in_flight: boolean; elapsed_ms: number | null } | null = null;
+  try {
+    scanner = { in_flight: isInFlight(), elapsed_ms: getInFlightElapsedMs() };
+  } catch { /* optional */ }
+
+  let quota: { daily_percent: number; monthly_percent: number; state: string } | null = null;
+  try {
+    const report = await getQuotaReport();
+    quota = {
+      daily_percent:   report.daily.percent,
+      monthly_percent: report.monthly.percent,
+      state:           report.state,
+    };
+  } catch { /* optional */ }
+
   const alerts = evaluateAlerts({
     snapshot,
     candle: {
@@ -49,6 +107,14 @@ export async function evaluateProductionAlerts(): Promise<{
       market_open: candleReport.market_open,
     },
     breaker,
+    signalsPipeline: {
+      market_open:            market.isOpen,
+      active_confirmed_count: confirmed.active_confirmed_count,
+      last_pipeline_run_ms:   confirmed.last_pipeline_run_ms,
+    },
+    liveFeed,
+    scanner,
+    quota,
   });
 
   return { alerts, summary: summariseAlerts(alerts) };

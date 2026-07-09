@@ -23,11 +23,13 @@
 
 import { NextResponse } from 'next/server';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
+import { ensureLiveMarketStack } from '@/lib/marketData/ensureLiveMarketStack';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET() {
+  await ensureLiveMarketStack();
   const data = getMarketDataHealth();
 
   // Always 200: HTTP status reflects whether the endpoint itself is
