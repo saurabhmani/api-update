@@ -17,6 +17,7 @@ import { cacheGet, cacheSet }   from '@/lib/redis';
 import { resolvePrice }         from '@/lib/marketData/resolver/marketDataResolver';
 import { getStockDetails }      from '@/lib/marketData/providers/indianApiProvider';
 import { fetchYahooPublicQuote, fetchYahoo52WeekRange } from '@/lib/marketData/yahooChartPublic';
+import { fetchYahooFundamentals } from '@/lib/marketData/yahooFundamentals';
 import { isMarketOpen, getMarketStatus } from '@/lib/marketData/marketHours';
 import { getMovers, getCorporateIntel } from '@/providers/MarketDataProvider';
 import { corporateIntelCacheKey, cache as memCache } from '@/lib/cache';
@@ -582,22 +583,40 @@ export async function fetchInstrumentMeta(
     if (rows[0]?.industry) meta.industry = String(rows[0].industry);
   } catch { /* industry column may not exist */ }
 
+  const applyIntel = (intel: {
+    companyName?: string; sector?: string; industry?: string;
+    pe?: number; forwardPe?: number; eps?: number; roe?: number;
+    dividendYield?: number; debtToEquity?: number; marketCap?: number;
+    bookValue?: number; pbRatio?: number; beta?: number;
+    week52High?: number; week52Low?: number;
+  }) => {
+    if (intel.companyName) meta.companyName = intel.companyName;
+    if (intel.sector)      meta.sector = intel.sector;
+    if (intel.industry)    meta.industry = intel.industry;
+    meta.pe            = positiveOrNull(intel.pe)            ?? meta.pe;
+    meta.forwardPe     = positiveOrNull(intel.forwardPe)     ?? meta.forwardPe;
+    meta.eps           = positiveOrNull(intel.eps)           ?? meta.eps;
+    meta.roe           = positiveOrNull(intel.roe)           ?? meta.roe;
+    meta.beta          = positiveOrNull(intel.beta)          ?? meta.beta;
+    meta.dividendYield = positiveOrNull(intel.dividendYield) ?? meta.dividendYield;
+    meta.debtToEquity  = positiveOrNull(intel.debtToEquity)  ?? meta.debtToEquity;
+    meta.marketCap     = positiveOrNull(intel.marketCap)     ?? meta.marketCap;
+    meta.pbRatio       = positiveOrNull(intel.pbRatio)       ?? meta.pbRatio;
+    meta.week52High    = positiveOrNull(intel.week52High)    ?? meta.week52High;
+    meta.week52Low     = positiveOrNull(intel.week52Low)     ?? meta.week52Low;
+    if (!meta.pbRatio) {
+      const bookValue = positiveOrNull(intel.bookValue);
+      const ltp       = positiveOrNull(quote?.lastPrice);
+      if (bookValue && ltp) meta.pbRatio = +(ltp / bookValue).toFixed(2);
+    }
+  };
+
+  let intelLoaded = false;
   try {
     const res = await getCorporateIntel(sym);
-    const intel = res.data;
-    if (intel) {
-      if (intel.companyName) meta.companyName = intel.companyName;
-      if (intel.sector)      meta.sector = intel.sector;
-      if (intel.industry)    meta.industry = intel.industry;
-      meta.pe            = positiveOrNull(intel.pe);
-      meta.eps           = positiveOrNull(intel.eps);
-      meta.roe           = positiveOrNull(intel.roe);
-      meta.dividendYield = positiveOrNull(intel.dividendYield);
-      meta.debtToEquity  = positiveOrNull(intel.debtToEquity);
-      meta.marketCap     = positiveOrNull(intel.marketCap);
-      const bookValue = positiveOrNull(intel.bookValue);
-      const ltp         = positiveOrNull(quote?.lastPrice);
-      if (bookValue && ltp) meta.pbRatio = +(ltp / bookValue).toFixed(2);
+    if (res.data) {
+      applyIntel(res.data);
+      intelLoaded = true;
     }
   } catch {
     // IndianAPI 429 / breaker — serve last cached fundamentals if available.
@@ -609,15 +628,8 @@ export async function fetchInstrumentMeta(
         bookValue?: number;
       }>(corporateIntelCacheKey(sym));
       if (stale) {
-        if (stale.companyName) meta.companyName = stale.companyName;
-        if (stale.sector)      meta.sector = stale.sector;
-        if (stale.industry)    meta.industry = stale.industry;
-        meta.pe            = positiveOrNull(stale.pe)            ?? meta.pe;
-        meta.eps           = positiveOrNull(stale.eps)           ?? meta.eps;
-        meta.roe           = positiveOrNull(stale.roe)           ?? meta.roe;
-        meta.dividendYield = positiveOrNull(stale.dividendYield) ?? meta.dividendYield;
-        meta.debtToEquity  = positiveOrNull(stale.debtToEquity)  ?? meta.debtToEquity;
-        meta.marketCap     = positiveOrNull(stale.marketCap)     ?? meta.marketCap;
+        applyIntel(stale);
+        intelLoaded = true;
       }
     } catch { /* cache miss */ }
     const staleRedis = await cacheGet<{
@@ -625,12 +637,41 @@ export async function fetchInstrumentMeta(
       companyName?: string; sector?: string;
     }>(`corp:stale:${sym}`);
     if (staleRedis) {
-      if (staleRedis.companyName) meta.companyName = staleRedis.companyName;
-      if (staleRedis.sector)      meta.sector = staleRedis.sector;
-      meta.pe        = positiveOrNull(staleRedis.pe)        ?? meta.pe;
-      meta.eps       = positiveOrNull(staleRedis.eps)       ?? meta.eps;
-      meta.roe       = positiveOrNull(staleRedis.roe)       ?? meta.roe;
-      meta.marketCap = positiveOrNull(staleRedis.marketCap) ?? meta.marketCap;
+      applyIntel(staleRedis);
+      intelLoaded = true;
+    }
+  }
+
+  const missingValuation =
+    meta.pe == null && meta.eps == null && meta.marketCap == null && meta.roe == null;
+  if (!intelLoaded || missingValuation) {
+    const yahooKey = `corp:yahoo:${sym}`;
+    const cachedYahoo = await cacheGet<Parameters<typeof applyIntel>[0]>(yahooKey);
+    if (cachedYahoo) {
+      applyIntel(cachedYahoo);
+    } else {
+      const yahoo = await fetchYahooFundamentals(sym);
+      if (yahoo) {
+        const payload = {
+          companyName:   yahoo.companyName ?? undefined,
+          sector:        yahoo.sector ?? undefined,
+          industry:      yahoo.industry ?? undefined,
+          pe:            yahoo.pe ?? undefined,
+          forwardPe:     yahoo.forwardPe ?? undefined,
+          eps:           yahoo.eps ?? undefined,
+          roe:           yahoo.roe ?? undefined,
+          beta:          yahoo.beta ?? undefined,
+          dividendYield: yahoo.dividendYield ?? undefined,
+          debtToEquity:  yahoo.debtToEquity ?? undefined,
+          marketCap:     yahoo.marketCap ?? undefined,
+          bookValue:     yahoo.bookValue ?? undefined,
+          pbRatio:       yahoo.pbRatio ?? undefined,
+          week52High:    yahoo.week52High ?? undefined,
+          week52Low:     yahoo.week52Low ?? undefined,
+        };
+        applyIntel(payload);
+        await cacheSet(yahooKey, payload, 6 * 60 * 60).catch(() => {});
+      }
     }
   }
 

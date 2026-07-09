@@ -66,6 +66,56 @@ const INTRADAY_BUCKET_MIN: Partial<Record<ChartInterval, number>> = {
 
 const DAILY_STALE_MS = 3 * 24 * 60 * 60 * 1000;
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const SESSION_CLOSE_MIN = 15 * 60 + 30; // 15:30 IST
+
+function istWallClock(ts: string): { ymd: string; minutes: number } | null {
+  const t = new Date(ts).getTime();
+  if (!Number.isFinite(t)) return null;
+  const ist = new Date(t + IST_OFFSET_MS);
+  const ymd = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}-${String(ist.getUTCDate()).padStart(2, '0')}`;
+  return { ymd, minutes: ist.getUTCHours() * 60 + ist.getUTCMinutes() };
+}
+
+/**
+ * NSE 1-minute bars are stamped at bucket start (last = 15:29 for
+ * 15:29–15:30). Append an explicit 15:30 close point so charts show
+ * the full session through market close.
+ */
+export function appendSessionCloseCandle(
+  bars: OhlcvBar[],
+  interval: ChartInterval,
+): OhlcvBar[] {
+  const bucketMin = INTRADAY_BUCKET_MIN[interval];
+  if (!bucketMin || !bars.length) return bars;
+
+  const last = bars[bars.length - 1];
+  const ist = istWallClock(last.ts);
+  if (!ist) return bars;
+
+  const expectedLastStart = SESSION_CLOSE_MIN - bucketMin;
+  if (ist.minutes !== expectedLastStart) return bars;
+
+  const closeTs = `${ist.ymd}T15:30:00+05:30`;
+  if (bars.some((b) => b.ts === closeTs || b.ts.startsWith(`${ist.ymd}T15:30`))) {
+    return bars;
+  }
+
+  const px = last.close;
+  return [
+    ...bars,
+    {
+      ts:     closeTs,
+      open:   px,
+      high:   Math.max(px, last.high),
+      low:    Math.min(px, last.low),
+      close:  px,
+      volume: 0,
+      oi:     last.oi,
+    },
+  ];
+}
+
 function defaultFromForInterval(interval: ChartInterval): string | undefined {
   if (interval === '1day') {
     const d = new Date();
@@ -432,6 +482,9 @@ export async function getChartData(
   }
 
   candles = candles.slice(-effectiveLimit);
+  if (isIntraday) {
+    candles = appendSessionCloseCandle(candles, interval);
+  }
 
   if (candles.length > 0) {
     await cacheSet(cKey, candles, ttl).catch(() => {});
