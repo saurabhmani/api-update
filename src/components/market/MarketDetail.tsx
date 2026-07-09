@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loading, Empty, Card } from '@/components/ui';
+import { Loading, Empty, Card, Modal } from '@/components/ui';
 import { chartsApi } from '@/lib/apiClient';
 import { useLiveTick } from '@/hooks/useLiveTick';
 import { fmt, clsx } from '@/lib/utils';
@@ -13,7 +13,7 @@ import {
   BarChart2,
 } from 'lucide-react';
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip,
+  AreaChart, Area, XAxis, YAxis, Tooltip, Brush,
   ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from 'recharts';
 import type { Candle } from '@/types';
@@ -114,6 +114,11 @@ function isMarketOpen(): boolean {
   return mins >= 555 && mins <= 930;
 }
 
+function defaultChartBrushWindow(iv: string, len: number) {
+  const windowSize = iv === '1day' ? 45 : iv === '1minute' ? 90 : 60;
+  return { start: Math.max(0, len - windowSize), end: len - 1 };
+}
+
 function reasonSent(text: string) {
   const t = text.toLowerCase();
   if (t.includes('above') || t.includes('bullish') || t.includes('strong')) return 'pos';
@@ -208,6 +213,15 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
   const [loading, setLoading]     = useState(true);
   const [added, setAdded]         = useState(false);
   const [copied, setCopied]       = useState(false);
+  const [alertOpen, setAlertOpen] = useState(false);
+  const [chartOpen, setChartOpen] = useState(false);
+  const [alertPrice, setAlertPrice] = useState('');
+  const [alertCondition, setAlertCondition] = useState<'above' | 'below'>('above');
+  const [alertSaving, setAlertSaving] = useState(false);
+  const [alertDone, setAlertDone]   = useState(false);
+  const [alertError, setAlertError] = useState<string | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartBrush, setChartBrush] = useState<{ start: number; end: number } | null>(null);
 
   // Live tick
   const { ticks } = useLiveTick([instrumentKey], 'full');
@@ -297,7 +311,11 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       if (iRes.status === 'fulfilled' && iRes.value?.instrument) setInst(iRes.value.instrument);
       else setInst({ tradingsymbol: symbol, exchange, instrument_type: 'EQ', name: symbol });
 
-      if (cRes.status === 'fulfilled') setCandles((cRes.value as any).candles || []);
+      if (cRes.status === 'fulfilled') {
+        const next = (cRes.value as any).candles || [];
+        setCandles(next);
+        setChartBrush(next.length > 0 ? defaultChartBrushWindow('5minute', next.length) : null);
+      }
       if (qRes.status === 'fulfilled' && qRes.value?.quote) {
         setQuote(qRes.value.quote);
         if (qRes.value.meta) setMeta(qRes.value.meta);
@@ -404,14 +422,33 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
   // Chart interval switch
   const switchInterval = useCallback(async (iv: string) => {
     setIv(iv);
+    setChartLoading(true);
     try {
       const isDaily = iv === '1day';
       const data = isDaily
-        ? await chartsApi.historical(instrumentKey, 'days', '1')
-        : await chartsApi.intraday(instrumentKey, iv);
-      setCandles((data as any).candles || []);
-    } catch {}
+        ? await chartsApi.historical(instrumentKey, 'days', '1day', undefined, undefined, 180)
+        : await chartsApi.intraday(instrumentKey, iv, 500);
+      const next = (data as any).candles || [];
+      setCandles(next);
+      setChartBrush(next.length > 0 ? defaultChartBrushWindow(iv, next.length) : null);
+    } catch {
+      /* keep prior candles */
+    } finally {
+      setChartLoading(false);
+    }
   }, [instrumentKey]);
+
+  const resetChartZoom = useCallback(() => {
+    if (!candles.length) return;
+    setChartBrush(defaultChartBrushWindow(interval, candles.length));
+  }, [candles.length, interval]);
+
+  const openFullChart = useCallback(() => {
+    if (candles.length && !chartBrush) {
+      setChartBrush(defaultChartBrushWindow(interval, candles.length));
+    }
+    setChartOpen(true);
+  }, [candles.length, chartBrush, interval]);
 
   // Actions
   const addWatch = async () => {
@@ -439,6 +476,155 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const openAlertModal = () => {
+    const defaultPrice = t1 ?? ltp ?? prevCls ?? '';
+    setAlertPrice(defaultPrice != null && Number(defaultPrice) > 0 ? String(defaultPrice) : '');
+    setAlertCondition(sigDir === 'SELL' ? 'below' : 'above');
+    setAlertError(null);
+    setAlertDone(false);
+    setAlertOpen(true);
+  };
+
+  const submitAlert = async () => {
+    const price = Number(alertPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      setAlertError('Enter a valid target price.');
+      return;
+    }
+    setAlertSaving(true);
+    setAlertError(null);
+    try {
+      const res = await fetch('/api/alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instrument_key: instrumentKey,
+          tradingsymbol: symbol,
+          condition: alertCondition,
+          target_price: price,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      setAlertDone(true);
+      setTimeout(() => setAlertOpen(false), 1400);
+    } catch (e) {
+      setAlertError(e instanceof Error ? e.message : 'Could not create alert');
+    } finally {
+      setAlertSaving(false);
+    }
+  };
+
+  const renderPriceChart = (
+    height: number,
+    opts?: { showBrush?: boolean; remountKey?: string },
+  ) => {
+    const showBrush = !!opts?.showBrush && candles.length > 4;
+    const brushStart = chartBrush?.start ?? 0;
+    const brushEnd = chartBrush?.end ?? Math.max(0, candles.length - 1);
+    const visible = showBrush
+      ? candles.slice(brushStart, brushEnd + 1)
+      : candles;
+    const mainHeight = showBrush ? Math.max(220, height - 56) : height;
+
+    if (candles.length === 0) {
+      return (
+        <Empty icon={Activity} title="No chart data"
+          description="Market may be closed or data not yet available." />
+      );
+    }
+
+    const handleBrushChange = (range: { startIndex?: number; endIndex?: number }) => {
+      if (range?.startIndex == null || range?.endIndex == null) return;
+      const start = Math.max(0, range.startIndex);
+      const end = Math.min(candles.length - 1, range.endIndex);
+      if (end - start < 2) return;
+      setChartBrush({ start, end });
+    };
+
+    return (
+      <div key={opts?.remountKey ?? 'inline'}>
+        <ResponsiveContainer width="100%" height={mainHeight}>
+          <AreaChart
+            data={visible}
+            margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
+          >
+            <defs>
+              <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={positive ? '#16A34A' : '#DC2626'} stopOpacity={0.1} />
+                <stop offset="100%" stopColor={positive ? '#16A34A' : '#DC2626'} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+            <XAxis
+              dataKey="ts"
+              tickFormatter={v =>
+                interval === '1day'
+                  ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+                  : new Date(v).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+              }
+              tick={{ fontSize: 10, fill: '#94A3B8' }}
+              minTickGap={showBrush ? 24 : 8}
+            />
+            <YAxis
+              domain={['auto', 'auto']}
+              tickFormatter={v => Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              tick={{ fontSize: 10, fill: '#94A3B8' }} width={55}
+            />
+            <Tooltip
+              formatter={(v: any) => [fmt.currency(v), 'Close']}
+              labelFormatter={v => new Date(v).toLocaleString('en-IN')}
+              contentStyle={{ borderRadius: 6, border: '1px solid #E2E8F0', fontSize: 11 }}
+            />
+            {prevCls && <ReferenceLine y={prevCls} stroke="#94A3B8" strokeDasharray="4 4" label={{ value: 'Prev', fill: '#94A3B8', fontSize: 9 }} />}
+            {entry && <ReferenceLine y={entry} stroke="#0B1F3A" strokeDasharray="4 4" label={{ value: 'Entry', fill: '#0B1F3A', fontSize: 9 }} />}
+            {sl    && <ReferenceLine y={sl} stroke="#DC2626" strokeDasharray="4 4" label={{ value: 'SL', fill: '#DC2626', fontSize: 9 }} />}
+            {t1    && <ReferenceLine y={t1} stroke="#16A34A" strokeDasharray="4 4" label={{ value: 'T1', fill: '#16A34A', fontSize: 9 }} />}
+            <Area type="monotone" dataKey="close" stroke={positive ? '#16A34A' : '#DC2626'}
+              strokeWidth={1.5} fill="url(#cg)" dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+        {showBrush && (
+          <ResponsiveContainer width="100%" height={56}>
+            <AreaChart
+              data={candles}
+              margin={{ top: 2, right: 12, bottom: 2, left: 0 }}
+            >
+              <YAxis hide domain={['dataMin', 'dataMax']} />
+              <XAxis dataKey="ts" hide />
+              <Area
+                type="monotone"
+                dataKey="close"
+                stroke="#CBD5E1"
+                fill="#F1F5F9"
+                strokeWidth={1}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Brush
+                dataKey="ts"
+                height={24}
+                stroke="#64748B"
+                fill="#F8FAFC"
+                travellerWidth={10}
+                startIndex={brushStart}
+                endIndex={brushEnd}
+                tickFormatter={v =>
+                  interval === '1day'
+                    ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+                    : new Date(v).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+                }
+                onChange={handleBrushChange}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    );
   };
 
   // ── Loading ────────────────────────────────────────────────────
@@ -539,8 +725,12 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
             <Star size={11} fill={added ? 'currentColor' : 'none'} />
             {added ? 'Watchlisted' : 'Watchlist'}
           </button>
-          <button className={s.heroBtn}><Bell size={11} /> Alert</button>
-          <button className={s.heroBtn}><Maximize2 size={11} /> Chart</button>
+          <button className={s.heroBtn} onClick={openAlertModal}>
+            <Bell size={11} /> Alert
+          </button>
+          <button className={s.heroBtn} onClick={openFullChart}>
+            <Maximize2 size={11} /> Chart
+          </button>
           <button className={s.heroBtn} onClick={copyPlan}>
             {copied ? <Check size={11} /> : <Copy size={11} />}
             {copied ? 'Copied' : 'Copy Plan'}
@@ -589,47 +779,7 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
               </div>
             </div>
 
-            {candles.length === 0 ? (
-              <Empty icon={Activity} title="No chart data"
-                description="Market may be closed or data not yet available." />
-            ) : (
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={candles} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-                  <defs>
-                    <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={positive ? '#16A34A' : '#DC2626'} stopOpacity={0.1} />
-                      <stop offset="100%" stopColor={positive ? '#16A34A' : '#DC2626'} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                  <XAxis
-                    dataKey="ts"
-                    tickFormatter={v =>
-                      interval === '1day'
-                        ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
-                        : new Date(v).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-                    }
-                    tick={{ fontSize: 10, fill: '#94A3B8' }}
-                  />
-                  <YAxis
-                    domain={['auto', 'auto']}
-                    tickFormatter={v => Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                    tick={{ fontSize: 10, fill: '#94A3B8' }} width={55}
-                  />
-                  <Tooltip
-                    formatter={(v: any) => [fmt.currency(v), 'Close']}
-                    labelFormatter={v => new Date(v).toLocaleString('en-IN')}
-                    contentStyle={{ borderRadius: 6, border: '1px solid #E2E8F0', fontSize: 11 }}
-                  />
-                  {prevCls && <ReferenceLine y={prevCls} stroke="#94A3B8" strokeDasharray="4 4" label={{ value: 'Prev', fill: '#94A3B8', fontSize: 9 }} />}
-                  {entry && <ReferenceLine y={entry} stroke="#0B1F3A" strokeDasharray="4 4" label={{ value: 'Entry', fill: '#0B1F3A', fontSize: 9 }} />}
-                  {sl    && <ReferenceLine y={sl} stroke="#DC2626" strokeDasharray="4 4" label={{ value: 'SL', fill: '#DC2626', fontSize: 9 }} />}
-                  {t1    && <ReferenceLine y={t1} stroke="#16A34A" strokeDasharray="4 4" label={{ value: 'T1', fill: '#16A34A', fontSize: 9 }} />}
-                  <Area type="monotone" dataKey="close" stroke={positive ? '#16A34A' : '#DC2626'}
-                    strokeWidth={1.5} fill="url(#cg)" dot={false} activeDot={{ r: 3 }} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
+            {renderPriceChart(260)}
           </motion.div>
 
           {/* ── Tab Content ────────────────────────────────────── */}
@@ -1195,6 +1345,96 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
           </button>
         </motion.aside>
       </div>
+
+      <Modal
+        open={alertOpen}
+        onClose={() => setAlertOpen(false)}
+        title={`Price Alert — ${symbol}`}
+        footer={(
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button className="btn btn--sm btn--secondary" onClick={() => setAlertOpen(false)}>
+              Cancel
+            </button>
+            <button className="btn btn--sm btn--primary" onClick={() => void submitAlert()} disabled={alertSaving}>
+              {alertSaving ? 'Saving…' : alertDone ? 'Saved' : 'Create Alert'}
+            </button>
+          </div>
+        )}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
+          <div style={{ color: '#64748B' }}>
+            Current LTP: <strong style={{ color: '#0F172A' }}>{ltp != null ? fmt.currency(ltp) : '—'}</strong>
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontWeight: 600, color: '#334155' }}>Target price</span>
+            <input
+              type="number"
+              step="0.05"
+              value={alertPrice}
+              onChange={(e) => setAlertPrice(e.target.value)}
+              style={{ padding: '8px 10px', borderRadius: 6, border: '1px solid #E2E8F0' }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontWeight: 600, color: '#334155' }}>Condition</span>
+            <select
+              value={alertCondition}
+              onChange={(e) => setAlertCondition(e.target.value as 'above' | 'below')}
+              style={{ padding: '8px 10px', borderRadius: 6, border: '1px solid #E2E8F0' }}
+            >
+              <option value="above">Price goes above</option>
+              <option value="below">Price goes below</option>
+            </select>
+          </label>
+          {alertError && (
+            <div style={{ color: '#B91C1C', fontSize: 12 }}>{alertError}</div>
+          )}
+          {alertDone && (
+            <div style={{ color: '#047857', fontSize: 12 }}>Alert created. You can manage alerts from Notifications.</div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={chartOpen}
+        onClose={() => setChartOpen(false)}
+        title={`${symbol} — Full Chart`}
+        wide
+      >
+        <div className={s.chartToolbar} style={{ marginBottom: 12 }}>
+          <div className={s.ivGroup}>
+            {IV_OPTIONS.map(iv => (
+              <button
+                key={iv.key}
+                className={clsx(s.ivBtn, interval === iv.key && s['ivBtn--active'])}
+                onClick={() => void switchInterval(iv.key)}
+                disabled={chartLoading}
+              >
+                {iv.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {chartBrush && (chartBrush.start > 0 || chartBrush.end < candles.length - 1) && (
+              <button
+                type="button"
+                className="btn btn--sm btn--secondary"
+                onClick={resetChartZoom}
+                disabled={chartLoading}
+              >
+                Reset zoom
+              </button>
+            )}
+            <span style={{ fontSize: 11, color: '#94A3B8' }}>
+              {chartLoading ? 'Loading…' : 'Drag handles on the navigator to zoom'}
+            </span>
+          </div>
+        </div>
+        {renderPriceChart(480, {
+          showBrush: true,
+          remountKey: chartOpen ? `modal-${interval}-${candles.length}` : 'closed',
+        })}
+      </Modal>
     </div>
   );
 }

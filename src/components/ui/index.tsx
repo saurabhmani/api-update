@@ -179,18 +179,19 @@ export function AlertBanner({
 
 // ── Modal ────────────────────────────────────────────────────────
 export function Modal({
-  open, onClose, title, children, footer,
+  open, onClose, title, children, footer, wide,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  wide?: boolean;
 }) {
   if (!open) return null;
   return (
     <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal">
+      <div className={wide ? 'modal modal--wide' : 'modal'}>
         <div className="modal__header">
           <h3>{title}</h3>
           <button onClick={onClose}>✕</button>
