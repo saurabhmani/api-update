@@ -28,6 +28,7 @@ import {
   getActiveTrackers,
   updateMaturityState,
   markPromoted,
+  touchEvaluated,
   upsertTrackerOnDetection,
   type TrackerRow,
 } from '@/lib/signal-engine/repository/maturityTracker';
@@ -262,8 +263,11 @@ async function processTracker(
   const current = await fetchCurrentSignalRow(tracker.symbol, tracker.direction);
   if (!current) {
     // Scanner expired the underlying signal between detection and
-    // this tick. Leave the tracker untouched — the next detection
-    // will reset it via the stale-tracker rule.
+    // this tick. Leave the maturity state untouched — the next
+    // detection will reset it via the stale-tracker rule — but bump
+    // last_evaluated_at so the batch rotation doesn't re-visit this
+    // dead tracker before every not-yet-scored live one.
+    try { await touchEvaluated(tracker.id); } catch { /* best-effort */ }
     return 'skipped';
   }
 
@@ -810,12 +814,22 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
   // strongest candidates before spending the batch budget on hundreds
   // of cycle-1 candidates. Without this, a 1000-tracker backlog can
   // starve promotion for hours even when the DQ gate allows it.
+  //
+  // Starvation fix (2026-07) — within each stage, process the LEAST
+  // recently evaluated tracker first instead of highest score first.
+  // Score-descending order let stale rows (whose underlying signal
+  // was long gone → 'skipped' each tick, score frozen high) occupy
+  // the entire batch every tick, so fresh trackers at score 0 were
+  // never evaluated at all: 23 live APPROVED signals sat un-scored
+  // for days while the worker re-processed the same 150 dead rows.
+  // Least-recently-evaluated rotation guarantees every tracker gets
+  // scored within scanned/batchCap ticks.
   const stageRank = (s: string): number =>
     s === 'mature' ? 0 : s === 'developing' ? 1 : s === 'candidate' ? 2 : 3;
   const sortedTrackers = [...trackers].sort((a, b) => {
     const r = stageRank(a.stage) - stageRank(b.stage);
     if (r !== 0) return r;
-    return (b.maturity_score ?? 0) - (a.maturity_score ?? 0);
+    return (a.last_evaluated_at ?? 0) - (b.last_evaluated_at ?? 0);
   });
   const batchCap = envInt('MATURITY_WORKER_BATCH_CAP', 150, 25, 1000);
   const workTrackers =

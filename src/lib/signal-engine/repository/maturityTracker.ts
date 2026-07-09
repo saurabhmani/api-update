@@ -516,6 +516,19 @@ export async function updateMaturityState(
 }
 
 /**
+ * Bump last_evaluated_at without touching maturity state. Used by the
+ * worker when a tracker is skipped (underlying q365_signals row gone)
+ * so the least-recently-evaluated batch rotation moves past it instead
+ * of re-visiting the same dead trackers every tick.
+ */
+export async function touchEvaluated(trackerId: number): Promise<void> {
+  await db.query(
+    `UPDATE q365_signal_maturity_tracker SET last_evaluated_at = NOW() WHERE id = ?`,
+    [trackerId],
+  );
+}
+
+/**
  * Mark a tracker as promoted — its confirmed snapshot exists and
  * the tracker becomes dormant until the snapshot terminates.
  */

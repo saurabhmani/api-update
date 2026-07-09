@@ -26,7 +26,7 @@ export function TrustDashboardPanel() {
         <StatCard label="Active Signals" value={data.activeSignals} icon={Target} iconVariant="blue" />
         <StatCard label="Running Strategies" value={data.runningStrategies} icon={Activity} iconVariant="green" />
         <StatCard
-          label="Today's P&L"
+          label="Total P&L"
           value={data.hasPortfolio ? fmt.currency(data.todayPnl) : 'N/A'}
           change={data.hasPortfolio ? data.todayPnlPct : undefined}
           icon={Wallet}
