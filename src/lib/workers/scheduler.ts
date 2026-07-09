@@ -341,6 +341,49 @@ cron.schedule('30 19 * * 1-5', async () => {
   }
 }, { timezone: IST });
 
+// 3c. 20:00 IST — nightly signal-outcome evaluation (Mon–Fri).
+//
+// Feeds the Strategy Performance page: evaluates signals against
+// post-signal daily candles and writes q365_signal_outcomes rows
+// with a fresh evaluated_at. Without this the outcomes table goes
+// stale and 7D/30D performance windows show "Insufficient data".
+//
+// Runs after the 19:30 EOD ingestion so today's candle is in the
+// warehouse. Incremental (staleHours=20): each run skips signals
+// already evaluated today, so successive batches walk the backlog
+// instead of re-chewing the same rows. Up to 5 batches × 1000.
+let outcomeEvalRunning = false;
+cron.schedule('0 20 * * 1-5', async () => {
+  if (outcomeEvalRunning) {
+    log.warn('[OUTCOME-EVAL] previous run still in flight — skipping');
+    return;
+  }
+  outcomeEvalRunning = true;
+  try {
+    const { runOutcomeEvaluation } = await import(
+      '@/lib/signal-engine/feedback/runOutcomeEvaluation'
+    );
+    let totalUpdated = 0, totalSkipped = 0;
+    let cursor = 0;
+    for (let batch = 0; batch < 20; batch++) {
+      const r = await runOutcomeEvaluation({ limit: 1000, staleHours: 20, afterId: cursor });
+      totalUpdated += r.updated_count;
+      totalSkipped += r.skipped_count;
+      log.info('[OUTCOME-EVAL] batch complete', {
+        batch, processed: r.processed_count, updated: r.updated_count,
+        skipped: r.skipped_count, elapsedMs: r.duration_ms,
+      });
+      if (r.processed_count < 1000 || r.last_signal_id == null) break; // backlog drained
+      cursor = r.last_signal_id;
+    }
+    log.info('[OUTCOME-EVAL] complete', { totalUpdated, totalSkipped });
+  } catch (err) {
+    log.error('[OUTCOME-EVAL] failed', { err: (err as Error).message });
+  } finally {
+    outcomeEvalRunning = false;
+  }
+}, { timezone: IST });
+
 // 4. Dynamic ranking rescore — DISABLED by default.
 //
 // Controlled schedule runs rescore at 12:30 and 14:45 IST via
@@ -544,6 +587,7 @@ log.info('worker-scheduler ready', {
   nightlyJobs: [
     '19:00 backtest',
     '19:30 eod-manipulation (NSE bhavcopy + manipulation scan)',
+    '20:00 signal-outcome evaluation (feeds strategy performance)',
   ],
   weeklyUniverseRebuild: {
     enabled: process.env.UNIVERSE_WEEKLY_REBUILD_ENABLED !== 'false',

@@ -113,6 +113,12 @@ interface PerformancePayload {
   strategies: StrategyPerformance[];
   warnings: string[];
   dataQuality: { status: DataStatus; evaluatedSignals: number; minimumRequiredSignals: number; coveragePct: number; warnings: string[] };
+  sourceStatus?: {
+    directOutcomeRows: number;
+    observedSnapshotRows: number;
+    backtestTradeRows: number;
+    strategySnapshots: number;
+  };
   detail?: Record<string, DetailBlock>;
   selectedStrategy?: StrategyPerformance | null;
 }
@@ -377,7 +383,9 @@ export default function StrategyPerformancePage() {
               icon={Gauge} tone="grey"
               label="Data Source"
               value={data.performanceSource.replace(/_/g, ' ').toUpperCase()}
-              sub={`${data.totalSignalsEvaluated} evaluated · ${data.dataQuality.coveragePct}% coverage`}
+              sub={data.sourceStatus
+                ? `${data.totalSignalsEvaluated} evaluated · ${data.dataQuality.coveragePct}% coverage · ${data.sourceStatus.directOutcomeRows.toLocaleString()} outcome rows`
+                : `${data.totalSignalsEvaluated} evaluated · ${data.dataQuality.coveragePct}% coverage`}
             />
           </div>
         )}

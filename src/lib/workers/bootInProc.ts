@@ -50,6 +50,10 @@ interface InProcState {
    *  a static-data tier behind the in-memory cache. */
   closeSnapshotTask: ScheduledTask | null;
   closeSnapshotInFlight: Promise<void> | null;
+  /** 20:00 IST nightly signal-outcome evaluation — feeds the Strategy
+   *  Performance page by keeping q365_signal_outcomes fresh. */
+  outcomeEvalTask: ScheduledTask | null;
+  outcomeEvalInFlight: Promise<void> | null;
   /** setInterval handle for the 30s confirmed-snapshot lifecycle worker. */
   snapshotLifecycleHandle: ReturnType<typeof setInterval> | null;
   snapshotLifecycleInFlight: Promise<void> | null;
@@ -81,6 +85,8 @@ function getState(): InProcState {
       newsTask:                   null,
       closeSnapshotTask:          null,
       closeSnapshotInFlight:      null,
+      outcomeEvalTask:            null,
+      outcomeEvalInFlight:        null,
       snapshotLifecycleHandle:    null,
       snapshotLifecycleInFlight:  null,
       maturityHandle:             null,
@@ -201,6 +207,10 @@ export function bootInProcScheduler(): void {
   if (state.closeSnapshotTask) {
     try { state.closeSnapshotTask.stop(); } catch { /* already stopped */ }
     state.closeSnapshotTask = null;
+  }
+  if (state.outcomeEvalTask) {
+    try { state.outcomeEvalTask.stop(); } catch { /* already stopped */ }
+    state.outcomeEvalTask = null;
   }
   if (state.snapshotLifecycleHandle) {
     try { clearInterval(state.snapshotLifecycleHandle); } catch { /* already cleared */ }
@@ -326,6 +336,24 @@ export function bootInProcScheduler(): void {
         state.closeSnapshotInFlight = null;
       }
     })();
+  }, { timezone: IST });
+
+  // ── 20:00 IST nightly signal-outcome evaluation ──────────────
+  //
+  // Evaluates signals against post-signal daily candles and writes
+  // q365_signal_outcomes rows with a fresh evaluated_at — the data
+  // source behind the Strategy Performance page. Runs after the EOD
+  // candle ingestion. Incremental (staleHours=20) so each nightly
+  // run advances through the backlog instead of re-evaluating the
+  // same oldest batch.
+  state.outcomeEvalTask = cron.schedule('0 20 * * 1-5', () => {
+    if (state.outcomeEvalInFlight) {
+      log.warn('[INPROC OUTCOME-EVAL] previous run still in flight — skipping');
+      return;
+    }
+    state.outcomeEvalInFlight = runOutcomeEvalInProc()
+      .catch((err) => log.error('[INPROC OUTCOME-EVAL] failed', { err: err?.message ?? String(err) }))
+      .finally(() => { state.outcomeEvalInFlight = null; });
   }, { timezone: IST });
 
   // ── 5-minute news pipeline (always on) ──────────────────────
@@ -532,6 +560,7 @@ export function bootInProcScheduler(): void {
       'hourly full-market scan (09:30-15:30 IST, always on)',
       ...(regenInProc ? ['*/10 min regen (09:30-15:30 IST, default ON)'] : []),
       '15:30 IST market-close snapshot (Mon-Fri)',
+      '20:00 IST nightly signal-outcome evaluation (Mon-Fri)',
       '*/5 min news ingestion (24x7)',
       '30s confirmed-snapshot lifecycle (24x7)',
       '60s signal-maturity worker (24x7)',
@@ -546,6 +575,26 @@ export function bootInProcScheduler(): void {
       ? 'Legacy 10-min/hourly regen ON by explicit SIGNAL_INTRADAY_REGEN_ENABLED=true.'
       : 'Legacy 10-min/hourly regen disabled. Controlled schedule is authoritative.',
   });
+}
+
+async function runOutcomeEvalInProc(): Promise<void> {
+  const { runOutcomeEvaluation } = await import(
+    '@/lib/signal-engine/feedback/runOutcomeEvaluation'
+  );
+  let totalUpdated = 0, totalSkipped = 0;
+  let cursor = 0;
+  for (let batch = 0; batch < 20; batch++) {
+    const r = await runOutcomeEvaluation({ limit: 1000, staleHours: 20, afterId: cursor });
+    totalUpdated += r.updated_count;
+    totalSkipped += r.skipped_count;
+    log.info('[INPROC OUTCOME-EVAL] batch complete', {
+      batch, processed: r.processed_count, updated: r.updated_count,
+      skipped: r.skipped_count, elapsedMs: r.duration_ms,
+    });
+    if (r.processed_count < 1000 || r.last_signal_id == null) break; // backlog drained
+    cursor = r.last_signal_id;
+  }
+  log.info('[INPROC OUTCOME-EVAL] complete', { totalUpdated, totalSkipped });
 }
 
 async function runNewsPipelineInProc(): Promise<void> {
@@ -636,6 +685,7 @@ export function stopInProcScheduler(): void {
   state.hourlyScanTask?.stop();
   state.newsTask?.stop();
   state.closeSnapshotTask?.stop();
+  state.outcomeEvalTask?.stop();
   if (state.snapshotLifecycleHandle) clearInterval(state.snapshotLifecycleHandle);
   if (state.maturityHandle) clearInterval(state.maturityHandle);
   if (state.heartbeatHandle) clearInterval(state.heartbeatHandle);
@@ -645,6 +695,7 @@ export function stopInProcScheduler(): void {
   state.hourlyScanTask = null;
   state.newsTask = null;
   state.closeSnapshotTask = null;
+  state.outcomeEvalTask = null;
   state.snapshotLifecycleHandle = null;
   state.maturityHandle = null;
   state.heartbeatHandle = null;
