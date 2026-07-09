@@ -44,10 +44,13 @@ function freshnessFromAgeMs(
     const coarse = opts.coarseHealth;
     const tickAge = coarse.lastTickAgeMs;
     // Live WS feed is pushing — ring buffer may lag on cold boot.
-    if (tickAge != null && tickAge < 120_000) return 'Fresh';
-    if (coarse.subscribedCount > 0 && coarse.tickRatePerSec > 0) return 'Fresh';
-    // Provider configured and market open — not "offline", just no logged batch yet.
-    if (opts.marketOpen && coarse.health === 'OK') return 'Stale';
+    // Only treat recent ticks as "Fresh" during session hours; off-hours
+    // polls (Yahoo/IndianAPI background loops) must not flip the badge green.
+    if (opts.marketOpen) {
+      if (tickAge != null && tickAge < 120_000) return 'Fresh';
+      if (coarse.subscribedCount > 0 && coarse.tickRatePerSec > 0) return 'Fresh';
+      if (coarse.health === 'OK') return 'Stale';
+    }
     if (!opts.marketOpen && coarse.health === 'DEGRADED') return 'Stale';
     // Signal pipeline ran recently — engine is alive even if quotes aren't logged.
     if (opts.lastPipelineRunAt) {
@@ -104,12 +107,12 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Market-closed mode: the resolver gate correctly suppresses upstream
   // calls outside session hours, so `lastSuccessAt` ages indefinitely
-  // and `freshnessFromAgeMs` lands on 'Stale' / 'Offline'. Painting a
-  // yellow STALE (or red OFFLINE) banner on a system that is healthy
-  // and deliberately serving last-close snapshot data confused
-  // operators — the timestamps are today's, nothing is wrong. Label
-  // the state honestly as 'Market Closed' instead.
-  if (!coarse.market.isOpen && freshness !== 'Fresh') {
+  // and `freshnessFromAgeMs` can land on 'Stale' / 'Offline'. Background
+  // poll loops may still run and were incorrectly keeping the badge on
+  // 'Fresh' because the override below used to skip when already Fresh.
+  // When the session is closed, label honestly as 'Market Closed' —
+  // last-close snapshot data is expected, not live freshness.
+  if (!coarse.market.isOpen) {
     freshness = 'Market Closed';
   }
 

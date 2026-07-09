@@ -296,7 +296,9 @@ export interface LeaderboardEntry {
  */
 export async function loadDirectSignalOutcomes(
   window: PerformanceWindow,
+  options?: { limit?: number },
 ): Promise<PerformanceOutcomeRow[]> {
+  const limit = Math.max(1, Math.min(options?.limit ?? 20_000, 200_000));
   const cutoff = windowCutoffIso(window);
   // Window by the resolution timestamp (`outcome_at`) so terminal
   // outcomes fall in the intended window regardless of when the
@@ -336,7 +338,7 @@ export async function loadDirectSignalOutcomes(
            LEFT JOIN q365_signals s ON s.id = o.signal_id
            ${where}
            ORDER BY ${eventAt} DESC
-           LIMIT 20000`,
+           LIMIT ${limit}`,
         params,
       );
       return (rows ?? []).map(directOutcomeToRow);
@@ -362,7 +364,7 @@ export async function loadDirectSignalOutcomes(
            LEFT JOIN q365_signals s ON s.id = o.signal_id
            ${legacyWhere}
            ORDER BY ${legacyEventAt} DESC
-           LIMIT 20000`,
+           LIMIT ${limit}`,
         params,
       );
       return (rows ?? []).map(directOutcomeToRow);
