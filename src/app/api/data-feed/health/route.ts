@@ -29,7 +29,7 @@ import { getManualRunStatus } from '@/lib/pipeline/runLockRepo';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline';
+type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline' | 'Market Closed';
 
 function freshnessFromAgeMs(
   ageMs: number | null,
@@ -104,17 +104,13 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Market-closed mode: the resolver gate correctly suppresses upstream
   // calls outside session hours, so `lastSuccessAt` ages indefinitely
-  // and `freshnessFromAgeMs` lands on 'Offline'. That paints a red
-  // OFFLINE banner on a system that is actually healthy and serving
-  // last-close snapshot data on purpose. When the coarse health says
-  // DEGRADED *because* the market is closed (not because something is
-  // broken), downgrade the banner from 'Offline' → 'Stale' (yellow,
-  // "static data acceptable") to match the real system state.
-  if (!coarse.market.isOpen
-      && coarse.health === 'DEGRADED'
-      && coarse.source === 'indianapi'
-      && (freshness === 'Offline' || freshness === 'Degraded')) {
-    freshness = 'Stale';
+  // and `freshnessFromAgeMs` lands on 'Stale' / 'Offline'. Painting a
+  // yellow STALE (or red OFFLINE) banner on a system that is healthy
+  // and deliberately serving last-close snapshot data confused
+  // operators — the timestamps are today's, nothing is wrong. Label
+  // the state honestly as 'Market Closed' instead.
+  if (!coarse.market.isOpen && freshness !== 'Fresh') {
+    freshness = 'Market Closed';
   }
 
   // Live WS poll loop (Yahoo + IndianAPI dual-source) is the operator-

@@ -1916,6 +1916,7 @@ export default function SignalsPage() {
               Stale:      { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
               Degraded:   { bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
               Offline:    { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+              'Market Closed': { bg: '#F1F5F9', color: '#334155', border: '#CBD5E1' },
               'Starting…': { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' },
             };
             const freshnessLabel = feedHealth.healthLoaded
@@ -2206,7 +2207,11 @@ export default function SignalsPage() {
           const closedDataSource = marketClosed?.data_source ?? null;
           const isBootstrapData = isBootstrap;
           if (!marketOpen) {
-            headline = `Market ${marketLabel}`;
+            // Labels from the status APIs may already start with
+            // "Market" (e.g. "Market Closed") — don't prefix twice.
+            headline = /^market\b/i.test(String(marketLabel).trim())
+              ? String(marketLabel).trim()
+              : `Market ${marketLabel}`;
             const approvedZero = validRows.length === 0;
             sub = approvedZero && (watchlistTotal > 0 || highPotential.length > 0)
               ? 'Market Closed — Showing last-close watchlist candidates'
