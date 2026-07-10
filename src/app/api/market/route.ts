@@ -22,8 +22,12 @@ import { fetchQuote,
          fetchIndices }               from '@/services/marketQuote';
 import type { MarketSnapshot }        from '@/services/marketDataService';
 import type { Tick }                  from '@/types';
-import { DEFAULT_PHASE1_CONFIG }      from '@/lib/signal-engine/constants/signalEngine.constants';
-import { fetchYahooQuotesBatch }      from '@/lib/marketData/yahooBatch'; // @deprecated marker
+import {
+  DEFAULT_PHASE1_CONFIG,
+  loadTradeableUniverse,
+} from '@/lib/signal-engine/constants/signalEngine.constants';
+import { initOnce } from '@/lib/marketData/nifty500Universe';
+import { fetchYahooPublicQuotesBatch } from '@/lib/marketData/yahooChartPublic';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
@@ -49,20 +53,22 @@ const STATIC_INDEX_ROWS: Array<{ instrument_key: string; exchange: string; tradi
   { instrument_key: 'NSE_INDEX|INDIA VIX',          exchange: 'NSE', tradingsymbol: 'INDIAVIX',   name: 'India VIX' },
 ];
 
-function searchStaticUniverse(q: string, limit: number) {
+function searchStaticUniverse(q: string, limit: number, symbols?: string[]) {
+  const universe = symbols ?? DEFAULT_PHASE1_CONFIG.universe;
   const qUp  = q.toUpperCase();
   const qLow = q.toLowerCase();
+  const qEmpty = q.trim().length === 0;
 
   const indexHits = STATIC_INDEX_ROWS
-    .filter(r => r.tradingsymbol.includes(qUp) || r.name.toLowerCase().includes(qLow))
+    .filter(r => qEmpty || r.tradingsymbol.includes(qUp) || r.name.toLowerCase().includes(qLow))
     .map(r => ({
       ...r,
       instrument_type: 'INDEX',
       expiry: null, strike: null, option_type: null,
     }));
 
-  const eqHits = DEFAULT_PHASE1_CONFIG.universe
-    .filter(sym => sym.toUpperCase().includes(qUp))
+  const eqHits = universe
+    .filter(sym => qEmpty || sym.toUpperCase().includes(qUp))
     .map(sym => ({
       instrument_key:  `NSE_EQ|${sym}`,
       exchange:        'NSE',
@@ -186,22 +192,28 @@ export async function GET(req: NextRequest) {
     if (allSyms.length === 0) return NextResponse.json({ data: {}, count: 0 });
     if (allSyms.length > 500)  return NextResponse.json({ error: 'Max 500 symbols' }, { status: 400 });
 
-    const quotes = await fetchYahooQuotesBatch(allSyms); // @deprecated marker
+    // Use Yahoo's public chart API directly — bypasses IndianAPI/NSE
+    // resolver so the market page gets LTP even when API quota is exhausted.
+    const quotes = await fetchYahooPublicQuotesBatch(allSyms, {
+      concurrency: 12,
+      gapMs:       80,
+    });
     const data: Record<string, Tick> = {};
     const nowIso = new Date().toISOString();
-    for (const [sym, q] of quotes.entries()) {
+    for (const q of quotes) {
+      const sym = q.symbol.toUpperCase();
       const key = `NSE_EQ|${sym}`;
       data[key] = {
         instrument_key: key,
-        ltp:        q.price   ?? 0,
-        net_change: q.change  ?? 0,
-        pct_change: q.pChange ?? 0,
-        volume:     0,
+        ltp:        q.lastPrice,
+        net_change: q.change,
+        pct_change: q.pChange,
+        volume:     q.volume ?? 0,
         oi:         0,
-        ts:         q.marketTime ? new Date(q.marketTime).toISOString() : nowIso,
+        ts:         q.timestamp ? new Date(q.timestamp).toISOString() : nowIso,
       };
     }
-    const res = NextResponse.json({ data, count: Object.keys(data).length, source: 'yahoo' }); // @deprecated marker
+    const res = NextResponse.json({ data, count: Object.keys(data).length, source: 'yahoo_public' });
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     return res;
   }
@@ -213,8 +225,22 @@ export async function GET(req: NextRequest) {
   // any DB table being populated.
   if (action === 'list') {
     const limit = parseInt(searchParams.get('limit') || '1000');
-    const results = searchStaticUniverse('', limit);
-    return NextResponse.json({ results, count: results.length, source: 'universe' });
+    // Always hydrate from DB — Turbopack can serve API routes from a
+    // module copy where TRADEABLE_UNIVERSE is still [] on refresh.
+    let symbols: string[] = [];
+    try {
+      const loaded = await initOnce();
+      symbols = loaded.symbols;
+      await loadTradeableUniverse().catch(() => undefined);
+    } catch {
+      symbols = [...DEFAULT_PHASE1_CONFIG.universe];
+    }
+    const results = searchStaticUniverse('', limit, symbols);
+    return NextResponse.json({
+      results,
+      count: results.length,
+      source: symbols.length > 0 ? 'universe' : 'indices-only',
+    });
   }
 
   // ── Search / Suggest ──────────────────────────────────────────

@@ -9,9 +9,34 @@ import Link from 'next/link';
 import type { Instrument, Tick } from '@/types';
 
 const KEY_INDICES = ['NIFTY 50', 'NIFTY BANK', 'NIFTY MIDCAP 100', 'NIFTY IT', 'India VIX'];
-const LTP_REFRESH_MS  = 10_000;  // Yahoo batch is cheap; poll at 10s. // @deprecated marker
-const LTP_BATCH_SIZE  = 100;     // Matches yahoo-batch's URL-length cap. // @deprecated marker
+const LTP_REFRESH_MS  = 10_000;
+const LTP_BATCH_SIZE  = 100;
+const LTP_PARALLEL    = 4;
 const FLASH_DURATION_MS = 1_200;
+const PAGE_CACHE_KEY    = 'q365-market-page-v1';
+
+type PageCache = {
+  all: Instrument[];
+  quotes: Record<string, Tick>;
+  indices: any[];
+};
+
+function readPageCache(): PageCache | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(PAGE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PageCache;
+    if (!Array.isArray(parsed.all) || parsed.all.length === 0) return null;
+    return {
+      all: parsed.all,
+      quotes: parsed.quotes ?? {},
+      indices: Array.isArray(parsed.indices) ? parsed.indices : [],
+    };
+  } catch {
+    return null;
+  }
+}
 
 export default function MarketPage() {
   const [query,    setQuery]   = useState('');
@@ -19,107 +44,167 @@ export default function MarketPage() {
   const [quotes,   setQuotes]  = useState<Record<string, Tick>>({});
   const [indices,  setIndices] = useState<any[]>([]);
   const [listLoad, setListLoad]= useState(true);
+  const [listRefreshing, setListRefreshing] = useState(false);
+  const [listError,setListError]= useState<string | null>(null);
   const [ltpLoad,  setLtpLoad] = useState(false);
-  // Stays true until the very first Yahoo LTP batch completes — used // @deprecated marker
-  // to gate the whole table behind a single "Loading…" screen so the
-  // user never sees a half-populated list with placeholder dashes.
-  const [initialLoad, setInitialLoad] = useState(true);
   const [lastAt,   setLastAt]  = useState<string | null>(null);
   const [added,    setAdded]   = useState<Set<string>>(new Set());
 
-  // Per-row price-flash state — set to 'up' | 'down' | undefined after
-  // each poll, cleared after a short timeout so the CSS animation
-  // fires exactly once per tick.
   const [flash, setFlash] = useState<Record<string, 'up' | 'down' | undefined>>({});
   const prevLtpRef = useRef<Record<string, number>>({});
+  const quotesGenRef = useRef(0);
+  const equityKeysSigRef = useRef('');
+  const mountedRef = useRef(false);
+  const allLenRef = useRef(0);
 
   const equityKeys = useMemo(
     () => all.filter(i => i.instrument_type === 'EQ').map(i => i.instrument_key),
     [all],
   );
 
-  /* ── Load the static universe + indices once ── */
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [listRes, idxRes] = await Promise.allSettled([
-          marketApi.list() as Promise<{ results: Instrument[] }>,
-          fetch('/api/market?resource=indices').then(r => r.json()),
-        ]);
-        if (cancelled) return;
-        if (listRes.status === 'fulfilled') {
-          setAll(listRes.value.results ?? []);
+    allLenRef.current = all.length;
+  }, [all.length]);
+
+  const fetchUniverse = useCallback(async () => {
+    const hasExisting = allLenRef.current > 0;
+    if (hasExisting) setListRefreshing(true);
+    else setListLoad(true);
+    setListError(null);
+    try {
+      const [listRes, idxRes] = await Promise.allSettled([
+        marketApi.list() as Promise<{ results: Instrument[] }>,
+        fetch('/api/market?resource=indices').then(r => r.json()),
+      ]);
+      if (listRes.status === 'fulfilled') {
+        const rows = listRes.value.results ?? [];
+        if (rows.length > 0) {
+          equityKeysSigRef.current = '';
+          setAll(rows);
+        } else if (!hasExisting) {
+          setListError('Symbol list returned empty — retrying may help after the server warms up.');
+        } else {
+          setListError('Reload returned empty — showing the previous symbol list.');
         }
-        if (idxRes.status === 'fulfilled') {
-          const rows: any[] = idxRes.value.indices ?? [];
-          setIndices(rows.filter(i => KEY_INDICES.includes(i.name)));
-        }
-      } finally {
-        if (!cancelled) setListLoad(false);
+      } else if (!hasExisting) {
+        setListError('Could not load market universe. Please sign in again or retry.');
+      } else {
+        setListError('Could not refresh symbol list — showing the previous list.');
       }
-    })();
-    return () => { cancelled = true; };
+      if (idxRes.status === 'fulfilled') {
+        const rows: any[] = idxRes.value.indices ?? [];
+        const next = rows.filter(i => KEY_INDICES.includes(i.name));
+        if (next.length > 0) setIndices(next);
+      }
+    } finally {
+      setListLoad(false);
+      setListRefreshing(false);
+    }
   }, []);
 
-  /* ── Poll LTPs directly from Yahoo Finance (bulk batch) ── */ // @deprecated marker
+  useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+    const cache = readPageCache();
+    if (cache) {
+      allLenRef.current = cache.all.length;
+      setAll(cache.all);
+      setQuotes(cache.quotes);
+      setIndices(cache.indices);
+      setListLoad(false);
+      prevLtpRef.current = Object.fromEntries(
+        Object.entries(cache.quotes)
+          .filter(([, q]) => q?.ltp != null)
+          .map(([k, q]) => [k, q.ltp as number]),
+      );
+    }
+    void fetchUniverse();
+  }, [fetchUniverse]);
+
   const loadQuotes = useCallback(async (showSpinner = false) => {
     if (!equityKeys.length) return;
     if (showSpinner) setLtpLoad(true);
+    const gen = ++quotesGenRef.current;
     try {
-      const merged: Record<string, Tick> = {};
+      const chunks: string[][] = [];
       for (let i = 0; i < equityKeys.length; i += LTP_BATCH_SIZE) {
-        const chunk = equityKeys.slice(i, i + LTP_BATCH_SIZE);
-        try {
-          const res = await marketApi.yahooLtp(chunk) as any; // @deprecated marker
-          Object.assign(merged, res.data ?? {});
-        } catch { /* one chunk failing shouldn't blank the rest */ }
+        chunks.push(equityKeys.slice(i, i + LTP_BATCH_SIZE));
       }
 
-      // Diff against the previous tick so the table can flash rows
-      // whose price actually moved.
-      const prev = prevLtpRef.current;
-      const nextFlash: Record<string, 'up' | 'down' | undefined> = {};
-      for (const [key, q] of Object.entries(merged)) {
-        const p = prev[key];
-        if (p != null && q.ltp != null && q.ltp !== p) {
-          nextFlash[key] = q.ltp > p ? 'up' : 'down';
+      let cursor = 0;
+      const workers = Array.from({ length: Math.min(LTP_PARALLEL, chunks.length) }, async () => {
+        while (cursor < chunks.length) {
+          const idx = cursor++;
+          const chunk = chunks[idx];
+          try {
+            const res = await marketApi.yahooLtp(chunk) as { data?: Record<string, Tick> };
+            if (gen !== quotesGenRef.current) return;
+            const batch = res.data ?? {};
+            setQuotes(prev => ({ ...prev, ...batch }));
+
+            const prev = prevLtpRef.current;
+            const nextFlash: Record<string, 'up' | 'down'> = {};
+            for (const [key, q] of Object.entries(batch)) {
+              const p = prev[key];
+              if (p != null && q.ltp != null && q.ltp !== p) {
+                nextFlash[key] = q.ltp > p ? 'up' : 'down';
+              }
+              if (q.ltp != null) prev[key] = q.ltp;
+            }
+            prevLtpRef.current = prev;
+            if (Object.keys(nextFlash).length > 0) {
+              setFlash(f => ({ ...f, ...nextFlash }));
+            }
+          } catch {
+            /* one chunk failing shouldn't blank the rest */
+          }
         }
-        if (q.ltp != null) prev[key] = q.ltp;
-      }
-      prevLtpRef.current = prev;
+      });
+      await Promise.all(workers);
 
-      setQuotes(merged);
-      if (Object.keys(nextFlash).length > 0) {
-        setFlash(nextFlash);
-        setTimeout(() => setFlash({}), FLASH_DURATION_MS);
+      if (gen === quotesGenRef.current) {
+        setLastAt(new Date().toLocaleTimeString('en-IN', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        }));
+        if (Object.keys(prevLtpRef.current).length > 0) {
+          setTimeout(() => setFlash({}), FLASH_DURATION_MS);
+        }
       }
-      setLastAt(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } finally {
       if (showSpinner) setLtpLoad(false);
-      // Flip the one-shot gate once any LTP attempt has run, regardless
-      // of whether Yahoo returned rows — the UI should not stay locked // @deprecated marker
-      // behind the loader forever if Yahoo is down. // @deprecated marker
-      setInitialLoad(false);
     }
   }, [equityKeys]);
 
-  const didInitialFetch = useRef(false);
+  // Refresh prices whenever the universe is ready or changes — never
+  // wipe the table; only show a spinner on the very first load.
   useEffect(() => {
-    if (!equityKeys.length || didInitialFetch.current) return;
-    didInitialFetch.current = true;
-    loadQuotes(true);
-  }, [equityKeys, loadQuotes]);
+    if (listLoad || !equityKeys.length) return;
+    const sig = equityKeys.join('|');
+    const isFirst = equityKeysSigRef.current === '';
+    const universeChanged = equityKeysSigRef.current !== '' && equityKeysSigRef.current !== sig;
+    equityKeysSigRef.current = sig;
+    if (isFirst || universeChanged) {
+      void loadQuotes(isFirst);
+    }
+  }, [equityKeys, listLoad, loadQuotes]);
+
+  useEffect(() => {
+    if (all.length === 0) return;
+    try {
+      sessionStorage.setItem(PAGE_CACHE_KEY, JSON.stringify({ all, quotes, indices }));
+    } catch {
+      /* quota / private mode */
+    }
+  }, [all, quotes, indices]);
 
   useEffect(() => {
     if (!equityKeys.length) return;
     const id = setInterval(() => {
-      if (!document.hidden) loadQuotes(false);
+      if (!document.hidden) void loadQuotes(false);
     }, LTP_REFRESH_MS);
     return () => clearInterval(id);
   }, [equityKeys, loadQuotes]);
 
-  /* ── Client-side filter (no debounce, no network) ── */
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
     if (!q) return all;
@@ -153,33 +238,51 @@ export default function MarketPage() {
             <h1>Market Search</h1>
             <p style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#16A34A', fontWeight: 700 }}>
-                <Wifi size={12} /> LIVE · Yahoo Finance // @deprecated marker
+                <Wifi size={12} /> LIVE · Market quotes
               </span>
               <span style={{ color: '#64748B', fontSize: 13 }}>
-                {all.length || '…'} tradeable symbols
+                {listLoad && all.length === 0 ? '…' : all.length} tradeable symbols
+                {listRefreshing && all.length > 0 && (
+                  <span style={{ marginLeft: 6, color: '#94A3B8' }}>· refreshing list…</span>
+                )}
               </span>
               {lastAt && (
                 <span style={{ color: '#94A3B8', fontSize: 12 }}>
-                  · Updated {lastAt}
+                  · Prices updated {lastAt}
                 </span>
               )}
             </p>
           </div>
-          <button
-            className="btn btn--secondary btn--sm"
-            onClick={() => loadQuotes(true)}
-            disabled={ltpLoad || listLoad}
-          >
-            <RefreshCw size={13} className={ltpLoad ? 'spin' : ''} /> Refresh prices
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn--secondary btn--sm"
+              onClick={() => void fetchUniverse()}
+              disabled={listLoad || listRefreshing}
+            >
+              <RefreshCw size={13} className={listRefreshing ? 'spin' : ''} /> Reload list
+            </button>
+            <button
+              className="btn btn--secondary btn--sm"
+              onClick={() => void loadQuotes(true)}
+              disabled={ltpLoad || equityKeys.length === 0}
+            >
+              <RefreshCw size={13} className={ltpLoad ? 'spin' : ''} /> Refresh prices
+            </button>
+          </div>
         </div>
 
-        {initialLoad ? (
+        {listLoad && all.length === 0 ? (
           <div style={{ padding: '60px 0' }}>
-            <Loading text={listLoad ? 'Loading market universe…' : 'Fetching live prices from Yahoo Finance…'} /> // @deprecated marker
+            <Loading text="Loading market universe…" />
           </div>
         ) : (
           <>
+        {listError && (
+          <Card style={{ marginBottom: 16, borderColor: '#FCD34D', background: '#FFFBEB' }}>
+            <p style={{ margin: 0, fontSize: 13, color: '#92400E' }}>{listError}</p>
+          </Card>
+        )}
+
         {indices.length > 0 && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
             {indices.map((idx: any) => (
@@ -212,8 +315,12 @@ export default function MarketPage() {
           </div>
         </Card>
 
-        {listLoad ? (
-          <Loading text="Loading market universe…" />
+        {filtered.length === 0 && all.length === 0 ? (
+          <Empty
+            icon={Search}
+            title="Market universe unavailable"
+            description="Could not load the tradeable symbol list. Click Reload list or check that q365_universe is populated."
+          />
         ) : filtered.length === 0 ? (
           <Empty
             icon={Search}
