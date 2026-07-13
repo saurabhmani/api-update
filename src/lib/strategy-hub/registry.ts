@@ -4,11 +4,13 @@
 
 import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
 import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
-import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
 import type { StrategyCardStatus, StrategyHubSummary, StrategyHubDetail } from './types';
 import { categoryLabel, riskProfileLabel } from './categories';
 import { assessPaperTradingReadiness } from './services/paperTradingReadiness';
+import { resolveDeploymentLifecycle } from './deploymentLifecycle';
+import { extractModeOverride } from './services/strategyModeOverrides';
 import type { StrategyProfileRow } from './types';
+import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
 
 /** Initial featured strategies for the Strategy Hub spotlight. */
 export const FEATURED_STRATEGY_IDS: StrategyName[] = [
@@ -65,8 +67,9 @@ function cardStatus(
   entry: StrategyRegistryEntry,
   paperReady: boolean,
   isActiveInRunner: boolean,
+  effectiveMode?: string,
 ): StrategyCardStatus {
-  if (entry.strategyMode === 'DISABLED') return 'Inactive';
+  if ((effectiveMode ?? entry.strategyMode) === 'DISABLED') return 'Inactive';
   if (paperReady || isActiveInRunner) return 'Active';
   return 'Inactive';
 }
@@ -82,6 +85,17 @@ export function mapEntryToSummary(
   });
   const activeInRunner = ACTIVE_RUNNER_STRATEGIES.has(entry.strategyId);
   const paperReady = profile?.paper_trading_enabled ?? paper.ready;
+  const modeOverride = extractModeOverride(profile?.metadata_json);
+  const deploymentLifecycle = resolveDeploymentLifecycle({
+    storedStatus: profile?.deployment_status,
+    readinessReady: paper.ready,
+    strategyModeDisabled: (modeOverride ?? entry.strategyMode) === 'DISABLED',
+  });
+  const effectiveStrategyMode = resolveEffectiveStrategyMode(
+    entry.strategyId,
+    undefined,
+    modeOverride,
+  );
 
   return {
     strategyId: entry.strategyId,
@@ -98,10 +112,13 @@ export function mapEntryToSummary(
     isFeatured: isFeaturedStrategy(entry.strategyId),
     isActiveInRunner: activeInRunner,
     deploymentStatus: profile?.deployment_status ?? paper.deploymentStatus,
+    deploymentLifecycle,
     paperTradingReady: paperReady,
-    strategyMode: entry.strategyMode,
-    effectiveStrategyMode: resolveEffectiveStrategyMode(entry.strategyId),
-    cardStatus: cardStatus(entry, paperReady, activeInRunner),
+    strategyMode: effectiveStrategyMode,
+    registryStrategyMode: entry.strategyMode,
+    hasModeOverride: modeOverride != null,
+    effectiveStrategyMode,
+    cardStatus: cardStatus(entry, paperReady, activeInRunner, effectiveStrategyMode),
   };
 }
 

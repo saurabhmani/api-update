@@ -25,14 +25,15 @@ export async function deployLiveTrading(
   let strategyApproved = true;
   const strategyIssues: string[] = [];
   try {
-    const { requestPaperDeployment } = await import('@/lib/strategy-lab');
-    const paperResult = await requestPaperDeployment(strategyId, actor);
-    if (!paperResult.approved) {
+    const { assertStrategyValidationForDeploy } = await import('@/lib/strategy-hub/services/strategyValidationService');
+    const validation = await assertStrategyValidationForDeploy(strategyId, 'live');
+    if (!validation.approved) {
       strategyApproved = false;
-      strategyIssues.push(...paperResult.issues);
+      strategyIssues.push(...validation.issues);
     }
   } catch {
-    strategyIssues.push('Strategy validation unavailable — deploy with caution');
+    strategyIssues.push('Strategy validation unavailable — deploy blocked');
+    strategyApproved = false;
   }
 
   const broker = opts?.broker ?? (defaultBrokerName() as BrokerName);
@@ -48,6 +49,11 @@ export async function deployLiveTrading(
       approved: false,
       issues: [...gates.issues, connected.error ?? 'Broker connect failed'],
     };
+  }
+
+  if (strategyApproved) {
+    const { markLiveDeployed } = await import('@/lib/strategy-hub/services/deploymentService');
+    await markLiveDeployed(userId, strategyId, actor, connected.connection.id);
   }
 
   return {

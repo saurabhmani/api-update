@@ -458,9 +458,10 @@ export async function deployToPaper(
   let result: { approved: boolean; issues: string[] };
 
   if (registryEntry) {
-    const [{ assessPaperTradingReadiness }, { loadStrategyProfile }] = await Promise.all([
+    const [{ assessPaperTradingReadiness }, { loadStrategyProfile }, { assertStrategyValidationForDeploy }] = await Promise.all([
       import('@/lib/strategy-hub/services/paperTradingReadiness'),
       import('@/lib/strategy-hub/repository/strategyProfiles'),
+      import('@/lib/strategy-hub/services/strategyValidationService'),
     ]);
     const profile = await loadStrategyProfile(strategyId);
     const readiness = assessPaperTradingReadiness(strategyId, {
@@ -468,11 +469,14 @@ export async function deployToPaper(
       isActiveInRunner: ACTIVE_RUNNER_STRATEGIES.has(registryEntry.strategyId),
       profile,
     });
+    const validation = await assertStrategyValidationForDeploy(strategyId, 'paper');
+    const readinessIssues = readiness.checks
+      .filter((check) => check.required && !check.pass)
+      .map((check) => check.name);
+    const issues = [...new Set([...readinessIssues, ...validation.issues])];
     result = {
-      approved: readiness.ready,
-      issues: readiness.checks
-        .filter((check) => check.required && !check.pass)
-        .map((check) => check.name),
+      approved: readiness.ready && validation.approved,
+      issues,
     };
   } else {
     const { requestPaperDeployment } = await import('@/lib/strategy-lab');
@@ -490,6 +494,8 @@ export async function deployToPaper(
       strategyId,
       details: { deployment: 'paper' },
     });
+    const { markPaperDeployed } = await import('@/lib/strategy-hub/services/deploymentService');
+    await markPaperDeployed(userId, strategyId, actor, account.account.id);
   }
   return {
     ok: result.approved,

@@ -42,6 +42,12 @@ export function isRegistryDrivenStrategy(strategyId: string): boolean {
 }
 
 export async function listStrategiesFromRegistry(): Promise<StrategyHubSummary[]> {
+  // Keep Signal Engine override resolvers warm whenever the Hub loads.
+  const [{ loadStrategyModeOverrides }, { loadStrategyConfigOverrides }] = await Promise.all([
+    import('./strategyModeOverrides'),
+    import('./strategyConfigOverrides'),
+  ]);
+  await Promise.all([loadStrategyModeOverrides(), loadStrategyConfigOverrides()]);
   const profiles = await loadAllStrategyProfiles();
   return loadAllStrategySummaries(profiles);
 }

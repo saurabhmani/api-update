@@ -20,12 +20,16 @@ export async function POST(req: NextRequest) {
         approved: false,
         issues: result.issues,
         error: 'Deployment gates not met',
+        hint: 'Run Validate Strategy on the strategy detail page before deploying',
       }, { status: 403 });
     }
+    const { getEffectiveLifecycle } = await import('@/lib/strategy-hub/services/deploymentService');
+    const deploymentLifecycle = await getEffectiveLifecycle(strategyId);
     return NextResponse.json({
       ok: true,
       approved: true,
       deployment: 'paper',
+      deploymentLifecycle,
       accountId: result.accountId,
       message: 'Strategy deployed to paper trading',
     });

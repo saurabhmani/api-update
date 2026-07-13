@@ -4,9 +4,20 @@ import { useState } from 'react';
 import Link from 'next/link';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading, StatCard } from '@/components/ui';
+import { DeploymentStatusBadge } from '@/components/strategies/DeploymentStatusBadge';
+import { DeploymentHistoryPanel } from '@/components/strategies/DeploymentHistoryPanel';
+import { StrategyModeBadge } from '@/components/strategies/StrategyModeBadge';
+import { StrategyModeControls } from '@/components/strategies/StrategyModeControls';
+import { ModeActivityPanel } from '@/components/strategies/ModeActivityPanel';
+import { StrategyConfigurationPanel } from '@/components/strategies/StrategyConfigurationPanel';
+import { StrategyValidationPanel } from '@/components/strategies/StrategyValidationPanel';
+import { StrategyAnalyticsPanel } from '@/components/strategies/StrategyAnalyticsPanel';
+import { StrategyAiInsightsPanel } from '@/components/strategies/StrategyAiInsightsPanel';
 import { useStrategyDetail } from '@/hooks/useStrategyDetail';
+import { useAuth } from '@/hooks/useAuth';
 import { CheckCircle2, XCircle, ArrowLeft, Target, Shield, TrendingUp } from 'lucide-react';
 import styles from '../strategies.module.scss';
+import { strategyModeDescription } from '@/lib/strategy-hub/strategyModeDisplay';
 
 const WINDOWS = ['7D', '30D', '90D', '180D', '1Y'] as const;
 
@@ -16,7 +27,10 @@ interface Props {
 
 export default function StrategyDetailPage({ strategyId }: Props) {
   const [window, setWindow] = useState<string>('90D');
+  const [detailTab, setDetailTab] = useState<'overview' | 'validation' | 'analytics' | 'ai'>('overview');
   const { data, isLoading, error } = useStrategyDetail(strategyId, window);
+  const { user } = useAuth();
+  const canManage = user?.role === 'admin';
 
   if (isLoading) return <AppShell title="Strategy"><Loading text="Loading strategy…" /></AppShell>;
   if (error || !data) {
@@ -31,6 +45,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   }
 
   const perf = data.performanceDetail;
+  const mode = data.effectiveStrategyMode ?? data.strategyMode;
 
   return (
     <AppShell title={data.displayName}>
@@ -50,6 +65,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
               </Badge>
               <Badge variant="orange">{data.riskProfileLabel}</Badge>
               <Badge variant="gray">{data.timeframe}</Badge>
+              <StrategyModeBadge mode={mode} />
+              <DeploymentStatusBadge status={data.deploymentLifecycle} />
+              {data.hasModeOverride && <Badge variant="dark">Mode Override</Badge>}
               {data.paperTradingReady && <Badge variant="green">Paper Trading Ready</Badge>}
               {data.isActiveInRunner && <Badge variant="dark">Engine Active</Badge>}
             </div>
@@ -59,6 +77,57 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           </Link>
         </div>
 
+        <div className={styles.filters} style={{ marginBottom: 20 }}>
+          <button
+            type="button"
+            className={detailTab === 'overview' ? styles.filterChipActive : styles.filterChip}
+            onClick={() => setDetailTab('overview')}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            className={detailTab === 'validation' ? styles.filterChipActive : styles.filterChip}
+            onClick={() => setDetailTab('validation')}
+          >
+            Validation
+          </button>
+          <button
+            type="button"
+            className={detailTab === 'analytics' ? styles.filterChipActive : styles.filterChip}
+            onClick={() => setDetailTab('analytics')}
+          >
+            Performance & Analytics
+          </button>
+          <button
+            type="button"
+            className={detailTab === 'ai' ? styles.filterChipActive : styles.filterChip}
+            onClick={() => setDetailTab('ai')}
+          >
+            AI Insights
+          </button>
+        </div>
+
+        {detailTab === 'ai' && (
+          <div style={{ marginBottom: 24 }}>
+            <StrategyAiInsightsPanel strategyId={strategyId} canManage={canManage} />
+          </div>
+        )}
+
+        {detailTab === 'analytics' && (
+          <div style={{ marginBottom: 24 }}>
+            <StrategyAnalyticsPanel strategyId={strategyId} />
+          </div>
+        )}
+
+        {detailTab === 'validation' && (
+          <div style={{ marginBottom: 24 }}>
+            <StrategyValidationPanel strategyId={strategyId} canManage={canManage} />
+          </div>
+        )}
+
+        {detailTab === 'overview' && (
+        <>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginBottom: 24 }}>
           <StatCard
             label="Win Rate"
@@ -96,9 +165,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {data.minAdx != null && <div><strong>Min ADX:</strong> {data.minAdx}</div>}
                 {data.minVolumeExpansion != null && <div><strong>Min Volume:</strong> {data.minVolumeExpansion}x</div>}
                 <div><strong>Version:</strong> {data.version}</div>
-                <div><strong>Deployment:</strong> {data.deploymentStatus.replace(/_/g, ' ')}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <strong>Deployment:</strong>
+                  <DeploymentStatusBadge status={data.deploymentLifecycle} compact />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, gridColumn: '1 / -1' }}>
+                  <strong>Strategy Mode:</strong>
+                  <StrategyModeBadge mode={mode} compact />
+                  <span style={{ fontSize: '0.8rem', color: '#64748B' }}>
+                    {strategyModeDescription(mode)}
+                  </span>
+                </div>
+                {data.registryStrategyMode && data.registryStrategyMode !== mode && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: '0.8rem', color: '#64748B' }}>
+                    Registry default: {data.registryStrategyMode}
+                  </div>
+                )}
               </div>
             </Card>
+
+            {canManage && (
+              <Card title="Admin Mode Controls">
+                <StrategyModeControls
+                  strategyId={strategyId}
+                  currentMode={mode}
+                />
+              </Card>
+            )}
+
+            <StrategyConfigurationPanel strategyId={strategyId} canManage={canManage} />
 
             <Card title="Market Regime Gates">
               <div style={{ fontSize: '0.9rem' }}>
@@ -177,6 +272,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
               </Card>
             )}
 
+            <DeploymentHistoryPanel strategyId={strategyId} />
+
+            <ModeActivityPanel strategyId={strategyId} limit={10} />
+
             {data.conditions && data.conditions.length > 0 && (
               <Card title="Strategy Conditions">
                 <ul className={styles.checkList}>
@@ -199,6 +298,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             </Link>
           </div>
         </div>
+        </>
+        )}
       </div>
     </AppShell>
   );

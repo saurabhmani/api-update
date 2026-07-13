@@ -3,13 +3,24 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { Badge } from '@/components/ui';
+import { DeploymentStatusBadge } from '@/components/strategies/DeploymentStatusBadge';
+import { StrategyModeBadge } from '@/components/strategies/StrategyModeBadge';
+import { StrategyModeControls } from '@/components/strategies/StrategyModeControls';
+import { isDeployedLifecycle } from '@/lib/strategy-hub/deploymentLifecycle';
 import type { StrategyHubSummary } from '@/lib/strategy-hub/types';
+import type { StrategyMode } from '@/lib/signal-engine/types/signalEngine.types';
 import styles from '@/app/strategies/strategies.module.scss';
 
 interface Props {
   strategy: StrategyHubSummary;
   featured?: boolean;
+  compact?: boolean;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (strategyId: string) => void;
+  canManage?: boolean;
 }
 
 function statusVariant(status: StrategyHubSummary['cardStatus']): 'green' | 'orange' | 'gray' | 'dark' {
@@ -24,11 +35,25 @@ function fmtPct(n: number | null | undefined): string {
   return `${n.toFixed(1)}%`;
 }
 
-export function StrategyCard({ strategy, featured }: Props) {
+export function StrategyCard({
+  strategy,
+  featured,
+  compact = false,
+  selectable,
+  selected,
+  onToggleSelect,
+  canManage,
+}: Props) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const perf = strategy.performance;
   const [busyAction, setBusyAction] = useState<'backtest' | 'deploy' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [optimisticMode, setOptimisticMode] = useState<StrategyMode | null>(null);
+  const alreadyDeployed = isDeployedLifecycle(strategy.deploymentLifecycle);
+  const mode = (optimisticMode
+    ?? strategy.effectiveStrategyMode
+    ?? strategy.strategyMode) as StrategyMode | string;
 
   const runBacktest = async () => {
     setBusyAction('backtest');
@@ -70,6 +95,11 @@ export function StrategyCard({ strategy, featured }: Props) {
         throw new Error(`${body.error ?? 'Paper deployment failed'}${issues}`);
       }
       setMessage(body.message ?? 'Strategy deployed to paper trading');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['strategy-hub'] }),
+        queryClient.invalidateQueries({ queryKey: ['strategy-deployments'] }),
+        queryClient.invalidateQueries({ queryKey: ['strategy-detail', strategy.strategyId] }),
+      ]);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Paper deployment failed');
     } finally {
@@ -78,31 +108,46 @@ export function StrategyCard({ strategy, featured }: Props) {
   };
 
   return (
-    <article className={featured ? styles.cardFeatured : styles.card}>
+    <article className={featured ? styles.cardFeatured : compact ? styles.cardCompact : styles.card}>
       <div className={styles.cardHeader}>
-        <div>
-          <Link href={`/strategies/${strategy.strategyId}`} className={styles.cardTitleLink}>
-            <h3 className={styles.cardTitle}>{strategy.displayName}</h3>
-          </Link>
-          <div className={styles.cardSubTitle}>{strategy.marketType} · {strategy.timeframeLabel}</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', minWidth: 0 }}>
+          {selectable && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onChange={() => onToggleSelect?.(strategy.strategyId)}
+              aria-label={`Select ${strategy.displayName}`}
+              style={{ marginTop: 4, flexShrink: 0 }}
+            />
+          )}
+          <div style={{ minWidth: 0 }}>
+            <Link href={`/strategies/${strategy.strategyId}`} className={styles.cardTitleLink}>
+              <h3 className={styles.cardTitle}>{strategy.displayName}</h3>
+            </Link>
+            <div className={styles.cardSubTitle}>
+              {strategy.categoryLabel} · {strategy.marketType} · {strategy.timeframeLabel}
+            </div>
+          </div>
         </div>
         <Badge variant={statusVariant(strategy.cardStatus)}>{strategy.cardStatus}</Badge>
       </div>
 
       <div className={styles.cardMeta}>
-        <Badge variant="gray">{strategy.categoryLabel}</Badge>
         <Badge variant={strategy.direction === 'BUY' ? 'green' : strategy.direction === 'SELL' ? 'red' : 'gray'}>
           {strategy.direction}
         </Badge>
         <Badge variant="orange">{strategy.riskProfileLabel}</Badge>
-        <Badge variant="gray">{strategy.deploymentStatus.replace(/_/g, ' ')}</Badge>
-        {strategy.isActiveInRunner && <Badge variant="dark">Active</Badge>}
+        {!compact && <Badge variant="gray">{strategy.categoryLabel}</Badge>}
+        <StrategyModeBadge mode={mode} compact />
         {strategy.paperTradingReady && <Badge variant="green">Paper Ready</Badge>}
+        {!compact && strategy.hasModeOverride && <Badge variant="dark">Override</Badge>}
+        {!compact && strategy.isActiveInRunner && <Badge variant="dark">Runner</Badge>}
+        {!compact && <DeploymentStatusBadge status={strategy.deploymentLifecycle} compact />}
       </div>
 
-      <p className={styles.cardExplanation}>{strategy.explanation}</p>
+      {!compact && <p className={styles.cardExplanation}>{strategy.explanation}</p>}
 
-      <div className={styles.metrics}>
+      <div className={compact ? styles.metricsCompact : styles.metrics}>
         <div>
           <div className={styles.metricLabel}>Win Rate</div>
           <div className={styles.metricValue}>
@@ -117,44 +162,88 @@ export function StrategyCard({ strategy, featured }: Props) {
           <div className={styles.metricLabel}>Max DD</div>
           <div className={styles.metricValue}>{perf ? fmtPct(perf.maxDrawdownPct) : '—'}</div>
         </div>
-        <div>
-          <div className={styles.metricLabel}>Risk</div>
-          <div className={styles.metricValue}>{strategy.riskProfileLabel}</div>
-        </div>
-        <div>
-          <div className={styles.metricLabel}>Signals</div>
-          <div className={styles.metricValue}>{perf?.totalSignals ?? 0}</div>
-        </div>
-        <div>
-          <div className={styles.metricLabel}>Health</div>
-          <div className={styles.metricValue}>{perf?.healthScore ?? '—'}</div>
-        </div>
+        {!compact && (
+          <>
+            <div>
+              <div className={styles.metricLabel}>Signals</div>
+              <div className={styles.metricValue}>{perf?.totalSignals ?? 0}</div>
+            </div>
+            <div>
+              <div className={styles.metricLabel}>Health</div>
+              <div className={styles.metricValue}>{perf?.healthScore ?? '—'}</div>
+            </div>
+          </>
+        )}
       </div>
 
-      <div className={styles.cardActions}>
-        <Link href={`/strategies/${strategy.strategyId}`} className="btn btn--outline btn--sm">
+      {canManage && !compact && (
+        <StrategyModeControls
+          strategyId={strategy.strategyId}
+          currentMode={mode}
+          onChanged={(next) => setOptimisticMode(next)}
+        />
+      )}
+
+      <div className={compact ? styles.cardActionsCompact : styles.cardActions}>
+        <Link href={`/strategies/${strategy.strategyId}`} className="btn btn--primary btn--sm">
           View Details
         </Link>
-        <button
-          type="button"
-          className="btn btn--secondary btn--sm"
-          onClick={runBacktest}
-          disabled={busyAction != null}
-        >
-          {busyAction === 'backtest' ? 'Queuing…' : 'Run Backtest'}
-        </button>
-        <Link href={`/strategies/performance?strategyId=${encodeURIComponent(strategy.strategyId)}`} className="btn btn--outline btn--sm">
-          View Performance
-        </Link>
-        <button
-          type="button"
-          className="btn btn--primary btn--sm"
-          onClick={deployToPaper}
-          disabled={busyAction != null || !strategy.paperTradingReady}
-          title={strategy.paperTradingReady ? 'Deploy to paper trading' : 'Paper trading gates are not met'}
-        >
-          {busyAction === 'deploy' ? 'Deploying…' : 'Deploy to Paper'}
-        </button>
+        {compact ? (
+          strategy.paperTradingReady && !alreadyDeployed ? (
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={deployToPaper}
+              disabled={busyAction != null}
+            >
+              {busyAction === 'deploy' ? 'Deploying…' : 'Deploy'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={runBacktest}
+              disabled={busyAction != null}
+            >
+              {busyAction === 'backtest' ? 'Queuing…' : 'Backtest'}
+            </button>
+          )
+        ) : (
+          <>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={runBacktest}
+              disabled={busyAction != null}
+            >
+              {busyAction === 'backtest' ? 'Queuing…' : 'Run Backtest'}
+            </button>
+            <Link href={`/strategies/performance?strategyId=${encodeURIComponent(strategy.strategyId)}`} className="btn btn--outline btn--sm">
+              Performance
+            </Link>
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={deployToPaper}
+              disabled={busyAction != null || !strategy.paperTradingReady || alreadyDeployed}
+              title={
+                alreadyDeployed
+                  ? 'Strategy is already deployed'
+                  : strategy.paperTradingReady
+                    ? 'Deploy to paper trading'
+                    : 'Paper trading gates are not met'
+              }
+            >
+              {busyAction === 'deploy'
+                ? 'Deploying…'
+                : alreadyDeployed
+                  ? strategy.deploymentLifecycle === 'live'
+                    ? 'Live'
+                    : 'Deployed'
+                  : 'Deploy to Paper'}
+            </button>
+          </>
+        )}
       </div>
 
       {message && <div className={styles.cardMessage}>{message}</div>}

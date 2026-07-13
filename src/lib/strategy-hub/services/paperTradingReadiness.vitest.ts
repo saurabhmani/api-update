@@ -19,6 +19,7 @@ describe('paperTradingReadiness', () => {
     expect(result.ready).toBe(true);
     expect(result.paperTradingEnabled).toBe(true);
     expect(result.deploymentStatus).toBe('paper_ready');
+    expect(result.deploymentLifecycle).toBe('validated');
   });
 
   it('fails readiness when evaluator missing', () => {
@@ -31,10 +32,20 @@ describe('paperTradingReadiness', () => {
   });
 
   it('uses staging status when evaluator exists but not active', () => {
-    const result = assessPaperTradingReadiness('multi_timeframe_alignment', {
+    const result = assessPaperTradingReadiness('bullish_breakout', {
       hasEvaluator: true,
       isActiveInRunner: false,
     });
+    expect(result.ready).toBe(false);
     expect(result.deploymentStatus).toBe('staging');
+    expect(result.deploymentLifecycle).toBe('draft');
+  });
+
+  it('returns disabled lifecycle when strategy mode is disabled', () => {
+    const result = assessPaperTradingReadiness('multi_timeframe_alignment', {
+      hasEvaluator: false,
+      isActiveInRunner: false,
+    });
+    expect(result.deploymentLifecycle).toBe('disabled');
   });
 });

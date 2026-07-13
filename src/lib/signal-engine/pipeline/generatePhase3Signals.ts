@@ -237,6 +237,32 @@ export async function generatePhase3Signals(
     );
   }
 
+  // Phase 2 — refresh admin strategy-mode overrides before scoring/caps.
+  try {
+    const { syncStrategyModesForSignalEngine } = await import(
+      '@/lib/strategy-hub/services/strategyModeOverrides'
+    );
+    const sync = await syncStrategyModesForSignalEngine();
+    if (sync.overrideCount > 0) {
+      console.log(`[STRATEGY-MODE] synced overrides=${sync.overrideCount} at=${sync.syncedAt}`);
+    }
+  } catch (err) {
+    console.warn('[STRATEGY-MODE] override sync skipped:', err instanceof Error ? err.message : err);
+  }
+
+  // Phase 3 — refresh parameter configuration overrides.
+  try {
+    const { syncStrategyConfigForSignalEngine } = await import(
+      '@/lib/strategy-hub/services/strategyConfigOverrides'
+    );
+    const cfgSync = await syncStrategyConfigForSignalEngine();
+    if (cfgSync.overrideCount > 0) {
+      console.log(`[STRATEGY-CONFIG] synced overrides=${cfgSync.overrideCount} at=${cfgSync.syncedAt}`);
+    }
+  } catch (err) {
+    console.warn('[STRATEGY-CONFIG] override sync skipped:', err instanceof Error ? err.message : err);
+  }
+
   // ── Debug bypass (PRODUCTION-BLOCKED) ─────────────────────
   // Spec "FORCE ACCEPT TEST MODE" + "TEMPORARY RELAX FILTERS":
   // when DEBUG_FORCE_SIGNAL=true, lower the rejection-engine

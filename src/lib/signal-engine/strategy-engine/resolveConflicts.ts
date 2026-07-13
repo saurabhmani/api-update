@@ -11,6 +11,7 @@ import type {
   EnhancedMarketRegime, SectorContext,
 } from '../types/signalEngine.types';
 import { STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
+import { getEffectiveStrategyEntryFields } from '@/lib/strategy-hub/effectiveStrategyConfig';
 import { round } from '../utils/math';
 
 /**
@@ -106,10 +107,11 @@ function computeConflictScore(
   sectorContext: SectorContext,
 ): number {
   const entry = STRATEGY_REGISTRY[candidate.strategy];
+  const effective = getEffectiveStrategyEntryFields(candidate.strategy) ?? entry;
 
   // 1. Regime fit (0-100) — 30% weight
   let regimeFit = 50; // neutral default
-  if (entry.allowedRegimes.includes(regime.label)) {
+  if (effective.allowedRegimes.includes(regime.label)) {
     // Bonus based on how well the regime matches
     regimeFit = 70;
     if (regime.label === 'Strong Bullish' && entry.direction === 'long') regimeFit = 95;
@@ -135,7 +137,7 @@ function computeConflictScore(
   if (entry.direction === 'short' && sectorContext.sectorStrengthScore <= 35) sectorBonus = 5;
 
   // 6. Registry confidence weight (some strategies are inherently more reliable)
-  const registryWeight = entry.defaultConfidenceWeight;
+  const registryWeight = effective.defaultConfidenceWeight;
 
   return (
     regimeFit * 0.30 +

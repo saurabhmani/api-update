@@ -15,6 +15,7 @@ import type {
   StrategyName, StrategyRegistryEntry, MarketRegimeLabel,
   EntryType, StrategyCategory, StrategyMode,
 } from '../types/signalEngine.types';
+import { getEffectiveStrategyEntryFields } from '@/lib/strategy-hub/effectiveStrategyConfig';
 import {
   resolveEffectiveStrategyMode,
   canStrategyProduceConfirmedSignal,
@@ -502,17 +503,19 @@ export function isStrategyAllowedInRegime(
     return { allowed: false, reason: `Unknown strategy: ${strategy}` };
   }
 
-  if (entry.blockedRegimes.includes(regime)) {
+  const effective = getEffectiveStrategyEntryFields(strategy) ?? entry;
+
+  if (effective.blockedRegimes.includes(regime)) {
     return {
       allowed: false,
       reason: `${entry.displayName} is blocked in ${regime} regime`,
     };
   }
 
-  if (!entry.allowedRegimes.includes(regime)) {
+  if (!effective.allowedRegimes.includes(regime)) {
     return {
       allowed: false,
-      reason: `${entry.displayName} not allowed in ${regime} regime (allowed: ${entry.allowedRegimes.join(', ')})`,
+      reason: `${entry.displayName} not allowed in ${regime} regime (allowed: ${effective.allowedRegimes.join(', ')})`,
     };
   }
 

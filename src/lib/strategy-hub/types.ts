@@ -3,8 +3,21 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { StrategyCategory, StrategyRiskProfile } from '@/lib/signal-engine/types/signalEngine.types';
+import type { DeploymentLifecycle } from './deploymentLifecycle';
 
-export type DeploymentStatus = 'registered' | 'staging' | 'paper_ready' | 'live';
+/** @deprecated Use DeploymentLifecycle — kept for DB backward compatibility. */
+export type LegacyDeploymentStatus = 'registered' | 'staging' | 'paper_ready';
+
+export type DeploymentStatus = DeploymentLifecycle | LegacyDeploymentStatus;
+
+export type DeploymentEnvironment = 'paper' | 'live';
+
+export type DeploymentEventType =
+  | 'deploy'
+  | 'promote_live'
+  | 'disable'
+  | 'enable'
+  | 'rollback';
 export type StrategyMarketType = 'Equity' | 'Options';
 export type StrategyCardStatus = 'Active' | 'Inactive' | 'Backtested' | 'Premium';
 
@@ -19,6 +32,7 @@ export interface PaperTradingReadiness {
   score: number;
   checks: PaperTradingCheck[];
   deploymentStatus: DeploymentStatus;
+  deploymentLifecycle: DeploymentLifecycle;
   paperTradingEnabled: boolean;
 }
 
@@ -44,8 +58,14 @@ export interface StrategyHubSummary {
   isFeatured: boolean;
   isActiveInRunner: boolean;
   deploymentStatus: DeploymentStatus;
+  /** Phase 1 — normalized lifecycle for badges and filters. */
+  deploymentLifecycle: DeploymentLifecycle;
   paperTradingReady: boolean;
   strategyMode: string;
+  /** Registry default mode (before admin override). */
+  registryStrategyMode?: string;
+  /** True when an admin override is stored in the profile. */
+  hasModeOverride?: boolean;
   effectiveStrategyMode?: string;
   cardStatus: StrategyCardStatus;
   performance?: StrategyHubPerformanceSummary | null;
@@ -117,6 +137,113 @@ export interface StrategyProfileRow {
   metadata_json: Record<string, unknown> | null;
   version: string;
   notes: string | null;
+  updated_at?: string;
+  created_at?: string;
+}
+
+export interface DeploymentHistoryRow {
+  id: number;
+  strategy_id: string;
+  user_id: number;
+  from_status: string | null;
+  to_status: string;
+  environment: DeploymentEnvironment;
+  event_type: DeploymentEventType;
+  actor: string | null;
+  details_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface DeployedStrategyRow {
+  strategy_id: string;
+  deployment_status: DeploymentStatus;
+  paper_trading_enabled: boolean;
+  updated_at: string;
+  last_deployed_at: string | null;
+  last_deployed_by: string | null;
+  last_environment: DeploymentEnvironment | null;
+}
+
+export type StrategyModeChangeSource = 'ui' | 'api' | 'bulk' | 'system';
+
+export interface StrategyModeHistoryRow {
+  id: number;
+  strategy_id: string;
+  user_id: number;
+  from_mode: string | null;
+  to_mode: string;
+  reason: string | null;
+  source: StrategyModeChangeSource;
+  actor: string | null;
+  details_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface StrategyManagementStatus {
+  totalRegistered: number;
+  activeCount: number;
+  watchlistCount: number;
+  disabledCount: number;
+  experimentalCount: number;
+  currentlyRunning: number;
+  overrideCount: number;
+  lastUpdated: string | null;
+}
+
+export type StrategyConfigChangeSource = 'ui' | 'api' | 'restore' | 'reset';
+
+export interface StrategyConfigHistoryRow {
+  id: number;
+  strategy_id: string;
+  user_id: number;
+  version_number: number;
+  previous_values_json: Record<string, unknown> | null;
+  new_values_json: Record<string, unknown> | null;
+  change_summary: string;
+  reason: string | null;
+  actor: string | null;
+  source: StrategyConfigChangeSource;
+  created_at: string;
+}
+
+export interface StrategyConfigFieldView {
+  key: string;
+  label: string;
+  description: string;
+  type: string;
+  registryDefault: unknown;
+  overrideValue: unknown | null;
+  effectiveValue: unknown;
+  isOverridden: boolean;
+  optional?: boolean;
+}
+
+export interface StrategyConfigurationView {
+  strategyId: string;
+  displayName: string;
+  version: number;
+  fields: StrategyConfigFieldView[];
+  overriddenKeys: string[];
+  effective: Record<string, unknown>;
+  registryDefaults: Record<string, unknown>;
+  overrides: Record<string, unknown>;
+  lastUpdated: string | null;
+  lastUpdatedBy: string | null;
+}
+
+export interface StrategyConfigPreviewResult {
+  valid: boolean;
+  issues: Array<{ key: string; message: string }>;
+  changes: Array<{
+    key: string;
+    label: string;
+    previousValue: unknown;
+    newValue: unknown;
+    impact: string;
+  }>;
+  summary: string;
+  nextOverrides: Record<string, unknown>;
+  nextEffective: Record<string, unknown>;
 }
 
 export interface StrategyConditionRow {

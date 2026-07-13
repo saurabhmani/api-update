@@ -14,6 +14,12 @@ interface Props {
   marketType?: string | null;
   status?: string | null;
   risk?: string | null;
+  excludeIds?: string[];
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (strategyId: string) => void;
+  canManage?: boolean;
+  onStrategiesLoaded?: (ids: string[]) => void;
 }
 
 export function StrategyHubGrid({
@@ -25,6 +31,11 @@ export function StrategyHubGrid({
   marketType,
   status,
   risk,
+  excludeIds = [],
+  selectable,
+  selectedIds,
+  onToggleSelect,
+  canManage,
 }: Props) {
   const { data, isLoading, error } = useStrategyHub({
     category,
@@ -43,7 +54,8 @@ export function StrategyHubGrid({
     return <p style={{ color: '#DC2626' }}>Unable to load strategy registry.</p>;
   }
 
-  const rows = data.strategies;
+  const exclude = new Set(excludeIds);
+  const rows = data.strategies.filter((s) => !exclude.has(s.strategyId));
 
   if (rows.length === 0) {
     return <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No strategies match the selected filters.</p>;
@@ -52,7 +64,16 @@ export function StrategyHubGrid({
   return (
     <div className={styles.grid}>
       {rows.map((s) => (
-        <StrategyCard key={s.strategyId} strategy={s} featured={s.isFeatured} />
+        <StrategyCard
+          key={s.strategyId}
+          strategy={s}
+          featured={s.isFeatured}
+          compact
+          selectable={selectable}
+          selected={selectedIds?.has(s.strategyId)}
+          onToggleSelect={onToggleSelect}
+          canManage={canManage}
+        />
       ))}
     </div>
   );

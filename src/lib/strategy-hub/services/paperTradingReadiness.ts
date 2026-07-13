@@ -4,7 +4,9 @@
 
 import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
-import type { DeploymentStatus, PaperTradingReadiness, StrategyProfileRow } from '../types';
+import type { PaperTradingReadiness, StrategyProfileRow } from '../types';
+import { resolveDeploymentLifecycle, type DeploymentLifecycle } from '../deploymentLifecycle';
+import { extractModeOverride } from './strategyModeOverrides';
 
 interface ReadinessContext {
   hasEvaluator: boolean;
@@ -37,20 +39,24 @@ export function assessPaperTradingReadiness(
   const ready = requiredChecks.every((c) => c.pass);
   const score = Math.round((checks.filter((c) => c.pass).length / checks.length) * 100);
 
-  let deploymentStatus: DeploymentStatus = 'registered';
-  if (context.profile?.deployment_status) {
-    deploymentStatus = context.profile.deployment_status;
-  } else if (ready) {
-    deploymentStatus = 'paper_ready';
-  } else if (context.hasEvaluator) {
-    deploymentStatus = 'staging';
-  }
+  const deploymentLifecycle: DeploymentLifecycle = resolveDeploymentLifecycle({
+    storedStatus: context.profile?.deployment_status,
+    readinessReady: ready,
+    strategyModeDisabled:
+      extractModeOverride(context.profile?.metadata_json) === 'DISABLED'
+      || entry?.strategyMode === 'DISABLED',
+  });
+
+  let deploymentStatus = context.profile?.deployment_status ?? (
+    ready ? 'validated' as const : context.hasEvaluator ? 'staging' as const : 'registered' as const
+  );
 
   return {
     ready,
     score,
     checks,
     deploymentStatus,
+    deploymentLifecycle,
     paperTradingEnabled: context.profile?.paper_trading_enabled ?? ready,
   };
 }

@@ -36,12 +36,30 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Optional runtime override map (admin DB overrides). Null = use registry. */
+type ModeOverrideResolver = (strategyId: string) => StrategyMode | null | undefined;
+
+let _overrideResolver: ModeOverrideResolver | null = null;
+
+/** Wire DB/runtime overrides into the pure policy module (Signal Engine sync). */
+export function setStrategyModeOverrideResolver(resolver: ModeOverrideResolver | null): void {
+  _overrideResolver = resolver;
+}
+
+export function clearStrategyModeOverrideResolver(): void {
+  _overrideResolver = null;
+}
+
 function resolveScoreGatedMode(
   strategy: StrategyName,
   baseMode: StrategyMode,
   ctx?: StrategyModeScoreContext,
 ): StrategyMode {
   const entry = STRATEGY_REGISTRY[strategy];
+  // Admin DISABLED / WATCHLIST_ONLY overrides skip score-gating reopen.
+  if (baseMode === 'DISABLED' || baseMode === 'WATCHLIST_ONLY' || baseMode === 'EXPERIMENTAL') {
+    return baseMode;
+  }
   if (!entry?.scoreGatedWatchlist) return baseMode;
   const fs = num(ctx?.finalScore);
   const cs = num(ctx?.confidenceScore);
@@ -53,22 +71,27 @@ function resolveScoreGatedMode(
 }
 
 /**
- * Effective strategy mode after optional score-gating (ema_crossover).
+ * Effective strategy mode after optional admin override + score-gating.
+ * Precedence: explicit override arg → runtime resolver → registry default.
  * Unknown strategy IDs default to CONFIRMED_ENABLED for backward
  * compatibility with legacy / custom strategy names.
  */
 export function resolveEffectiveStrategyMode(
   strategy: StrategyName | string | null | undefined,
   ctx?: StrategyModeScoreContext,
+  override?: StrategyMode | null,
 ): StrategyMode {
   if (!strategy) return 'CONFIRMED_ENABLED';
   const entry = STRATEGY_REGISTRY[strategy as StrategyName];
   if (!entry) return 'CONFIRMED_ENABLED';
-  return resolveScoreGatedMode(
-    entry.strategyId,
-    entry.strategyMode,
-    ctx,
-  );
+
+  const resolvedOverride =
+    override !== undefined
+      ? override
+      : (_overrideResolver?.(entry.strategyId) ?? null);
+
+  const baseMode = resolvedOverride ?? entry.strategyMode;
+  return resolveScoreGatedMode(entry.strategyId, baseMode, ctx);
 }
 
 /** True when the strategy may surface as a confirmed / main-table signal. */

@@ -79,9 +79,9 @@ export function Input({ label, hint, error, className, passwordToggle, type, ...
 // ── Badge ─────────────────────────────────────────────────────────
 type BadgeVariant = 'default' | 'green' | 'red' | 'orange' | 'gray' | 'dark';
 
-export function Badge({ children, variant = 'default', style }: { children: ReactNode; variant?: BadgeVariant; style?: CSSProperties }) {
+export function Badge({ children, variant = 'default', style, title }: { children: ReactNode; variant?: BadgeVariant; style?: CSSProperties; title?: string }) {
   const cls = variant === 'default' ? 'badge' : `badge badge--${variant}`;
-  return <span className={cls} style={style}>{children}</span>;
+  return <span className={cls} style={style} title={title}>{children}</span>;
 }
 
 // ── Card ──────────────────────────────────────────────────────────
