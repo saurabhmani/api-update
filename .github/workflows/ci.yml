@@ -37,14 +37,81 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          # Build must not require live secrets; DB/provider access is
-          # runtime-only. SESSION_SECRET satisfies the boot-time check.
           SESSION_SECRET: ci-only-session-secret-not-used-in-prod
           NODE_ENV: production
 
+  operations-gate:
+    name: Operations tests + deployment validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Operations test suite
+        run: |
+          npm run test:operations
+          npm run test:monitoring
+          npm run test:alerts
+          npm run test:deployment-validation
+          npm run test:backup-recovery
+          npm run test:release-governance
+
+      - name: Benchmark operations (offline)
+        run: npm run benchmark:operations
+
+      - name: Deployment validation
+        run: npm run validate:deployment
+        env:
+          SESSION_SECRET: ci-only-session-secret-not-used-in-prod
+
+      - name: Generate release manifest
+        run: npm run release:manifest
+        env:
+          SESSION_SECRET: ci-only-session-secret-not-used-in-prod
+          GITHUB_SHA: ${{ github.sha }}
+          GIT_COMMIT: ${{ github.sha }}
+
+  phase-tests:
+    name: Phase 1-4 regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Phase 1-2 tests
+        run: |
+          npm run test:feature-consistency
+          npm run test:signal-determinism
+          npm run test:confidence-calibration
+          npm run test:rejection-engine
+
+      - name: Phase 3-4 tests
+        run: |
+          npm run test:outcome-intelligence
+          npm run test:learning-snapshots
+          npm run test:performance-reporting
+          npm run test:adaptive-parameters
+          npm run test:promotion-pipeline
+          npm run test:drift-detection
+          npm run test:runtime-configuration
+
   contracts:
-    # Quarantined UI source-regex contracts (docs/test-debt.md).
-    # Informational only — failures do not block the pipeline.
     name: UI source contracts (non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -64,8 +131,6 @@ jobs:
         run: npm run test:contracts
 
   full-suite:
-    # Full Vitest suite — informational until the buckets in
-    # docs/test-debt.md are re-aligned with the current spec.
     name: Full test suite (non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -39,6 +39,8 @@ stockUpdate.txt
 coverage/
 dist/
 reports/
+backups/
+releases/
 
 # cookies / session captures (must never enter the repo)
 cookies.txt
