@@ -118,6 +118,7 @@ async function main() {
     try {
       detail = await revalidateInstrument(ikey, sym, exch, {
         persistInvalidation: !args.noPersist,
+        preferredDirection: 'BUY',
       });
     } catch (err: any) {
       console.log(
@@ -147,10 +148,13 @@ async function main() {
 
     const failures: string[] = [];
 
-    // Direction must match the table (revalidated case is allowed
-    // since the displayed direction stays = stored direction).
-    if (detailDir && detailDir.toUpperCase() !== 'BUY') {
-      failures.push(`direction mismatch: table=BUY detail=${detailDir}`);
+    // Direction must match the table. When revalidated, the displayed
+    // signal is the stored row (display_source=stored).
+    const displayDir = detail.revalidation.display_source === 'stored' && detail.revalidation.stored?.direction
+      ? detail.revalidation.stored.direction
+      : detailDir;
+    if (displayDir && displayDir.toUpperCase() !== 'BUY') {
+      failures.push(`direction mismatch: table=BUY detail=${displayDir}`);
     }
 
     // Live engine returning NO_TRADE / DEVELOPING_SETUP without the

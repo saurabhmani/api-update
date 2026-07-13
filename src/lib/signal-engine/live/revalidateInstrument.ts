@@ -34,6 +34,7 @@ import {
   getLatestActiveSnapshotBySymbol,
   type ConfirmedSnapshotRow,
 }                             from '@/lib/signal-engine/repository/readConfirmedSnapshots';
+import { getAuthoritativeSignalRow } from '@/lib/signal-engine/pipeline/authoritativeSignalRow';
 import {
   generateSignal,
   opportunityScore,
@@ -200,39 +201,17 @@ function withTradeLevels(resp: RevalidatedInstrumentResponse): RevalidatedInstru
   return { ...resp, ...levels };
 }
 
-async function loadLatestStored(symbol: string, instrumentKey: string): Promise<StoredSignalRow | null> {
-  // Prefer the latest non-invalidated row. A row whose
-  // `invalidation_reason` is already set is by definition not the
-  // signal the user clicked from /signals (the table filters those
-  // out at the SQL layer), so falling through to it would resurrect
-  // a disagreement we already resolved. The same query also rejects
-  // expired rows so we never revalidate a signal the lifecycle gate
-  // has already retired.
+async function loadLatestStored(
+  symbol: string,
+  instrumentKey: string,
+  preferredDirection?: 'BUY' | 'SELL',
+): Promise<StoredSignalRow | null> {
   try {
-    const { rows } = await db.query<any>(
-      `SELECT
-         s.id, s.symbol, s.instrument_key, s.exchange,
-         s.direction, s.signal_type,
-         s.confidence_score, s.confidence_band,
-         s.risk_score, s.risk_band, s.opportunity_score,
-         s.portfolio_fit_score, s.regime_alignment,
-         s.entry_price, s.stop_loss, s.target1, s.target2, s.risk_reward,
-         s.market_regime, s.market_stance, s.scenario_tag,
-         s.status, s.signal_status, s.generated_at, s.invalidation_reason
-       FROM q365_signals s
-       WHERE (s.instrument_key = ? OR s.symbol = ?)
-         AND s.status IN ('active','watchlist','flagged')
-         AND s.invalidation_reason IS NULL
-         AND (s.expires_at IS NULL OR s.expires_at > NOW())
-         AND (s.decay_state IS NULL OR s.decay_state <> 'expired')
-       ORDER BY s.generated_at DESC
-       LIMIT 1`,
-      [instrumentKey, symbol],
-    );
-    if (!rows.length) return null;
-    const r = rows[0];
+    const row = await getAuthoritativeSignalRow(symbol, instrumentKey, {
+      direction: preferredDirection,
+    });
+    if (!row) return null;
 
-    // Pull typed reasons (best-effort; table may be empty for legacy rows).
     let reasons: StoredSignalRow['reasons'] = [];
     try {
       const reasonRes = await db.query<any>(
@@ -240,7 +219,7 @@ async function loadLatestStored(symbol: string, instrumentKey: string): Promise<
            FROM q365_signal_reasons
           WHERE signal_id = ?
           ORDER BY id ASC`,
-        [r.id],
+        [row.id],
       );
       reasons = (reasonRes.rows as any[]).map((rr) => ({
         type:       String(rr.reason_type ?? ''),
@@ -250,31 +229,31 @@ async function loadLatestStored(symbol: string, instrumentKey: string): Promise<
     } catch { /* optional table */ }
 
     return {
-      id:                  Number(r.id),
-      symbol:              String(r.symbol ?? symbol),
-      instrument_key:      String(r.instrument_key ?? instrumentKey),
-      exchange:            r.exchange ? String(r.exchange) : null,
-      direction:           r.direction ? String(r.direction) : null,
-      signal_type:         r.signal_type ? String(r.signal_type) : null,
-      confidence_score:    r.confidence_score != null ? n(r.confidence_score) : null,
-      confidence_band:     r.confidence_band ? String(r.confidence_band) : null,
-      risk_score:          r.risk_score != null ? n(r.risk_score) : null,
-      risk_band:           r.risk_band ? String(r.risk_band) : null,
-      opportunity_score:   r.opportunity_score != null ? n(r.opportunity_score) : null,
-      portfolio_fit_score: r.portfolio_fit_score != null ? n(r.portfolio_fit_score) : null,
-      regime_alignment:    r.regime_alignment != null ? n(r.regime_alignment) : null,
-      entry_price:         r.entry_price != null ? n(r.entry_price) : null,
-      stop_loss:           r.stop_loss   != null ? n(r.stop_loss)   : null,
-      target1:             r.target1     != null ? n(r.target1)     : null,
-      target2:             r.target2     != null ? n(r.target2)     : null,
-      risk_reward:         r.risk_reward != null ? n(r.risk_reward) : null,
-      market_regime:       r.market_regime ? String(r.market_regime) : null,
-      market_stance:       r.market_stance ? String(r.market_stance) : null,
-      scenario_tag:        r.scenario_tag  ? String(r.scenario_tag)  : null,
-      status:              r.status ? String(r.status) : null,
-      signal_status:       r.signal_status ? String(r.signal_status) : null,
-      generated_at:        r.generated_at ? new Date(r.generated_at).toISOString() : null,
-      invalidation_reason: r.invalidation_reason ? String(r.invalidation_reason) : null,
+      id:                  row.id,
+      symbol:              row.symbol,
+      instrument_key:      row.instrument_key,
+      exchange:            row.exchange,
+      direction:           row.direction,
+      signal_type:         row.signal_type,
+      confidence_score:    row.confidence_score,
+      confidence_band:     row.confidence_band,
+      risk_score:          row.risk_score,
+      risk_band:           row.risk_band,
+      opportunity_score:   row.opportunity_score,
+      portfolio_fit_score: row.portfolio_fit_score,
+      regime_alignment:    row.regime_alignment,
+      entry_price:         row.entry_price,
+      stop_loss:           row.stop_loss,
+      target1:             row.target1,
+      target2:             row.target2,
+      risk_reward:         row.risk_reward,
+      market_regime:       row.market_regime,
+      market_stance:       row.market_stance,
+      scenario_tag:        row.scenario_tag,
+      status:              row.status,
+      signal_status:       row.signal_status,
+      generated_at:        row.generated_at,
+      invalidation_reason: row.invalidation_reason,
       reasons,
     };
   } catch (err: any) {
@@ -386,7 +365,9 @@ function responseFromConfirmedSnapshot(
 
   const storedDirection = snap.direction.toUpperCase();
   const liveDirNorm     = (liveDirection ?? '').toUpperCase();
-  const sameDirection   = !liveDirNorm || storedDirection === liveDirNorm;
+  const sameDirection   = liveDirNorm
+    ? storedDirection === liveDirNorm
+    : !liveRejected;
 
   let revalidation: RevalidationBlock;
   if (!live) {
@@ -581,6 +562,9 @@ export interface RevalidateOpts {
   /** Set to false to skip the DB invalidation write — used by the
    *  acceptance-test script which only wants to compare. */
   persistInvalidation?: boolean;
+  /** When set, load the authoritative row for this direction (matches
+   *  /signals table BUY/SELL pool selection). */
+  preferredDirection?: 'BUY' | 'SELL';
 }
 
 export async function revalidateInstrument(
@@ -606,7 +590,7 @@ export async function revalidateInstrument(
 
   // 1. Fetch stored + live in parallel — they don't share state.
   const [stored, live] = await Promise.all([
-    loadLatestStored(symbol, instrumentKey),
+    loadLatestStored(symbol, instrumentKey, opts.preferredDirection),
     generateSignal(instrumentKey, symbol, exchange).catch((err) => {
       console.warn(`[revalidateInstrument] generateSignal ${symbol} threw:`, err?.message);
       return null;

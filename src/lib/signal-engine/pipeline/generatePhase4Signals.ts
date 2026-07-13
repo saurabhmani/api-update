@@ -51,6 +51,7 @@ import {
   logPostScanSummary,
   type PostScanSummary,
 } from '../observability/postScanSummary';
+import { pipelineDebugLog } from '../observability/pipelineDebugLog';
 
 function isInsufficientCandleReason(reason: string): boolean {
   const t = String(reason ?? '').toLowerCase();
@@ -163,6 +164,12 @@ export async function generatePhase4Signals(
     `[PIPELINE_START] source=${generationSource} ` +
     `universe=${p1Config.universe.length} events=${eventTags.join(',')}`,
   );
+  pipelineDebugLog({
+    stage: 'phase4_enrichment',
+    run_id: tracer.runId,
+    data_source: generationSource,
+    symbol: '*',
+  });
 
   // ── Upstream gate engines (Scenario → Market Stance) ──────
   // These were dangling before this wire-up — both had full

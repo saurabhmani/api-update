@@ -1,5 +1,9 @@
 // ════════════════════════════════════════════════════════════════
-//  GET /api/signal-engine — Phase 1 Signal Engine API
+//  GET /api/signal-engine — Phase 1/2 DEBUG API // @deprecated marker
+//
+//  NOT a production Product A entry point. Use generatePhase4Signals
+//  via /api/run-signal-engine or the worker scheduler instead.
+//  See docs/product-a/data-integrity.md and canonicalPipeline.ts.
 //
 //  Actions:
 //    ?action=generate  — run the full pipeline

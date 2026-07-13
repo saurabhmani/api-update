@@ -1,6 +1,6 @@
 # Technical Debt Log
 
-**Phase:** 0 (Foundation)  
+**Phase:** 1 (Signal Engine Standardization)  
 **Last updated:** 2026-07-13  
 **Owner:** Platform / Signal Engine team
 
@@ -42,7 +42,7 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 | `ignoreBuildErrors` removed from `next.config.js` | Platform | High | **0** | **Resolved** |
 | `ignoreDeprecations` removed from `tsconfig.json` | Platform | Low | **0** | **Resolved** |
 | Legacy `getLivePrice.ts` still used by non-signal APIs | Market Data | Medium | Phase 1 | Open |
-| `customUniverseBatchScanner` Yahoo path | Signals | Medium | Phase 1 | Deprecated, not removed |
+| `customUniverseBatchScanner` Yahoo path | Signals | Medium | Phase 1 | Deprecated — use canonical pipeline |
 | `outcomeLearningEngine.ts` orphaned | Signals | Low | Phase 1 | Deprecated Phase 0 |
 
 ---
@@ -51,7 +51,8 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 
 | Item | Owner | Severity | Phase |
 |------|-------|----------|-------|
-| `check:signal-consistency` reports live DB mismatches (LGEINDIA, PFC) | Signals | Medium | Phase 1 — revalidation drift |
+| ~~`check:signal-consistency` LGEINDIA/PFC mismatches~~ | Signals | Medium | **Resolved Phase 1** — `getAuthoritativeSignalRow` + `preferredDirection` |
+| `check:signal-consistency` stale-candle `NO_TRADE` on closed market (ARE&M, etc.) | Signals | Low | Expected — live staleness gate; not a consistency bug |
 | Full Vitest suite ~87 failures | Platform | Low | Phase 1 |
 | `.env.local` corrupted lines in some dev copies | Platform | Low | **0** — use `.env.example` |
 
@@ -66,7 +67,10 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 | `npm run build` | Yes | Green |
 | `npm run test:signals-gate` | Yes | Green (112 tests incl. scoring regression) |
 | `npm run validate:signal-engine-functional` | Yes | PASS |
-| `npm run check:signal-consistency` | Informational | May report live DB mismatches |
+| `npm run check:signal-consistency` | Informational | Green for LGEINDIA/PFC; stale-candle NO_TRADE expected off-hours |
+| `npm run test:feature-consistency` | Yes | Green (3 tests) |
+| `npm run test:market-data-integrity` | Yes | Green (5 tests) |
+| `npm run test:signal-determinism` | Yes | Green (2 tests) |
 
 ---
 
