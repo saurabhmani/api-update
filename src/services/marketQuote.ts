@@ -15,10 +15,16 @@
  */
 import { cacheGet, cacheSet }   from '@/lib/redis';
 import { resolvePrice }         from '@/lib/marketData/resolver/marketDataResolver';
+import { getStockDetails }      from '@/lib/marketData/providers/indianApiProvider';
+import { fetchYahooPublicQuote, fetchYahoo52WeekRange } from '@/lib/marketData/yahooChartPublic';
+import { fetchYahooFundamentals } from '@/lib/marketData/yahooFundamentals';
+import { isMarketOpen, getMarketStatus } from '@/lib/marketData/marketHours';
+import { getMovers, getCorporateIntel } from '@/providers/MarketDataProvider';
+import { corporateIntelCacheKey, cache as memCache } from '@/lib/cache';
 import { fetchFromYahooCached } from '@/lib/marketData/priceCache'; // @deprecated marker
-import { getMovers }            from '@/providers/MarketDataProvider';
 import { StaleDataError }       from '@/types/market';
 import type { MoversBucket }    from '@/types/market';
+import type { MarketSnapshot }  from '@/types/market';
 import { db }                   from '@/lib/db';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -121,39 +127,569 @@ export interface OptionChainResult {
 // + 52-week range from Yahoo chart metadata so the richer Quote // @deprecated marker
 // shape below is populated even when no Kite tick is available. // @deprecated marker
 
-async function fetchYahooMeta(_symbol: string): Promise<Partial<Quote> | null> { // @deprecated marker
-  // Yahoo removed. Returning null lets fetchQuote() fall through to // @deprecated marker
-  // resolvePrice() (which is also data-source-less now) and ultimately
-  // return null if no upstream is available.
-  return null;
+async function fetchYahooMeta(symbol: string): Promise<Partial<Quote> | null> { // @deprecated marker
+  const yq = await fetchYahooPublicQuote(symbol);
+  if (!yq) return null;
+  return {
+    symbol:            yq.symbol,
+    lastPrice:         yq.lastPrice,
+    change:            yq.change,
+    pChange:           yq.pChange,
+    open:              yq.open,
+    dayHigh:           yq.dayHigh,
+    dayLow:            yq.dayLow,
+    previousClose:     yq.previousClose,
+    totalTradedVolume: yq.volume,
+    totalTradedValue:  0,
+    fiftyTwoWeekHigh:  0,
+    fiftyTwoWeekLow:   0,
+  };
 }
 
-export async function fetchQuote(symbol: string): Promise<Quote | null> {
-  const sym = symbol.toUpperCase();
-
-  const resolved = await resolvePrice(sym);
-  const meta = await fetchYahooMeta(sym); // @deprecated marker
-
-  if (!meta && (resolved.price == null || resolved.price <= 0)) return null;
-
-  const ltp     = resolved.price ?? meta?.lastPrice ?? 0;
-  const pChange = resolved.pChange ?? meta?.pChange ?? 0;
-  const change  = meta?.change ?? 0;
-
+function snapshotToQuote(sym: string, snap: MarketSnapshot): Quote {
+  const ltp = snap.ltp || snap.price;
+  const prevClose = snap.prevClose || ltp;
+  const change = snap.change ?? (ltp - prevClose);
+  const pChange = snap.changePercent ?? (prevClose > 0 ? (change / prevClose) * 100 : 0);
   return {
     symbol:            sym,
     lastPrice:         ltp,
     change,
     pChange,
-    open:              meta?.open              ?? 0,
-    dayHigh:           meta?.dayHigh           ?? ltp,
-    dayLow:            meta?.dayLow            ?? ltp,
-    previousClose:     meta?.previousClose     ?? 0,
-    totalTradedVolume: meta?.totalTradedVolume ?? 0,
-    totalTradedValue:  meta?.totalTradedValue  ?? 0,
-    fiftyTwoWeekHigh:  meta?.fiftyTwoWeekHigh  ?? 0,
-    fiftyTwoWeekLow:   meta?.fiftyTwoWeekLow   ?? 0,
+    open:              snap.open  || ltp,
+    dayHigh:           snap.high  || ltp,
+    dayLow:            snap.low   || ltp,
+    previousClose:     prevClose,
+    totalTradedVolume: snap.volume || 0,
+    totalTradedValue:  0,
+    fiftyTwoWeekHigh:  0,
+    fiftyTwoWeekLow:   0,
   };
+}
+
+/** Direct IndianAPI call — bypasses NIFTY500 resolver lock for detail-page quotes. */
+async function fetchIndianApiQuote(sym: string): Promise<Quote | null> {
+  try {
+    const inv = await getStockDetails(sym);
+    if (inv.status !== 'success' || !inv.data?.price) return null;
+    return snapshotToQuote(sym, inv.data);
+  } catch {
+    return null;
+  }
+}
+
+function istToday(): string {
+  return getMarketStatus().nowIst.slice(0, 10);
+}
+
+interface DbCandleRow {
+  ts: Date | string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+async function loadRecentDailyCandles(sym: string, limit = 3): Promise<DbCandleRow[]> {
+  try {
+    const { rows } = await db.query<DbCandleRow>(
+      `SELECT ts, open, high, low, close, volume
+         FROM candles
+        WHERE interval_unit = '1day'
+          AND (instrument_key = ? OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?)
+        ORDER BY ts DESC
+        LIMIT ?`,
+      [`NSE_EQ|${sym}`, sym, limit],
+    );
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+/** 52-week range from warehouse daily bars (candles EOD → market_data_daily). */
+async function load52WeekRangeFromDb(sym: string): Promise<{ high: number; low: number } | null> {
+  const ikey = `NSE_EQ|${sym}`;
+  const queries = [
+    `SELECT MAX(high) AS week52_high, MIN(low) AS week52_low
+       FROM candles
+      WHERE (instrument_key = ? OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?)
+        AND ts >= DATE_SUB(NOW(), INTERVAL 365 DAY)
+        AND (candle_type = 'eod' OR interval_unit = '1day' OR candle_type IS NULL)`,
+  ];
+  for (const sql of queries) {
+    try {
+      const { rows } = await db.query<{ week52_high: number; week52_low: number }>(sql, [ikey, sym]);
+      const high = Number(rows[0]?.week52_high) || 0;
+      const low  = Number(rows[0]?.week52_low)  || 0;
+      if (high > 0 && low > 0) return { high, low };
+    } catch { /* optional schema */ }
+  }
+  try {
+    const { rows } = await db.query<{ week52_high: number; week52_low: number }>(
+      `SELECT MAX(high) AS week52_high, MIN(low) AS week52_low
+         FROM market_data_daily
+        WHERE symbol = ?
+          AND ts >= DATE_SUB(NOW(), INTERVAL 365 DAY)`,
+      [sym],
+    );
+    const high = Number(rows[0]?.week52_high) || 0;
+    const low  = Number(rows[0]?.week52_low)  || 0;
+    if (high > 0 && low > 0) return { high, low };
+  } catch { /* table optional */ }
+  return null;
+}
+
+async function enrichQuoteWith52Week(quote: Quote, sym: string): Promise<Quote> {
+  if (quote.fiftyTwoWeekHigh > 0 && quote.fiftyTwoWeekLow > 0) return quote;
+
+  const cacheKey = `quote:52w:${sym}`;
+  const cached = await cacheGet<{ high: number; low: number }>(cacheKey);
+  if (cached?.high && cached?.low) {
+    return {
+      ...quote,
+      fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh > 0 ? quote.fiftyTwoWeekHigh : cached.high,
+      fiftyTwoWeekLow:  quote.fiftyTwoWeekLow  > 0 ? quote.fiftyTwoWeekLow  : cached.low,
+    };
+  }
+
+  const fromDb = await load52WeekRangeFromDb(sym);
+  if (fromDb) {
+    await cacheSet(cacheKey, fromDb, 6 * 3600).catch(() => {});
+    return {
+      ...quote,
+      fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh > 0 ? quote.fiftyTwoWeekHigh : fromDb.high,
+      fiftyTwoWeekLow:  quote.fiftyTwoWeekLow  > 0 ? quote.fiftyTwoWeekLow  : fromDb.low,
+    };
+  }
+
+  const fromYahoo = await fetchYahoo52WeekRange(sym);
+  if (fromYahoo) {
+    await cacheSet(cacheKey, fromYahoo, 6 * 3600).catch(() => {});
+    return {
+      ...quote,
+      fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh > 0 ? quote.fiftyTwoWeekHigh : fromYahoo.high,
+      fiftyTwoWeekLow:  quote.fiftyTwoWeekLow  > 0 ? quote.fiftyTwoWeekLow  : fromYahoo.low,
+    };
+  }
+
+  return quote;
+}
+
+/** Name / sector for symbols missing from the instruments master. */
+export async function resolveInstrumentProfile(symbol: string): Promise<{
+  tradingsymbol:  string;
+  instrument_key: string;
+  exchange:       string;
+  name:           string;
+  sector:         string | null;
+}> {
+  const sym = symbol.toUpperCase();
+  const base = {
+    tradingsymbol:  sym,
+    instrument_key: `NSE_EQ|${sym}`,
+    exchange:       'NSE',
+    name:           sym,
+    sector:         null as string | null,
+  };
+
+  try {
+    const { rows } = await db.query<{ name?: string; sector?: string }>(
+      `SELECT name, sector FROM instruments WHERE tradingsymbol = ? LIMIT 1`,
+      [sym],
+    );
+    if (rows[0]?.name) {
+      base.name = String(rows[0].name);
+      if (rows[0].sector) base.sector = String(rows[0].sector);
+      return base;
+    }
+  } catch { /* optional */ }
+
+  try {
+    const { rows } = await db.query<{ name?: string; sector?: string }>(
+      `SELECT name, sector FROM rankings WHERE tradingsymbol = ? LIMIT 1`,
+      [sym],
+    );
+    if (rows[0]?.name) {
+      base.name = String(rows[0].name);
+      if (rows[0].sector) base.sector = String(rows[0].sector);
+      return base;
+    }
+  } catch { /* optional */ }
+
+  return base;
+}
+
+/** Warehouse fallback when live resolver / Yahoo are unavailable. */
+async function buildQuoteFromDb(sym: string): Promise<Quote | null> {
+  const dailyRows = await loadRecentDailyCandles(sym, 3);
+  const latest = dailyRows[0];
+  const prior  = dailyRows[1];
+
+  let ltp = 0;
+  let rankingsUpdated: Date | null = null;
+  let rankingsVolume = 0;
+
+  try {
+    const { rows } = await db.query<{
+      ltp: number; pct_change: number; volume: number; updated_at: Date | string;
+    }>(
+      `SELECT ltp, pct_change, volume, updated_at
+         FROM rankings
+        WHERE tradingsymbol = ?
+        LIMIT 1`,
+      [sym],
+    );
+    const r = rows[0];
+    if (r) {
+      ltp = Number(r.ltp) || 0;
+      rankingsVolume = Number(r.volume) || 0;
+      rankingsUpdated = r.updated_at instanceof Date
+        ? r.updated_at
+        : new Date(String(r.updated_at));
+    }
+  } catch { /* rankings optional */ }
+
+  const latestCandleMs = latest
+    ? new Date(latest.ts instanceof Date ? latest.ts : String(latest.ts)).getTime()
+    : 0;
+  const rankingsMs = rankingsUpdated?.getTime() ?? 0;
+  const latestClose = latest ? Number(latest.close) || 0 : 0;
+
+  // Prefer the freshest warehouse price: latest daily close beats stale rankings.
+  if (latestClose > 0 && latestCandleMs >= rankingsMs) {
+    ltp = latestClose;
+  } else if (!ltp || ltp <= 0) {
+    ltp = await fetchStockSpotFromDb(sym) ?? latestClose;
+  }
+
+  if (!ltp || ltp <= 0) return null;
+
+  let open = ltp;
+  let high = ltp;
+  let low  = ltp;
+  let volume = rankingsVolume;
+  let previousClose = prior ? Number(prior.close) || ltp : ltp;
+
+  if (latest) {
+    const latestDay = String(latest.ts).slice(0, 10);
+    const today = istToday();
+    open  = Number(latest.open)  || ltp;
+    high  = Number(latest.high)  || ltp;
+    low   = Number(latest.low)   || ltp;
+    volume = Number(latest.volume) || volume;
+
+    if (latestDay === today) {
+      previousClose = prior ? Number(prior.close) || previousClose : previousClose;
+      // Today's bar may have a partial close — use rankings/live LTP as last price.
+      if (ltp > 0) {
+        high = Math.max(high, ltp);
+        low  = Math.min(low > 0 ? low : ltp, ltp);
+      }
+    } else {
+      previousClose = Number(latest.close) || previousClose;
+    }
+  }
+
+  const change = previousClose > 0 ? ltp - previousClose : 0;
+  const pct    = previousClose > 0 ? (change / previousClose) * 100 : 0;
+
+  return {
+    symbol:            sym,
+    lastPrice:         ltp,
+    change,
+    pChange:           pct,
+    open,
+    dayHigh:           high,
+    dayLow:            low,
+    previousClose,
+    totalTradedVolume: volume,
+    totalTradedValue:  0,
+    fiftyTwoWeekHigh:  0,
+    fiftyTwoWeekLow:   0,
+  };
+}
+
+export async function fetchQuote(symbol: string): Promise<Quote | null> {
+  const sym = symbol.toUpperCase();
+  const marketOpen = isMarketOpen();
+
+  // During market hours prefer live upstreams; after hours allow short cache.
+  const cacheKey = `quote:live:${sym}`;
+  if (!marketOpen) {
+    const cached = await cacheGet<Quote>(cacheKey);
+    if (cached?.lastPrice) return cached;
+  }
+
+  // 1) Resolver path (IndianAPI for NIFTY500 universe members)
+  const resolved = await resolvePrice(sym);
+
+  // 2) Direct IndianAPI (bypasses NIFTY500 lock — needed for NSE1000 symbols)
+  let liveQuote: Quote | null = null;
+  if (marketOpen || !resolved.price) {
+    liveQuote = await fetchIndianApiQuote(sym);
+  }
+
+  // 3) Yahoo public chart (verification-grade fallback, ~15 min delayed)
+  const yahooMeta = (!liveQuote?.lastPrice && (!resolved.price || marketOpen))
+    ? await fetchYahooMeta(sym)
+    : null;
+
+  if (liveQuote?.lastPrice) {
+    const enriched = await enrichQuoteWith52Week(liveQuote, sym);
+    await cacheSet(cacheKey, enriched, marketOpen ? 15 : 120).catch(() => {});
+    return enriched;
+  }
+
+  if (resolved.price != null && resolved.price > 0) {
+    const quote: Quote = {
+      symbol:            sym,
+      lastPrice:         resolved.price,
+      change:            0,
+      pChange:           resolved.pChange ?? 0,
+      open:              0,
+      dayHigh:           resolved.price,
+      dayLow:            resolved.price,
+      previousClose:     0,
+      totalTradedVolume: 0,
+      totalTradedValue:  0,
+      fiftyTwoWeekHigh:  0,
+      fiftyTwoWeekLow:   0,
+    };
+    const dbQuote = await buildQuoteFromDb(sym);
+    if (dbQuote) {
+      quote.open              = dbQuote.open              || quote.open;
+      quote.dayHigh           = dbQuote.dayHigh           || quote.dayHigh;
+      quote.dayLow            = dbQuote.dayLow            || quote.dayLow;
+      quote.previousClose     = dbQuote.previousClose     || quote.previousClose;
+      quote.totalTradedVolume = dbQuote.totalTradedVolume || quote.totalTradedVolume;
+      if (quote.previousClose > 0) {
+        quote.change  = quote.lastPrice - quote.previousClose;
+        quote.pChange = (quote.change / quote.previousClose) * 100;
+      } else if (!quote.pChange && dbQuote.pChange) {
+        quote.pChange = dbQuote.pChange;
+        quote.change  = dbQuote.change;
+      }
+    }
+    const enriched = await enrichQuoteWith52Week(quote, sym);
+    await cacheSet(cacheKey, enriched, marketOpen ? 15 : 120).catch(() => {});
+    return enriched;
+  }
+
+  if (yahooMeta?.lastPrice) {
+    const quote = await enrichQuoteWith52Week(yahooMeta as Quote, sym);
+    await cacheSet(cacheKey, quote, marketOpen ? 30 : 300).catch(() => {});
+    return quote;
+  }
+
+  const dbQuote = await buildQuoteFromDb(sym);
+  if (dbQuote) return enrichQuoteWith52Week(dbQuote, sym);
+
+  return null;
+}
+
+export interface InstrumentMeta {
+  companyName:     string;
+  industry:        string | null;
+  sector:          string | null;
+  macro:           string | null;
+  isin:            string | null;
+  listingDate:     string | null;
+  faceValue:       number | null;
+  issuedSize:      number | null;
+  lowerCP:         number | null;
+  upperCP:         number | null;
+  priceBand:       string | null;
+  surveillance:    string | null;
+  survDesc:        string | null;
+  isFNO:           boolean;
+  derivatives:     unknown;
+  slb:             unknown;
+  lastUpdateTime:  string | null;
+  pe:              number | null;
+  sectorPe:        number | null;
+  forwardPe:       number | null;
+  eps:             number | null;
+  beta:            number | null;
+  pbRatio:         number | null;
+  dividendYield:   number | null;
+  roe:             number | null;
+  debtToEquity:    number | null;
+  marketCap:       number | null;
+  avgVolume:       number | null;
+  week52High:      number | null;
+  week52Low:       number | null;
+}
+
+function positiveOrNull(v: unknown): number | null {
+  const x = Number(v);
+  return Number.isFinite(x) && x > 0 ? x : null;
+}
+
+/** Fundamentals + company profile for stock-detail / financials tabs. */
+export async function fetchInstrumentMeta(
+  symbol: string,
+  quote?: Quote | null,
+): Promise<InstrumentMeta> {
+  const sym = symbol.toUpperCase();
+  const profile = await resolveInstrumentProfile(sym);
+  const meta: InstrumentMeta = {
+    companyName:     profile.name,
+    industry:        null,
+    sector:          profile.sector,
+    macro:           null,
+    isin:            null,
+    listingDate:     null,
+    faceValue:       null,
+    issuedSize:      null,
+    lowerCP:         null,
+    upperCP:         null,
+    priceBand:       null,
+    surveillance:    null,
+    survDesc:        null,
+    isFNO:           false,
+    derivatives:     null,
+    slb:             null,
+    lastUpdateTime:  null,
+    pe:              null,
+    sectorPe:        null,
+    forwardPe:       null,
+    eps:             null,
+    beta:            null,
+    pbRatio:         null,
+    dividendYield:   null,
+    roe:             null,
+    debtToEquity:    null,
+    marketCap:       null,
+    avgVolume:       positiveOrNull(quote?.totalTradedVolume),
+    week52High:      positiveOrNull(quote?.fiftyTwoWeekHigh),
+    week52Low:       positiveOrNull(quote?.fiftyTwoWeekLow),
+  };
+
+  try {
+    const { rows } = await db.query<{ isin?: string }>(
+      `SELECT isin FROM instruments WHERE tradingsymbol = ? LIMIT 1`,
+      [sym],
+    );
+    if (rows[0]?.isin) meta.isin = String(rows[0].isin);
+  } catch { /* optional */ }
+
+  try {
+    const { rows } = await db.query<{ industry?: string }>(
+      `SELECT industry FROM instruments WHERE tradingsymbol = ? LIMIT 1`,
+      [sym],
+    );
+    if (rows[0]?.industry) meta.industry = String(rows[0].industry);
+  } catch { /* industry column may not exist */ }
+
+  const applyIntel = (intel: {
+    companyName?: string; sector?: string; industry?: string;
+    pe?: number; forwardPe?: number; eps?: number; roe?: number;
+    dividendYield?: number; debtToEquity?: number; marketCap?: number;
+    bookValue?: number; pbRatio?: number; beta?: number;
+    week52High?: number; week52Low?: number;
+  }) => {
+    if (intel.companyName) meta.companyName = intel.companyName;
+    if (intel.sector)      meta.sector = intel.sector;
+    if (intel.industry)    meta.industry = intel.industry;
+    meta.pe            = positiveOrNull(intel.pe)            ?? meta.pe;
+    meta.forwardPe     = positiveOrNull(intel.forwardPe)     ?? meta.forwardPe;
+    meta.eps           = positiveOrNull(intel.eps)           ?? meta.eps;
+    meta.roe           = positiveOrNull(intel.roe)           ?? meta.roe;
+    meta.beta          = positiveOrNull(intel.beta)          ?? meta.beta;
+    meta.dividendYield = positiveOrNull(intel.dividendYield) ?? meta.dividendYield;
+    meta.debtToEquity  = positiveOrNull(intel.debtToEquity)  ?? meta.debtToEquity;
+    meta.marketCap     = positiveOrNull(intel.marketCap)     ?? meta.marketCap;
+    meta.pbRatio       = positiveOrNull(intel.pbRatio)       ?? meta.pbRatio;
+    meta.week52High    = positiveOrNull(intel.week52High)    ?? meta.week52High;
+    meta.week52Low     = positiveOrNull(intel.week52Low)     ?? meta.week52Low;
+    if (!meta.pbRatio) {
+      const bookValue = positiveOrNull(intel.bookValue);
+      const ltp       = positiveOrNull(quote?.lastPrice);
+      if (bookValue && ltp) meta.pbRatio = +(ltp / bookValue).toFixed(2);
+    }
+  };
+
+  let intelLoaded = false;
+  try {
+    const res = await getCorporateIntel(sym);
+    if (res.data) {
+      applyIntel(res.data);
+      intelLoaded = true;
+    }
+  } catch {
+    // IndianAPI 429 / breaker — serve last cached fundamentals if available.
+    try {
+      const stale = await memCache.get<{
+        companyName?: string; sector?: string; industry?: string;
+        pe?: number; eps?: number; roe?: number;
+        dividendYield?: number; debtToEquity?: number; marketCap?: number;
+        bookValue?: number;
+      }>(corporateIntelCacheKey(sym));
+      if (stale) {
+        applyIntel(stale);
+        intelLoaded = true;
+      }
+    } catch { /* cache miss */ }
+    const staleRedis = await cacheGet<{
+      pe?: number; eps?: number; roe?: number; marketCap?: number;
+      companyName?: string; sector?: string;
+    }>(`corp:stale:${sym}`);
+    if (staleRedis) {
+      applyIntel(staleRedis);
+      intelLoaded = true;
+    }
+  }
+
+  const missingValuation =
+    meta.pe == null && meta.eps == null && meta.marketCap == null && meta.roe == null;
+  if (!intelLoaded || missingValuation) {
+    const yahooKey = `corp:yahoo:${sym}`;
+    const cachedYahoo = await cacheGet<Parameters<typeof applyIntel>[0]>(yahooKey);
+    if (cachedYahoo) {
+      applyIntel(cachedYahoo);
+    } else {
+      const yahoo = await fetchYahooFundamentals(sym);
+      if (yahoo) {
+        const payload = {
+          companyName:   yahoo.companyName ?? undefined,
+          sector:        yahoo.sector ?? undefined,
+          industry:      yahoo.industry ?? undefined,
+          pe:            yahoo.pe ?? undefined,
+          forwardPe:     yahoo.forwardPe ?? undefined,
+          eps:           yahoo.eps ?? undefined,
+          roe:           yahoo.roe ?? undefined,
+          beta:          yahoo.beta ?? undefined,
+          dividendYield: yahoo.dividendYield ?? undefined,
+          debtToEquity:  yahoo.debtToEquity ?? undefined,
+          marketCap:     yahoo.marketCap ?? undefined,
+          bookValue:     yahoo.bookValue ?? undefined,
+          pbRatio:       yahoo.pbRatio ?? undefined,
+          week52High:    yahoo.week52High ?? undefined,
+          week52Low:     yahoo.week52Low ?? undefined,
+        };
+        applyIntel(payload);
+        await cacheSet(yahooKey, payload, 6 * 60 * 60).catch(() => {});
+      }
+    }
+  }
+
+  if (!meta.week52High || !meta.week52Low) {
+    const fromDb = await load52WeekRangeFromDb(sym);
+    if (fromDb) {
+      meta.week52High = meta.week52High ?? fromDb.high;
+      meta.week52Low  = meta.week52Low  ?? fromDb.low;
+    } else {
+      const fromYahoo = await fetchYahoo52WeekRange(sym);
+      if (fromYahoo) {
+        meta.week52High = meta.week52High ?? fromYahoo.high;
+        meta.week52Low  = meta.week52Low  ?? fromYahoo.low;
+      }
+    }
+  }
+
+  return meta;
 }
 
 /**
@@ -458,9 +994,12 @@ async function fetchStockSpotFromDb(symbol: string): Promise<number | null> {
   const cached = await cacheGet<number>(cacheKey);
   if (typeof cached === 'number' && cached > 0) return cached;
 
+  let rankingsLtp = 0;
+  let rankingsMs = 0;
+
   try {
-    const { rows } = await db.query<{ ltp: number }>(
-      `SELECT ltp
+    const { rows } = await db.query<{ ltp: number; updated_at: Date | string }>(
+      `SELECT ltp, updated_at
          FROM rankings
         WHERE tradingsymbol = ?
           AND ltp IS NOT NULL
@@ -469,12 +1008,52 @@ async function fetchStockSpotFromDb(symbol: string): Promise<number | null> {
         LIMIT 1`,
       [sym],
     );
-    const spot = Number((rows[0] as { ltp?: number } | undefined)?.ltp ?? 0);
-    if (spot > 0) {
-      await cacheSet(cacheKey, spot, 300);
-      return spot;
+    const r = rows[0];
+    if (r) {
+      rankingsLtp = Number(r.ltp) || 0;
+      rankingsMs = new Date(r.updated_at instanceof Date ? r.updated_at : String(r.updated_at)).getTime();
     }
   } catch { /* rankings fallback unavailable */ }
+
+  let candleClose = 0;
+  let candleMs = 0;
+
+  try {
+    const { rows } = await db.query<{ close: number; ts: Date | string }>(
+      `SELECT close, ts
+         FROM candles
+        WHERE interval_unit = '1day'
+          AND close IS NOT NULL
+          AND close > 0
+          AND (
+            instrument_key = ?
+            OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?
+          )
+        ORDER BY ts DESC
+        LIMIT 1`,
+      [`NSE_EQ|${sym}`, sym],
+    );
+    const r = rows[0];
+    if (r) {
+      candleClose = Number(r.close) || 0;
+      candleMs = new Date(r.ts instanceof Date ? r.ts : String(r.ts)).getTime();
+    }
+  } catch { /* candle fallback unavailable */ }
+
+  if (candleClose > 0 && candleMs >= rankingsMs) {
+    await cacheSet(cacheKey, candleClose, 120);
+    return candleClose;
+  }
+
+  if (rankingsLtp > 0) {
+    await cacheSet(cacheKey, rankingsLtp, 300);
+    return rankingsLtp;
+  }
+
+  if (candleClose > 0) {
+    await cacheSet(cacheKey, candleClose, 120);
+    return candleClose;
+  }
 
   try {
     const { rows } = await db.query<{ close: number }>(
@@ -493,28 +1072,6 @@ async function fetchStockSpotFromDb(symbol: string): Promise<number | null> {
       return spot;
     }
   } catch { /* daily fallback unavailable */ }
-
-  try {
-    const { rows } = await db.query<{ close: number }>(
-      `SELECT close
-         FROM candles
-        WHERE interval_unit = '1day'
-          AND close IS NOT NULL
-          AND close > 0
-          AND (
-            instrument_key = ?
-            OR SUBSTRING_INDEX(instrument_key, '|', -1) = ?
-          )
-        ORDER BY ts DESC
-        LIMIT 1`,
-      [`NSE_EQ|${sym}`, sym],
-    );
-    const spot = Number((rows[0] as { close?: number } | undefined)?.close ?? 0);
-    if (spot > 0) {
-      await cacheSet(cacheKey, spot, 300);
-      return spot;
-    }
-  } catch { /* candle fallback unavailable */ }
 
   return null;
 }

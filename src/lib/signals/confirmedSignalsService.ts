@@ -22,6 +22,7 @@
 
 import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus }            from '@/lib/marketData/marketHours';
+import { fetchYahooPublicQuote }      from '@/lib/marketData/yahooChartPublic';
 
 import {
   getActiveConfirmedSnapshots,
@@ -149,16 +150,8 @@ export async function enrichWithLiveLtp<
       console.warn(
         `[DEBUG] enrichWithLiveLtp timeout after ${enrichElapsed}ms ` +
         `(symbols=${symbols.length}, cap=${ENRICH_TIMEOUT_MS}ms) — ` +
-        `shipping rows without live prices; resolver continues in background`,
+        `falling back to per-symbol quote fetch`,
       );
-      // Stamp every target as "no live data" so the UI knows entry
-      // is from the persisted snapshot, not a live tick.
-      for (const { row } of targets) {
-        row.livePrice   = null;
-        row.livePChange = null;
-        row.liveSource  = 'none';
-        row.liveTickTs  = null;
-      }
     } else {
       console.log(
         `[DEBUG] IndianAPI response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
@@ -170,12 +163,46 @@ export async function enrichWithLiveLtp<
           row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
           row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'indianapi'; // @deprecated marker
           row.liveTickTs  = snap.timestamp || Date.now();
-        } else {
-          row.livePrice   = null;
-          row.livePChange = null;
-          row.liveSource  = 'none';
-          row.liveTickTs  = null;
         }
+      }
+    }
+
+    // Fallback: symbols still missing after batch resolver (NIFTY500 lock,
+    // 429 rate-limit, timeout). Uses fetchQuote (IndianAPI direct → Yahoo → DB).
+    const missing = targets.filter(({ row }) => row.livePrice == null || (row.livePrice ?? 0) <= 0);
+    if (missing.length > 0) {
+      const { fetchQuote } = await import('@/services/marketQuote');
+      const BATCH = 5;
+      for (let i = 0; i < missing.length; i += BATCH) {
+        const chunk = missing.slice(i, i + BATCH);
+        await Promise.all(chunk.map(async ({ row, sym }) => {
+          try {
+            const q = await fetchQuote(sym);
+            if (q?.lastPrice && q.lastPrice > 0) {
+              row.livePrice   = q.lastPrice;
+              row.livePChange = q.pChange;
+              row.liveSource  = market.isOpen ? 'indianapi' : 'yahoo';
+              row.liveTickTs  = Date.now();
+              return;
+            }
+          } catch { /* try yahoo next */ }
+          const yq = await fetchYahooPublicQuote(sym);
+          if (yq?.lastPrice && yq.lastPrice > 0) {
+            row.livePrice   = yq.lastPrice;
+            row.livePChange = yq.pChange;
+            row.liveSource  = 'yahoo';
+            row.liveTickTs  = yq.timestamp;
+          }
+        }));
+      }
+    }
+
+    for (const { row } of targets) {
+      if (row.livePrice == null || (row.livePrice ?? 0) <= 0) {
+        row.livePrice   = null;
+        row.livePChange = null;
+        row.liveSource  = 'none';
+        row.liveTickTs  = null;
       }
     }
   }

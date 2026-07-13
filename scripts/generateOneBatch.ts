@@ -125,12 +125,13 @@ async function runPhase4Mode() {
 
   const t0 = Date.now();
   console.log('[1/3] Loading pipeline modules…');
-  const [{ generatePhase4Signals, DEFAULT_PHASE3_CONFIG }, { migrateSignalEngine }, { DEFAULT_PHASE1_CONFIG }] = await Promise.all([
+  const [{ generatePhase4Signals, DEFAULT_PHASE3_CONFIG }, { migrateSignalEngine }, { DEFAULT_PHASE1_CONFIG, loadTradeableUniverse }] = await Promise.all([
     import('../src/lib/signal-engine'),
     import('../src/lib/db/migrateSignalEngine'),
     import('../src/lib/signal-engine/constants/signalEngine.constants'),
   ]);
   await migrateSignalEngine().catch(() => {});
+  await loadTradeableUniverse();
 
   // Benchmark fallback: Phase-4 needs ≥80 candles for the benchmark
   // symbol to compute regime/relative-strength. Default 'NIFTY 50' is

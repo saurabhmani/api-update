@@ -37,6 +37,7 @@ interface CalibData {
     directRows: number;
     observedRows: number;
     backtestRows: number;
+    truncated?: boolean;
   };
 }
 
@@ -190,6 +191,9 @@ export default function CalibrationPage() {
         <div style={{ padding:'8px 16px', background:'#F8FAFC', border:'1px solid #E2E8F0', borderRadius:8, marginBottom:16, fontSize:12, color:'#475569', display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, flexWrap:'wrap' }}>
           <span>
             Source: <b>{data.dataQuality.source.replace(/_/g, ' ')}</b> · Evaluated rows: <b>{data.dataQuality.evaluatedRows}</b> · Window: <b>{data.dataQuality.performanceWindow}</b>
+            {data.dataQuality.truncated && (
+              <span style={{ color: '#B45309', marginLeft: 8 }}>· Sample capped — metrics may undercount older outcomes</span>
+            )}
           </span>
           <span>Direct {data.dataQuality.directRows} · Observed {data.dataQuality.observedRows} · Backtest {data.dataQuality.backtestRows}</span>
         </div>

@@ -27,6 +27,8 @@ import {
 import type { HistoricalRange } from '@/types/market';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { isInFlight } from '@/lib/scanner/scannerState';
+import { isMarketOpen } from '@/lib/marketData/marketHours';
+import { resolveMarketCandles } from '@/lib/marketData/resolveMarketCandles';
 
 // ── Config ─────────────────────────────────────────────────────────
 
@@ -360,6 +362,35 @@ export async function fetchDailyCandlesWithFallback(
   const t0 = Date.now();
   const min = MIN_BAR_THRESHOLD();
   const sym = symbol.toUpperCase();
+  const dbOnly = shouldUseDbOnly({ ...opts, evaluationRead: true });
+
+  // Market-open: warehouse history + in-memory live session bar (no upstream).
+  if (isMarketOpen()) {
+    try {
+      const live = await resolveMarketCandles(sym, {
+        forceDaily: false,
+        quiet: true,
+      });
+      if (live.candles.length >= (dbOnly ? 1 : min)) {
+        _dbUsed++;
+        console.log(
+          `[CANDLE SOURCE] symbol=${sym} mode=live_session ` +
+          `source=${live.source} bars=${live.candles.length} feed=${live.feedQuality}`,
+        );
+        return {
+          candles:     live.candles,
+          source:      'db',
+          hitUpstream: false,
+          latencyMs:   Date.now() - t0,
+        };
+      }
+    } catch (err) {
+      console.warn(
+        `[CANDLE] live session merge failed for ${sym}: ` +
+        `${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+  }
 
   let dbRows = await readDailyCandlesFromDb(sym).catch((err) => {
     console.warn(
@@ -367,8 +398,6 @@ export async function fetchDailyCandlesWithFallback(
     );
     return [] as Candle[];
   });
-
-  const dbOnly = shouldUseDbOnly({ ...opts, evaluationRead: true });
 
   if (dbOnly) {
     if (dbRows.length >= min) {

@@ -59,8 +59,9 @@ export async function GET(req: NextRequest) {
 
     const lookbackDays = Number(req.nextUrl.searchParams.get('days') || '30');
     const performanceWindow = windowForLookback(lookbackDays);
+    const outcomeLimit = 100_000;
     const [directOutcomes, observedOutcomes, backtestOutcomes] = await Promise.all([
-      loadDirectSignalOutcomes(performanceWindow).catch(() => []),
+      loadDirectSignalOutcomes(performanceWindow, { limit: outcomeLimit }).catch(() => []),
       loadObservedOutcomes(performanceWindow).catch(() => []),
       loadBacktestOutcomes(performanceWindow).catch(() => []),
     ]);
@@ -355,6 +356,7 @@ export async function GET(req: NextRequest) {
         directRows: directOutcomes.length,
         observedRows: observedOutcomes.length,
         backtestRows: backtestOutcomes.length,
+        truncated: directOutcomes.length >= outcomeLimit,
       },
       meta: {
         lookbackDays,

@@ -205,6 +205,31 @@ function tagAsEarly(r: ConfirmedSignalRow): ConfirmedSignalRow {
   return r;
 }
 
+/** Phase-3 APPROVED_SIGNAL rows from q365_signals that should surface in
+ *  signals[] when confirmed snapshots are empty (maturity worker lag). */
+function isPhase3MainTableCandidate(r: ConfirmedSignalRow): boolean {
+  const row = r as ConfirmedSignalRow & {
+    signal_status?: string;
+    effective_signal_status?: string;
+    raw_classification?: string | null;
+  };
+  const ss  = String(row.signal_status ?? row.effective_signal_status ?? '').toUpperCase();
+  const cls = String(r.classification ?? '').toUpperCase();
+  const raw = String(row.raw_classification ?? '').toUpperCase();
+  if (ss !== 'APPROVED_SIGNAL') return false;
+  if (cls === 'NO_TRADE' || cls === 'WATCHLIST_ONLY') return false;
+  if (raw === 'NO_TRADE' || raw === 'WATCHLIST_ONLY') return false;
+  return true;
+}
+
+function clearEarlyTagsForMainTable(r: ConfirmedSignalRow): ConfirmedSignalRow {
+  const row = { ...r } as ConfirmedSignalRow & Record<string, unknown>;
+  row.is_relaxed = false;
+  row.is_conditional = false;
+  row.is_scanner_candidate = false;
+  return row;
+}
+
 /**
  * Spec INSTITUTIONAL §H + §A — final-score-driven classification.
  * Aligned with the institutional 6-band scheme so closed-market rows
@@ -1068,7 +1093,12 @@ async function loadQ365SignalsStrict(limit: number): Promise<ConfirmedSignalRow[
       Math.max(1, Math.min(limit, 200)),
     ]);
     logQ365ScoreProvenance(rows as RawSignalRow[], 'q365_strict');
-    return (rows as any[]).map(shapeQ365Row).map(tagAsEarly);
+    return (rows as any[]).map(shapeQ365Row).map((r) => {
+      // APPROVED_SIGNAL rows that cleared strict SQL floors are eligible
+      // for the main table when snapshots are empty — do not tag as early.
+      if (isPhase3MainTableCandidate(r)) return r;
+      return tagAsEarly(r);
+    });
   } catch (err) {
     console.warn('[closedMarketSignals] strict query failed:', (err as Error).message);
     return [];
@@ -1152,6 +1182,18 @@ export async function loadClosedMarketSignals(
   // up-front so all three return paths share the same panel content.
   const q365Strict = await loadQ365SignalsStrict(limit);
 
+  // Phase-3 approved rows from q365_signals — the same pool /rankings
+  // reads. Computed up-front because ALL return paths now merge these
+  // into the main table (2026-07 fix): previously the confirmed-snapshot
+  // tiers returned EARLY and demoted every approved q365 row to the
+  // "scanner candidates" panel, so the moment ONE snapshot promoted the
+  // dashboard's approved count collapsed from ~20 to 1.
+  const keyOf = (r: ConfirmedSignalRow): string =>
+    `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`;
+  const q365ApprovedMain = q365Strict
+    .filter(isPhase3MainTableCandidate)
+    .map(clearEarlyTagsForMainTable);
+
   if (matureMain.length > 0) {
     // MATURATION_AUDIT_2026-05 — drop any q365_signals scanner-candidate
     // whose (symbol, direction) is already shipping in `matureMain`.
@@ -1161,71 +1203,111 @@ export async function loadClosedMarketSignals(
     // a scanner candidate in `scannerCandidates[]`. The frontend renders
     // both lists, so the user sees the symbol duplicated. Build a key
     // set from `matureMain` first and filter the candidate echo out.
-    const shippedKeys = new Set(
-      matureMain.map((r) =>
-        `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
-      ),
-    );
+    // 2026-07 fix — merge q365 APPROVED_SIGNAL rows alongside the
+    // confirmed snapshots instead of demoting them to scanner
+    // candidates. Snapshots win on (symbol, direction) collisions.
+    const snapshotKeys = new Set(matureMain.map(keyOf));
+    const q365Merged = q365ApprovedMain.filter((r) => !snapshotKeys.has(keyOf(r)));
+    const mainRows = [...matureMain, ...q365Merged];
+    approvedRowCount += q365Merged.length;
+    const shippedKeys = new Set(mainRows.map(keyOf));
     const candidates: ConfirmedSignalRow[] = [
       ...snapRows.filter((r) => !mainTableApproved(r, closedMarketOpts)),
-      ...q365Strict.filter((r) =>
-        !shippedKeys.has(
-          `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
-        ),
-      ),
+      ...q365Strict.filter((r) => !shippedKeys.has(keyOf(r))),
     ];
     const candidatesUniq   = dedupeLatestPerSymbolDirection(candidates);
     const candidatesSorted = candidatesUniq.sort(confirmedSnapshotCmp);
     const candidatesCapped = applyConfirmedCap(candidatesSorted)
       .map(asScannerCandidate);
     const bundle = finalizeBundle(
-      matureMain, 'confirmed_snapshots', 'STRICT', matureMain.length, false,
+      mainRows, 'confirmed_snapshots', 'STRICT', mainRows.length, false,
       scannedRowCount, approvedRowCount,
     );
-    bundle.scannerCandidates = candidatesCapped;
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
     return bundle;
   }
 
   // Spec SMART-RELAXED §2 — strict empty → try relaxed tier on the
-  // same snapshot pool. Confirmed-snapshot rows keep is_relaxed=false
-  // so they route to APPROVED; q365 early rows stay is_relaxed=true.
+  // same snapshot pool. These rows cleared relaxedMainTableApproved but
+  // NOT mainTableApproved — tag is_conditional so partitionByTier routes
+  // them to HIGH_POTENTIAL (via selectHighPotentialFallback), not APPROVED.
   const relaxedMain = snapRows
     .filter((r) => relaxedMainTableApproved(r, closedMarketOpts))
     .map((r) => ({
       ...r,
-      is_relaxed: (r as { source_kind?: string }).source_kind === 'confirmed_snapshot'
-        ? false
-        : true,
+      is_relaxed: true,
+      is_conditional: true,
     } as ConfirmedSignalRow));
   approvedRowCount += relaxedMain.length;
 
   if (relaxedMain.length > 0) {
+    // 2026-07 fix — strict q365 APPROVED_SIGNAL rows ship in the main
+    // table alongside relaxed snapshots (previously a single relaxed
+    // snapshot demoted every approved q365 row to scanner candidates).
+    // Snapshot rows win on (symbol, direction) collisions.
+    const relaxedKeys = new Set(relaxedMain.map(keyOf));
+    const q365Merged = q365ApprovedMain.filter((r) => !relaxedKeys.has(keyOf(r)));
+    const mainRows = [...relaxedMain, ...q365Merged];
+    approvedRowCount += q365Merged.length;
     // MATURATION_AUDIT_2026-05 — same scanner-candidate echo-suppression
-    // as the strict path: rows already shipping in `relaxedMain` must
+    // as the strict path: rows already shipping in the main table must
     // not also appear in `scannerCandidates`.
-    const shippedKeys = new Set(
-      relaxedMain.map((r) =>
-        `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
-      ),
-    );
+    const shippedKeys = new Set(mainRows.map(keyOf));
     const candidates: ConfirmedSignalRow[] = [
       // Anything that even the relaxed tier didn't accept (plus q365_signals).
       ...snapRows.filter((r) => !relaxedMainTableApproved(r, closedMarketOpts)),
-      ...q365Strict.filter((r) =>
-        !shippedKeys.has(
-          `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
-        ),
-      ),
+      ...q365Strict.filter((r) => !shippedKeys.has(keyOf(r))),
     ];
     const candidatesUniq   = dedupeLatestPerSymbolDirection(candidates);
     const candidatesSorted = candidatesUniq.sort(confirmedSnapshotCmp);
     const candidatesCapped = applyConfirmedCap(candidatesSorted)
       .map(asScannerCandidate);
     const bundle = finalizeBundle(
-      relaxedMain, 'confirmed_snapshots', 'RELAXED', 0, true,
+      mainRows, 'confirmed_snapshots',
+      q365Merged.length > 0 ? 'STRICT' : 'RELAXED',
+      q365Merged.length,
+      relaxedMain.length > 0,
       scannedRowCount, approvedRowCount,
     );
-    bundle.scannerCandidates = candidatesCapped;
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
+    return bundle;
+  }
+
+  // Phase-3 bridge — confirmed snapshots empty but q365_signals still
+  // holds strict APPROVED_SIGNAL rows (same pool /rankings reads). Without
+  // this, open-market /api/signals ships signals[]=0 while rankings shows
+  // opportunities; scanner_candidates-only paths tag is_relaxed=true and
+  // the UI elite filter drops every row.
+  if (q365ApprovedMain.length > 0) {
+    const shippedKeys = new Set(q365ApprovedMain.map(keyOf));
+    const candidates: ConfirmedSignalRow[] = [
+      ...snapRows.filter((r) => !shippedKeys.has(keyOf(r))),
+      ...q365Strict.filter((r) => !shippedKeys.has(keyOf(r))),
+    ];
+    const candidatesUniq   = dedupeLatestPerSymbolDirection(candidates);
+    const candidatesSorted = candidatesUniq.sort(confirmedSnapshotCmp);
+    const candidatesCapped = applyConfirmedCap(candidatesSorted)
+      .map(asScannerCandidate);
+    const bundle = finalizeBundle(
+      q365ApprovedMain,
+      'q365_signals_strict',
+      'STRICT',
+      q365ApprovedMain.length,
+      false,
+      scannedRowCount,
+      approvedRowCount + q365ApprovedMain.length,
+    );
+    bundle.scannerCandidates = candidatesCapped.length > 0
+      ? candidatesCapped
+      : await loadRelaxedScannerSupplement(shippedKeys, limit);
+    console.log(
+      `[Q365_PHASE3] surfacing ${bundle.signals.length} APPROVED_SIGNAL row(s) ` +
+      `from q365_signals (snapshots empty, scanner_candidates=${bundle.scannerCandidates.length})`,
+    );
     return bundle;
   }
 
@@ -1274,7 +1356,11 @@ export async function loadClosedMarketSignals(
       const relaxedActive = (SIGNAL_RELAX_MODE_ENABLED
         ? relaxedQ365
         : relaxedQ365.filter(earlySignalApproved)
-      ).map((r) => ({ ...r, is_relaxed: true } as ConfirmedSignalRow));
+      ).map((r) => ({
+        ...r,
+        is_relaxed: true,
+        is_conditional: true,
+      } as ConfirmedSignalRow));
       console.log(
         `[RELAXED] mode=${SIGNAL_RELAX_MODE_ENABLED ? 'on' : 'off'} ` +
         `sql_in=${relaxedQ365.length} ts_out=${relaxedActive.length} ` +
@@ -1341,6 +1427,45 @@ export async function loadClosedMarketSignals(
     scannedRowCount, approvedRowCount,
     scannerCandidates: candidatesCapped,
   };
+}
+
+/**
+ * DASHBOARD-NEAREST-2026-07 — relaxed scanner-candidate supplement.
+ *
+ * The three "approved rows exist" branches build their side-panel
+ * candidates only from snapshot/strict leftovers. On days when every
+ * strict row ships in the main table, that leftover pool is EMPTY —
+ * the dashboard's "Nearest Trade Opportunities" card then has no
+ * candidates to rank even though q365_signals holds hundreds of
+ * developing/watchlist rows from the same session. When the leftover
+ * pool is empty, top it up from the relaxed loader (conf>=55,
+ * final>=60, rr>=1.2 defaults) minus anything already shipped.
+ */
+async function loadRelaxedScannerSupplement(
+  shippedKeys: Set<string>,
+  limit: number,
+): Promise<ConfirmedSignalRow[]> {
+  try {
+    const relaxed = await loadQ365SignalsRelaxed(limit);
+    const leftover = relaxed.filter((r) =>
+      !shippedKeys.has(
+        `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
+      ),
+    );
+    if (leftover.length === 0) return [];
+    const uniq   = dedupeLatestPerSymbolDirection(leftover);
+    const sorted = uniq.sort(confirmedSnapshotCmp);
+    const capped = applyConfirmedCap(sorted).map(asScannerCandidate);
+    console.log(
+      `[SCANNER_SUPPLEMENT] relaxed loader topped up empty candidate pool: ` +
+      `sql_in=${relaxed.length} shipped_excluded=${relaxed.length - leftover.length} ` +
+      `out=${capped.length}`,
+    );
+    return capped;
+  } catch (err) {
+    console.warn('[SCANNER_SUPPLEMENT] relaxed supplement failed:', (err as Error).message);
+    return [];
+  }
 }
 
 /** Tag a row that's about to land in the scanner-candidates side

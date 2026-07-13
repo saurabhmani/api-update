@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useRef, Fragment } from 'react';
+import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading } from '@/components/ui';
 import { fmt, changeClass } from '@/lib/utils';
@@ -29,6 +29,10 @@ import {
   // PHASE_5_HEALTH_OBSERVABILITY_2026-05
   type EngineHealthPreview,
 } from './useSignalsPolling';
+import {
+  filterDisplayableApproved,
+  getDisplayableApprovedVetoReasons,
+} from '@/lib/signals/filterDisplayableApproved';
 import {
   ClassificationBadge,
   FinalScorePill,
@@ -117,6 +121,8 @@ function LiveCell({
     kite:      ['#10B981', '#fff', 'K', 'Kite • Live'], // @deprecated marker
     kite_ws:   ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'], // @deprecated marker
     kite_rest: ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'], // @deprecated marker
+    indianapi: ['#059669', '#fff', 'IA', 'IndianAPI • Live'],
+    yahoo:     ['#7C3AED', '#fff', 'Y', 'Yahoo • Delayed'],
   };
   const srcCfg = source ? sourceMap[source] : null;
 
@@ -824,10 +830,10 @@ export default function SignalsPage() {
   // the effect is a no-op for the rest of the mount.
   const didAutoSelectRef = useRef(false);
 
-  // Persist activeTab to localStorage whenever it changes.
+  // Persist activeTab to sessionStorage (same store as init + tab clicks).
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('q365_signals_active_tab', activeTab);
+      sessionStorage.setItem('q365_signals_active_tab', activeTab);
     }
   }, [activeTab]);
   // Direction filter inside the APPROVED tab. Kept separate from the
@@ -859,10 +865,11 @@ export default function SignalsPage() {
     lastConfirmedSignalUpdateAt: string | null;
     freshness:                   string | null;
     fallbackUsed:                string | null;
+    healthLoaded:                boolean;
   }>({
     dataSource: null, lastApiRequestAt: null, lastSuccessAt: null,
     lastPipelineRunAt: null, lastConfirmedSignalUpdateAt: null,
-    freshness: null, fallbackUsed: null,
+    freshness: null, fallbackUsed: null, healthLoaded: false,
   });
 
   useEffect(() => {
@@ -881,6 +888,7 @@ export default function SignalsPage() {
             lastConfirmedSignalUpdateAt: j.lastConfirmedSignalUpdateAt ?? null,
             freshness:                   j.freshness ?? null,
             fallbackUsed:                j.fallbackUsed ?? null,
+            healthLoaded:                true,
           });
         }
       } catch { /* ignore */ }
@@ -955,7 +963,7 @@ export default function SignalsPage() {
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
-    wsPrices, wsConnected, wsLastAt, wsMarketOpen, kiteStatus, stream, // @deprecated marker
+    wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load,
     lkgBatchIdRef,
   } = useSignalsPolling({ pipelineRunning });
@@ -967,7 +975,12 @@ export default function SignalsPage() {
   const watchlistTotal =
     developing.length + scannerCandidates.length + watchlist.length;
   const rejectedTotal = rejected.length + riskRestricted.length;
+  const approvedTabCount = useMemo(
+    () => filterDisplayableApproved(signals as unknown as Record<string, unknown>[], signalQuality).length,
+    [signals, signalQuality],
+  );
 
+  // ── Tab auto-selection (continued) ──────────────────────────────
   // SIGNAL-ENGINE-COPY-2026-05 — Single source of truth for the
   // provider-fallback state. /api/data-feed/health and /api/signals
   // each carry an independent fallback flag, and historically the
@@ -980,11 +993,17 @@ export default function SignalsPage() {
     && feedHealth.fallbackUsed !== ''
     && feedHealth.fallbackUsed.toUpperCase() !== 'NO'
     && feedHealth.fallbackUsed.toUpperCase() !== 'NONE';
-  const providerInFallback = isFallback || healthFallbackActive;
+  const liveFeedHealthy = freshness?.live_feed_quality === 'fresh'
+    || freshness?.live_feed_quality === 'delayed';
+  // Dual-source Yahoo is a shadow leg, not emergency fallback. When the
+  // live WS poll is healthy, show Live Mode even if the resolver ring
+  // buffer last logged a yahoo row.
+  const providerInFallback = (isFallback || healthFallbackActive) && !liveFeedHealthy;
   useEffect(() => {
     // TAB-BOUNCE-FIX (2026-05) — Once we have already auto-decided once,
     // the effect is a no-op for the rest of this mount.
     if (didAutoSelectRef.current)   return;
+    const approvedCount = approvedTabCount;
     // EMPTY-TAB-RESCUE (2026-05) — userSelectedTabRef is set both by an
     // in-session click AND by a sessionStorage restoration. The original
     // gate was unconditional — any saved tab was a hard lock, so a user
@@ -1000,7 +1019,7 @@ export default function SignalsPage() {
     // bounces the user away from their explicit choice.
     if (userSelectedTabRef.current) {
       const currentTabRows = (
-        activeTab === 'APPROVED'       ? signals.length
+        activeTab === 'APPROVED'       ? approvedCount
       : activeTab === 'HIGH_POTENTIAL' ? highPotential.length
       : activeTab === 'WATCHLIST'      ? watchlistTotal
       : activeTab === 'REJECTED'       ? rejectedTotal
@@ -1011,7 +1030,7 @@ export default function SignalsPage() {
         return;
       }
       const haveRowsElsewhere =
-        signals.length > 0 || highPotential.length > 0
+        approvedCount > 0 || highPotential.length > 0
         || watchlistTotal > 0 || rejectedTotal > 0;
       if (!haveRowsElsewhere) return;
       // eslint-disable-next-line no-console
@@ -1022,12 +1041,12 @@ export default function SignalsPage() {
     // to point at; transient empty frames (everything is []) wait for
     // the next poll instead of jumping straight to REJECTED.
     const haveAnyRows =
-      signals.length > 0
+      approvedCount > 0
       || highPotential.length > 0
       || watchlistTotal > 0
       || rejectedTotal > 0;
     if (!haveAnyRows && !defaultTab) return;
-    if (signals.length > 0) {
+    if (approvedCount > 0) {
       didAutoSelectRef.current = true;
       if (activeTab !== 'APPROVED') {
         // eslint-disable-next-line no-console
@@ -1078,7 +1097,7 @@ export default function SignalsPage() {
       setActiveTab('REJECTED');
     }
   }, [
-    signals.length, highPotential.length,
+    approvedTabCount, highPotential.length,
     watchlistTotal, rejectedTotal, defaultTab, activeTab,
   ]);
 
@@ -1442,18 +1461,30 @@ export default function SignalsPage() {
     const serverLive   = typeof sig.livePrice === 'number' ? sig.livePrice : null;
     const serverSource = (sig as any).liveSource ?? null;
     const entry        = typeof sig.entry_price === 'number' ? sig.entry_price : null;
+    const trustedLiveSources = new Set([
+      'kite_ws', 'kite_rest', 'kite', // @deprecated marker
+      'indianapi', 'yahoo',
+    ]);
     const serverPriceAcceptable =
       serverLive != null &&
       serverLive > 0 &&
-      (serverSource === 'kite_ws' || serverSource === 'kite_rest' || serverSource === 'kite') && // @deprecated marker
-      (entry == null || serverLive !== entry);
+      (serverSource == null || trustedLiveSources.has(serverSource)) &&
+      (entry == null || Math.abs(serverLive - entry) > 0.01);
 
     if (serverPriceAcceptable) {
+      const prevClose = typeof (sig as any).previous_close === 'number'
+        ? (sig as any).previous_close
+        : (typeof (sig as any).prev_close === 'number' ? (sig as any).prev_close : null);
+      let livePChange: number | null =
+        typeof (sig as any).livePChange === 'number' ? (sig as any).livePChange : null;
+      if (livePChange == null && prevClose != null && prevClose > 0) {
+        livePChange = ((serverLive! - prevClose) / prevClose) * 100;
+      }
       return {
         ...sig,
         livePrice:   serverLive,
-        livePChange: typeof (sig as any).livePChange === 'number' ? (sig as any).livePChange : null,
-        liveSource:  serverSource, // 'kite_ws' | 'kite_rest' | 'kite' // @deprecated marker
+        livePChange,
+        liveSource:  serverSource ?? 'indianapi',
         liveTickTs:  (sig as any).liveTickTs ?? null,
       };
     }
@@ -1479,32 +1510,13 @@ export default function SignalsPage() {
   // also cleared the UI elite bar. Trust the server bucket; keep only
   // hard-veto checks so an invalidated/blocked row cannot slip through.
   type EliteCheck = { passed: boolean; reasons: string[] };
-  const eliteHardVetoReasons = (r: SignalRow): string[] => {
-    const reasons: string[] = [];
-    if ((r as any).execution_allowed === false) reasons.push('execution_allowed=false');
-    if ((r as any).live_invalidated === true)   reasons.push('live_invalidated=true');
-    if ((r as any).invalidation_reason) {
-      reasons.push(`invalidated:${(r as any).invalidation_reason}`);
-    }
-    const tradeability = String((r as any).tradeability_status ?? '').toLowerCase();
-    if (tradeability === 'blocked' || tradeability === 'restricted') {
-      reasons.push(`tradeability=${tradeability}`);
-    }
-    const conv = String((r as any).conviction_band ?? '').toLowerCase();
-    if (conv === 'avoid') reasons.push('conviction_band=avoid');
-    return reasons;
-  };
   const eliteRowApproved = (r: SignalRow): EliteCheck => {
-    const isRelaxed     = (r as any).is_relaxed === true;
-    const isScannerCand = (r as any).is_scanner_candidate === true;
-    const sq = String(signalQuality ?? '').toUpperCase();
-    const qualityRelaxed = sq === 'RELAXED' || sq === 'SCANNER_CANDIDATES';
-    if (isRelaxed || isScannerCand || qualityRelaxed) {
-      return { passed: true, reasons: ['relaxed_bypass'] };
-    }
-    const hardReasons = eliteHardVetoReasons(r);
-    if (hardReasons.length > 0) {
-      return { passed: false, reasons: hardReasons };
+    const reasons = getDisplayableApprovedVetoReasons(
+      r as unknown as Record<string, unknown>,
+      signalQuality,
+    );
+    if (reasons.length > 0) {
+      return { passed: false, reasons };
     }
     return { passed: true, reasons: ['server_signals_tier'] };
   };
@@ -1900,12 +1912,17 @@ export default function SignalsPage() {
               }).replace(',', '') + ' IST';
             };
             const freshnessPalette: Record<string, { bg: string; color: string; border: string }> = {
-              Fresh:    { bg: '#F0FDF4', color: '#15803D', border: '#BBF7D0' },
-              Stale:    { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
-              Degraded: { bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
-              Offline:  { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+              Fresh:      { bg: '#F0FDF4', color: '#15803D', border: '#BBF7D0' },
+              Stale:      { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
+              Degraded:   { bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
+              Offline:    { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+              'Market Closed': { bg: '#F1F5F9', color: '#334155', border: '#CBD5E1' },
+              'Starting…': { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' },
             };
-            const f = freshnessPalette[feedHealth.freshness ?? 'Offline']
+            const freshnessLabel = feedHealth.healthLoaded
+              ? (feedHealth.freshness ?? 'Offline')
+              : 'Starting…';
+            const f = freshnessPalette[freshnessLabel]
                    ?? freshnessPalette.Offline;
             return (
               <div
@@ -1941,7 +1958,7 @@ export default function SignalsPage() {
                     letterSpacing: 0.3,
                   }}
                 >
-                  {feedHealth.freshness ?? 'Offline'}
+                  {freshnessLabel}
                 </span>
                 {(() => {
                   // SIGNAL-ENGINE-COPY-2026-05 — read the unified
@@ -1961,7 +1978,7 @@ export default function SignalsPage() {
               </div>
             );
           })()}
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             {/*
               Three-state badge to avoid the scary "OFFLINE" flash on
               first paint while the SSE connection is being negotiated:
@@ -2152,12 +2169,32 @@ export default function SignalsPage() {
             kiteStatus?.marketLabel ?? // @deprecated marker
             freshness?.market_label ??
             (marketOpen ? 'Open' : 'Closed');
-          // Kite-only mode: tick telemetry available via the WS layer // @deprecated marker
-          // when subscribed; for the dashboard summary we keep the
-          // simple two-state badge (live vs no-stream).
-          const lastTickIST: string | null = null;
-          const tickDot = '#10B981';
-          const tickDotLabel = 'kite stream'; // @deprecated marker
+          const fmtTickIst = (ts: number | string | null | undefined): string | null => {
+            if (ts == null) return null;
+            const d = typeof ts === 'number' ? new Date(ts) : new Date(ts);
+            if (Number.isNaN(d.getTime())) return null;
+            return d.toLocaleTimeString('en-IN', {
+              timeZone: 'Asia/Kolkata',
+              hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+            }) + ' IST';
+          };
+          const lastTickIST =
+            fmtTickIst(freshness?.live_last_tick_at)
+            ?? (wsLastAt ? fmtTickIst(wsLastAt) : null)
+            ?? fmtTickIst(kiteStatus?.lastTickIST); // @deprecated marker
+          const tickAgeMs = freshness?.live_tick_age_seconds != null
+            ? freshness.live_tick_age_seconds * 1000
+            : (wsLastAt ? Math.max(0, Date.now() - wsLastAt) : kiteStatus?.tickAgeMs ?? null); // @deprecated marker
+          const tickDot = tickAgeMs == null
+            ? '#94A3B8'
+            : tickAgeMs < 3_000
+              ? '#10B981'
+              : tickAgeMs < 30_000
+                ? '#F59E0B'
+                : '#EF4444';
+          const tickDotLabel = tickAgeMs == null
+            ? 'no ticks yet'
+            : `${Math.round(tickAgeMs / 1000)}s ago`;
 
           let bg = '#FFFBEB', fg = '#92400E', border = '#FDE68A';
           let dot = '#F59E0B';
@@ -2170,7 +2207,11 @@ export default function SignalsPage() {
           const closedDataSource = marketClosed?.data_source ?? null;
           const isBootstrapData = isBootstrap;
           if (!marketOpen) {
-            headline = `Market ${marketLabel}`;
+            // Labels from the status APIs may already start with
+            // "Market" (e.g. "Market Closed") — don't prefix twice.
+            headline = /^market\b/i.test(String(marketLabel).trim())
+              ? String(marketLabel).trim()
+              : `Market ${marketLabel}`;
             const approvedZero = validRows.length === 0;
             sub = approvedZero && (watchlistTotal > 0 || highPotential.length > 0)
               ? 'Market Closed — Showing last-close watchlist candidates'
@@ -3686,7 +3727,7 @@ export default function SignalsPage() {
                           <DueDiligencePanel
                             dueDiligence={ddRow}
                             performanceReview={perfRow}
-                            manipulationRisk={(row as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
+                            manipulationRisk={(s as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
                           />
                         </td>
                       </tr>

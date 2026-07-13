@@ -159,10 +159,22 @@ export async function GET(req: NextRequest) {
   // numbers for this window, not a replacement for the raw outcome
   // metrics computed here.
   const [direct, observed, backtests, snapshotsByStrategy] = await Promise.all([
-    loadDirectSignalOutcomes(window).catch(() => []),
-    loadObservedOutcomes(window).catch(() => []),
-    loadBacktestOutcomes(window).catch(() => []),
-    loadStrategyPerformanceSnapshots(window).catch(() => new Map()),
+    loadDirectSignalOutcomes(window).catch((err) => {
+      console.error('[strategies/performance] loadDirectSignalOutcomes failed:', err);
+      return [];
+    }),
+    loadObservedOutcomes(window).catch((err) => {
+      console.error('[strategies/performance] loadObservedOutcomes failed:', err);
+      return [];
+    }),
+    loadBacktestOutcomes(window).catch((err) => {
+      console.error('[strategies/performance] loadBacktestOutcomes failed:', err);
+      return [];
+    }),
+    loadStrategyPerformanceSnapshots(window).catch((err) => {
+      console.error('[strategies/performance] loadStrategyPerformanceSnapshots failed:', err);
+      return new Map();
+    }),
   ]);
   // De-dup: prefer direct outcomes over snapshot-derived ones for the
   // same underlying snapshot. `direct` rows carry source='direct' and

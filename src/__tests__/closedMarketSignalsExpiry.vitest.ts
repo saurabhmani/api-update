@@ -96,20 +96,7 @@ describe('signals UI — Cycle 1 / Early Scanner Candidate badge', () => {
   });
 });
 
-describe('dashboard UI — closed-market early-signal badge', () => {
-  const src = read('src/app/dashboard/page.tsx');
-
-  it('OpportunityRow carries the maturity-tracker fields', () => {
-    expect(src).toMatch(/validation_cycles_passed\?:/);
-    expect(src).toMatch(/source_kind\?:\s*['"]confirmed_snapshot['"]/);
-  });
-
-  it('renders the Early Scanner Candidate badge with cycle count', () => {
-    // Dashboard uses JSX expression `{cyclesLabel}`, not a template literal.
-    expect(src).toMatch(/Early Scanner Candidate · \{cyclesLabel\} · Not Confirmed · Last Close/);
-  });
-
-  it('falls back to a plain "Last Close" pill only when cycles ≥ 3 and not relaxed', () => {
-    expect(src).toMatch(/cycles\s*<\s*3/);
-  });
-});
+// The dashboard early-signal badge block was removed 2026-07: the
+// Command Center was refactored to consume aggregated /api/dashboard
+// summaries and no longer renders per-row maturity badges. The badge
+// (and its source contract, above) lives on the Signals page only.

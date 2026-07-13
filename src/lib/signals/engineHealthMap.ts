@@ -158,6 +158,8 @@ export interface EngineHealthContext {
     symbolsRequested:   number | null;
     symbolsReturned:    number | null;
     candleAgeHours:     number | null;
+    /** Live WS poll loop quality from freshness envelope. */
+    liveFeedQuality?:  'fresh' | 'delayed' | 'stale' | 'disconnected' | 'closed_market' | null;
     /** Direct DB fallback — populated when the route layer queries
      *  the `candles` warehouse independently of the signals envelope. */
     candleCoverage?: {
@@ -361,6 +363,46 @@ function isExpectedScannerSessionGap(
 export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const stale = ctx.feed.staleMinutes;
+
+  // Live dual-source / WS poll active — same rule as /api/market-data/live-feed-status.
+  if (
+    ctx.marketStatus.isOpen
+    && (ctx.feed.liveFeedQuality === 'fresh' || ctx.feed.liveFeedQuality === 'delayed')
+  ) {
+    diag.findings.push(`Live feed ${ctx.feed.liveFeedQuality} — WS poll loop ingesting ticks.`);
+    return {
+      id:                'data_feed',
+      name:              'Data Feed Engine',
+      category:          'DATA',
+      status:            'HEALTHY',
+      severity:          severityFromStatus('HEALTHY'),
+      description:       'IndianAPI / Yahoo / Kite provider pipeline that feeds market data into the engine.',
+      lastRunAt:         ctx.feed.lastApiRequestAt,
+      lastSuccessAt:     ctx.feed.lastSuccessAt,
+      lastFailureAt:     null,
+      freshnessMinutes:  stale,
+      inputCount:        ctx.feed.symbolsRequested,
+      outputCount:       ctx.feed.symbolsReturned,
+      errorCount:        0,
+      warningCount:      0,
+      dependencies:      [],
+      blockedBy:         [],
+      downstreamImpact:  ['market_status', 'scanner', 'indicators', 'scoring', 'risk', 'confirmation'],
+      diagnostics:       diag,
+      metrics: {
+        provider:          ctx.feed.provider,
+        coveragePercent:   ctx.feed.coveragePercent,
+        candleAgeHours:    ctx.feed.candleAgeHours,
+        isBootstrap:       ctx.feed.isBootstrap,
+        isFallback:        ctx.feed.isFallback,
+        freshnessLabel:    ctx.feed.freshnessLabel,
+      },
+      links: [
+        { label: 'Open Signal Engine',     href: '/signals' },
+        { label: 'Open Backtesting Lab',   href: '/signals/backtesting' },
+      ],
+    };
+  }
 
   // Candle-warehouse fallback — if the signals envelope was unavailable
   // but the candle warehouse has rows, the data feed is functional but
@@ -1745,6 +1787,9 @@ export interface LightweightHealthPreviewInput {
   freshnessMode?:    'intraday_strict' | 'daily_tolerant';
   feedFrozen?:       boolean;
   freshnessQuality?: 'fresh' | 'aging' | 'stale' | 'frozen' | 'unknown';
+  /** Live WS poll quality — when fresh/delayed, data feed is healthy. */
+  liveFeedQuality?:  'fresh' | 'delayed' | 'stale' | 'disconnected' | 'closed_market';
+  candleAgeHours?:   number | null;
 }
 
 /** Max age (minutes) for a daily bar from the prior session before we
@@ -1817,58 +1862,83 @@ function resolveFeedStaleness(input: LightweightHealthPreviewInput): {
   };
 }
 
+export function engineHealthMapToPreview(map: EngineHealthMap): EngineHealthPreview {
+  const blocking = map.pipelineReadiness.blockingReasons[0] ?? null;
+  return {
+    overallStatus: map.overallStatus,
+    canGenerateApprovedSignals: map.pipelineReadiness.canGenerateApprovedSignals,
+    canGenerateCandidates:      map.pipelineReadiness.canGenerateCandidates,
+    primaryBlockingReason: map.overallStatus === 'HEALTHY'
+      ? null
+      : (blocking ?? map.overallSummary),
+    engineHealthUrl: '/signals/engine-health',
+  };
+}
+
+/** Build preview from the same engine-health map used by /api/signals/engine-health. */
+export function buildEngineHealthPreviewFromContext(ctx: EngineHealthContext): EngineHealthPreview {
+  return engineHealthMapToPreview(buildEngineHealthMap(ctx));
+}
+
+function lightweightInputToContext(input: LightweightHealthPreviewInput): EngineHealthContext {
+  const candleAgeHours = input.candleAgeHours
+    ?? (input.staleMinutes != null ? Math.round(input.staleMinutes / 60) : null);
+  return {
+    generatedAt: new Date().toISOString(),
+    marketStatus: {
+      isOpen: input.marketOpen,
+      label:  input.marketOpen ? 'Market Open' : 'Market Closed',
+    },
+    feed: {
+      provider:           'indianapi',
+      lastSuccessAt:      new Date().toISOString(),
+      lastApiRequestAt:   new Date().toISOString(),
+      isBootstrap:        input.isBootstrap,
+      isFallback:         input.isFallback,
+      staleMinutes:       input.staleMinutes,
+      freshnessLabel:     input.freshnessQuality ?? null,
+      coveragePercent:    null,
+      symbolsRequested:   null,
+      symbolsReturned:    null,
+      candleAgeHours,
+      liveFeedQuality:    input.liveFeedQuality ?? null,
+    },
+    transport: {
+      signalsAvailable:     true,
+      dailyReportAvailable: false,
+      backtestAvailable:    false,
+    },
+    pipeline: {
+      lastPipelineRunAt:     null,
+      lastConfirmedSignalAt: null,
+      latestBatchId:         input.candidateTotal > 0 ? 'preview' : null,
+      latestBatchEngineKind: null,
+      scanCoveragePercent:   null,
+      totalScanned:          input.candidateTotal > 0 ? input.candidateTotal : null,
+      totalPersisted:        null,
+      universeSize:          null,
+      inProgressCount:       null,
+      validationStatus:      null,
+    },
+    signals: {
+      approved: [], highPotential: [], watchlist: [], developing: [],
+      scannerCandidates: [], riskRestricted: [], rejected: [],
+    },
+    counters: {
+      approvedTotal:       input.approvedTotal,
+      approvedBuy:         0,
+      approvedSell:        0,
+      highPotentialTotal:  0,
+      watchlistTotal:      0,
+      rejectedTotal:       0,
+      candidateTotal:      input.candidateTotal,
+    },
+    dueDiligenceSummary: null,
+  };
+}
+
 export function buildLightweightEngineHealthPreview(
   input: LightweightHealthPreviewInput,
 ): EngineHealthPreview {
-  const { staleHigh: feedStaleHigh, staleMid: feedStaleMid, reason: feedStaleReason } =
-    resolveFeedStaleness(input);
-  let overallStatus: EngineHealthPreview['overallStatus'] = 'HEALTHY';
-  let primaryBlockingReason: string | null = null;
-
-  const expectedDailyGap = isExpectedDailySessionGap({
-    freshnessMode:    input.freshnessMode,
-    staleMinutes:       input.staleMinutes,
-    feedFrozen:         input.feedFrozen,
-    freshnessQuality:   input.freshnessQuality,
-    feedStaleHigh,
-  });
-
-  if (input.isBootstrap || input.isFallback) {
-    overallStatus = 'DEGRADED';
-    primaryBlockingReason = input.isBootstrap
-      ? 'Bootstrap data in use — provider not live.'
-      : 'Provider in fallback mode.';
-  } else if (feedStaleHigh && expectedDailyGap) {
-    overallStatus = 'HEALTHY';
-    primaryBlockingReason = null;
-  } else if (feedStaleHigh) {
-    overallStatus = 'DEGRADED';
-    primaryBlockingReason = feedStaleReason;
-  } else if (feedStaleMid) {
-    if (input.freshnessMode === 'daily_tolerant' || expectedDailyGap) {
-      overallStatus = 'HEALTHY';
-      primaryBlockingReason = null;
-    } else {
-      overallStatus = 'WARNING';
-      primaryBlockingReason = feedStaleReason ?? `Provider feed aging (${input.staleMinutes}m).`;
-    }
-  }
-  // Market closed is expected off-hours — not a degradation. Approvals
-  // are naturally withheld; the dashboard should stay in full/monitoring
-  // mode rather than "Partial Intelligence Mode".
-  // Even when status is HEALTHY at preview level, we honour the "no
-  // approvals this cycle" message for transparency.
-  const canApprove = input.approvedTotal > 0
-    || (overallStatus === 'HEALTHY' && input.marketOpen);
-  // Lightweight preview never produces BROKEN — candidates are
-  // available unless the universe is empty.
-  const canCandidate = input.candidateTotal > 0 || overallStatus !== 'DEGRADED';
-
-  return {
-    overallStatus,
-    canGenerateApprovedSignals: canApprove,
-    canGenerateCandidates:      canCandidate,
-    primaryBlockingReason,
-    engineHealthUrl:            '/signals/engine-health',
-  };
+  return buildEngineHealthPreviewFromContext(lightweightInputToContext(input));
 }

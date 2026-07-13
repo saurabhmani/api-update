@@ -2,9 +2,27 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/session';
 import { db } from '@/lib/db';
 import { cacheGet, cacheSet } from '@/lib/redis';
+import { getCompanyNews } from '@/providers/MarketDataProvider';
+import { fetchNews, fetchStockNews } from '@/services/newsService';
+import { getNewsForSymbol } from '@/lib/news-engine/repository/readNewsEvents';
+import { resolveInstrumentProfile } from '@/services/marketQuote';
 
 export const dynamic   = 'force-dynamic';
 export const revalidate = 0;
+
+/** UI shape used by MarketDetail / StockDetail news tabs. */
+interface StockNewsItem {
+  id:            string | number;
+  title:         string;
+  summary?:      string | null;
+  url:           string;
+  published_at:  string;
+  source:        string;
+  category_name?: string;
+  thumbnail?:    string | null;
+  sentiment?:    string | null;
+  symbol?:       string;
+}
 
 // ── RSS feeds ─────────────────────────────────────────────────────
 const RSS_FEEDS = [
@@ -146,6 +164,171 @@ async function fetchAllRssNews(limit = 40): Promise<RssItem[]> {
   return news;
 }
 
+function matchesSymbol(text: string, symbol: string, companyName?: string | null): boolean {
+  const hay = text.toLowerCase();
+  const sym = symbol.toLowerCase();
+  if (hay.includes(sym)) return true;
+  // Common spaced form: INDUSIND BK / IndusInd Bank style tokens for longer symbols
+  if (sym.length >= 5 && hay.includes(sym.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase())) return true;
+  if (companyName) {
+    const name = companyName.toLowerCase().trim();
+    if (name.length >= 4 && hay.includes(name)) return true;
+    // First significant word of company name (e.g. "IndusInd" from "IndusInd Bank Ltd")
+    const first = name.split(/\s+/)[0];
+    if (first.length >= 5 && hay.includes(first)) return true;
+  }
+  return false;
+}
+
+async function resolveCompanyName(symbol: string): Promise<string | null> {
+  const profile = await resolveInstrumentProfile(symbol);
+  if (profile.name && profile.name.toUpperCase() !== symbol.toUpperCase()) {
+    return profile.name;
+  }
+  try {
+    const { rows } = await db.query<{ name?: string }>(
+      `SELECT name FROM instruments WHERE tradingsymbol = ? LIMIT 1`,
+      [symbol],
+    );
+    return rows[0]?.name ? String(rows[0].name) : null;
+  } catch {
+    return null;
+  }
+}
+
+function symbolNewsCacheKey(symbol: string): string {
+  return `news:symbol-bundle:${symbol.toUpperCase()}`;
+}
+
+function dedupeNews(items: StockNewsItem[]): StockNewsItem[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.title.toLowerCase().slice(0, 60);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Symbol-specific news for stock / market detail pages.
+ * Priority: news-engine DB → IndianAPI company news → GNews/NewsData → filtered RSS.
+ */
+async function fetchSymbolNews(
+  symbol: string,
+  limit: number,
+  companyHint?: string | null,
+): Promise<{
+  news: StockNewsItem[];
+  sources: Record<string, number>;
+}> {
+  const sym = symbol.toUpperCase();
+  const companyName = (companyHint && companyHint.trim()) || (await resolveCompanyName(sym));
+  const sources = { engine: 0, indianapi: 0, external: 0, rss: 0 };
+  const merged: StockNewsItem[] = [];
+
+  // 1) News-engine DB (already entity-linked to this symbol)
+  try {
+    const events = await getNewsForSymbol(sym, limit, 14);
+    sources.engine = events.length;
+    for (const e of events) {
+      merged.push({
+        id:           e.id ?? e.externalId,
+        title:        e.title,
+        summary:      e.body,
+        url:          e.url || '#',
+        published_at: e.publishedAt,
+        source:       e.sourceId,
+        category_name: e.category,
+        sentiment:    e.sentiment ?? null,
+        symbol:       sym,
+      });
+    }
+  } catch { /* schema may be empty */ }
+
+  // 2) IndianAPI /company_news
+  if (merged.length < limit) {
+    try {
+      const res = await getCompanyNews(sym);
+      const items = res.data ?? [];
+      sources.indianapi = items.length;
+      for (const n of items) {
+        const title = String(n.headline ?? '').trim();
+        if (!title) continue;
+        const published = typeof n.publishedAt === 'number'
+          ? new Date(n.publishedAt).toISOString()
+          : new Date().toISOString();
+        merged.push({
+          id:           `ia-${Buffer.from(`${title}:${n.url ?? ''}`).toString('base64').slice(0, 24)}`,
+          title,
+          summary:      n.summary ?? null,
+          url:          n.url || '#',
+          published_at: published,
+          source:       n.source ?? 'IndianAPI',
+          symbol:       sym,
+        });
+      }
+    } catch { /* quota / upstream unavailable */ }
+  }
+
+  // 3) External search (GNews / NewsData) with symbol + company query
+  if (merged.length < limit) {
+    try {
+      const query = companyName
+        ? `${sym} OR "${companyName}" stock India NSE`
+        : `${sym} NSE India stock`;
+      const items = companyName
+        ? await fetchNews(query, limit)
+        : await fetchStockNews(sym, limit);
+      sources.external = items.length;
+      for (const n of items) {
+        const blob = `${n.title} ${n.description ?? ''}`;
+        if (!matchesSymbol(blob, sym, companyName)) continue;
+        merged.push({
+          id:           n.id,
+          title:        n.title,
+          summary:      n.description,
+          url:          n.url || '#',
+          published_at: n.published_at,
+          source:       n.source,
+          sentiment:    n.sentiment ?? null,
+          symbol:       sym,
+        });
+      }
+    } catch { /* keys may be missing */ }
+  }
+
+  // 4) Last resort: market RSS filtered to symbol / company name
+  if (merged.length < limit) {
+    try {
+      const rss = await fetchAllRssNews(80);
+      const filtered = rss.filter((r) =>
+        matchesSymbol(`${r.title} ${r.summary}`, sym, companyName),
+      );
+      sources.rss = filtered.length;
+      for (const r of filtered) {
+        merged.push({
+          id:            r.id,
+          title:         r.title,
+          summary:       r.summary,
+          url:           r.url,
+          published_at:  r.published_at,
+          source:        r.source,
+          category_name: r.category_name,
+          thumbnail:     r.thumbnail,
+          symbol:        sym,
+        });
+      }
+    } catch { /* silent */ }
+  }
+
+  const news = dedupeNews(merged)
+    .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+    .slice(0, limit);
+
+  return { news, sources };
+}
+
 // ── GET ───────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   try { await requireSession(); } catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
@@ -154,6 +337,53 @@ export async function GET(req: NextRequest) {
   const catId    = searchParams.get('category_id');
   const featured = searchParams.get('featured');
   const limit    = Math.min(parseInt(searchParams.get('limit') || '40'), 100);
+  // Stock/market detail pages pass symbol via `symbol` or `q`
+  const rawSymbol = (searchParams.get('symbol') || searchParams.get('q') || '').trim();
+  const symbol = rawSymbol
+    ? (rawSymbol.includes('|') ? rawSymbol.split('|')[1] : rawSymbol).toUpperCase().replace(/[^A-Z0-9]/g, '')
+    : '';
+  const companyHint = searchParams.get('company');
+
+  if (symbol) {
+    const cacheKey = `news:symbol:${symbol}:${limit}`;
+    const cached = await cacheGet<{ news: StockNewsItem[]; sources: Record<string, number> }>(cacheKey);
+    if (cached?.news?.length) {
+      return NextResponse.json({
+        news: cached.news,
+        symbol,
+        count: cached.news.length,
+        sources: cached.sources,
+        from_cache: true,
+      });
+    }
+
+    const { news, sources } = await fetchSymbolNews(symbol, limit, companyHint);
+    if (news.length > 0) {
+      await cacheSet(cacheKey, { news, sources }, 6 * 3600);
+      await cacheSet(symbolNewsCacheKey(symbol), { news, sources }, 7 * 24 * 3600);
+    } else {
+      const stale = await cacheGet<{ news: StockNewsItem[]; sources: Record<string, number> }>(
+        symbolNewsCacheKey(symbol),
+      );
+      if (stale?.news?.length) {
+        return NextResponse.json({
+          news: stale.news,
+          symbol,
+          count: stale.news.length,
+          sources: stale.sources,
+          from_cache: true,
+          stale: true,
+        });
+      }
+    }
+    return NextResponse.json({
+      news,
+      symbol,
+      count: news.length,
+      sources,
+      from_cache: false,
+    });
+  }
 
   // Try DB articles first
   let dbArticles: any[] = [];

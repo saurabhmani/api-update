@@ -50,12 +50,19 @@ interface InProcState {
    *  a static-data tier behind the in-memory cache. */
   closeSnapshotTask: ScheduledTask | null;
   closeSnapshotInFlight: Promise<void> | null;
+  /** 20:00 IST nightly signal-outcome evaluation — feeds the Strategy
+   *  Performance page by keeping q365_signal_outcomes fresh. */
+  outcomeEvalTask: ScheduledTask | null;
+  outcomeEvalInFlight: Promise<void> | null;
   /** setInterval handle for the 30s confirmed-snapshot lifecycle worker. */
   snapshotLifecycleHandle: ReturnType<typeof setInterval> | null;
   snapshotLifecycleInFlight: Promise<void> | null;
   /** setInterval handle for the 60s signal-maturity worker. */
   maturityHandle:           ReturnType<typeof setInterval> | null;
   maturityInFlight:         Promise<void> | null;
+  /** setInterval handle for the 5-min production alert monitor. */
+  alertMonitorHandle:       ReturnType<typeof setInterval> | null;
+  alertMonitorInFlight:     Promise<void> | null;
   /** setInterval handle for the 60s pipeline heartbeat. Bumps the
    *  Redis `scheduler:heartbeat:pipeline` key so the freshness probe
    *  in /api/signals can surface a non-null `last_pipeline_run` even
@@ -78,10 +85,14 @@ function getState(): InProcState {
       newsTask:                   null,
       closeSnapshotTask:          null,
       closeSnapshotInFlight:      null,
+      outcomeEvalTask:            null,
+      outcomeEvalInFlight:        null,
       snapshotLifecycleHandle:    null,
       snapshotLifecycleInFlight:  null,
       maturityHandle:             null,
       maturityInFlight:           null,
+      alertMonitorHandle:         null,
+      alertMonitorInFlight:       null,
       heartbeatHandle:            null,
       heartbeatInFlight:          null,
       regenInFlight:              null,
@@ -197,6 +208,10 @@ export function bootInProcScheduler(): void {
     try { state.closeSnapshotTask.stop(); } catch { /* already stopped */ }
     state.closeSnapshotTask = null;
   }
+  if (state.outcomeEvalTask) {
+    try { state.outcomeEvalTask.stop(); } catch { /* already stopped */ }
+    state.outcomeEvalTask = null;
+  }
   if (state.snapshotLifecycleHandle) {
     try { clearInterval(state.snapshotLifecycleHandle); } catch { /* already cleared */ }
     state.snapshotLifecycleHandle = null;
@@ -204,6 +219,10 @@ export function bootInProcScheduler(): void {
   if (state.maturityHandle) {
     try { clearInterval(state.maturityHandle); } catch { /* already cleared */ }
     state.maturityHandle = null;
+  }
+  if (state.alertMonitorHandle) {
+    try { clearInterval(state.alertMonitorHandle); } catch { /* already cleared */ }
+    state.alertMonitorHandle = null;
   }
   if (state.heartbeatHandle) {
     try { clearInterval(state.heartbeatHandle); } catch { /* already cleared */ }
@@ -319,6 +338,24 @@ export function bootInProcScheduler(): void {
     })();
   }, { timezone: IST });
 
+  // ── 20:00 IST nightly signal-outcome evaluation ──────────────
+  //
+  // Evaluates signals against post-signal daily candles and writes
+  // q365_signal_outcomes rows with a fresh evaluated_at — the data
+  // source behind the Strategy Performance page. Runs after the EOD
+  // candle ingestion. Incremental (staleHours=20) so each nightly
+  // run advances through the backlog instead of re-evaluating the
+  // same oldest batch.
+  state.outcomeEvalTask = cron.schedule('0 20 * * 1-5', () => {
+    if (state.outcomeEvalInFlight) {
+      log.warn('[INPROC OUTCOME-EVAL] previous run still in flight — skipping');
+      return;
+    }
+    state.outcomeEvalInFlight = runOutcomeEvalInProc()
+      .catch((err) => log.error('[INPROC OUTCOME-EVAL] failed', { err: err?.message ?? String(err) }))
+      .finally(() => { state.outcomeEvalInFlight = null; });
+  }, { timezone: IST });
+
   // ── 5-minute news pipeline (always on) ──────────────────────
   // Keeps q365_news_events fresh without the UI having to click
   // "Run Pipeline". RSS upstreams cache for several minutes so 5
@@ -422,6 +459,41 @@ export function bootInProcScheduler(): void {
     })();
   }, MATURITY_INTERVAL_MS);
 
+  // ── 5-minute production alert monitor ────────────────────────
+  //
+  // PRODUCTION-READINESS 2026-07 §6.2 — evaluates the alert rules
+  // (no confirmed signals, live feed stale, stuck in-flight, quota
+  // near limit, plus the PRODUCTION-ALERTS-2026-05 set) and pushes
+  // warning/critical hits through the delivery channels (Slack /
+  // email / system notifications) via dispatchAlerts(). The alert
+  // store dedups by rule id, so a persistent condition increments
+  // occurrence_count instead of spamming a new row per tick.
+  // Disable with ALERT_MONITOR_DISABLED=true.
+  if (process.env.ALERT_MONITOR_DISABLED !== 'true') {
+    const ALERT_MONITOR_INTERVAL_MS = 5 * 60_000;
+    state.alertMonitorHandle = setInterval(() => {
+      if (state.alertMonitorInFlight) return;
+      state.alertMonitorInFlight = (async () => {
+        try {
+          const { dispatchAlerts } = await import('@/lib/reliability/alertDispatcher');
+          const r = await dispatchAlerts();
+          if (r.dispatched > 0) {
+            log.warn('[INPROC ALERT-MONITOR] dispatched alerts', {
+              evaluated: r.evaluated, dispatched: r.dispatched,
+              deliveries: r.deliveries,
+            });
+          }
+        } catch (err: any) {
+          log.error('[INPROC ALERT-MONITOR] failed', { err: err?.message ?? String(err) });
+        } finally {
+          state.alertMonitorInFlight = null;
+        }
+      })();
+    }, ALERT_MONITOR_INTERVAL_MS);
+  } else {
+    log.info('[INPROC ALERT-MONITOR] disabled via ALERT_MONITOR_DISABLED=true');
+  }
+
   // ── 60-second pipeline heartbeat ─────────────────────────────
   //
   // Spec FIX-DATA-PIPELINE §4: the freshness probe in /api/signals
@@ -488,10 +560,12 @@ export function bootInProcScheduler(): void {
       'hourly full-market scan (09:30-15:30 IST, always on)',
       ...(regenInProc ? ['*/10 min regen (09:30-15:30 IST, default ON)'] : []),
       '15:30 IST market-close snapshot (Mon-Fri)',
+      '20:00 IST nightly signal-outcome evaluation (Mon-Fri)',
       '*/5 min news ingestion (24x7)',
       '30s confirmed-snapshot lifecycle (24x7)',
       '60s signal-maturity worker (24x7)',
       '60s pipeline heartbeat (24x7)',
+      '5-min production alert monitor (24x7)',
       'controlled daily scan schedule (08:30 readiness, 09:20/09:45/16:30 scans, 12:30/14:45 rescore)',
       'manipulation auto-heal on stale snapshots (90s after boot)',
     ],
@@ -501,6 +575,26 @@ export function bootInProcScheduler(): void {
       ? 'Legacy 10-min/hourly regen ON by explicit SIGNAL_INTRADAY_REGEN_ENABLED=true.'
       : 'Legacy 10-min/hourly regen disabled. Controlled schedule is authoritative.',
   });
+}
+
+async function runOutcomeEvalInProc(): Promise<void> {
+  const { runOutcomeEvaluation } = await import(
+    '@/lib/signal-engine/feedback/runOutcomeEvaluation'
+  );
+  let totalUpdated = 0, totalSkipped = 0;
+  let cursor = 0;
+  for (let batch = 0; batch < 20; batch++) {
+    const r = await runOutcomeEvaluation({ limit: 1000, staleHours: 20, afterId: cursor });
+    totalUpdated += r.updated_count;
+    totalSkipped += r.skipped_count;
+    log.info('[INPROC OUTCOME-EVAL] batch complete', {
+      batch, processed: r.processed_count, updated: r.updated_count,
+      skipped: r.skipped_count, elapsedMs: r.duration_ms,
+    });
+    if (r.processed_count < 1000 || r.last_signal_id == null) break; // backlog drained
+    cursor = r.last_signal_id;
+  }
+  log.info('[INPROC OUTCOME-EVAL] complete', { totalUpdated, totalSkipped });
 }
 
 async function runNewsPipelineInProc(): Promise<void> {
@@ -591,17 +685,21 @@ export function stopInProcScheduler(): void {
   state.hourlyScanTask?.stop();
   state.newsTask?.stop();
   state.closeSnapshotTask?.stop();
+  state.outcomeEvalTask?.stop();
   if (state.snapshotLifecycleHandle) clearInterval(state.snapshotLifecycleHandle);
   if (state.maturityHandle) clearInterval(state.maturityHandle);
   if (state.heartbeatHandle) clearInterval(state.heartbeatHandle);
+  if (state.alertMonitorHandle) clearInterval(state.alertMonitorHandle);
   state.rescoreTask = null;
   state.regenTask = null;
   state.hourlyScanTask = null;
   state.newsTask = null;
   state.closeSnapshotTask = null;
+  state.outcomeEvalTask = null;
   state.snapshotLifecycleHandle = null;
   state.maturityHandle = null;
   state.heartbeatHandle = null;
+  state.alertMonitorHandle = null;
   state.bootedAt = null;
   log.info('in-proc scheduler stopped');
 }

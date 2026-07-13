@@ -4,8 +4,9 @@ import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Button, Loading, Empty } from '@/components/ui';
 import { watchlistApi, marketApi } from '@/lib/apiClient';
 import { useLiveTick } from '@/hooks/useLiveTick';
+import MarketStreamStatus from '@/components/ui/MarketStreamStatus';
 import { fmt, changeClass, debounce } from '@/lib/utils';
-import { Star, Trash2, Search, Wifi, WifiOff } from 'lucide-react';
+import { Star, Trash2, Search } from 'lucide-react';
 import type { WatchlistItem } from '@/types';
 
 export default function WatchlistPage() {
@@ -16,7 +17,7 @@ export default function WatchlistPage() {
   const [showSug,     setShowSug]     = useState(false);
 
   const keys = items.map(i => i.instrument_key).filter(Boolean) as string[];
-  const { ticks, connected } = useLiveTick(keys);
+  const { ticks, connected, streamStatus } = useLiveTick(keys);
 
   async function load() {
     setLoading(true);
@@ -57,10 +58,7 @@ export default function WatchlistPage() {
             <h1>Watchlist</h1>
             <p>{items.length} stocks tracked</p>
           </div>
-          <span style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color: connected ? '#16A34A' : '#94A3B8' }}>
-            {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
-            {connected ? 'Live' : 'Offline'}
-          </span>
+          <MarketStreamStatus status={streamStatus} />
         </div>
 
         {/* Search to add */}

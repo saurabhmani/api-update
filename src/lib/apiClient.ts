@@ -62,10 +62,10 @@ export const instrumentApi = {
 
 // ── Charts ────────────────────────────────────────────────────────
 export const chartsApi = {
-  intraday:   (instrumentKey: string, interval = '1minute') =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}`),
-  historical: (instrumentKey: string, unit = 'days', interval = '1', from?: string, to?: string) =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&unit=${unit}&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}`),
+  intraday:   (instrumentKey: string, interval = '1minute', limit = 500) =>
+    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}&limit=${limit}`),
+  historical: (instrumentKey: string, _unit = 'days', interval = '1day', from?: string, to?: string, limit = 120) =>
+    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}&limit=${limit}`),
 };
 
 // ── Watchlist ─────────────────────────────────────────────────────
@@ -129,6 +129,14 @@ export const reportsApi = {
 // ── Rankings ─────────────────────────────────────────────────────
 export const rankingsApi = {
   get: (limit = 50) => get(`/rankings?limit=${limit}`),
+  opportunities: (params: Record<string, string | number | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return get(`/rankings/opportunities${q ? `?${q}` : ''}`);
+  },
 };
 
 // ── User / Preferences ───────────────────────────────────────────

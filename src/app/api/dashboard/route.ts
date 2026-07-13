@@ -263,6 +263,9 @@ export async function GET(req: NextRequest) {
   const sigPayload = signals.data ?? {};
   const counters   = (sigPayload.counters && typeof sigPayload.counters === 'object') ? sigPayload.counters : {};
   const approvedSignals      = arr<any>(sigPayload.approvedSignals      ?? sigPayload.signals);
+  const signalQuality        = String(sigPayload.signal_quality ?? '').toUpperCase() || null;
+  const { filterDisplayableApproved } = await import('@/lib/signals/filterDisplayableApproved');
+  const displayableApproved  = filterDisplayableApproved(approvedSignals, signalQuality);
   const highPotentialSignals = arr<any>(sigPayload.highPotentialSignals ?? sigPayload.high_potential);
   // DASHBOARD-PARITY-2026-05 — read every non-approved tier the signals
   // route now ships. The legacy `watchlistSignals` alias is just one of
@@ -299,6 +302,7 @@ export async function GET(req: NextRequest) {
     upstream_url:        ('url' in signals && (signals as { url?: string }).url) || null,
     raw_inputs: {
       approvedSignals:      approvedSignals.length,
+      displayableApproved:  displayableApproved.length,
       highPotentialSignals: highPotentialSignals.length,
       watchlistSignalsRaw:  watchlistSignalsRaw.length,
       developing:           developingSignals.length,
@@ -316,8 +320,8 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  const approvedBuy  = approvedSignals.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'BUY').length;
-  const approvedSell = approvedSignals.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'SELL').length;
+  const approvedBuy  = displayableApproved.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'BUY').length;
+  const approvedSell = displayableApproved.filter((s) => String(s.direction ?? s.signal_type ?? '').toUpperCase() === 'SELL').length;
 
   const dueDiligenceSummary = sigPayload.dueDiligenceSummary ?? null;
   const topBlockReason = dueDiligenceSummary?.topBlockReasons?.[0]?.reason ?? null;
@@ -331,9 +335,9 @@ export async function GET(req: NextRequest) {
     null;
 
   const signalSummary = {
-    approvedTotal:        num(counters.approvedTotal)      ?? approvedSignals.length,
-    approvedBuy:          num(counters.approvedBuy)        ?? approvedBuy,
-    approvedSell:         num(counters.approvedSell)       ?? approvedSell,
+    approvedTotal:        displayableApproved.length,
+    approvedBuy:          approvedBuy,
+    approvedSell:         approvedSell,
     highPotentialTotal:   num(counters.highPotentialTotal) ?? highPotentialSignals.length,
     // watchlistTotal: prefer the upstream counter when it's already
     // non-zero (post-fix /api/signals computes it from the full tier

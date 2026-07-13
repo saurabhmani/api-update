@@ -66,6 +66,7 @@ import {
   nseMostActiveCacheKey,
   newsRecentIndexKey,
   QUOTE_TTL_S,
+  CORP_TTL_S,
   MARKET_NEWS_TTL_S,
   COMPANY_NEWS_TTL_S,
   MOVERS_TTL_S,
@@ -500,8 +501,16 @@ export async function getCorporateIntel(
   );
   if (primary) {
     await cache.set(key, primary);
+    await redisCacheSet(key, primary, CORP_TTL_S);
+    await redisCacheSet(`corp:stale:${sym}`, primary, 7 * 24 * 60 * 60);
     void spend('corp', 1);
     return rejectIfStale(wrap(primary, 'indian', 'near-live', trail), !!opts.signalCritical);
+  }
+
+  const staleRedis = await redisCacheGet<CorporateIntel>(`corp:stale:${sym}`);
+  if (staleRedis) {
+    trail.push({ source: 'cache', ok: true });
+    return rejectIfStale(wrap(staleRedis, 'cache', 'stale', trail), !!opts.signalCritical);
   }
 
   const dbHit = await tryStep('db', trail, async () => {
@@ -818,6 +827,11 @@ export async function getCompanyNews(symbol: string): Promise<ProviderResponse<N
 
   const spendCheck = await canSpend('news');
   if (!spendCheck.allowed) {
+    const staleOnBudget = await redisCacheGet<NewsItem[]>(`news:stale:${sym}`);
+    if (staleOnBudget?.length) {
+      trail.push({ source: 'cache', ok: true });
+      return wrap(staleOnBudget, 'cache', 'stale', trail);
+    }
     return wrap([], 'db', 'stale', trail);
   }
   await spend('news');
@@ -828,6 +842,7 @@ export async function getCompanyNews(symbol: string): Promise<ProviderResponse<N
   if (primary) {
     await cache.set(key, primary, COMPANY_NEWS_TTL_S);
     await redisCacheSet(key, primary, COMPANY_NEWS_TTL_S);
+    await redisCacheSet(`news:stale:${sym}`, primary, 7 * 24 * 60 * 60);
 
     // Update the recent-news symbol index so triggerEngine can read it.
     const existing = (await redisCacheGet<string[]>(newsRecentIndexKey())) ?? [];
@@ -839,6 +854,13 @@ export async function getCompanyNews(symbol: string): Promise<ProviderResponse<N
 
     return wrap(primary, 'indian', 'near-live', trail);
   }
+
+  const staleNews = await redisCacheGet<NewsItem[]>(`news:stale:${sym}`);
+  if (staleNews?.length) {
+    trail.push({ source: 'cache', ok: true });
+    return wrap(staleNews, 'cache', 'stale', trail);
+  }
+
   return wrap([], 'db', 'stale', trail);
 }
 

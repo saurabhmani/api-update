@@ -3,7 +3,13 @@ export { mapRegimeToCategory, categoryDisplayLabel } from './mappers/regimeMappe
 export { buildTrustDashboard } from './services/trustDashboardService';
 export { loadTrustSignalBoard } from './services/trustSignalBoardService';
 export { loadMarketRegimeSnapshot } from './services/benchmarkCandles';
-export { loadTrustStrategyPerformance } from './services/trustStrategyPerformanceService';
+export {
+  loadTrustStrategyPerformance,
+} from './services/trustStrategyPerformanceService';
+export type {
+  TrustStrategyPerformanceResult,
+  TrustStrategyPerformanceSourceStatus,
+} from './services/trustStrategyPerformanceService';
 export { resolveSignalReasons } from './services/signalReasonEngine';
 export { resolveSignalWarnings } from './services/signalWarningEngine';
 export { loadTrustWatchlist } from './services/trustWatchlistService';

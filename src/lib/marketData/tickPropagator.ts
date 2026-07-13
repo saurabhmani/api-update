@@ -23,6 +23,11 @@
 
 import { setTick } from '@/lib/redis';
 import { logger } from '@/lib/logger';
+import { tickBus } from '@/lib/marketData/tickBus';
+import {
+  MARKET_TICK_EVENT,
+  type MarketStreamTick,
+} from '@/lib/marketData/marketStreamTypes';
 import type { MarketSnapshot } from '@/types/market';
 import type { Tick } from '@/types';
 
@@ -94,6 +99,21 @@ export async function propagateTick(snap: MarketSnapshot | null | undefined): Pr
       error: err instanceof Error ? err.message : String(err),
     });
   });
+
+  const streamTick: MarketStreamTick = {
+    symbol:  sym,
+    price:   snap.price,
+    change:  Number.isFinite(snap.change) ? snap.change : null,
+    pChange: Number.isFinite(snap.changePercent) ? snap.changePercent : null,
+    open:    Number.isFinite(snap.open) ? snap.open : null,
+    high:    Number.isFinite(snap.high) ? snap.high : null,
+    low:     Number.isFinite(snap.low) ? snap.low : null,
+    close:   Number.isFinite(snap.prevClose) ? snap.prevClose : null,
+    volume:  Number.isFinite(snap.volume) ? snap.volume : null,
+    source:  'indianapi',
+    ts:      snap.timestamp && snap.timestamp > 0 ? snap.timestamp : now,
+  };
+  tickBus.emit(MARKET_TICK_EVENT, streamTick);
 
   log.debug('tick update', { symbol: sym, price: snap.price });
 }

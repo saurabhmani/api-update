@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { MarketStreamStatus } from '@/lib/marketData/marketStreamTypes';
 
 interface Props {
   connected: boolean;
   lastAt:    number | null;
-  /** Source of the most recent frame for the symbol being displayed. */
-  source?:   'yahoo' | null; // @deprecated marker
-  /** Frame older than this (ms) → STALE. Default 15s. */
+  status?:   MarketStreamStatus;
+  source?:   'indianapi' | 'yahoo' | null;
   staleMs?:  number;
   className?: string;
 }
@@ -23,10 +23,8 @@ const PALETTE: Record<Tone, { bg: string; fg: string; dot: string }> = {
 };
 
 export default function FeedStatusBadge({
-  connected, lastAt, source, staleMs = 15_000, className,
+  connected, lastAt, status, source, staleMs = 15_000, className,
 }: Props) {
-  // Keep age evaluation fresh even when no new ticks arrive — without
-  // this, a feed that goes quiet would stay stuck on "LIVE" forever.
   const [, rerender] = useState(0);
   useEffect(() => {
     const id = setInterval(() => rerender((n) => n + 1), 2_000);
@@ -34,20 +32,28 @@ export default function FeedStatusBadge({
   }, []);
 
   const age = lastAt == null ? null : Date.now() - lastAt;
+  const streamStatus = status ?? (connected ? 'connected' : 'disconnected');
 
   let label: string;
   let tone: Tone;
-  if (!connected) {
+  if (streamStatus === 'disconnected') {
     label = 'DISCONNECTED'; tone = 'off';
+  } else if (streamStatus === 'connecting') {
+    label = 'CONNECTING'; tone = 'idle';
+  } else if (streamStatus === 'reconnecting') {
+    label = 'RECONNECTING'; tone = 'fallback';
   } else if (age != null && age > staleMs) {
-    label = 'STALE';        tone = 'stale';
-  } else if (source === 'yahoo') { // @deprecated marker
-    label = 'YAHOO';        tone = 'fallback';
+    label = 'STALE'; tone = 'stale';
+  } else if (source === 'yahoo') {
+    label = 'DELAYED'; tone = 'fallback';
+  } else if (age != null) {
+    label = 'LIVE'; tone = 'live';
   } else {
-    label = 'CONNECTING';   tone = 'idle';
+    label = 'CONNECTING'; tone = 'idle';
   }
+
   const c = PALETTE[tone];
-  const pulsing = tone === 'fallback';
+  const pulsing = tone === 'fallback' || tone === 'idle';
 
   return (
     <span

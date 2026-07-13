@@ -1,11 +1,13 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, StatCard, Modal, Button, Input, Loading, Empty, AlertBanner } from '@/components/ui';
 import { portfolioApi } from '@/lib/apiClient';
 import { fmt, changeClass } from '@/lib/utils';
 import { Briefcase, Plus, Trash2 } from 'lucide-react';
 import type { PortfolioPosition, PortfolioSummary } from '@/types';
+import { useMarketStream } from '@/hooks/useMarketStream';
+import MarketStreamStatus from '@/components/ui/MarketStreamStatus';
 
 const empty = { tradingsymbol:'', exchange:'NSE', quantity:'', buy_price:'' };
 
@@ -29,6 +31,28 @@ export default function PortfolioPage() {
 
   useEffect(() => { load(); }, []);
 
+  const symbols = useMemo(
+    () => [...new Set(positions.map((p) => p.tradingsymbol.toUpperCase()).filter(Boolean))],
+    [positions],
+  );
+  const { ticks, status: streamStatus, lastAt } = useMarketStream({ symbols });
+
+  const liveSummary = useMemo(() => {
+    if (!positions.length) return null;
+    let invested = 0;
+    let current = 0;
+    for (const p of positions) {
+      const inv = p.quantity * p.buy_price;
+      invested += inv;
+      const live = ticks.get(p.tradingsymbol.toUpperCase());
+      const cmp = live?.price ?? p.current_price ?? p.buy_price;
+      current += p.quantity * cmp;
+    }
+    const pnl = current - invested;
+    const pnlPct = invested ? (pnl / invested) * 100 : 0;
+    return { invested, current, pnl, pnlPct };
+  }, [positions, ticks]);
+
   async function addPosition() {
     if (!form.tradingsymbol || !form.quantity || !form.buy_price) return setError('All fields required');
     setSaving(true); setError('');
@@ -45,7 +69,8 @@ export default function PortfolioPage() {
     setPositions(prev => prev.filter(p => p.id !== id));
   }
 
-  const pnlCls = summary?.total_pnl != null && summary.total_pnl >= 0 ? 'positive' : 'negative';
+  const pnlCls = (liveSummary?.pnl ?? summary?.total_pnl) != null &&
+    (liveSummary?.pnl ?? summary?.total_pnl ?? 0) >= 0 ? 'positive' : 'negative';
 
   return (
     <AppShell title="Portfolio">
@@ -76,15 +101,18 @@ export default function PortfolioPage() {
       <div className="page">
         <div className="page__header">
           <div><h1>Portfolio</h1><p>{positions.length} positions</p></div>
-          <Button onClick={() => setModal(true)}><Plus size={14} /> Add Position</Button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <MarketStreamStatus status={streamStatus} lastAt={lastAt} />
+            <Button onClick={() => setModal(true)}><Plus size={14} /> Add Position</Button>
+          </div>
         </div>
 
         {/* Summary */}
         <div className="grid-stats" style={{ marginBottom:24 }}>
-          <StatCard label="Invested"      value={fmt.currency(summary?.total_invested)} icon={Briefcase} iconVariant="blue"   loading={loading} />
-          <StatCard label="Current Value" value={fmt.currency(summary?.current_value)}  icon={Briefcase} iconVariant="green"  loading={loading} />
-          <StatCard label="Total P&L"     value={<span className={pnlCls}>{fmt.currency(summary?.total_pnl)}</span>} icon={Briefcase} iconVariant={summary?.total_pnl != null && summary.total_pnl >= 0 ? 'green' : 'red'} loading={loading} />
-          <StatCard label="P&L %"         value={<span className={pnlCls}>{fmt.percent(summary?.pnl_pct)}</span>} icon={Briefcase} iconVariant={summary?.pnl_pct != null && summary.pnl_pct >= 0 ? 'green' : 'red'} loading={loading} />
+          <StatCard label="Invested"      value={fmt.currency(liveSummary?.invested ?? summary?.total_invested)} icon={Briefcase} iconVariant="blue"   loading={loading} />
+          <StatCard label="Current Value" value={fmt.currency(liveSummary?.current ?? summary?.current_value)}  icon={Briefcase} iconVariant="green"  loading={loading} />
+          <StatCard label="Total P&L"     value={<span className={pnlCls}>{fmt.currency(liveSummary?.pnl ?? summary?.total_pnl)}</span>} icon={Briefcase} iconVariant={(liveSummary?.pnl ?? summary?.total_pnl ?? 0) >= 0 ? 'green' : 'red'} loading={loading} />
+          <StatCard label="P&L %"         value={<span className={pnlCls}>{fmt.percent(liveSummary?.pnlPct ?? summary?.pnl_pct)}</span>} icon={Briefcase} iconVariant={(liveSummary?.pnlPct ?? summary?.pnl_pct ?? 0) >= 0 ? 'green' : 'red'} loading={loading} />
         </div>
 
         {/* Positions */}
@@ -104,7 +132,9 @@ export default function PortfolioPage() {
                 <tbody>
                   {positions.map(p => {
                     const inv  = p.quantity * p.buy_price;
-                    const cur  = p.quantity * (p.current_price ?? p.buy_price);
+                    const live = ticks.get(p.tradingsymbol.toUpperCase());
+                    const cmp  = live?.price ?? p.current_price ?? p.buy_price;
+                    const cur  = p.quantity * cmp;
                     const pnl  = cur - inv;
                     const pct  = inv ? (pnl / inv) * 100 : 0;
                     return (
@@ -112,7 +142,7 @@ export default function PortfolioPage() {
                         <td><strong style={{ color:'#1E3A5F' }}>{p.tradingsymbol}</strong></td>
                         <td style={{ textAlign:'right' }}>{p.quantity}</td>
                         <td style={{ textAlign:'right' }}>{fmt.currency(p.buy_price)}</td>
-                        <td style={{ textAlign:'right' }}>{fmt.currency(p.current_price)}</td>
+                        <td style={{ textAlign:'right' }}>{fmt.currency(cmp)}</td>
                         <td style={{ textAlign:'right' }}>{fmt.currency(inv)}</td>
                         <td style={{ textAlign:'right' }}>{fmt.currency(cur)}</td>
                         <td style={{ textAlign:'right' }} className={changeClass(pnl)}>{fmt.currency(pnl)}</td>

@@ -195,6 +195,10 @@
   box-shadow:$shadow-xl; border:1px solid $color-border;
   width:100%; max-width:480px; max-height:90vh; overflow-y:auto;
   @include thin-scroll;
+  &--wide {
+    max-width:min(1120px, 96vw);
+    .modal__body { min-height:420px; }
+  }
   &__header {
     @include flex-between; padding:$s5 $s5 $s4; border-bottom:1px solid $color-border;
     h3 { font-size:$text-lg; font-weight:700; }

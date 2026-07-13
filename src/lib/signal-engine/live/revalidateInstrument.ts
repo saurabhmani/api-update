@@ -31,6 +31,10 @@
 
 import { db }                 from '@/lib/db';
 import {
+  getLatestActiveSnapshotBySymbol,
+  type ConfirmedSnapshotRow,
+}                             from '@/lib/signal-engine/repository/readConfirmedSnapshots';
+import {
   generateSignal,
   opportunityScore,
   type Signal,
@@ -122,6 +126,12 @@ export interface RevalidatedInstrumentResponse {
   portfolio_fit_score: number | null;
   regime_alignment:  number | null;
   revalidation:      RevalidationBlock;
+  /** Trade-plan levels duplicated at top level for tabs that read outside `signal`. */
+  entry_price?:      number | null;
+  stop_loss?:        number | null;
+  target1?:          number | null;
+  target2?:          number | null;
+  risk_reward?:      number | null;
 }
 
 // Stored rows are projected into a Signal-shaped object so the existing
@@ -162,6 +172,32 @@ export interface StoredSignalAsLive {
 function n(v: unknown, fallback = 0): number {
   const x = Number(v);
   return Number.isFinite(x) ? x : fallback;
+}
+
+function positiveLevel(v: unknown): number | null {
+  const x = Number(v);
+  return Number.isFinite(x) && x > 0 ? x : null;
+}
+
+function tradeLevelsFromSignal(
+  sig: Signal | StoredSignalAsLive | null,
+): Pick<RevalidatedInstrumentResponse, 'entry_price' | 'stop_loss' | 'target1' | 'target2' | 'risk_reward'> {
+  if (!sig) {
+    return { entry_price: null, stop_loss: null, target1: null, target2: null, risk_reward: null };
+  }
+  const rr = positiveLevel(sig.risk_reward);
+  return {
+    entry_price: positiveLevel(sig.entry_price),
+    stop_loss:   positiveLevel(sig.stop_loss),
+    target1:     positiveLevel(sig.target1),
+    target2:     positiveLevel(sig.target2),
+    risk_reward: rr,
+  };
+}
+
+function withTradeLevels(resp: RevalidatedInstrumentResponse): RevalidatedInstrumentResponse {
+  const levels = tradeLevelsFromSignal(resp.signal);
+  return { ...resp, ...levels };
 }
 
 async function loadLatestStored(symbol: string, instrumentKey: string): Promise<StoredSignalRow | null> {
@@ -245,6 +281,158 @@ async function loadLatestStored(symbol: string, instrumentKey: string): Promise<
     console.warn(`[revalidateInstrument] loadLatestStored ${symbol} failed:`, err?.message);
     return null;
   }
+}
+
+function scoreFromFactors(
+  factors: Record<string, unknown>,
+  ...keys: string[]
+): number | null {
+  for (const key of keys) {
+    const x = Number((factors as any)[key]);
+    if (Number.isFinite(x) && x > 0) return x;
+  }
+  return null;
+}
+
+function projectConfirmedSnapshot(row: ConfirmedSnapshotRow): StoredSignalAsLive {
+  const factors = (row.factor_scores ?? {}) as Record<string, unknown>;
+  const gates   = (row.gate_details ?? {}) as Record<string, unknown>;
+  const conf    = row.confidence_score ?? 0;
+  // Match /signals table backfill: prefer stored factor, else min(100, conf+5)
+  const fitFromFactors =
+    scoreFromFactors(factors, 'portfolio_fit_score', 'portfolio_fit')
+    ?? scoreFromFactors(gates, 'portfolio_fit_score', 'portfolio_fit')
+    ?? Math.min(100, conf + 5);
+  const riskFromFactors =
+    scoreFromFactors(factors, 'risk_score', 'risk')
+    ?? 50;
+
+  const visibleReasons = Object.entries(row.explanation ?? {})
+    .filter(([, v]) => typeof v === 'string' && v.length > 0)
+    .slice(0, 6)
+    .map(([key, text], i) => ({
+      rank:         i + 1,
+      factor_key:   key,
+      text:         String(text),
+      contribution: 0,
+    }));
+
+  if (visibleReasons.length === 0) {
+    visibleReasons.push({
+      rank: 1,
+      factor_key: 'institutional',
+      text: 'Cleared institutional approval gate',
+      contribution: 0,
+    });
+  }
+
+  return {
+    instrument_key:    `NSE_EQ|${row.symbol}`,
+    tradingsymbol:     row.symbol,
+    exchange:          row.exchange ?? 'NSE',
+    direction:         row.direction,
+    timeframe:         'swing',
+    confidence:        conf,
+    risk_score:        riskFromFactors,
+    opportunity_score: row.expected_edge_percent ?? 0,
+    portfolio_fit:     fitFromFactors,
+    conviction_band:   String(row.conviction_level ?? 'medium').toLowerCase(),
+    market_stance:     String((factors as any).market_stance ?? 'selective'),
+    regime_alignment:  Number((factors as any).regime_alignment ?? 0) || 0,
+    rejection_reasons: [],
+    rejection_codes:   row.rejection_codes ?? [],
+    signal_status:     'APPROVED_SIGNAL',
+    scenario_tag:      row.strategy ?? row.classification ?? 'INSTITUTIONAL',
+    regime:            String((factors as any).market_regime ?? 'NEUTRAL'),
+    entry_price:       row.entry_price ?? 0,
+    stop_loss:         row.stop_loss ?? 0,
+    target1:           row.target1 ?? 0,
+    target2:           row.target2 ?? 0,
+    risk_reward:       row.risk_reward ?? row.rr_ratio ?? 0,
+    reasons:           visibleReasons,
+    signal_type:       row.strategy ?? row.direction,
+    generated_at:      row.confirmed_at ?? new Date().toISOString(),
+    source:            'stored_q365',
+  };
+}
+
+function responseFromConfirmedSnapshot(
+  snap:  ConfirmedSnapshotRow,
+  live:  Signal | null,
+): RevalidatedInstrumentResponse {
+  const projected = projectConfirmedSnapshot(snap);
+  const liveDirection      = live?.direction ?? null;
+  const liveStatus         = live?.signal_status ?? null;
+  const liveRejected       = !!live && live.rejection_reasons.length > 0;
+  const liveConfidence     = live?.confidence ?? null;
+  const liveRejectionList  = live?.rejection_reasons ?? [];
+  const liveRejectionCodes = live?.rejection_codes   ?? [];
+
+  const storedBlock: RevalidationBlock['stored'] = {
+    direction:        snap.direction,
+    signal_status:    'APPROVED_SIGNAL',
+    confidence_score: snap.confidence_score,
+    generated_at:     snap.confirmed_at,
+    signal_id:        snap.source_signal_id,
+  };
+
+  const liveBlock: RevalidationBlock['live'] = live ? {
+    direction:         liveDirection,
+    signal_status:     liveStatus,
+    confidence_score:  liveConfidence,
+    rejection_reasons: [...liveRejectionList],
+    rejection_codes:   [...liveRejectionCodes],
+  } : undefined;
+
+  const storedDirection = snap.direction.toUpperCase();
+  const liveDirNorm     = (liveDirection ?? '').toUpperCase();
+  const sameDirection   = !liveDirNorm || storedDirection === liveDirNorm;
+
+  let revalidation: RevalidationBlock;
+  if (!live) {
+    revalidation = {
+      status: 'stored_only', display_source: 'stored', live_invalidated: false,
+      banner: null, stored: storedBlock, live: liveBlock,
+    };
+  } else if (!liveRejected && sameDirection) {
+    revalidation = {
+      status: 'consistent', display_source: 'stored', live_invalidated: false,
+      banner: null, stored: storedBlock, live: liveBlock,
+    };
+  } else {
+    revalidation = {
+      status:           'revalidated',
+      display_source:   'stored',
+      live_invalidated: true,
+      banner: !sameDirection && liveDirNorm
+        ? `Signal Changed / Revalidated — live engine now reports ${liveDirNorm}`
+        : 'Market is currently closed — awaiting fresh confirmation',
+      stored: storedBlock,
+      live:   liveBlock,
+    };
+  }
+
+  const riskScore = projected.risk_score;
+  return {
+    signal:              projected,
+    approved:            true,
+    rejection_reasons:   liveRejected ? liveRejectionList : [],
+    rejection_codes:     liveRejected ? liveRejectionCodes : [],
+    soft_warnings:       live?.soft_warnings ?? [],
+    factor_scores:       (live?.factor_scores ?? snap.factor_scores ?? null) as Record<string, number> | null,
+    confidence_score:    projected.confidence,
+    composite_score:     snap.final_score != null ? Math.round(snap.final_score) : null,
+    portfolio_fit:       projected.portfolio_fit,
+    conviction_band:     projected.conviction_band,
+    regime:              projected.regime,
+    scenario_tag:        projected.scenario_tag,
+    market_stance:       projected.market_stance,
+    opportunity_score:   projected.opportunity_score,
+    risk_score:          riskScore,
+    portfolio_fit_score: projected.portfolio_fit,
+    regime_alignment:    projected.regime_alignment,
+    revalidation,
+  };
 }
 
 function projectStored(row: StoredSignalRow): StoredSignalAsLive {
@@ -402,6 +590,19 @@ export async function revalidateInstrument(
   opts:          RevalidateOpts = {},
 ): Promise<RevalidatedInstrumentResponse> {
   const persist = opts.persistInvalidation !== false;
+  const sym = symbol.toUpperCase();
+
+  // Prefer confirmed snapshots — same source as the main /signals table.
+  // Without this, the stock-detail page runs live-only generateSignal() and
+  // shows "Signal Rejected" while /signals still lists the symbol as APPROVED.
+  const confirmedSnap = await getLatestActiveSnapshotBySymbol(sym).catch(() => null);
+  if (confirmedSnap?.status === 'ACTIVE') {
+    const live = await generateSignal(instrumentKey, sym, exchange).catch((err) => {
+      console.warn(`[revalidateInstrument] generateSignal ${sym} threw:`, err?.message);
+      return null;
+    });
+    return withTradeLevels(responseFromConfirmedSnapshot(confirmedSnap, live));
+  }
 
   // 1. Fetch stored + live in parallel — they don't share state.
   const [stored, live] = await Promise.all([
@@ -438,7 +639,7 @@ export async function revalidateInstrument(
   // ── Case A: no stored row — live is the only source ──────────────
   if (!stored) {
     if (!live) {
-      return {
+      return withTradeLevels({
         signal:            null,
         approved:          false,
         rejection_reasons: [],
@@ -464,10 +665,10 @@ export async function revalidateInstrument(
           stored:           storedBlock,
           live:             liveBlock,
         },
-      };
+      });
     }
     if (liveRejected) {
-      return {
+      return withTradeLevels({
         signal:            null,
         approved:          false,
         rejection_reasons: liveRejectionList,
@@ -493,9 +694,9 @@ export async function revalidateInstrument(
           stored:           storedBlock,
           live:             liveBlock,
         },
-      };
+      });
     }
-    return {
+    return withTradeLevels({
       signal:            live,
       approved:          true,
       rejection_reasons: [],
@@ -521,7 +722,7 @@ export async function revalidateInstrument(
         stored:           storedBlock,
         live:             liveBlock,
       },
-    };
+    });
   }
 
   // ── Case B: stored present, live engine returned null ────────────
@@ -530,7 +731,7 @@ export async function revalidateInstrument(
   // as-is and surface the missing live result via the envelope.
   if (!live) {
     const projected = projectStored(stored);
-    return {
+    return withTradeLevels({
       signal:            projected,
       approved:          true,
       rejection_reasons: [],
@@ -556,7 +757,7 @@ export async function revalidateInstrument(
         stored:           storedBlock,
         live:             liveBlock,
       },
-    };
+    });
   }
 
   // ── Case C: stored + live agree (consistent) ─────────────────────
@@ -565,7 +766,7 @@ export async function revalidateInstrument(
   const sameDirection   = storedDirection && liveDirNorm && storedDirection === liveDirNorm;
 
   if (!liveRejected && sameDirection) {
-    return {
+    return withTradeLevels({
       signal:            live,
       approved:          true,
       rejection_reasons: [],
@@ -591,7 +792,7 @@ export async function revalidateInstrument(
         stored:           storedBlock,
         live:             liveBlock,
       },
-    };
+    });
   }
 
   // ── Case D: stored APPROVED, live disagrees → REVALIDATED ────────
@@ -624,7 +825,7 @@ export async function revalidateInstrument(
     // so the invalidated row drops out on the next tick naturally.
   }
 
-  return {
+  return withTradeLevels({
     signal:            projected,
     // approved=true here is intentional: from the user's POV the
     // displayed signal IS the actionable BUY/SELL. The revalidation
@@ -655,5 +856,5 @@ export async function revalidateInstrument(
       stored:           storedBlock,
       live:             liveBlock,
     },
-  };
+  });
 }

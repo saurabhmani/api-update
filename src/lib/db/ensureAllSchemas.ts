@@ -14,6 +14,7 @@
 
 import { db } from '../db';
 import { migrateMarketData } from './migrateMarketData';
+import { migrateDualSource } from './migrateDualSource';
 import { migrateProviderRequestLogs } from './migrateProviderRequestLogs';
 import { migrateSignalEngine } from './migrateSignalEngine';
 
@@ -907,6 +908,13 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
   } catch (err) {
     failed++;
     console.error('[ensureAllSchemas] migrateSignalEngine failed:', (err as Error).message);
+  }
+
+  try {
+    await migrateDualSource();
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] migrateDualSource failed:', (err as Error).message);
   }
 
   // 3. Seed minimal rows so dashboards have something to render

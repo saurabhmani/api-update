@@ -296,7 +296,9 @@ export interface LeaderboardEntry {
  */
 export async function loadDirectSignalOutcomes(
   window: PerformanceWindow,
+  options?: { limit?: number },
 ): Promise<PerformanceOutcomeRow[]> {
+  const limit = Math.max(1, Math.min(options?.limit ?? 20_000, 200_000));
   const cutoff = windowCutoffIso(window);
   // Window by the resolution timestamp (`outcome_at`) so terminal
   // outcomes fall in the intended window regardless of when the
@@ -306,22 +308,37 @@ export async function loadDirectSignalOutcomes(
   const params = cutoff ? [cutoff] : [];
   try {
     try {
+      // The outcomes table carries two column vocabularies: the newer
+      // `outcome` / `strategy_id` columns written by the snapshot
+      // backfill writer, and the legacy `outcome_label` / target*_hit
+      // columns written by the Phase-4 feedback evaluator. COALESCE
+      // across both (and fall back to the joined q365_signals row for
+      // symbol / strategy / direction) so rows from either writer load.
       const { rows } = await db.query<any>(
-        `SELECT o.id, o.signal_id, o.source_snapshot_id, o.symbol,
-                COALESCE(NULLIF(o.strategy_id, ''), NULLIF(o.strategy, ''), 'unclassified') AS strategy_id,
-                o.direction, o.sector,
-                o.regime AS market_regime, o.confidence_score,
-                o.outcome, o.return_pct, o.return_r,
+        `SELECT o.id, o.signal_id, o.source_snapshot_id,
+                COALESCE(NULLIF(o.symbol, ''), s.symbol) AS symbol,
+                COALESCE(NULLIF(NULLIF(o.strategy_id, ''), 'unclassified'),
+                         NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
+                         s.signal_type, 'unclassified') AS strategy_id,
+                COALESCE(NULLIF(o.direction, ''), s.direction) AS direction,
+                COALESCE(o.sector, s.sector) AS sector,
+                COALESCE(o.regime, s.market_regime) AS market_regime,
+                COALESCE(o.confidence_score, s.confidence_score) AS confidence_score,
+                COALESCE(NULLIF(o.outcome, ''), o.outcome_label) AS outcome,
+                o.return_pct, o.return_r, o.pnl_r,
                 o.target_hit, o.stop_hit, o.invalidated,
-                o.mfe_pct, o.mae_pct, o.holding_period_bars,
-                o.approval_status, o.evaluated_at,
+                o.target1_hit, o.target2_hit, o.target3_hit,
+                o.max_fav_excursion_pct, o.max_adv_excursion_pct,
+                o.max_gain_pct, o.return_bar5_pct, o.return_bar10_pct,
+                o.mfe_pct, o.mae_pct, o.holding_period_bars, o.days_held,
+                o.approval_status, o.evaluated_at, o.outcome_at, o.resolved_at,
                 s.entry_price, s.stop_loss, s.target1, s.target2,
                 s.classification, s.rejection_codes_json
            FROM q365_signal_outcomes o
            LEFT JOIN q365_signals s ON s.id = o.signal_id
            ${where}
            ORDER BY ${eventAt} DESC
-           LIMIT 20000`,
+           LIMIT ${limit}`,
         params,
       );
       return (rows ?? []).map(directOutcomeToRow);
@@ -330,7 +347,10 @@ export async function loadDirectSignalOutcomes(
       const legacyEventAt = 'o.evaluated_at';
       const legacyWhere = cutoff ? `WHERE ${legacyEventAt} >= ?` : '';
       const { rows } = await db.query<any>(
-        `SELECT o.id, o.signal_id, s.symbol, s.strategy_id,
+        `SELECT o.id, o.signal_id, s.symbol,
+                COALESCE(NULLIF(NULLIF(o.strategy_id, ''), 'unclassified'),
+                         NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
+                         s.signal_type, 'unclassified') AS strategy_id,
                 o.outcome_label AS outcome,
                 o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
                 o.max_fav_excursion_pct AS max_gain_pct, o.pnl_r,
@@ -344,7 +364,7 @@ export async function loadDirectSignalOutcomes(
            LEFT JOIN q365_signals s ON s.id = o.signal_id
            ${legacyWhere}
            ORDER BY ${legacyEventAt} DESC
-           LIMIT 20000`,
+           LIMIT ${limit}`,
         params,
       );
       return (rows ?? []).map(directOutcomeToRow);
@@ -360,16 +380,20 @@ export async function loadDirectSignalOutcomes(
   }
 }
 
-/** Normalise the varchar `outcome` column. The writer has used two
- *  vocabularies over time — the newer `WIN` / `LOSS` labels and the
- *  older `T1_HIT` / `SL_HIT` labels. Both count identically. */
+/** Normalise the varchar `outcome` column. The writers have used three
+ *  vocabularies over time — the newer `WIN` / `LOSS` labels, the older
+ *  `T1_HIT` / `SL_HIT` labels, and the Phase-4 feedback evaluator's
+ *  `outcome_label` values (good_followthrough / partial_success /
+ *  stopped_out / expired / stale_no_trigger / ambiguous). All map onto
+ *  the same WIN / LOSS / EXPIRED semantics. */
 function normaliseOutcome(raw: string): OutcomeStatus {
   const v = raw.trim().toUpperCase();
-  if (v === 'WIN' || v === 'T1_HIT' || v === 'T2_HIT' || v === 'T3_HIT') return 'WIN';
-  if (v === 'LOSS' || v === 'SL_HIT') return 'LOSS';
-  if (v === 'EXPIRED') return 'EXPIRED';
+  if (v === 'WIN' || v === 'T1_HIT' || v === 'T2_HIT' || v === 'T3_HIT'
+   || v === 'GOOD_FOLLOWTHROUGH' || v === 'PARTIAL_SUCCESS') return 'WIN';
+  if (v === 'LOSS' || v === 'SL_HIT' || v === 'STOPPED_OUT') return 'LOSS';
+  if (v === 'EXPIRED' || v === 'STALE_NO_TRIGGER') return 'EXPIRED';
   if (v === 'INVALIDATED') return 'INVALIDATED';
-  if (v === 'ACTIVE' || v === 'OPEN' || v === '') return 'OPEN';
+  if (v === 'ACTIVE' || v === 'OPEN' || v === 'AMBIGUOUS' || v === '') return 'OPEN';
   return 'INSUFFICIENT_DATA';
 }
 

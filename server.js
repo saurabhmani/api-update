@@ -85,8 +85,8 @@ const NEXT_PORT = Number(process.env.PORT || process.env.NEXT_PORT) || 5000;
 const HOSTNAME  = process.env.HOST || '0.0.0.0';
 const DEV       = process.env.NODE_ENV !== 'production';
 
-// Kite WebSocket stream server (port 5001) removed — signal-only mode
-// does not serve live ticks. Only the Next.js HTTP listener remains.
+// Kite WebSocket stream server removed — live ticks are served by
+// IndianAPI polling + WebSocket fan-out (see instrumentation.ts).
 
 // tsx binary used to run TypeScript worker entrypoints. Same binary
 // PM2 used to invoke in the old ecosystem config.
@@ -271,7 +271,7 @@ async function main() {
 
   httpServer.listen(NEXT_PORT, HOSTNAME, () => {
     console.log(`[server] Next.js ready on http://${HOSTNAME}:${NEXT_PORT}`);
-    console.log(`[server] Signal-only mode — Yahoo data source, no WS feed`);
+    console.log(`[server] Live market WS feed boots via Next instrumentation (STREAM_WS_PORT)`);
   });
 
   startAllWorkers();

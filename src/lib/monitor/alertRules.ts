@@ -55,6 +55,31 @@ export interface AlertEvaluationInput {
     state:       string;
     auth_failed: boolean;
   } | null;
+  /** Confirmed-snapshot funnel probe (PRODUCTION-READINESS 2026-07). */
+  signalsPipeline?: {
+    market_open:            boolean;
+    active_confirmed_count: number | null;
+    /** Latest q365_confirmed_signal_snapshots write, epoch ms. */
+    last_pipeline_run_ms:   number | null;
+  } | null;
+  /** In-process live feed state (getLiveFeedState). */
+  liveFeed?: {
+    quality:           string;
+    market_open:       boolean;
+    approvals_blocked: boolean;
+    tick_age_ms:       number | null;
+  } | null;
+  /** Custom-universe scanner in-flight lock (scannerState). */
+  scanner?: {
+    in_flight:  boolean;
+    elapsed_ms: number | null;
+  } | null;
+  /** IndianAPI quota report (getQuotaReport) — percents are 0..1. */
+  quota?: {
+    daily_percent:   number;
+    monthly_percent: number;
+    state:           string;
+  } | null;
 }
 
 interface RuleConfig {
@@ -64,6 +89,9 @@ interface RuleConfig {
   scan_coverage_floor_pct:       number;
   approval_ratio_collapse_floor: number;
   elite_zero_output_min_sample:  number;
+  no_confirmed_signals_minutes:  number;
+  stuck_in_flight_minutes:       number;
+  quota_warning_pct:             number;
 }
 
 function envNum(name: string, fb: number, lo: number, hi: number): number {
@@ -80,6 +108,9 @@ function getRuleConfig(): RuleConfig {
     scan_coverage_floor_pct:       envNum('ALERT_SCAN_COVERAGE_FLOOR_PCT',   90, 0,  100),
     approval_ratio_collapse_floor: envNum('ALERT_APPROVAL_RATIO_FLOOR',      0.001, 0, 1),
     elite_zero_output_min_sample:  envNum('ALERT_ELITE_ZERO_MIN_SAMPLE',     100, 10, 100_000),
+    no_confirmed_signals_minutes:  envNum('ALERT_NO_CONFIRMED_SIGNALS_MIN',  30, 5,  1440),
+    stuck_in_flight_minutes:       envNum('ALERT_STUCK_INFLIGHT_MIN',        5,  1,  120),
+    quota_warning_pct:             envNum('ALERT_QUOTA_WARNING_PCT',         90, 50, 100),
   };
 }
 
@@ -252,6 +283,103 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
       },
       triggered_at: now,
     });
+  }
+
+  // ── no_confirmed_signals ─────────────────────────────────────
+  // PRODUCTION-READINESS 2026-07 alert 1: zero ACTIVE confirmed
+  // snapshots during market hours, sustained past the threshold after
+  // the last pipeline write. This is the exact "empty UI, full DB"
+  // failure mode the funnel playbook targets.
+  const sp = input.signalsPipeline;
+  if (sp?.market_open === true && sp.active_confirmed_count === 0) {
+    const lastRunAgeMin = sp.last_pipeline_run_ms != null
+      ? (Date.now() - sp.last_pipeline_run_ms) / 60_000
+      : null;
+    if (lastRunAgeMin === null || lastRunAgeMin >= cfg.no_confirmed_signals_minutes) {
+      alerts.push({
+        id:        'no_confirmed_signals',
+        severity:  'critical',
+        title:     'No confirmed signals during market hours',
+        detail:    lastRunAgeMin === null
+          ? 'q365_confirmed_signal_snapshots has 0 ACTIVE rows and no pipeline write has ever been recorded. Run diagnoseSignalFunnel.ts.'
+          : `0 ACTIVE confirmed snapshots and the last pipeline write was ${Math.round(lastRunAgeMin)} min ago (threshold ${cfg.no_confirmed_signals_minutes} min). The dashboard and signals page are empty for every user.`,
+        context: {
+          active_confirmed_count: sp.active_confirmed_count,
+          last_pipeline_run_ms:   sp.last_pipeline_run_ms,
+          last_run_age_minutes:   lastRunAgeMin,
+          threshold_minutes:      cfg.no_confirmed_signals_minutes,
+        },
+        triggered_at: now,
+      });
+    }
+  }
+
+  // ── live_feed_stale ──────────────────────────────────────────
+  // Alert 2: live feed stale/disconnected during market hours. When
+  // approvals_blocked is true the engine also refuses to approve new
+  // signals, so this compounds into alert 1 if left unattended.
+  const lf = input.liveFeed;
+  if (lf?.market_open === true
+      && (lf.quality === 'stale' || lf.quality === 'disconnected' || lf.approvals_blocked)) {
+    alerts.push({
+      id:        'live_feed_stale',
+      severity:  'critical',
+      title:     `Live feed ${lf.quality} during market hours`,
+      detail:    `Last tick was ${lf.tick_age_ms != null ? Math.round(lf.tick_age_ms / 1000) + 's' : 'never'} ago and approvals are ${lf.approvals_blocked ? 'BLOCKED' : 'still allowed'}. Probe with scripts/probeLiveWs.ts; check STREAM_WS_DISABLED and the IndianAPI breaker.`,
+      context: {
+        quality:           lf.quality,
+        tick_age_ms:       lf.tick_age_ms,
+        approvals_blocked: lf.approvals_blocked,
+      },
+      triggered_at: now,
+    });
+  }
+
+  // ── pipeline_stuck_in_flight ─────────────────────────────────
+  // Alert 3: the scanner in-flight lock has been held far past the
+  // ~30s stale watchdog — auto-recovery itself has failed, so every
+  // subsequent run request is 409-blocked.
+  const sc = input.scanner;
+  if (sc?.in_flight === true
+      && sc.elapsed_ms != null
+      && sc.elapsed_ms >= cfg.stuck_in_flight_minutes * 60_000) {
+    alerts.push({
+      id:        'pipeline_stuck_in_flight',
+      severity:  'critical',
+      title:     `Scanner in-flight lock held for ${Math.round(sc.elapsed_ms / 60_000)} min`,
+      detail:    `The in-flight lock outlived the stale watchdog (threshold ${cfg.stuck_in_flight_minutes} min); new scans are refused with 409. Clear via GET /api/scanner/custom-universe/status (watchdog) or npm run unblock:execution-lock for the engine lock.`,
+      context: {
+        elapsed_ms:        sc.elapsed_ms,
+        threshold_minutes: cfg.stuck_in_flight_minutes,
+      },
+      triggered_at: now,
+    });
+  }
+
+  // ── api_quota_near_limit ─────────────────────────────────────
+  // Alert 4: IndianAPI quota above the warning band. Critical once a
+  // window is exhausted (requests are being refused outright).
+  const q = input.quota;
+  if (q) {
+    const worstPct = Math.max(q.daily_percent, q.monthly_percent) * 100;
+    if (worstPct >= cfg.quota_warning_pct) {
+      const exhausted = worstPct >= 100;
+      alerts.push({
+        id:        'api_quota_near_limit',
+        severity:  exhausted ? 'critical' : 'warning',
+        title:     exhausted
+          ? 'IndianAPI quota exhausted — requests are being blocked'
+          : `IndianAPI quota at ${Math.round(worstPct)}% of limit`,
+        detail:    `Daily ${Math.round(q.daily_percent * 100)}%, monthly ${Math.round(q.monthly_percent * 100)}% (state=${q.state}). Reduce polling / universe caps, or wait for the IST reset. Audit with npx tsx scripts/productionAudit.ts.`,
+        context: {
+          daily_percent:   q.daily_percent,
+          monthly_percent: q.monthly_percent,
+          state:           q.state,
+          warning_pct:     cfg.quota_warning_pct,
+        },
+        triggered_at: now,
+      });
+    }
   }
 
   return alerts;

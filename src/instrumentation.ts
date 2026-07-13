@@ -204,11 +204,36 @@ export async function register() {
     return true;
   });
 
-  // Kite ticker + dynamic subscription sync + WebSocket stream
-  // server were all removed with the Kite integration. Signal-only
-  // mode serves from the Yahoo cache per request; no background
-  // tick feed is required.
-  log.info('Signal-only mode: Kite ticker / WS stream / sub-sync disabled');
+  // ── Live market WebSocket feed ──────────────────────────────
+  // IndianAPI polling loop + WS fan-out on STREAM_WS_PORT.
+  // Disabled when STREAM_WS_DISABLED=true (signal-only dev mode).
+  await withBudget('Live market feed start', 5_000, async () => {
+    const wsDisabled = (process.env.STREAM_WS_DISABLED ?? '').toLowerCase() === 'true';
+    if (wsDisabled) {
+      log.info('STREAM_WS_DISABLED — live market feed not started');
+      return false;
+    }
+    const { startLiveMarketFeed } = await import('@/lib/marketData/liveMarketFeed');
+    const { startStreamServer } = await import('@/lib/ws/streamServer');
+    const { installLiveSessionBarStore } = await import('@/lib/marketData/liveSessionBarStore');
+    const { installLiveSignalRecalc } = await import('@/lib/signal-engine/live/liveSignalRecalc');
+    installLiveSessionBarStore();
+    startLiveMarketFeed();
+    const wsState = startStreamServer();
+    await installLiveSignalRecalc();
+    const { refreshLiveFeedBaseline } = await import('@/lib/marketData/liveFeedBaseline');
+    await refreshLiveFeedBaseline(true);
+    log.info('Live market WebSocket feed started', {
+      wsPort: wsState.port,
+      wsRunning: wsState.running,
+    });
+    return true;
+  });
+
+  // Kite ticker + dynamic subscription sync were removed with the
+  // Kite integration. Live ticks now flow IndianAPI → liveMarketFeed
+  // → tickBus → streamServer → browser WebSocket clients.
+  log.info('Live market mode: IndianAPI feed + WS stream enabled (unless STREAM_WS_DISABLED)');
 
   // ── DB-driven tradeable universe ────────────────────────────
   // The engine reads its scan list from q365_universe(is_active=1).

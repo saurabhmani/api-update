@@ -990,11 +990,13 @@ export default function DashboardPage() {
 
             {opps.length === 0 ? (
               <div className={styles.panelEmpty}>
-                {noApproved && hasCandidates
-                  ? 'Candidates under review — none within striking distance of approval thresholds yet.'
-                  : noApproved
-                    ? 'No approved signals currently. Awaiting candidates that clear the institutional gate.'
-                    : 'Signal data is loading. Refresh or open Engine Health for details.'}
+                {loading || !data
+                  ? 'Signal data is loading. Refresh or open Engine Health for details.'
+                  : noApproved && hasCandidates
+                    ? 'Candidates under review — none within striking distance of approval thresholds yet.'
+                    : noApproved
+                      ? 'No approved signals currently. Awaiting candidates that clear the institutional gate.'
+                      : 'All surfaced signals are fully approved — no additional near-approval candidates this cycle. See the Approved pool on the Signals page.'}
               </div>
             ) : (
               <ul className={styles.oppList}>

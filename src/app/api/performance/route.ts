@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
+import { AuthenticationError, AppError } from '@/lib/errors';
 import { loadTrustStrategyPerformance } from '@/lib/trust-layer';
 import type { PerformanceWindow } from '@/lib/strategies/strategyPerformance';
 
@@ -16,12 +17,20 @@ const WINDOWS = new Set(['7D', '30D', '90D', '180D', '1Y', 'ALL']);
 export async function GET(req: NextRequest) {
   try {
     await requireSession();
+  } catch (err) {
+    if (err instanceof AuthenticationError) {
+      return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
     const url = req.nextUrl;
     const raw = (url.searchParams.get('window') ?? '90D').toUpperCase();
     const window = (WINDOWS.has(raw) ? raw : '90D') as PerformanceWindow;
     const strategyId = url.searchParams.get('strategyId')?.trim() || null;
 
-    const rows = await loadTrustStrategyPerformance(window);
+    const { rows, sourceStatus } = await loadTrustStrategyPerformance(window);
 
     if (strategyId) {
       const match = rows.find((r) => r.strategyId === strategyId);
@@ -30,6 +39,7 @@ export async function GET(req: NextRequest) {
         window,
         global: { strategies: rows, count: rows.length },
         strategy: match ?? null,
+        sourceStatus,
       });
     }
 
@@ -48,8 +58,19 @@ export async function GET(req: NextRequest) {
         totalTrades,
       },
       strategy: null,
+      sourceStatus,
     });
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  } catch (err) {
+    console.error('[api/performance] load failed:', err);
+    if (err instanceof AppError) {
+      return NextResponse.json(
+        { ok: false, error: err.message, code: err.code },
+        { status: err.statusCode },
+      );
+    }
+    return NextResponse.json(
+      { ok: false, error: 'Failed to load performance' },
+      { status: 500 },
+    );
   }
 }

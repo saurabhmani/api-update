@@ -19,6 +19,11 @@ import { db } from '@/lib/db';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
 import { getPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
+import {
+  getLiveFeedState,
+  resolveActiveCandleSource,
+} from '@/lib/marketData/liveFeedState';
+import { getLiveSessionBarStats } from '@/lib/marketData/liveSessionBarStore';
 
 /** Shape of the upstream snapshot freshness probe. Mirrors what
  *  `getConfirmedSnapshotFreshness()` returns; extra fields are
@@ -113,6 +118,14 @@ export interface FreshnessEnvelope {
   /** @deprecated alias for kite_health — kept so existing UI consumers
    *  that read freshness.yahoo_health don't need an immediate update. */ // @deprecated marker
   yahoo_health:                     KiteHealth; // @deprecated marker
+  /** Active candle axis for the signal engine during this response. */
+  candle_feed_source?:              'live_tick' | 'daily';
+  /** Live WebSocket/poll feed quality (market hours). */
+  live_feed_quality?:               'fresh' | 'delayed' | 'stale' | 'disconnected' | 'closed_market';
+  live_feed_connection?:            'connected' | 'reconnecting' | 'disconnected';
+  live_last_tick_at?:               string | null;
+  live_tick_age_seconds?:           number | null;
+  live_approvals_blocked?:          boolean;
 }
 
 export interface BuildFreshnessInput {
@@ -288,6 +301,14 @@ export async function buildFreshness(
   } = input;
 
   const candleMs = await probeLatestCandleMs();
+  const liveFeed = getLiveFeedState();
+  const sessionStats = getLiveSessionBarStats();
+  const candleFeedSource = resolveActiveCandleSource();
+
+  // During market hours prefer live tick age for freshness display.
+  const effectiveCandleMs = liveFeed.marketOpen && liveFeed.lastTickAt != null
+    ? liveFeed.lastTickAt
+    : (sessionStats.lastUpdate ?? candleMs);
 
   // Spec FIX-DATA-PIPELINE §4: when no signals have been promoted yet,
   // surface the pipeline heartbeat so `last_pipeline_run` is never
@@ -371,10 +392,22 @@ export async function buildFreshness(
     active_count:             freshnessRaw.active_count,
     total_lifetime:           freshnessRaw.total_lifetime,
     total_stored_signals:     fallbackUsed ? enrichedLength : freshnessRaw.total_lifetime,
-    candle_latest_ts:         candleMs ? new Date(candleMs).toISOString() : null,
-    candle_age_hours:         candleMs ? Math.round((Date.now() - candleMs) / 3_600_000 * 10) / 10 : null,
+    candle_latest_ts:         effectiveCandleMs ? new Date(effectiveCandleMs).toISOString() : null,
+    candle_age_hours:         effectiveCandleMs
+      ? Math.round((Date.now() - effectiveCandleMs) / 3_600_000 * 10) / 10
+      : null,
     market_open:              getMarketStatus().isOpen,
     data_source:              fallbackUsed ? 'q365_signals_fallback' : 'confirmed_snapshots',
+    candle_feed_source:       candleFeedSource,
+    live_feed_quality:        liveFeed.quality,
+    live_feed_connection:     liveFeed.connectionStatus,
+    live_last_tick_at:        liveFeed.lastTickAt
+      ? new Date(liveFeed.lastTickAt).toISOString()
+      : null,
+    live_tick_age_seconds:    liveFeed.lastTickAgeMs != null
+      ? Math.round(liveFeed.lastTickAgeMs / 1000)
+      : null,
+    live_approvals_blocked:   liveFeed.approvalsBlocked,
     tracker_counts:           trackerCounts,
     in_progress_count:        inProgressLength,
     // Scanner / batch / coverage banner fields — populated only

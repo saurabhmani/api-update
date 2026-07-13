@@ -22,16 +22,43 @@ import {
   getLastSuccessRow,
 } from '@/lib/marketData/feedHealthLog';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
-import { getProviderFlagsSummary } from '@/lib/marketData/providerFlags';
+import { getProviderFlagsSummary, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
+import { getLiveFeedState } from '@/lib/marketData/liveFeedState';
 import { getManualRunStatus } from '@/lib/pipeline/runLockRepo';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline';
+type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline' | 'Market Closed';
 
-function freshnessFromAgeMs(ageMs: number | null, latestQuality: string | null): Freshness {
-  if (ageMs == null) return 'Offline';
+function freshnessFromAgeMs(
+  ageMs: number | null,
+  latestQuality: string | null,
+  opts: {
+    marketOpen: boolean;
+    coarseHealth: ReturnType<typeof getMarketDataHealth>;
+    lastPipelineRunAt: string | null;
+  },
+): Freshness {
+  if (ageMs == null) {
+    const coarse = opts.coarseHealth;
+    const tickAge = coarse.lastTickAgeMs;
+    // Live WS feed is pushing — ring buffer may lag on cold boot.
+    // Only treat recent ticks as "Fresh" during session hours; off-hours
+    // polls (Yahoo/IndianAPI background loops) must not flip the badge green.
+    if (opts.marketOpen) {
+      if (tickAge != null && tickAge < 120_000) return 'Fresh';
+      if (coarse.subscribedCount > 0 && coarse.tickRatePerSec > 0) return 'Fresh';
+      if (coarse.health === 'OK') return 'Stale';
+    }
+    if (!opts.marketOpen && coarse.health === 'DEGRADED') return 'Stale';
+    // Signal pipeline ran recently — engine is alive even if quotes aren't logged.
+    if (opts.lastPipelineRunAt) {
+      const pipelineAge = Date.now() - new Date(opts.lastPipelineRunAt).getTime();
+      if (Number.isFinite(pipelineAge) && pipelineAge < 2 * 3_600_000) return 'Stale';
+    }
+    return 'Offline';
+  }
   if (ageMs < 60_000   && latestQuality === 'HIGH')   return 'Fresh';
   if (ageMs < 300_000  && latestQuality !== 'LOW')    return 'Fresh';
   if (ageMs < 900_000)                                 return 'Stale';
@@ -52,6 +79,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const flags = getProviderFlagsSummary();
   const coarse = getMarketDataHealth();
+  const manual = await getManualRunStatus().catch(() => null);
 
   // Determine the active provider label. The flag wins when present;
   // when no requests have run yet (cold boot) we fall back to flags.
@@ -64,34 +92,42 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
-    lastReq?.provider === 'yahoo'     ? 'Emergency Yahoo' : // @deprecated marker
+    lastReq?.provider === 'yahoo' && !isDualSourceEnabled() ? 'Emergency Yahoo' : // @deprecated marker
     'No';
 
   // Coverage / freshness — computed from the most recent successful
   // batch. If the last invocation was a single-symbol call we surface
   // its coverage but mark the freshness from its quality field.
   const coverage = lastSuc?.coverage_percent ?? 0;
-  let freshness = freshnessFromAgeMs(ageSinceLastSuccessMs, lastSuc?.data_quality ?? null);
+  let freshness = freshnessFromAgeMs(ageSinceLastSuccessMs, lastSuc?.data_quality ?? null, {
+    marketOpen: coarse.market.isOpen,
+    coarseHealth: coarse,
+    lastPipelineRunAt: manual?.lastRunAt ?? null,
+  });
 
   // Market-closed mode: the resolver gate correctly suppresses upstream
   // calls outside session hours, so `lastSuccessAt` ages indefinitely
-  // and `freshnessFromAgeMs` lands on 'Offline'. That paints a red
-  // OFFLINE banner on a system that is actually healthy and serving
-  // last-close snapshot data on purpose. When the coarse health says
-  // DEGRADED *because* the market is closed (not because something is
-  // broken), downgrade the banner from 'Offline' → 'Stale' (yellow,
-  // "static data acceptable") to match the real system state.
-  if (!coarse.market.isOpen
-      && coarse.health === 'DEGRADED'
-      && coarse.source === 'indianapi'
-      && (freshness === 'Offline' || freshness === 'Degraded')) {
-    freshness = 'Stale';
+  // and `freshnessFromAgeMs` can land on 'Stale' / 'Offline'. Background
+  // poll loops may still run and were incorrectly keeping the badge on
+  // 'Fresh' because the override below used to skip when already Fresh.
+  // When the session is closed, label honestly as 'Market Closed' —
+  // last-close snapshot data is expected, not live freshness.
+  if (!coarse.market.isOpen) {
+    freshness = 'Market Closed';
+  }
+
+  // Live WS poll loop (Yahoo + IndianAPI dual-source) is the operator-
+  // visible feed. When it is ingesting ticks, do not mark the header
+  // "Stale" just because the resolver ring buffer logged MEDIUM/LOW
+  // quality on the last IndianAPI batch.
+  const liveFeed = getLiveFeedState();
+  if (coarse.market.isOpen
+      && (liveFeed.quality === 'fresh' || liveFeed.quality === 'delayed')) {
+    freshness = 'Fresh';
   }
 
   // Manual run last timestamp — the dashboard renders these next to
   // "Last Pipeline Run" so the operator sees the manual-vs-cron split.
-  const manual = await getManualRunStatus().catch(() => null);
-
   // Last confirmed-signal write — the dashboard's "Last Confirmed
   // Signal Update" field reads this. We pick MAX(updated_at) over
   // active rows because the lifecycle worker bumps updated_at on

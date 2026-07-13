@@ -533,6 +533,7 @@ export interface UseSignalsPollingResult {
   wsConnected:  boolean;
   wsLastAt:     number | null;
   wsMarketOpen: boolean;
+  wsStreamStatus: ReturnType<typeof useLivePrices>['streamStatus'];
   // Always null in Yahoo-only mode, but typed as a wide nullable // @deprecated marker
   // union so render code that does `kiteStatus?.marketIsOpen`, // @deprecated marker
   // `kiteStatus?.connected`, etc. type-checks. Mirrors the original // @deprecated marker
@@ -725,7 +726,12 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     const isPartial      = envelope.is_partial_scan === true;
 
     if (incomingTs != null && lkgResponseAtRef.current != null && incomingTs < lkgResponseAtRef.current) {
-      return { accept: false, reason: `stale wire payload (older than last accepted by ${lkgResponseAtRef.current - incomingTs}ms)` };
+      // Never reject a populated HTTP response because an earlier empty SSE
+      // frame carried a slightly newer response_generated_at. That race was
+      // leaving signals[]=0 on screen while /api/signals returned rows.
+      if (!(rows.length > 0 && lkgRowsCountRef.current === 0)) {
+        return { accept: false, reason: `stale wire payload (older than last accepted by ${lkgResponseAtRef.current - incomingTs}ms)` };
+      }
     }
 
     // Spec §1: request_id guard. Server stamps every response with
@@ -796,6 +802,12 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
   };
 
   const commitAccepted = (envelope: LkgEnvelope, rows: SignalRow[]): void => {
+    // Empty SSE frames must not advance the wire clock — otherwise the
+    // next HTTP poll (which carries the real q365_signals fallback rows)
+    // looks "stale" and is dropped by acceptResponse().
+    if (rows.length === 0 && envelope.empty_confirmed !== true) {
+      return;
+    }
     if (envelope.response_generated_at) {
       const ts = new Date(envelope.response_generated_at).getTime();
       if (Number.isFinite(ts)) lkgResponseAtRef.current = ts;
@@ -1266,6 +1278,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     connected: wsConnected,
     lastAt: wsLastAt,
     marketOpen: wsMarketOpen,
+    streamStatus: wsStreamStatus,
   } = useLivePrices();
 
   const stream = useSignalStream(true);
@@ -1520,7 +1533,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     }, FALLBACK_POLL_MS);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsConnected, wsLastAt, wsPrices, kiteStatus, freshness, stream.connected, stream.lastPushAt]); // @deprecated marker
+  }, [wsConnected, wsLastAt, wsPrices.size, kiteStatus, freshness, stream.connected, stream.lastPushAt]); // @deprecated marker
 
   // ── triggerAutoRebuild ─────────────────────────────────────────
   const AUTO_REBUILD_COOLDOWN_MS = 5 * 60_000;
@@ -1685,7 +1698,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
-    wsPrices, wsConnected, wsLastAt, wsMarketOpen, kiteStatus, stream, // @deprecated marker
+    wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load, triggerAutoRebuild,
     lkgBatchIdRef,
   };

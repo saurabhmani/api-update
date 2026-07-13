@@ -66,7 +66,7 @@ export async function buildTrustDashboard(userId: number): Promise<TrustDashboar
 
   let winRate = 0;
   try {
-    const perf = await loadTrustStrategyPerformance('90D');
+    const { rows: perf } = await loadTrustStrategyPerformance('90D');
     const withData = perf.filter((p) => p.dataStatus === 'AVAILABLE');
     if (withData.length > 0) {
       winRate = Math.round(

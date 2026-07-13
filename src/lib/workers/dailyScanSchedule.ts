@@ -331,6 +331,40 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
   const summary = await runCandleDailyUpdateJob({
     maxFetch: DAILY_UPDATE_MAX_REQUESTS(),
   });
+
+  // Self-heal: when IndianAPI produced ZERO bars (typically a 429
+  // rate-limit day), fall back to the free NSE bhavcopy pipeline so
+  // the warehouse still advances and the 16:30 evening scan has
+  // today's candles. Idempotent upsert — safe to run alongside a
+  // later IndianAPI retry.
+  if (!summary.dryRun && summary.fetched === 0 && summary.failed > 0) {
+    log.warn('evening update: IndianAPI returned zero bars — falling back to NSE bhavcopy', {
+      failed: summary.failed,
+      sample: summary.failures.slice(0, 3).map((f) => f.reason),
+    });
+    try {
+      const { runDailyEodIngestion } = await import('@/lib/marketData/eod/eodIngestionPipeline');
+      const eod = await runDailyEodIngestion();
+      const inserted = eod.sources.reduce((n, s) => n + s.inserted + s.updated, 0);
+      log.info('evening update: bhavcopy fallback complete', {
+        ok: eod.ok,
+        inserted,
+        latestCandleDate: eod.latestCandleDate,
+      });
+      if (eod.ok && inserted > 0) {
+        summary.fetched = inserted;
+        summary.failures.push({
+          symbol: '(bhavcopy-fallback)',
+          reason: `indianapi_failed_bhavcopy_recovered_${inserted}_bars`,
+        });
+      }
+    } catch (err) {
+      log.error('evening update: bhavcopy fallback failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const endMs = Date.now();
   const failedSample = summary.failures.slice(0, 10).map((f) => ({
     symbol: f.symbol,

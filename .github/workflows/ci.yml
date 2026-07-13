@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signals-gate:
+    name: Typecheck, lint, signals gate, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Signals gate (blocking test suite)
+        run: npm run test:signals-gate
+
+      - name: Build
+        run: npm run build
+        env:
+          # Build must not require live secrets; DB/provider access is
+          # runtime-only. SESSION_SECRET satisfies the boot-time check.
+          SESSION_SECRET: ci-only-session-secret-not-used-in-prod
+          NODE_ENV: production
+
+  contracts:
+    # Quarantined UI source-regex contracts (docs/test-debt.md).
+    # Informational only — failures do not block the pipeline.
+    name: UI source contracts (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run quarantined contract tests
+        run: npm run test:contracts
+
+  full-suite:
+    # Full Vitest suite — informational until the buckets in
+    # docs/test-debt.md are re-aligned with the current spec.
+    name: Full test suite (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run full vitest suite
+        run: npm test

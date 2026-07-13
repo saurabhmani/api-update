@@ -24,6 +24,7 @@ import { mapToIndianApiSymbol } from '@/lib/marketData/symbolMapper';
 import { persistSnapshot } from '@/services/LiveQuoteService';
 import { cacheSet as redisCacheSet, cacheGet as redisCacheGet } from '@/lib/redis';
 import { withProviderFrame } from '@/lib/marketData/enforcer';
+import { isMarketOpen } from '@/lib/marketData/marketHours';
 import { guarded } from '@/providers/resilience';
 import {
   isNifty500Initialized,
@@ -604,11 +605,15 @@ export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetail
       else cacheMisses += 1;
     }
 
-    // Refresh ONLY the cold cells. getBatchLiveSnapshots is itself
-    // cache-first + budget-guarded, so this is the safest live-feed
-    // top-up call in the codebase.
+    // Refresh ONLY the cold cells, and ONLY while the market is open.
+    // Off-hours prices are frozen at last close (served by the
+    // market-close snapshot tier), so an upstream top-up would spend
+    // IndianAPI quota on values that cannot change — and that steady
+    // 24x7 drain is what starved the 16:00 IST EOD candle cron with
+    // 429s. getBatchLiveSnapshots is itself cache-first +
+    // budget-guarded for the market-open path.
     let upstreamCallsMade = 0;
-    if (cacheMisses > 0) {
+    if (cacheMisses > 0 && isMarketOpen()) {
       const r = await MarketDataProvider.getBatchLiveSnapshots(universe);
       upstreamCallsMade = r.batchCallsMade;
       console.log(`[DATA] heartbeat refreshed misses=${cacheMisses} upstream=${upstreamCallsMade}`);

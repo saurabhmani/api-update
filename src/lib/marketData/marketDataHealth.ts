@@ -22,8 +22,11 @@
 import { getMarketStatus } from './marketHours';
 import {
   getMarketDataProvider,
-  isYahooEmergencyFallbackEnabled, // @deprecated marker
+  isYahooEmergencyFallbackEnabled,
 } from './providerFlags';
+import { getLiveMarketFeedStats } from './liveMarketFeed';
+import { getStreamServerStats } from '@/lib/ws/streamServer';
+import { getLiveFeedState } from './liveFeedState';
 
 export type HealthState = 'OK' | 'DEGRADED' | 'FAIL';
 export type HealthSource = 'indianapi' | 'yahoo' | 'none'; // @deprecated marker
@@ -50,6 +53,8 @@ export interface MarketDataHealth {
     lastConnectedAt: number | null;
     reconnectAttempts: number;
     lastError: string | null;
+    port?: number;
+    clientCount?: number;
   };
   yahooFallback: { // @deprecated marker
     active: boolean;
@@ -65,6 +70,8 @@ export interface MarketDataHealth {
   };
   lastTickTs: number | null;
   serverNow: number;
+  liveFeed: ReturnType<typeof getLiveFeedState>;
+  liveFeedProvider: string;
 }
 
 function isIndianApiKeyPresent(): boolean {
@@ -96,19 +103,35 @@ export function getMarketDataHealth(): MarketDataHealth {
   const indianKey = isIndianApiKeyPresent();
   const yahooEmergency = isYahooEmergencyFallbackEnabled(); // @deprecated marker
 
+  const feed = getLiveMarketFeedStats();
+  const ws = getStreamServerStats();
+  const liveFeed = getLiveFeedState();
+
   let health: HealthState;
   let source: HealthSource;
   let reason: string;
+
+  const liveProvider = feed.provider ?? 'indianapi';
 
   if (provider === 'indianapi' && indianKey) {
     if (!mkt.isOpen) {
       health = 'DEGRADED';
       source = 'indianapi';
       reason = `Market closed (${mkt.label}) — IndianAPI returns last close`;
+    } else if (liveFeed.quality === 'stale' || liveFeed.quality === 'disconnected') {
+      health = 'DEGRADED';
+      source = liveProvider === 'yahoo' ? 'yahoo' : 'indianapi';
+      reason = `Live feed ${liveFeed.quality} (${liveProvider}) — last tick ${liveFeed.lastTickAgeMs ?? '?'}ms ago`;
+    } else if (liveProvider === 'yahoo' && liveFeed.ticksReceived === 0) {
+      health = 'DEGRADED';
+      source = 'yahoo';
+      reason = 'Yahoo live feed warming — no ticks yet';
     } else {
       health = 'OK';
-      source = 'indianapi';
-      reason = 'IndianAPI is the active primary live-quote source';
+      source = liveProvider === 'yahoo' ? 'yahoo' : 'indianapi';
+      reason = liveProvider === 'yahoo'
+        ? `Yahoo live feed active (${liveFeed.quality})`
+        : `IndianAPI live feed active (${liveFeed.quality})`;
     }
   } else if (provider === 'indianapi' && !indianKey) {
     if (yahooEmergency) { // @deprecated marker
@@ -134,34 +157,38 @@ export function getMarketDataHealth(): MarketDataHealth {
     health,
     source,
     reason,
-    tickRatePerSec: 0,
-    lastTickAgeMs: null,
-    subscribedCount: 0,
+    tickRatePerSec: feed.tickRatePerSec,
+    lastTickAgeMs: feed.lastTickAgeMs,
+    subscribedCount: feed.subscribedCount,
     market: {
       isOpen: mkt.isOpen,
       state: mkt.state,
       label: mkt.label,
     },
     ws: {
-      state: 'removed',
+      state: ws.running ? 'open' : 'closed',
       loginRequired: false,
-      lastConnectedAt: null,
-      reconnectAttempts: 0,
-      lastError: null,
+      lastConnectedAt: ws.lastConnectedAt,
+      reconnectAttempts: ws.reconnectAttempts,
+      lastError: ws.lastError ?? feed.lastError,
+      port: ws.port,
+      clientCount: ws.clientCount,
     },
-    yahooFallback: { // @deprecated marker
-      active: yahooEmergency && mkt.isOpen, // @deprecated marker
+    yahooFallback: {
+      active: yahooEmergency && mkt.isOpen,
       activations: 0,
       recoveries: 0,
-      cyclesRun: 0,
-      ticksEmitted: 0,
+      cyclesRun: feed.cyclesRun,
+      ticksEmitted: feed.lastTickTs != null ? 1 : 0,
     },
     marketOpenWatcher: {
-      installed: false,
+      installed: feed.running,
       nextWakeAt: null,
-      fires: 0,
+      fires: feed.cyclesRun,
     },
-    lastTickTs: null,
+    lastTickTs: feed.lastTickTs,
     serverNow: Date.now(),
+    liveFeed,
+    liveFeedProvider: liveProvider,
   };
 }
