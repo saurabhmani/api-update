@@ -12,6 +12,7 @@ import {
   MAX_ATR_PCT,
   MAX_GAP_PCT,
 } from '../constants/signalEngine.constants';
+import { applyPhase2ConfidenceCalibration } from './confidenceCalibration';
 
 // RSI thresholds for confidence (standalone, not tied to breakout range)
 const RSI_OVERBOUGHT = 76;
@@ -299,9 +300,11 @@ export function scoreConfidenceForStrategy(
 
   const adjusted = clamp(base.finalScore + adjustment, 0, 100);
 
-  return {
+  const result: ConfidenceBreakdown = {
     ...base,
     finalScore: adjusted,
     band: classifyConfidence(adjusted),
   };
+
+  return applyPhase2ConfidenceCalibration(result, features, strategy);
 }

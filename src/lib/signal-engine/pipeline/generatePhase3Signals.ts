@@ -18,6 +18,7 @@ import { DEFAULT_PHASE3_CONFIG, getSector } from '../constants/phase3.constants'
 import { createPipelineTracer, setAmbientTracer } from '../tracing/pipelineTracer';
 import { detectEnhancedRegime } from '../regime/detectMarketRegime';
 import { buildSignalFeatures } from '../features/buildSignalFeatures';
+import { buildEnhancedFeatures } from '../features/buildEnhancedFeatures';
 import { runAllStrategies, resetSellDebugAgg, flushSellDebugAgg } from '../strategy-engine/runStrategies';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 import { computeRelativeStrength, defaultRelativeStrength } from '../context/relativeStrength';
@@ -31,6 +32,7 @@ import {
 import { computePhase3Risk } from '../risk/phase3Risk';
 import { createLifecycle, resolveInitialState } from '../lifecycle/signalLifecycle';
 import { buildPhase3TradePlanForStrategy } from '../trade-plan/buildTradePlan';
+import { enhancePhase3TradePlan } from '../trade-plan/tradePlanEnhancements';
 import { evaluateCorrelationPenalty, buildCorrelationMatrix, type CorrelationMatrix } from '../correlation/correlationEngine';
 import { validateCandleSeries } from '../utils/candles';
 import { validateFeatures } from '../utils/validation';
@@ -725,7 +727,7 @@ export async function generatePhase3Signals(
       }
       stageReached.not_stale++;
 
-      const features = buildSignalFeatures(candles, regime.label, p1Config.minAvgVolume, p1Config.minPrice);
+      let features = buildSignalFeatures(candles, regime.label, p1Config.minAvgVolume, p1Config.minPrice);
       const featureCheck = validateFeatures(features);
       // Spec "LOG FEATURE GENERATION" — emit per-symbol AFTER
       // indicators are computed regardless of whether they validated.
@@ -760,6 +762,10 @@ export async function generatePhase3Signals(
 
       let rs = defaultRelativeStrength();
       try { rs = computeRelativeStrength(candles, benchmarkCandles); } catch {}
+      features = {
+        ...features,
+        enhanced: buildEnhancedFeatures(features, rs),
+      };
 
       // ── Step 3: Strategy evaluation ─────────────────────────
       const { candidates, rejections } = runAllStrategies(features, rs);
@@ -892,7 +898,12 @@ export async function generatePhase3Signals(
       }
 
       // ── Step 4: Build Phase 3 trade plan (strategy-aware target3) ─
-      const tradePlan = buildPhase3TradePlanForStrategy(features, best.strategy);
+      const tradePlan = enhancePhase3TradePlan(
+        buildPhase3TradePlanForStrategy(features, best.strategy),
+        features,
+        best.strategy,
+        BEARISH_STRATEGIES.has(best.strategy),
+      );
 
       // ── Step 5: Stop width check ────────────────────────────
       // Spec "GUARANTEE SIGNAL OUTPUT" — when DEBUG_FORCE_SIGNAL is on,
@@ -1222,6 +1233,7 @@ export async function generatePhase3Signals(
         currentPrice:     null,     // not available in batch generation
         direction:        tradeDirection,
         discoveryMode:    true,
+        features,
       };
       // Spec "FAIL LOUD" — increment BEFORE the engine call so a
       // throw inside runRejectionEngine still counts as "reached

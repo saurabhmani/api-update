@@ -24,8 +24,9 @@
 //  scoring before reaching this engine.
 // ════════════════════════════════════════════════════════════════
 
-import type { StrategyName } from '../types/signalEngine.types';
+import type { StrategyName, SignalFeatures } from '../types/signalEngine.types';
 import type { PortfolioFitResult, ExecutionReadiness } from '../types/phase3.types';
+import { evaluatePhase2QualityGates } from './phase2RejectionGates';
 
 // ── Decision Output ────────────────────────────────────────────
 
@@ -52,7 +53,16 @@ export type RejectionCode =
   /** applyLiveSanity flagged the row vs the live tape. */
   | 'live_invalidated'
   /** Current price has crossed the stop (BUY: ≤ stop, SELL: ≥ stop). */
-  | 'stop_violated';
+  | 'stop_violated'
+  // ── Phase 2 quality gates ──────────────────────────────────
+  | 'weak_trend'
+  | 'poor_liquidity_quality'
+  | 'high_spread'
+  | 'abnormal_volatility'
+  | 'low_confirmation'
+  | 'poor_reward_risk'
+  | 'late_breakout'
+  | 'overextended_move';
 
 export interface RejectionGateResult {
   gate: string;
@@ -258,6 +268,8 @@ export interface RejectionInput {
    * blocking is tracked separately via signalDiscoveryStatus.
    */
   discoveryMode?: boolean;
+  /** Phase 2 — canonical features for quality gates. */
+  features?: SignalFeatures;
 }
 
 /** Default staleness cutoff — matches postSignalValidator's structure-
@@ -704,6 +716,34 @@ export function runRejectionEngine(input: RejectionInput): RejectionDecision {
       }
     }
     trace.push(`manipulation=${mc.score} band=${mc.band} reject=${mc.shouldReject} penalize=${mc.shouldPenalize} max=${maxManip}`);
+  }
+
+  // ── Phase 2: Quality rejection gates ─────────────────────────
+  if (input.features) {
+    const p2 = evaluatePhase2QualityGates({
+      features: input.features,
+      strategy: input.strategy,
+      rewardRisk: input.rewardRisk,
+      confidenceScore: input.confidenceScore,
+      direction: input.direction,
+    });
+    for (const gate of p2.gates) {
+      if (!gate.passed && gate.code && gate.message) {
+        const blockedKey =
+          gate.code === 'poor_reward_risk' ? 'risk_reward'
+          : gate.code === 'weak_trend' || gate.code === 'overextended_move' ? 'regime'
+          : gate.code === 'poor_liquidity_quality' || gate.code === 'high_spread' ? 'liquidity'
+          : gate.code === 'abnormal_volatility' ? 'risk'
+          : gate.code === 'low_confirmation' ? 'confidence'
+          : 'data_quality';
+        recordFailure(gate.gate, gate.code, gate.message, blockedKey as keyof RejectionBlockedBy, gate.snapshot);
+      }
+    }
+    if (p2.passed) {
+      trace.push('phase2_quality=passed');
+    } else {
+      trace.push(`phase2_quality=rejected codes=${p2.codes.join(',')}`);
+    }
   }
 
   } // ← end of `else` (strategy present) block

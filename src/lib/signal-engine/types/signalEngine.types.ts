@@ -123,6 +123,25 @@ export interface ContextFeatures {
   liquidityPass: boolean;
 }
 
+/** Phase 2 — normalized 0..100 quality scores (deterministic). */
+export interface EnhancedFeatures {
+  trendStrength: number;
+  volumeQuality: number;
+  volatilityRegime: number;
+  breakoutQuality: number;
+  liquidityQuality: number;
+  relativeStrength: number;
+  momentumPersistence: number;
+  riskAdjustedReward: number;
+  atrEfficiency: number;
+  emaCompression: number;
+  swingStructure: number;
+  supportResistanceProximity: number;
+  trendExhaustion: number;
+  marketParticipation: number;
+  multiTimeframeAlignment: number;
+}
+
 export interface SignalFeatures {
   trend: TrendFeatures;
   momentum: MomentumFeatures;
@@ -130,6 +149,8 @@ export interface SignalFeatures {
   volatility: VolatilityFeatures;
   structure: StructureFeatures;
   context: ContextFeatures;
+  /** Phase 2 enhanced quality scores — present when built via buildSignalFeatures. */
+  enhanced?: EnhancedFeatures;
 }
 
 // ── Confidence ───────────────────────────────────────────────
@@ -318,6 +339,17 @@ export interface StrategyCandidate {
   tradePlan: TradePlan;
   reasons: string[];
   warnings: string[];
+  /** Phase 2 structured explainability — internal only, not API wire change. */
+  explainability?: ProductAExplainability;
+}
+
+/** Phase 2 — structured signal explainability bundle. */
+export interface ProductAExplainability {
+  topContributingFeatures: Array<{ feature: string; score: number; contribution: string }>;
+  confidenceExplanation: string[];
+  riskExplanation: string[];
+  tradeRationale: string[];
+  rejectionReasons: string[];
 }
 
 // ── Signal Classification ───────────────────────────────────

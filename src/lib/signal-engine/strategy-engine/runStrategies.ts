@@ -36,8 +36,10 @@ import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 import { scoreConfidenceForStrategy } from '../scoring/confidenceScorer';
 import { scoreRisk } from '../scoring/riskScorer';
 import { buildTradePlanForStrategy } from '../trade-plan/buildTradePlan';
+import { enhanceTradePlan } from '../trade-plan/tradePlanEnhancements';
 import { buildReasons } from '../explain/buildReasons';
 import { buildWarnings } from '../explain/buildWarnings';
+import { buildProductAExplainability } from '../explain/productAExplainability';
 import { STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
 import {
   recordStrategyEvaluation,
@@ -138,7 +140,9 @@ function evaluateOne(
       finalScore: Math.max(0, confidence.finalScore - REGIME_RELAX_PENALTY),
     };
   }
-  const tradePlan = buildTradePlanForStrategy(features, name);
+  const isShort = BEARISH_STRATEGIES.has(name);
+  const rawPlan = buildTradePlanForStrategy(features, name);
+  const tradePlan = enhanceTradePlan(rawPlan, features, name, isShort);
   const stopDistPct = features.trend.close > 0
     ? Math.abs((features.trend.close - tradePlan.stopLoss) / features.trend.close) * 100
     : 0;
@@ -181,6 +185,16 @@ function evaluateOne(
     tradePlan,
     reasons,
     warnings,
+    explainability: buildProductAExplainability({
+      features,
+      strategy: name,
+      confidence,
+      risk,
+      tradePlan,
+      relativeStrength,
+      reasons,
+      warnings,
+    }),
   });
 }
 

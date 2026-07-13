@@ -9,7 +9,9 @@ import { buildMomentumFeatures } from './buildMomentumFeatures';
 import { buildVolumeFeatures } from './buildVolumeFeatures';
 import { buildVolatilityFeatures } from './buildVolatilityFeatures';
 import { buildStructureFeatures } from './buildStructureFeatures';
+import { buildEnhancedFeatures } from './buildEnhancedFeatures';
 import { isLiquid } from '../utils/validation';
+import type { RelativeStrengthFeatures } from '../types/signalEngine.types';
 import { MIN_AVG_VOLUME, MIN_PRICE } from '../constants/signalEngine.constants';
 
 export function buildSignalFeatures(
@@ -17,6 +19,7 @@ export function buildSignalFeatures(
   marketRegime: MarketRegimeLabel,
   minAvgVolume = MIN_AVG_VOLUME,
   minPrice = MIN_PRICE,
+  relativeStrength?: RelativeStrengthFeatures,
 ): SignalFeatures {
   const integrity = validateCandleSeriesIntegrity(candles);
   const series = integrity.candles.length > 0 ? integrity.candles : candles;
@@ -29,7 +32,7 @@ export function buildSignalFeatures(
 
   const liquidityPass = isLiquid(volume.avgVolume20, trend.close, minAvgVolume, minPrice);
 
-  return {
+  const base: SignalFeatures = {
     trend,
     momentum,
     volume,
@@ -39,5 +42,10 @@ export function buildSignalFeatures(
       marketRegime,
       liquidityPass,
     },
+  };
+
+  return {
+    ...base,
+    enhanced: buildEnhancedFeatures(base, relativeStrength),
   };
 }

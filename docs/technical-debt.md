@@ -1,6 +1,6 @@
 # Technical Debt Log
 
-**Phase:** 1 (Signal Engine Standardization)  
+**Phase:** 2 (Signal Quality & Feature Enhancement)  
 **Last updated:** 2026-07-13  
 **Owner:** Platform / Signal Engine team
 
@@ -71,6 +71,10 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 | `npm run test:feature-consistency` | Yes | Green (3 tests) |
 | `npm run test:market-data-integrity` | Yes | Green (5 tests) |
 | `npm run test:signal-determinism` | Yes | Green (2 tests) |
+| `npm run test:trade-plan` | Yes | Green (4 tests) |
+| `npm run test:confidence-calibration` | Yes | Green (4 tests) |
+| `npm run test:rejection-engine` | Yes | Green (3 tests) |
+| `npm run benchmark:signal-quality` | Informational | Phase 1 vs Phase 2 replay comparison |
 
 ---
 
