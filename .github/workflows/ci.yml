@@ -119,6 +119,14 @@ jobs:
           npm run test:multi-asset
           npm run benchmark:multi-asset
 
+      - name: Phase 7 research tests
+        run: |
+          npm run test:research
+          npm run test:backtesting
+          npm run test:research-paper-trading
+          npm run test:experiment-registry
+          npm run benchmark:research
+
   contracts:
     name: UI source contracts (non-blocking)
     runs-on: ubuntu-latest
