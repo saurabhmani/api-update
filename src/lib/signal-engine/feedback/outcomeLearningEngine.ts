@@ -1,5 +1,12 @@
 // ════════════════════════════════════════════════════════════════
-//  Signal Outcome Learning — Phase NEXT
+//  Signal Outcome Learning — Phase NEXT // @deprecated marker
+//
+//  DEPRECATED (Phase 0, 2026-07-13): superseded by the canonical
+//  learning pair outcomeTracker.ts + learningScheduler.ts. No
+//  production import references this module. Metrics that were unique
+//  here (falseBreakoutRate, volatilityFailureRate, per-triple weight
+//  multipliers) are documented in docs/product-a/learning-consolidation.md
+//  for a future Phase-1 port if needed. Safe to delete after sign-off.
 //
 //  Aggregates the historical SignalOutcome records produced by
 //  feedback/outcomeTracker.ts and turns them into per-strategy

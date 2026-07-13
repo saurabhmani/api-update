@@ -1,6 +1,5 @@
 {
   "compilerOptions": {
-    "ignoreDeprecations": "6.0",
     "target": "es2017",
     "lib": [
       "dom",
@@ -20,19 +19,18 @@
     "isolatedModules": true,
     "allowSyntheticDefaultImports": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
       "@/*": [
-        "src/*"
+        "./src/*"
       ],
       "@contracts/*": [
-        "packages/contracts/src/*"
+        "./packages/contracts/src/*"
       ],
       "@eventbus/*": [
-        "packages/eventbus/src/*"
+        "./packages/eventbus/src/*"
       ],
       "@rpc/*": [
-        "packages/rpc/src/*"
+        "./packages/rpc/src/*"
       ]
     },
     "plugins": [

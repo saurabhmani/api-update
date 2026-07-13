@@ -109,10 +109,10 @@ async function runOnce(): Promise<RescoreResult> {
   }
 
   // ── Batch live LTP resolution ──────────────────────────────
-  // resolvePrices chains Kite → IndianAPI cache → Yahoo → DB per // @deprecated marker
-  // symbol. We capture both price AND source so the cycle log can
-  // tell the operator whether Kite is actually delivering ticks // @deprecated marker
-  // or the system is quietly running on Yahoo's 15-min delayed feed. // @deprecated marker
+  // resolvePrices (marketDataResolver) applies the canonical ladder:
+  // market-closed gate → IndianAPI → cache → NSE direct (rare) →
+  // Yahoo emergency (flagged) → DATA_DEGRADED. Source is logged per
+  // symbol for operator visibility.
   const fetchStarted = Date.now();
   const uniqueSymbols = Array.from(new Set(rows.map(r => r.symbol)));
   const quotes = await resolvePrices(uniqueSymbols, { concurrency: 12 });

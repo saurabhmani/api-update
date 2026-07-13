@@ -1,23 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // ── Build-time type checking ─────────────────────────────────
-  //
-  // Next 14's bundled type checker re-runs against the project's
-  // tsconfig at build time. Even with strictNullChecks: false in
-  // tsconfig.json, certain pre-existing patterns in this codebase
-  // (closures over nullable state, null narrowing across JSX &&)
-  // re-trigger errors during `next build` that don't appear in
-  // `tsc --noEmit`. We've already verified the project is clean
-  // under our tsconfig, so bypass Next's redundant pass to unblock
-  // production builds.
-  //
-  // Type errors in dev (next dev / IDE) and CI (`npx tsc --noEmit`)
-  // still surface — only `next build` ignores them. Re-enable once
-  // the legacy null patterns are refactored.
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-
   // Trust the X-Forwarded-* headers set by nginx on the VPS.
   // Without this, req.headers.host inside API routes returns the
   // upstream address (localhost:3000) instead of the public domain,

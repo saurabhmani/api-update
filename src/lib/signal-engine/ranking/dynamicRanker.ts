@@ -102,6 +102,15 @@ export interface RankerBreakdown {
   verdictMultiplier:       number;
 }
 
+/**
+ * Live ranker score (Phase-4 dynamic ranking). Subtractive model on
+ * top of setup confidence: context modifier × confidence minus
+ * freshness / overextension / event-risk / manipulation penalties.
+ * Persisted as `q365_signals.final_score`; recomputed every rescore.
+ *
+ * @alias computeRankerFinalScore — disambiguates from scoringEngine.computeFinalScore.
+ * @see docs/product-a/scoring-terminology.md — "Dynamic Ranker Score"
+ */
 export function computeFinalScore(
   input:  RankerInput,
   cfg:    Partial<RankerConfig> = {},
@@ -196,3 +205,6 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 function round2(n: number): number { return Math.round(n * 100)   / 100;   }
 function round4(n: number): number { return Math.round(n * 10000) / 10000; }
+
+/** Disambiguating alias — same function as `computeFinalScore`. */
+export { computeFinalScore as computeRankerFinalScore };

@@ -240,9 +240,14 @@ export function classify(
 }
 
 /**
- * Main entry point. Converts per-dimension scores into a weighted
- * composite finalScore + classification band. Pure function —
- * safe to call from any layer.
+ * Legacy six-factor pipeline scorer (pre–Phase-4). Weighted blend of
+ * confidence, inverted risk, R:R, portfolio fit, regime alignment,
+ * and freshness → `HIGH_CONVICTION` / `VALID_SIGNAL` / … bands.
+ * Used by ranking seed at INSERT and explainability — NOT the
+ * authoritative `composite_final_score` (see `calculateFinalScore`).
+ *
+ * @alias computeLegacySixFactorScore — disambiguates from ranker scorer.
+ * @see docs/product-a/scoring-terminology.md — "Legacy Six-Factor Score"
  */
 export function computeFinalScore(
   input:      ScoringInput,
@@ -526,17 +531,17 @@ function substitutePenalty(v: number | null): { raw: number; applied: number } {
 }
 
 /**
- * Phase-2 entry point. Pure function. Returns a clamped final score
- * in [0, 100], a 6-band classification, per-factor and per-penalty
- * contributions, and an explanation-ready breakdown.
+ * Authoritative Phase-4 structural scorer. Eight weighted factors
+ * minus three penalties → 6-band classification persisted as
+ * `composite_final_score` / `classification`. Consumed via
+ * `phase4FactorAdapter.runPhase4Scoring()` in batch and live paths.
  *
- * The optional `weights` parameter overrides FINAL_SCORE_WEIGHTS so
- * Phase-3 per-strategy presets can reweight the scoring composition
- * (e.g. breakout strategies emphasise volume_confirmation, mean
- * reversion emphasises risk_reward). When omitted, the global
- * defaults apply. Weights are used as supplied — callers that want
- * normalization to 1.0 must do it themselves (Phase-3's
- * `getFinalScoreWeights` already does).
+ * Pure function. Returns a clamped final score in [0, 100], a 6-band
+ * classification, per-factor and per-penalty contributions, and an
+ * explanation-ready breakdown. The optional `weights` parameter
+ * overrides FINAL_SCORE_WEIGHTS for per-strategy presets.
+ *
+ * @see docs/product-a/scoring-terminology.md — "Structural Final Score"
  */
 export function calculateFinalScore(
   input:    FinalScoreInput,
@@ -742,3 +747,6 @@ export function calculateFinalScore(
     breakdown,
   };
 }
+
+/** Disambiguating alias — same function as `computeFinalScore`. */
+export { computeFinalScore as computeLegacySixFactorScore };

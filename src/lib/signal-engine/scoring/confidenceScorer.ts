@@ -183,6 +183,14 @@ function classifyConfidence(score: number): ConfidenceBand {
 //  Strategy-Specific Confidence — Phase 2
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * Setup confidence scorer (Phase 1–2). Produces the 0–100
+ * `confidence_score` stored on `q365_signals` before trade-plan and
+ * Phase-4 structural scoring run. Applies generic `scoreConfidence()`
+ * plus per-strategy adjustment deltas only — no final-score bands.
+ *
+ * @see docs/product-a/scoring-terminology.md — "Setup Confidence"
+ */
 export function scoreConfidenceForStrategy(
   features: SignalFeatures,
   strategy: StrategyName,
