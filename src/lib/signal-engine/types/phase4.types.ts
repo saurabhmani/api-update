@@ -172,6 +172,19 @@ export interface SignalOutcome {
   returnAtBar10Pct: number | null;
   outcomeLabel: OutcomeLabel;
   evaluatedAt: string;
+  /** Outcome intelligence schema version. Older rows may omit this. */
+  outcomeVersion?: string;
+  /** 0..100; rewards entries that limit adverse excursion before payoff. */
+  entryQualityScore?: number;
+  timeToTargetBars?: number | null;
+  timeToStopBars?: number | null;
+  holdingDurationBars?: number;
+  exitReason?: 'target3' | 'target2' | 'target1' | 'stop' | 'horizon_close' | 'not_triggered';
+  realizedReturnPct?: number;
+  riskAdjustedReturn?: number;
+  expectedRewardRisk?: number;
+  realizedRewardRisk?: number;
+  metadataVersion?: string;
 }
 
 // ── Strategy Performance ────────────────────────────────────

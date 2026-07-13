@@ -27,8 +27,11 @@ export async function saveOutcome(outcome: SignalOutcome): Promise<void> {
        target1_hit, target2_hit, target3_hit, stop_hit,
        max_fav_excursion_pct, max_adv_excursion_pct,
        pnl_r, return_bar5_pct, return_bar10_pct,
-       outcome_label, evaluated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       outcome_label, evaluated_at, outcome_version, entry_quality_score,
+       time_to_target_bars, time_to_stop_bars, holding_duration_bars,
+       exit_reason, realized_return_pct, risk_adjusted_return,
+       expected_reward_risk, realized_reward_risk, metadata_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       outcome.signalId,
       outcome.entryTriggered ? 1 : 0,
@@ -44,6 +47,17 @@ export async function saveOutcome(outcome: SignalOutcome): Promise<void> {
       outcome.returnAtBar10Pct,
       outcome.outcomeLabel,
       toMysqlDateTime(outcome.evaluatedAt),
+      outcome.outcomeVersion ?? '1.0.0',
+      outcome.entryQualityScore ?? null,
+      outcome.timeToTargetBars ?? null,
+      outcome.timeToStopBars ?? null,
+      outcome.holdingDurationBars ?? null,
+      outcome.exitReason ?? null,
+      outcome.realizedReturnPct ?? null,
+      outcome.riskAdjustedReturn ?? null,
+      outcome.expectedRewardRisk ?? null,
+      outcome.realizedRewardRisk ?? null,
+      outcome.metadataVersion ?? null,
     ],
   );
 }
@@ -404,6 +418,17 @@ export async function migratePhase4Tables(): Promise<void> {
       return_bar5_pct DECIMAL(8,4),
       return_bar10_pct DECIMAL(8,4),
       outcome_label VARCHAR(30) NOT NULL,
+      outcome_version VARCHAR(20) NOT NULL DEFAULT '1.0.0',
+      entry_quality_score DECIMAL(6,2),
+      time_to_target_bars INT,
+      time_to_stop_bars INT,
+      holding_duration_bars INT,
+      exit_reason VARCHAR(30),
+      realized_return_pct DECIMAL(10,4),
+      risk_adjusted_return DECIMAL(10,4),
+      expected_reward_risk DECIMAL(10,4),
+      realized_reward_risk DECIMAL(10,4),
+      metadata_version VARCHAR(20),
       evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_signal_id (signal_id),
       INDEX idx_outcome (outcome_label),
@@ -423,6 +448,36 @@ export async function migratePhase4Tables(): Promise<void> {
       console.log('[migratePhase4Tables] q365_signal_outcomes: added column pnl_r');
     }
   } catch { /* race condition or already exists — fine */ }
+
+  // Phase 3 additive outcome-intelligence metadata. Existing rows remain
+  // valid and are tagged as version 1 until replayed by the scheduler.
+  const outcomeIntelligenceColumns: Array<[string, string]> = [
+    ['outcome_version', "VARCHAR(20) NOT NULL DEFAULT '1.0.0'"],
+    ['entry_quality_score', 'DECIMAL(6,2) NULL'],
+    ['time_to_target_bars', 'INT NULL'],
+    ['time_to_stop_bars', 'INT NULL'],
+    ['holding_duration_bars', 'INT NULL'],
+    ['exit_reason', 'VARCHAR(30) NULL'],
+    ['realized_return_pct', 'DECIMAL(10,4) NULL'],
+    ['risk_adjusted_return', 'DECIMAL(10,4) NULL'],
+    ['expected_reward_risk', 'DECIMAL(10,4) NULL'],
+    ['realized_reward_risk', 'DECIMAL(10,4) NULL'],
+    ['metadata_version', 'VARCHAR(20) NULL'],
+  ];
+  for (const [column, ddl] of outcomeIntelligenceColumns) {
+    try {
+      const { rows } = await db.query<{ COLUMN_NAME: string }>(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'q365_signal_outcomes'
+            AND COLUMN_NAME = ?`,
+        [column],
+      );
+      if (rows.length === 0) {
+        await db.query(`ALTER TABLE q365_signal_outcomes ADD COLUMN \`${column}\` ${ddl}`);
+      }
+    } catch { /* concurrent migration or restricted DDL — surfaced on write */ }
+  }
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS q365_signal_explanations (

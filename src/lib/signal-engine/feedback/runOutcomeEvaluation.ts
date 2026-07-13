@@ -25,6 +25,10 @@ import {
   calibrateConfidence,
 } from '@/lib/signal-engine/feedback/outcomeTracker';
 import type { SignalOutcome } from '@/lib/signal-engine/types/phase4.types';
+import {
+  ensurePhase4Tables,
+  saveOutcome,
+} from '@/lib/signal-engine/repository/savePhase4Artifacts';
 
 export interface OutcomeEvaluationOptions {
   /** Evaluate only this signal. */
@@ -76,18 +80,10 @@ interface EligibleSignalRow {
 }
 
 interface PostCandleRow {
+  ts: Date | string;
   high: string | number;
   low: string | number;
   close: string | number;
-}
-
-// MySQL strict mode rejects ISO 8601 timestamps with 'T'/'Z'/fractional
-// seconds. Normalize at the write boundary.
-function toMysqlDateTime(input: string | Date | null | undefined): string | null {
-  if (input == null || input === '') return null;
-  const iso = input instanceof Date ? input.toISOString() : String(input);
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso)) return iso;
-  return iso.slice(0, 19).replace('T', ' ');
 }
 
 function toNum(v: string | number | null | undefined, fallback = 0): number {
@@ -114,6 +110,7 @@ export async function runOutcomeEvaluation(
   const staleHours = opts.staleHours;
 
   await ensureSignalEngineSchemas();
+  await ensurePhase4Tables();
 
   // ── Step 1: Load eligible signals ────────────────────────
   //
@@ -207,7 +204,7 @@ export async function runOutcomeEvaluation(
         ? sig.generated_at
         : sig.generated_at.toISOString();
     const { rows: candleRows } = await db.query<PostCandleRow>(
-      `SELECT high, low, close
+      `SELECT ts, high, low, close
          FROM market_data_daily
         WHERE symbol = ? AND ts > ?
         ORDER BY ts ASC
@@ -221,6 +218,7 @@ export async function runOutcomeEvaluation(
     }
 
     const postCandles = candleRows.map((c) => ({
+      ts: c.ts,
       high: toNum(c.high),
       low: toNum(c.low),
       close: toNum(c.close),
@@ -235,6 +233,12 @@ export async function runOutcomeEvaluation(
       target3,
       postCandles,
       isBearish,
+      {
+        expectedRewardRisk: Math.abs(entryPrice - stopLoss) > 0
+          ? Math.abs(target1 - entryPrice) / Math.abs(entryPrice - stopLoss)
+          : 0,
+        evaluatedAt: String(candleRows.at(-1)?.ts ?? genAt),
+      },
     );
 
     // Idempotent write: remove any prior outcome row for this signal
@@ -243,31 +247,7 @@ export async function runOutcomeEvaluation(
       `DELETE FROM q365_signal_outcomes WHERE signal_id = ?`,
       [sig.id],
     );
-    await db.query(
-      `INSERT INTO q365_signal_outcomes
-        (signal_id, entry_triggered, bars_to_entry,
-         target1_hit, target2_hit, target3_hit, stop_hit,
-         max_fav_excursion_pct, max_adv_excursion_pct,
-         pnl_r, return_bar5_pct, return_bar10_pct,
-         outcome_label, evaluated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        outcome.signalId,
-        outcome.entryTriggered ? 1 : 0,
-        outcome.barsToEntry,
-        outcome.target1Hit ? 1 : 0,
-        outcome.target2Hit ? 1 : 0,
-        outcome.target3Hit ? 1 : 0,
-        outcome.stopHit ? 1 : 0,
-        outcome.maxFavorableExcursionPct,
-        outcome.maxAdverseExcursionPct,
-        outcome.pnlR,
-        outcome.returnAtBar5Pct,
-        outcome.returnAtBar10Pct,
-        outcome.outcomeLabel,
-        toMysqlDateTime(outcome.evaluatedAt),
-      ],
-    );
+    await saveOutcome(outcome);
 
     updated_count++;
 

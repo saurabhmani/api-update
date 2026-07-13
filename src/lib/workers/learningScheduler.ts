@@ -94,6 +94,12 @@ import {
 } from '@/lib/manipulation-engine';
 import { ensureNewsSchemas } from '@/lib/news-engine/repository/ensureNewsSchemas';
 import { runNewsCalibration } from '@/lib/news-engine/feedback/runNewsCalibration';
+import type { OutcomeAnalyticsRecord } from '@/lib/signal-engine/analytics/outcomeAnalytics';
+import { createLearningSnapshot } from '@/lib/signal-engine/learning/versionedLearningSnapshots';
+import { saveLearningSnapshot } from '@/lib/signal-engine/repository/learningSnapshotRepository';
+import { getSignalEngineConfig } from '@/lib/signal-engine/config/signalEnginePhase2Config';
+import { PERFORMANCE_REPORT_VERSION } from '@/lib/signal-engine/analytics/performanceReporting';
+import { OUTCOME_INTELLIGENCE_VERSION } from '@/lib/signal-engine/feedback/outcomeTracker';
 
 // ════════════════════════════════════════════════════════════════
 //  TUNABLES
@@ -220,6 +226,10 @@ export async function evaluateSignalOutcomes(): Promise<{
 
       const outcome = evaluateOutcome(
         sig.id, entry, stop, target1, target2, target3, postCandles, isBearish,
+        {
+          expectedRewardRisk: risk > 0 ? Math.abs(target1 - entry) / risk : 0,
+          evaluatedAt: String(postCandles.at(-1)?.ts ?? sig.generated_at),
+        },
       );
       await saveOutcome(outcome);
       counts.evaluated++;
@@ -243,14 +253,18 @@ export async function evaluateSignalOutcomes(): Promise<{
 
 interface OutcomeWithMeta {
   outcome: SignalOutcome;
+  symbol: string;
+  generatedAt: string;
   confidence: number;
+  expectedRewardRisk: number;
   strategyName: string;
   regime: string;
   volatilityState: string;
   sector: string | null;
+  topContributingFeatures: Array<{ feature: string; score: number }>;
 }
 
-async function loadOutcomesWithMeta(lookbackDays: number): Promise<OutcomeWithMeta[]> {
+export async function loadOutcomesWithMeta(lookbackDays: number): Promise<OutcomeWithMeta[]> {
   const { rows } = await db.query(
     `SELECT o.signal_id, o.entry_triggered, o.bars_to_entry,
             o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
@@ -258,8 +272,13 @@ async function loadOutcomesWithMeta(lookbackDays: number): Promise<OutcomeWithMe
             o.pnl_r,
             o.return_bar5_pct, o.return_bar10_pct,
             o.outcome_label, o.evaluated_at,
-            s.confidence_score, s.signal_type, s.market_regime,
-            s.volatility_state, s.sector
+            o.outcome_version, o.entry_quality_score,
+            o.time_to_target_bars, o.time_to_stop_bars, o.holding_duration_bars,
+            o.exit_reason, o.realized_return_pct, o.risk_adjusted_return,
+            o.expected_reward_risk, o.realized_reward_risk, o.metadata_version,
+            s.symbol, s.generated_at, s.confidence_score, s.risk_reward,
+            s.signal_type, s.market_regime, s.volatility_state, s.sector,
+            s.factor_scores_json
        FROM q365_signal_outcomes o
        JOIN q365_signals s ON s.id = o.signal_id
       WHERE o.evaluated_at >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
@@ -281,17 +300,92 @@ async function loadOutcomesWithMeta(lookbackDays: number): Promise<OutcomeWithMe
       returnAtBar5Pct:          r.return_bar5_pct != null ? Number(r.return_bar5_pct) : null,
       returnAtBar10Pct:         r.return_bar10_pct != null ? Number(r.return_bar10_pct) : null,
       outcomeLabel:             r.outcome_label,
-      evaluatedAt:              String(r.evaluated_at),
+      evaluatedAt:              r.evaluated_at instanceof Date
+        ? r.evaluated_at.toISOString()
+        : String(r.evaluated_at),
+      outcomeVersion:           r.outcome_version ? String(r.outcome_version) : undefined,
+      entryQualityScore:        r.entry_quality_score != null ? Number(r.entry_quality_score) : undefined,
+      timeToTargetBars:         r.time_to_target_bars != null ? Number(r.time_to_target_bars) : null,
+      timeToStopBars:           r.time_to_stop_bars != null ? Number(r.time_to_stop_bars) : null,
+      holdingDurationBars:      r.holding_duration_bars != null ? Number(r.holding_duration_bars) : undefined,
+      exitReason:               r.exit_reason ?? undefined,
+      realizedReturnPct:        r.realized_return_pct != null ? Number(r.realized_return_pct) : undefined,
+      riskAdjustedReturn:       r.risk_adjusted_return != null ? Number(r.risk_adjusted_return) : undefined,
+      expectedRewardRisk:       r.expected_reward_risk != null ? Number(r.expected_reward_risk) : undefined,
+      realizedRewardRisk:       r.realized_reward_risk != null ? Number(r.realized_reward_risk) : undefined,
+      metadataVersion:          r.metadata_version ? String(r.metadata_version) : undefined,
     };
+    let factors: Record<string, unknown> = {};
+    try {
+      factors = typeof r.factor_scores_json === 'string'
+        ? JSON.parse(r.factor_scores_json)
+        : (r.factor_scores_json ?? {});
+    } catch { /* malformed legacy JSON contributes no feature analytics */ }
+    const topContributingFeatures = Object.entries(factors)
+      .filter((entry): entry is [string, number] => Number.isFinite(Number(entry[1])))
+      .map(([feature, score]) => ({ feature, score: Number(score) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
     return {
       outcome,
+      symbol:          String(r.symbol ?? 'unknown'),
+      generatedAt:     r.generated_at instanceof Date ? r.generated_at.toISOString() : String(r.generated_at),
       confidence:      Number(r.confidence_score ?? 0),
+      expectedRewardRisk: Number(r.expected_reward_risk ?? r.risk_reward ?? 0),
       strategyName:    String(r.signal_type ?? 'unknown'),
       regime:          String(r.market_regime ?? 'NEUTRAL'),
       volatilityState: String(r.volatility_state ?? 'normal'),
       sector:          r.sector ? String(r.sector) : null,
+      topContributingFeatures,
     };
   });
+}
+
+function toAnalyticsRecords(rows: readonly OutcomeWithMeta[]): OutcomeAnalyticsRecord[] {
+  return rows.map((row) => ({
+    signalId: row.outcome.signalId,
+    symbol: row.symbol,
+    strategy: row.strategyName,
+    sector: row.sector,
+    marketRegime: row.regime,
+    volatilityState: row.volatilityState,
+    timeframe: 'daily',
+    generatedAt: row.generatedAt,
+    predictedConfidence: row.confidence,
+    expectedRewardRisk: row.expectedRewardRisk,
+    outcome: row.outcome,
+    topContributingFeatures: row.topContributingFeatures,
+  }));
+}
+
+export async function loadOutcomeAnalyticsRecords(
+  lookbackDays = CALIBRATION_LOOKBACK_DAYS,
+): Promise<OutcomeAnalyticsRecord[]> {
+  await ensurePhase4Tables();
+  return toAnalyticsRecords(await loadOutcomesWithMeta(lookbackDays));
+}
+
+export async function createScheduledLearningSnapshot(
+  rows: readonly OutcomeWithMeta[],
+): Promise<{ snapshots: number; sampleCount: number }> {
+  const createdAt = new Date().toISOString();
+  const config = getSignalEngineConfig();
+  const records = toAnalyticsRecords(rows);
+  const snapshot = createLearningSnapshot({
+    records,
+    createdAt,
+    lookbackDays: CALIBRATION_LOOKBACK_DAYS,
+    versions: {
+      configurationVersion: config.configVersionLabel,
+      featureVersion: '2.0.0',
+      confidenceVersion: '2.0.0',
+      learningVersion: '3.0.0',
+      benchmarkVersion: PERFORMANCE_REPORT_VERSION,
+      outcomeVersion: OUTCOME_INTELLIGENCE_VERSION,
+    },
+  });
+  await saveLearningSnapshot(snapshot);
+  return { snapshots: 1, sampleCount: records.length };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -584,6 +678,12 @@ export async function runLearningJobs(): Promise<JobResult[]> {
   //    adaptive recommendations. Depends on A (outcomes) being fresh.
   const f = await runJob('updateNewsCalibration', () => runNewsCalibration(CALIBRATION_LOOKBACK_DAYS));
   results.push(f.result);
+
+  // G. Immutable analytics snapshot. This is report-only: it does not
+  // write weights, confidence modifiers, rejection thresholds or signals.
+  const g = await runJob('createVersionedLearningSnapshot',
+    () => createScheduledLearningSnapshot(outcomesForLearning));
+  results.push(g.result);
 
   const failures = results.filter((r) => r.status === 'failed').length;
   console.log('\n══════════════════════════════════════════════════');
