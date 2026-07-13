@@ -100,6 +100,9 @@ import { saveLearningSnapshot } from '@/lib/signal-engine/repository/learningSna
 import { getSignalEngineConfig } from '@/lib/signal-engine/config/signalEnginePhase2Config';
 import { PERFORMANCE_REPORT_VERSION } from '@/lib/signal-engine/analytics/performanceReporting';
 import { OUTCOME_INTELLIGENCE_VERSION } from '@/lib/signal-engine/feedback/outcomeTracker';
+import { loadLatestLearningSnapshot } from '@/lib/signal-engine/repository/learningSnapshotRepository';
+import { runAdaptiveLearningPipeline, hydrateAdaptiveRuntimeFromDb } from '@/lib/signal-engine/adaptive/runAdaptiveLearningPipeline';
+import { ensureAdaptiveParameterTables } from '@/lib/signal-engine/adaptive/adaptiveParameterRepository';
 
 // ════════════════════════════════════════════════════════════════
 //  TUNABLES
@@ -367,7 +370,7 @@ export async function loadOutcomeAnalyticsRecords(
 
 export async function createScheduledLearningSnapshot(
   rows: readonly OutcomeWithMeta[],
-): Promise<{ snapshots: number; sampleCount: number }> {
+): Promise<{ snapshots: number; sampleCount: number; snapshotId: string }> {
   const createdAt = new Date().toISOString();
   const config = getSignalEngineConfig();
   const records = toAnalyticsRecords(rows);
@@ -385,7 +388,7 @@ export async function createScheduledLearningSnapshot(
     },
   });
   await saveLearningSnapshot(snapshot);
-  return { snapshots: 1, sampleCount: records.length };
+  return { snapshots: 1, sampleCount: records.length, snapshotId: snapshot.snapshotId };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -632,6 +635,8 @@ export async function runLearningJobs(): Promise<JobResult[]> {
   await ensureLearningTables();
   await ensureManipulationEngineTables();
   await ensureNewsSchemas();
+  await ensureAdaptiveParameterTables();
+  await hydrateAdaptiveRuntimeFromDb();
 
   // Idempotency: clear today's derivative snapshots before recomputing.
   // Outcomes are NOT cleared — they're graded once per signal and the
@@ -684,6 +689,24 @@ export async function runLearningJobs(): Promise<JobResult[]> {
   const g = await runJob('createVersionedLearningSnapshot',
     () => createScheduledLearningSnapshot(outcomesForLearning));
   results.push(g.result);
+
+  // H. Adaptive candidate + validation pipeline (Phase 4).
+  // Creates versioned parameter candidates from outcomes. Promotion
+  // requires validation; auto-promote is opt-in via env flags.
+  let priorSnapshot = null;
+  try {
+    priorSnapshot = await loadLatestLearningSnapshot();
+  } catch { /* drift comparison is best-effort */ }
+  const h = await runJob('runAdaptiveLearningPipeline', () =>
+    runAdaptiveLearningPipeline({
+      records: toAnalyticsRecords(outcomesForLearning),
+      lookbackDays: CALIBRATION_LOOKBACK_DAYS,
+      createdAt: new Date().toISOString(),
+      priorSnapshot: priorSnapshot && priorSnapshot.snapshotId !== g.payload?.snapshotId
+        ? priorSnapshot
+        : null,
+    }));
+  results.push(h.result);
 
   const failures = results.filter((r) => r.status === 'failed').length;
   console.log('\n══════════════════════════════════════════════════');

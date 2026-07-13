@@ -11,7 +11,7 @@ import type {
   StrategyName,
   RelativeStrengthFeatures,
 } from '../types/signalEngine.types';
-import { getSignalEngineConfig } from '../config/signalEnginePhase2Config';
+import { getRuntimeSignalEngineConfig } from '../adaptive/runtimeConfiguration';
 import { clamp } from '../utils/math';
 import {
   CONFIDENCE_HIGH_CONVICTION,
@@ -63,7 +63,7 @@ export function computePhase2ConfidenceAdjustment(
   features: SignalFeatures,
   strategy: StrategyName,
 ): number {
-  const config = getSignalEngineConfig();
+  const config = getRuntimeSignalEngineConfig().config;
   if (config.version < 2 || !config.confidence.enabled) return 0;
 
   const e = features.enhanced;

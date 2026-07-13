@@ -7,7 +7,7 @@
 
 import type { SignalFeatures, StrategyName } from '../types/signalEngine.types';
 import type { RejectionCode, RejectionGateResult } from '../core/runRejectionEngine';
-import { getSignalEngineConfig } from '../config/signalEnginePhase2Config';
+import { getRuntimeSignalEngineConfig } from '../adaptive/runtimeConfiguration';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 
 export type Phase2RejectionCode =
@@ -62,7 +62,7 @@ function confirmationScore(features: SignalFeatures, strategy: StrategyName): nu
  * the canonical rejection engine state.
  */
 export function evaluatePhase2QualityGates(input: Phase2QualityInput): Phase2QualityResult {
-  const config = getSignalEngineConfig();
+  const config = getRuntimeSignalEngineConfig().config;
   const gates: RejectionGateResult[] = [];
   const codes: Phase2RejectionCode[] = [];
   const reasons: string[] = [];

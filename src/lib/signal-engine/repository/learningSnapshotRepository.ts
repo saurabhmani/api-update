@@ -96,6 +96,41 @@ export async function logLearningSnapshotAudit(
  * Rollback changes only the active analytics pointer. Immutable snapshots
  * and signal-generation state are never modified.
  */
+export async function loadLatestLearningSnapshot(): Promise<ImmutableLearningSnapshot | null> {
+  await ensureLearningSnapshotTables();
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT snapshot_id, schema_version, configuration_version, feature_version,
+            confidence_version, learning_version, benchmark_version, outcome_version,
+            benchmark_metrics, source_metadata, content_hash, created_at
+     FROM q365_learning_snapshots
+     ORDER BY created_at DESC
+     LIMIT 1`,
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const benchmarkMetrics = typeof r.benchmark_metrics === 'string'
+    ? JSON.parse(r.benchmark_metrics)
+    : r.benchmark_metrics;
+  const source = typeof r.source_metadata === 'string'
+    ? JSON.parse(r.source_metadata)
+    : r.source_metadata;
+  return {
+    snapshotId: String(r.snapshot_id),
+    schemaVersion: String(r.schema_version),
+    createdAt: String(r.created_at),
+    versions: {
+      configurationVersion: String(r.configuration_version),
+      featureVersion: String(r.feature_version),
+      confidenceVersion: String(r.confidence_version),
+      learningVersion: String(r.learning_version),
+      benchmarkVersion: String(r.benchmark_version),
+      outcomeVersion: String(r.outcome_version),
+    },
+    source,
+    benchmarkMetrics,
+    contentHash: String(r.content_hash),
+  };
+}
 export async function activateLearningSnapshot(
   snapshotId: string,
   options: { actor?: string; reason: string; rollback?: boolean },

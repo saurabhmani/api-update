@@ -8,7 +8,7 @@
 import type { SignalFeatures, TradePlan, StrategyName } from '../types/signalEngine.types';
 import type { Phase3TradePlan } from '../types/phase3.types';
 import { round } from '../utils/math';
-import { getSignalEngineConfig } from '../config/signalEnginePhase2Config';
+import { getRuntimeSignalEngineConfig } from '../adaptive/runtimeConfiguration';
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
 
 /**
@@ -46,7 +46,7 @@ function refineStopLoss(
   plan: TradePlan,
   isShort: boolean,
 ): number {
-  const config = getSignalEngineConfig();
+  const config = getRuntimeSignalEngineConfig().config;
   const atr = features.volatility.atr14;
   const buffer = config.tradePlan.structureStopBufferAtr * atr;
   const close = features.trend.close;
@@ -77,7 +77,7 @@ export function enhanceTradePlan(
   strategy: StrategyName,
   isShort: boolean,
 ): TradePlan {
-  const config = getSignalEngineConfig();
+  const config = getRuntimeSignalEngineConfig().config;
   if (config.version < 2) return plan;
 
   let enhanced = { ...plan };
