@@ -16,6 +16,12 @@ export interface OutcomeAnalyticsRecord {
   outcome: SignalOutcome;
   topContributingFeatures?: Array<{ feature: string; score: number }>;
   manualTags?: string[];
+  /** Phase 6 — optional multi-asset metadata for analytics only */
+  assetClass?: string;
+  strategyFamily?: string;
+  marketSession?: string;
+  currency?: string;
+  region?: string;
 }
 
 export interface OutcomeIntelligenceSummary {

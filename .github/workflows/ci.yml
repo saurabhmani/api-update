@@ -111,6 +111,14 @@ jobs:
           npm run test:drift-detection
           npm run test:runtime-configuration
 
+      - name: Phase 6 multi-asset tests
+        run: |
+          npm run test:asset-registry
+          npm run test:strategy-registry
+          npm run test:market-sessions
+          npm run test:multi-asset
+          npm run benchmark:multi-asset
+
   contracts:
     name: UI source contracts (non-blocking)
     runs-on: ubuntu-latest

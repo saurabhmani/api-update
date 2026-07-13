@@ -13,6 +13,8 @@ import { buildEnhancedFeatures } from './buildEnhancedFeatures';
 import { isLiquid } from '../utils/validation';
 import type { RelativeStrengthFeatures } from '../types/signalEngine.types';
 import { MIN_AVG_VOLUME, MIN_PRICE } from '../constants/signalEngine.constants';
+import type { AssetDefinition } from '@/lib/platform/types';
+import { buildCanonicalSignalFeatures } from '@/lib/platform/featureAdapters/featureAdapterRouter';
 
 export function buildSignalFeatures(
   candles: Candle[],
@@ -20,7 +22,19 @@ export function buildSignalFeatures(
   minAvgVolume = MIN_AVG_VOLUME,
   minPrice = MIN_PRICE,
   relativeStrength?: RelativeStrengthFeatures,
+  asset?: AssetDefinition,
 ): SignalFeatures {
+  if (asset && asset.assetClass !== 'equity') {
+    return buildCanonicalSignalFeatures({
+      asset,
+      candles,
+      marketRegime,
+      minAvgVolume,
+      minPrice,
+      relativeStrength,
+    });
+  }
+
   const integrity = validateCandleSeriesIntegrity(candles);
   const series = integrity.candles.length > 0 ? integrity.candles : candles;
 
