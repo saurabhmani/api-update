@@ -3,7 +3,7 @@
  * scoring entry points documented in docs/product-a/scoring-terminology.md.
  * Any change to formulas, weights, or thresholds must fail here deliberately.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { scoreConfidenceForStrategy } from '@/lib/signal-engine/scoring/confidenceScorer';
 import {
   calculateFinalScore,
@@ -11,6 +11,7 @@ import {
   computeFinalScore as computeLegacySixFactorScore,
 } from '@/lib/signal-engine/scoring/scoringEngine';
 import { computeFinalScore as computeRankerFinalScore } from '@/lib/signal-engine/ranking/dynamicRanker';
+import { resetSignalEngineConfigCache } from '@/lib/signal-engine/config/signalEnginePhase2Config';
 import type { RelativeStrengthFeatures, SignalFeatures } from '@/lib/signal-engine/types/signalEngine.types';
 import type { ValidationVerdict } from '@/lib/signal-engine/validation/postSignalValidator';
 import type { FreshnessReport } from '@/lib/signal-engine/freshness/freshnessEngine';
@@ -75,6 +76,12 @@ const KEEP_VERDICT: ValidationVerdict = {
 };
 
 describe('scoring terminology regression (Phase 0)', () => {
+  beforeEach(() => {
+    // Frozen Phase 0 baseline — config v1 disables factor-ownership consolidation
+    process.env.SIGNAL_ENGINE_CONFIG_VERSION = '1';
+    resetSignalEngineConfigCache();
+  });
+
   it('scoreConfidenceForStrategy — bullish_breakout fixture', () => {
     const result = scoreConfidenceForStrategy(BREAKOUT_FEATURES, 'bullish_breakout', RS_STUB);
     expect(result.finalScore).toBe(87);

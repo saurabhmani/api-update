@@ -71,12 +71,25 @@ import {
 } from '@/lib/signal-engine/repository/savePhase4Artifacts';
 import {
   saveConfidenceCalibration,
+  saveCalibrationAudit,
+  loadLatestCalibrationModifiers,
   saveStrategyPerformance,
   saveAdaptiveRecommendation,
   clearTodaysLearningSnapshots,
   logLearningJobRun,
   ensureLearningTables,
 } from '@/lib/signal-engine/repository/saveLearningArtifacts';
+import {
+  computeEmpiricalBucketMetrics,
+  confidenceBucketForScore,
+  applyCycleBound,
+  setCalibrationCellCache,
+  CONFIDENCE_MODEL_VERSION,
+  CALIBRATION_MIN_PARTIAL,
+  type EmpiricalBucketMetrics,
+  type EmpiricalOutcomeRow,
+} from '@/lib/signal-engine/scoring/empiricalCalibration';
+import { buildConfidenceReliabilityReport } from '@/lib/signal-engine/scoring/confidenceReliabilityReport';
 import type {
   SignalOutcome,
   StrategyPerformanceSnapshot,
@@ -393,20 +406,98 @@ export async function createScheduledLearningSnapshot(
 
 // ════════════════════════════════════════════════════════════════
 //  B. updateConfidenceCalibration
+//
+//  Empirical hierarchy cells + bounded modifiers. Learning adjusts
+//  ranking among eligible signals only — never Phase 3 gates.
 // ════════════════════════════════════════════════════════════════
 
-function bucketForConfidence(score: number): '85_100' | '70_84' | '55_69' | '0_54' {
-  if (score >= 85) return '85_100';
-  if (score >= 70) return '70_84';
-  if (score >= 55) return '55_69';
-  return '0_54';
+function bucketForConfidence(score: number): string {
+  return confidenceBucketForScore(score);
+}
+
+function toEmpiricalRow(r: OutcomeWithMeta): EmpiricalOutcomeRow {
+  return {
+    confidenceScore: r.confidence,
+    strategy: r.strategyName,
+    regime: r.regime,
+    volatilityState: r.volatilityState,
+    target1Hit: r.outcome.target1Hit,
+    entryTriggered: r.outcome.entryTriggered,
+    expired:
+      r.outcome.outcomeLabel === 'expired' || r.outcome.outcomeLabel === 'stale_no_trigger',
+    maxFavorableExcursionPct: r.outcome.maxFavorableExcursionPct,
+    maxAdverseExcursionPct: r.outcome.maxAdverseExcursionPct,
+    predictedProbability: Number.isFinite(r.confidence) ? r.confidence / 100 : null,
+  };
+}
+
+function groupKey(
+  bucket: string,
+  strategy: string | null,
+  regime: string | null,
+  vol: string | null,
+): string {
+  return `${bucket}|${strategy ?? ''}|${regime ?? ''}|${vol ?? ''}`;
+}
+
+function buildHierarchyCells(rows: OutcomeWithMeta[]): EmpiricalBucketMetrics[] {
+  const cells: EmpiricalBucketMetrics[] = [];
+  const empirical = rows.map(toEmpiricalRow);
+
+  type Dim = {
+    strategy: string | null;
+    regime: string | null;
+    volatilityState: string | null;
+  };
+
+  const dimsList: Dim[] = [{ strategy: null, regime: null, volatilityState: null }];
+  const strategies = new Set(rows.map((r) => r.strategyName));
+  const regimes = new Set(rows.map((r) => r.regime));
+  const vols = new Set(rows.map((r) => r.volatilityState));
+
+  for (const s of strategies) {
+    dimsList.push({ strategy: s, regime: null, volatilityState: null });
+    for (const reg of regimes) {
+      dimsList.push({ strategy: s, regime: reg, volatilityState: null });
+      for (const v of vols) {
+        dimsList.push({ strategy: s, regime: reg, volatilityState: v });
+      }
+    }
+  }
+
+  const buckets = new Set(empirical.map((r) => confidenceBucketForScore(r.confidenceScore)));
+  for (const bucket of buckets) {
+    for (const dims of dimsList) {
+      const filtered = empirical.filter((r) => {
+        if (confidenceBucketForScore(r.confidenceScore) !== bucket) return false;
+        if (dims.strategy != null && r.strategy !== dims.strategy) return false;
+        if (dims.regime != null && r.regime !== dims.regime) return false;
+        if (dims.volatilityState != null && r.volatilityState !== dims.volatilityState) return false;
+        return true;
+      });
+      if (filtered.length === 0) continue;
+      cells.push(computeEmpiricalBucketMetrics(bucket, filtered, dims));
+    }
+  }
+  return cells;
 }
 
 export async function updateConfidenceCalibration(
   rows?: OutcomeWithMeta[],
-): Promise<{ loaded: number; buckets: number; persisted: number }> {
+): Promise<{
+  loaded: number;
+  buckets: number;
+  persisted: number;
+  cells: number;
+  auditRows: number;
+  monotonicityOk: boolean;
+}> {
   console.log('[learning:B] updateConfidenceCalibration — start');
   const all = rows ?? (await loadOutcomesWithMeta(CALIBRATION_LOOKBACK_DAYS));
+  const cycleId = `calib_${new Date().toISOString().slice(0, 10)}`;
+  const prevMods = await loadLatestCalibrationModifiers();
+
+  // Legacy bucket-only snapshots (compat consumers)
   const byBucket = new Map<string, SignalOutcome[]>();
   for (const r of all) {
     const b = bucketForConfidence(r.confidence);
@@ -422,8 +513,103 @@ export async function updateConfidenceCalibration(
     persisted++;
   }
 
-  console.log(`[learning:B] loaded=${all.length} buckets=${byBucket.size} persisted=${persisted}`);
-  return { loaded: all.length, buckets: byBucket.size, persisted };
+  // Hierarchy cells for production lookups + audit with cycle bounds
+  const cells = buildHierarchyCells(all);
+  const appliedCells: EmpiricalBucketMetrics[] = [];
+  let auditRows = 0;
+
+  for (const cell of cells) {
+    const key = groupKey(cell.bucket, cell.strategy, cell.regime, cell.volatilityState);
+    const oldMod = prevMods.get(key) ?? 0;
+    const proposed = cell.suggestedModifier;
+    // Below partial threshold: inform only — do not materially alter production
+    const bounded =
+      cell.sampleSize < CALIBRATION_MIN_PARTIAL
+        ? oldMod
+        : applyCycleBound(oldMod, proposed);
+
+    const applied: EmpiricalBucketMetrics = {
+      ...cell,
+      suggestedModifier: bounded,
+    };
+    appliedCells.push(applied);
+
+    if (bounded !== oldMod || cell.sampleSize >= CALIBRATION_MIN_PARTIAL) {
+      await saveConfidenceCalibration(
+        {
+          bucket: cell.bucket,
+          sampleSize: cell.sampleSize,
+          target1HitRate: cell.actualPrecision,
+          avgMFE: cell.avgMfe,
+          calibrationState:
+            cell.calibrationState === 'insufficient_data'
+              ? 'insufficient_data'
+              : cell.calibrationState === 'overconfident'
+                ? 'overconfident'
+                : cell.calibrationState === 'underconfident'
+                  ? 'underconfident'
+                  : 'well_calibrated',
+          priorHitRate: cell.priorHitRate,
+          wilsonLower: cell.wilsonLower,
+          wilsonUpper: cell.wilsonUpper,
+          brierScore: cell.brierScore,
+          expectedCalibrationError: cell.expectedCalibrationError,
+          avgMAE: cell.avgMae,
+          entryTriggerRate: cell.entryTriggerRate,
+          expiryRate: cell.expiryRate,
+          suggestedModifier: bounded,
+          evidenceWeight: cell.evidenceWeight,
+          strategyName: cell.strategy,
+          regime: cell.regime,
+          volatilityState: cell.volatilityState,
+          modelVersion: CONFIDENCE_MODEL_VERSION,
+        },
+        cell.strategy,
+        cell.regime,
+      );
+      persisted++;
+
+      await saveCalibrationAudit({
+        bucket: cell.bucket,
+        strategyName: cell.strategy,
+        regime: cell.regime,
+        volatilityState: cell.volatilityState,
+        oldModifier: oldMod,
+        newModifier: bounded,
+        proposedModifier: proposed,
+        sampleSize: cell.sampleSize,
+        actualPrecision: cell.actualPrecision,
+        evidenceJson: {
+          wilsonLower: cell.wilsonLower,
+          wilsonUpper: cell.wilsonUpper,
+          brierScore: cell.brierScore,
+          ece: cell.expectedCalibrationError,
+          evidenceWeight: cell.evidenceWeight,
+          priorHitRate: cell.priorHitRate,
+          note: 'Phase 2 calibration — does not bypass Phase 3 gates',
+        },
+        approverState: cell.sampleSize < CALIBRATION_MIN_PARTIAL ? 'pending' : 'auto_applied',
+        modelVersion: CONFIDENCE_MODEL_VERSION,
+        cycleId,
+      });
+      auditRows++;
+    }
+  }
+
+  setCalibrationCellCache(appliedCells);
+  const report = buildConfidenceReliabilityReport(appliedCells);
+  console.log(
+    `[learning:B] loaded=${all.length} buckets=${byBucket.size} cells=${cells.length} ` +
+      `persisted=${persisted} audit=${auditRows} monotonicityOk=${report.monotonicityOk}`,
+  );
+  return {
+    loaded: all.length,
+    buckets: byBucket.size,
+    persisted,
+    cells: cells.length,
+    auditRows,
+    monotonicityOk: report.monotonicityOk,
+  };
 }
 
 // ════════════════════════════════════════════════════════════════

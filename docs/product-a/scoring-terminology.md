@@ -39,11 +39,16 @@ Runs immediately after strategy matching in `runStrategies.ts`. Applies the gene
 
 ### Output
 
-`ConfidenceBreakdown` with:
+`SetupConfidenceResult` (extends `ConfidenceBreakdown`) with:
 
 - Component scores (trend, momentum, volume, structure, context)
 - `finalScore` 0–100 → persisted as `confidence_score`
-- `band`: `High Conviction` | `Actionable` | `Watchlist` | `Avoid`
+- `band` / `confidenceBand`: `High Conviction` | `Actionable` | `Watchlist` | `Avoid`
+- `calibratedProbability`, `calibrationSampleSize`, `calibrationState`, `modelVersion`
+- `factorContributions` / `penalties` (attribution; no double-count under config v2+)
+- `signalTier` + `evidenceLabel` (Elite only when calibrated evidence supports aspirational 78%)
+
+See `docs/product-a/confidence-calibration.md` for empirical hierarchy and learning bounds.
 
 ### Not responsible for
 

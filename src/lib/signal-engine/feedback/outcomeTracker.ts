@@ -3,6 +3,12 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { SignalOutcome, OutcomeLabel, StrategyPerformanceSnapshot, EnvironmentFit, ConfidenceCalibrationSnapshot, CalibrationState, AdaptiveRecommendation, FeedbackState } from '../types/phase4.types';
+import {
+  computeEmpiricalBucketMetrics,
+  CALIBRATION_HIT_RATE_PRIORS,
+  CONFIDENCE_MODEL_VERSION,
+  type EmpiricalOutcomeRow,
+} from '../scoring/empiricalCalibration';
 
 export const OUTCOME_INTELLIGENCE_VERSION = '3.0.0';
 
@@ -205,25 +211,51 @@ export function aggregatePerformance(
 export function calibrateConfidence(
   bucket: string,
   outcomes: SignalOutcome[],
+  dims: { strategy?: string | null; regime?: string | null; volatilityState?: string | null } = {},
 ): ConfidenceCalibrationSnapshot {
-  const n = outcomes.length;
-  if (n < 10) return { bucket, sampleSize: n, target1HitRate: 0, avgMFE: 0, calibrationState: 'insufficient_data' };
+  const rows: EmpiricalOutcomeRow[] = outcomes.map((o) => ({
+    confidenceScore: 0,
+    strategy: dims.strategy ?? 'all',
+    regime: dims.regime ?? 'all',
+    volatilityState: dims.volatilityState ?? null,
+    target1Hit: o.target1Hit,
+    entryTriggered: o.entryTriggered,
+    expired: o.outcomeLabel === 'expired' || o.outcomeLabel === 'stale_no_trigger',
+    maxFavorableExcursionPct: o.maxFavorableExcursionPct,
+    maxAdverseExcursionPct: o.maxAdverseExcursionPct,
+  }));
 
-  const t1Rate = Math.round(outcomes.filter(o => o.target1Hit).length / n * 100) / 100;
-  const avgMFE = Math.round(outcomes.reduce((s, o) => s + o.maxFavorableExcursionPct, 0) / n * 1000) / 1000;
+  const m = computeEmpiricalBucketMetrics(bucket, rows, dims);
+  const prior = CALIBRATION_HIT_RATE_PRIORS[bucket] ?? 0.5;
 
-  // Expected hit rates by bucket
-  const expected: Record<string, number> = { '85_100': 0.72, '70_84': 0.60, '55_69': 0.48, '0_54': 0.30 };
-  const exp = expected[bucket] ?? 0.50;
+  // Map empirical state onto legacy CalibrationState union
+  let calibrationState: CalibrationState = 'insufficient_data';
+  if (m.calibrationState === 'well_calibrated') calibrationState = 'well_calibrated';
+  else if (m.calibrationState === 'overconfident') {
+    calibrationState = m.actualPrecision < prior - 0.15 ? 'overconfident' : 'slightly_overconfident';
+  } else if (m.calibrationState === 'underconfident') calibrationState = 'underconfident';
 
-  let calibrationState: CalibrationState;
-  if (Math.abs(t1Rate - exp) < 0.08) calibrationState = 'well_calibrated';
-  else if (t1Rate < exp - 0.15) calibrationState = 'overconfident';
-  else if (t1Rate < exp - 0.08) calibrationState = 'slightly_overconfident';
-  else if (t1Rate > exp + 0.08) calibrationState = 'underconfident';
-  else calibrationState = 'well_calibrated';
-
-  return { bucket, sampleSize: n, target1HitRate: t1Rate, avgMFE, calibrationState };
+  return {
+    bucket,
+    sampleSize: m.sampleSize,
+    target1HitRate: m.actualPrecision,
+    avgMFE: m.avgMfe,
+    calibrationState,
+    priorHitRate: m.priorHitRate,
+    wilsonLower: m.wilsonLower,
+    wilsonUpper: m.wilsonUpper,
+    brierScore: m.brierScore,
+    expectedCalibrationError: m.expectedCalibrationError,
+    avgMAE: m.avgMae,
+    entryTriggerRate: m.entryTriggerRate,
+    expiryRate: m.expiryRate,
+    suggestedModifier: m.suggestedModifier,
+    evidenceWeight: m.evidenceWeight,
+    strategyName: dims.strategy ?? null,
+    regime: dims.regime ?? null,
+    volatilityState: dims.volatilityState ?? null,
+    modelVersion: CONFIDENCE_MODEL_VERSION,
+  };
 }
 
 // ── Adaptive Recommendation ─────────────────────────────────

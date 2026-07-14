@@ -214,6 +214,21 @@ export interface ConfidenceCalibrationSnapshot {
   target1HitRate: number;
   avgMFE: number;
   calibrationState: CalibrationState;
+  /** Phase 2 empirical fields (optional for legacy rows). */
+  priorHitRate?: number;
+  wilsonLower?: number;
+  wilsonUpper?: number;
+  brierScore?: number | null;
+  expectedCalibrationError?: number | null;
+  avgMAE?: number;
+  entryTriggerRate?: number;
+  expiryRate?: number;
+  suggestedModifier?: number;
+  evidenceWeight?: number;
+  strategyName?: string | null;
+  regime?: string | null;
+  volatilityState?: string | null;
+  modelVersion?: string;
 }
 
 // ── Adaptive Recommendation ─────────────────────────────────

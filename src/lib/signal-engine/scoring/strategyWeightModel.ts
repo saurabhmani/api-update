@@ -37,6 +37,9 @@
 //                      because MR setups are weaker by nature.
 //
 //  All weight presets sum to exactly 1.0 — validated at module load.
+//
+//  Phase 2.2: regime / freshness weights live HERE (composite), not as
+//  repeated penalties inside confidenceScorer (config v2+).
 // ════════════════════════════════════════════════════════════════
 
 import type { StrategyName } from '../types/signalEngine.types';

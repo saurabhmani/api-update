@@ -93,7 +93,7 @@
     "test:market-data-integrity": "vitest run src/__tests__/marketDataIntegrity.vitest.ts",
     "test:signal-determinism": "vitest run src/__tests__/signalDeterminism.vitest.ts",
     "test:trade-plan": "vitest run src/__tests__/tradePlan.vitest.ts",
-    "test:confidence-calibration": "vitest run src/__tests__/confidenceCalibration.vitest.ts",
+    "test:confidence-calibration": "vitest run src/__tests__/confidenceCalibration.vitest.ts src/__tests__/phase2ConfidenceCalibration.vitest.ts",
     "test:rejection-engine": "vitest run src/__tests__/rejectionEngine.vitest.ts",
     "benchmark:signal-quality": "tsx scripts/benchmarkSignalQuality.ts",
     "test:outcome-intelligence": "vitest run src/__tests__/outcomeIntelligence.vitest.ts",

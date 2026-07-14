@@ -173,6 +173,33 @@ export interface ConfidenceBreakdown {
   band: ConfidenceBand;
 }
 
+/** Phase 2.1 — canonical setup confidence contract (extends breakdown). */
+export interface FactorContribution {
+  name: string;
+  points: number;
+  layer: 'setup' | 'risk' | 'composite' | 'rank' | 'context' | 'rejection' | 'data_quality';
+}
+
+export type SetupCalibrationState =
+  | 'well_calibrated'
+  | 'overconfident'
+  | 'underconfident'
+  | 'insufficient_data';
+
+export interface SetupConfidenceResult extends ConfidenceBreakdown {
+  calibratedProbability: number | null;
+  confidenceBand: ConfidenceBand;
+  factorContributions: FactorContribution[];
+  penalties: FactorContribution[];
+  calibrationSampleSize: number;
+  calibrationWindow: string | null;
+  calibrationState: SetupCalibrationState;
+  modelVersion: string;
+  /** Phase 2.6 tier — Elite only when calibrated evidence supports it. */
+  signalTier: 'Elite' | 'Actionable' | 'Watchlist' | 'Avoid';
+  evidenceLabel: string;
+}
+
 // ── Risk ─────────────────────────────────────────────────────
 
 export type RiskBand =

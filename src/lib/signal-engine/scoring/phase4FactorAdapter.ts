@@ -18,6 +18,13 @@
 //    no risk of drift.
 //
 //  Pure function. Stateless. IO-free.
+//
+//  Phase 2.2 factor ownership (no double-count vs setup confidence):
+//    setup confidence → trend / momentum / volume / structure only
+//    composite        → regime alignment + MTF (via normalize / inputs)
+//    risk             → stop geometry / ATR (penalties here)
+//    rank             → freshness / news (not re-penalised in setup)
+//    rejection        → manipulation risk
 // ════════════════════════════════════════════════════════════════
 
 import {
