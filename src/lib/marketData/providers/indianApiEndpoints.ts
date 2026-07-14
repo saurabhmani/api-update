@@ -155,20 +155,6 @@ export const INDIANAPI_ENDPOINTS = {
 
 export type EndpointName = keyof typeof INDIANAPI_ENDPOINTS;
 
-/**
- * Returns the endpoints that have not yet been confirmed against the
- * live API. Useful for a one-line `[CONFIG]` boot log so an operator
- * sees at a glance which paths still need verification.
- */
-export function unverifiedEndpoints(): Array<{ name: EndpointName; verifyNote: string | null }> {
-  return (Object.entries(INDIANAPI_ENDPOINTS) as Array<[EndpointName, EndpointSpec]>)
-    .filter(([, spec]) => !spec.confirmed)
-    .map(([name, spec]) => ({
-      name,
-      verifyNote: spec.verifyNote ?? null,
-    }));
-}
-
 // ── Runtime endpoint availability ──────────────────────────────────
 //
 // When an endpoint returns a hard "this route is gone" response (HTTP

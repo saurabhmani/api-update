@@ -75,8 +75,7 @@ export async function register() {
     FORCE_MARKET_OPEN:            process.env.FORCE_MARKET_OPEN ?? '(unset)',
   });
 
-  // Resolved provider flags. Booleans only — explicit so an operator
-  // can confirm at a glance that production is running IndianAPI-first.
+  // Resolved provider flags. Booleans only — confirm Kite/IndianAPI selection.
   try {
     const { getProviderFlagsSummary } = await import('@/lib/marketData/providerFlags');
     log.info('Market-data provider flags', getProviderFlagsSummary());
@@ -86,15 +85,18 @@ export async function register() {
 
   // SAFE_NSE_MODE confirmation. Loud, single-line log so operators
   // can grep for `SAFE_NSE_MODE_ENABLED` and confirm the contract is
-  // active: IndianAPI primary, NSE direct safe fallback, no Yahoo.
+  // active: configured primary (Kite default) → IndianAPI fallback →
+  // NSE direct rare fallthrough; Yahoo emergency-only.
   // Also emits the current one-time-bootstrap flag state so a fresh
   // deploy can see whether a `POST /api/signals/bootstrap` call is
   // still pending.
   try {
     const { isBootstrapDone } = await import('@/lib/marketData/oneTimeNseBootstrap');
+    const { getMarketDataProvider, isIndianApiPrimary } = await import('@/lib/marketData/providerFlags');
     const flagSet = await isBootstrapDone();
     log.info('SAFE_NSE_MODE_ENABLED', {
-      indianApiPrimary:   true,
+      marketDataProvider: getMarketDataProvider(),
+      indianApiPrimary:   isIndianApiPrimary(),
       yahooDisabled:      true,
       nseDirectFallback:  true,
       bootstrapFlagSet:   flagSet,

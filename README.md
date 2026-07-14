@@ -23,6 +23,9 @@ Kite → IndianAPI → Yahoo (emergency only) → Database / existing emergency 
 
 Do not remove IndianAPI adapters, quota tracking, or environment variables.
 
+Full retention audit (features, env vars, dead-code cleanup):
+[docs/INDIANAPI_RETENTION.md](./docs/INDIANAPI_RETENTION.md).
+
 ### Configure
 
 See `.env.example` and [ARCHITECTURE.md](./ARCHITECTURE.md) § Market Data.

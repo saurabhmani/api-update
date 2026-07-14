@@ -51,7 +51,7 @@ flowchart TB
 | Runtime DB | **MySQL** (`mysql2/promise`) | `src/lib/db.ts` — dominant path for signals, auth, candles warehouse |
 | Sidecar DB | PostgreSQL (`pg`) | `src/lib/db/postgres.ts`, `migrations/postgres/`, service scaffolds |
 | Cache | Redis + in-memory | `src/lib/redis.ts`, `src/lib/cache.ts` |
-| Market data | IndianAPI primary | `IndianAPIAdapter.ts` → `marketDataResolver.ts` |
+| Market data | **Kite** primary → IndianAPI fallback | `KiteAdapter` / `MarketDataProvider` / `marketDataResolver`; IndianAPI retained for unsupported features |
 | Workers | `node-cron`, `tsx` | `src/lib/workers/scheduler.ts`, `dailyScanSchedule.ts` |
 | Auth | Cookie sessions, bcrypt, TOTP | `q200_session`, `src/services/auth.ts` |
 
@@ -105,7 +105,7 @@ sequenceDiagram
 | Manipulation one-shot | Daily 18:30 IST (UTC cron) | `manipulationScannerCli.ts` |
 | Learning one-shot | Daily 20:30 IST (UTC cron) | `learningScheduler.ts` |
 
-**Removed:** Kite WebSocket tick server (`server.js` comments). Live ticks use IndianAPI polling + in-process `tickBus` fan-out.
+**Note:** Legacy in-process Kite ticker WS was removed. Live ticks use `LIVE_FEED_PROVIDER` (default Yahoo public chart poll) + in-process `tickBus` fan-out; quote primary remains Kite → IndianAPI via MarketDataProvider / resolver.
 
 **Dev:** `npm run dev` → `next dev`. In-process scheduler optional via `Q365_INPROC_SCHEDULER=1` (`bootInProc.ts`).
 
@@ -701,7 +701,8 @@ api-update/
 |---|---|
 | `docs/DAILY_SCAN_SCHEDULE.md` | IST scan schedule detail |
 | `docs/signal-engine-flow.md` | Phase pipeline background |
-| `docs/PROVIDER_REQUEST_POLICY.md` | IndianAPI budget policy |
+| `docs/PROVIDER_REQUEST_POLICY.md` | IndianAPI budget policy (when IndianAPI is invoked) |
+| `docs/INDIANAPI_RETENTION.md` | Why IndianAPI remains; feature classification; uninstall verdict |
 | `docs/api-inventory.md` | Route inventory (may lag code) |
 | `MIGRATION_PLAYBOOK.md` | MySQL → PostgreSQL migration notes |
 
@@ -721,7 +722,7 @@ Major updates from prior version (2026-07-04):
 6. **Daily Signal Intelligence Report** — Documented status logic (COMPLETE/PARTIAL/INSUFFICIENT), chip vs full report difference, non-persistence.
 7. **Outcome evaluation** — 20:00 IST cron, `q365_signal_outcomes`, min 5 post-signal bars.
 8. **Schedulers** — Full IST tables for `dailyScanSchedule`, `scheduler.ts`, `src/lib/scheduler.ts`; noted legacy opt-in crons and manipulation overlap.
-9. **Market data** — Updated IndianAPI-first resolver, removed Kite, clarified Yahoo emergency-only; added `LIVE_FEED_PROVIDER`.
+9. **Market data** — Kite is the default primary (Phase 9); IndianAPI retained for automatic fallback + unsupported features; Yahoo emergency-only; `LIVE_FEED_PROVIDER` for WS poll.
 10. **Database** — Emphasized MySQL runtime; added maturity/snapshot ER relationships.
 11. **Frontend mapping** — Signals page APIs, polling vs SSE behavior.
 12. **Implementation gaps** — New section for proposals, partial features, and doc/code mismatches.

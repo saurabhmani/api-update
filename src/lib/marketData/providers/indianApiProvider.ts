@@ -496,20 +496,6 @@ export async function getNseBatchLivePrice(
   }, signal);
 }
 
-export const getBseBatchLivePrice = getNseBatchLivePrice;
-
-// ── Intraday (1-day) ───────────────────────────────────────────────
-
-/** REMOVED route — `/intraday` 404s on this plan. Returns a synthetic
- *  failed invocation without burning budget. Candle scheduler already
- *  falls back to /historical_data on intraday miss. */
-export async function getIntradayCandles(
-  symbol: string,
-): Promise<ProviderInvocation<unknown>> {
-  const sym = await mapToIndianApiSymbol(symbol);
-  return deadRouteInvocation<unknown>('intraday', [sym]);
-}
-
 // ── Historical (daily) ─────────────────────────────────────────────
 
 export async function getHistorical(
@@ -782,13 +768,14 @@ export function searchSymbols(query: string, signal?: AbortSignal): Promise<Prov
   }, signal);
 }
 
-// ── Default export for ergonomic single-import ────────────────────
+// ── Aggregated export (named wrappers remain the preferred import) ─
+// Final cleanup: no default consumers; kept for scripts that inspect
+// the module surface. Prefer named imports (getStockDetails, getHistorical,
+// getNseBatchLivePrice) on production paths.
 
 export const indianApiProvider = {
   getStockDetails,
   getNseBatchLivePrice,
-  getBseBatchLivePrice,
-  getIntradayCandles,
   getHistorical,
   getTrendingSymbols,
   getMovers,

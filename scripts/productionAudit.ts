@@ -111,23 +111,26 @@ interface ProviderReport {
 
 function auditProvider(): ProviderReport {
   const primary = getMarketDataProvider();
-  const ok = isIndianApiPrimary();
+  const indianForced = isIndianApiPrimary();
   const yahoo = isYahooEmergencyFallbackEnabled();
   const nse = isNseDirectFallbackEnabled();
   const notes: string[] = [];
-  if (!ok) notes.push(`primary provider is "${primary}", expected "indianapi"`);
-  if (yahoo) notes.push('YAHOO_EMERGENCY_FALLBACK_ENABLED is true — spec forbids Yahoo');
-  if (!nse) notes.push('NSE_DIRECT_FALLBACK_ENABLED=false — spec wants NSE as safe fallback');
-  // Removed endpoints — confirmed by code inspection in indianApiProvider.ts:
+  // Phase 9+: default primary is kite; indianapi is recovery / unsupported features.
+  if (primary !== 'kite' && primary !== 'indianapi') {
+    notes.push(`primary provider is "${primary}" — expected kite (default) or indianapi (recovery)`);
+  }
+  if (indianForced) {
+    notes.push('INDIANAPI_PRIMARY=true — IndianAPI recovery override active');
+  }
+  if (yahoo) notes.push('YAHOO_EMERGENCY_FALLBACK_ENABLED is true — emergency-only Yahoo path');
+  if (!nse) notes.push('NSE_DIRECT_FALLBACK_ENABLED=false — NSE direct fallthrough disabled');
+  // Removed IndianAPI endpoints — confirmed by code inspection:
   //   /nse/batch_quote → emulated via /stock fan-out (no upstream call)
-  //   /intraday        → deadRouteInvocation (no upstream call)
+  //   /intraday        → adapter removedEndpoint stub (no upstream call)
   //   /industry_peers  → deadRouteInvocation (no upstream call)
-  // The audit cannot prove the negative at runtime, so we surface the
-  // static-analysis result here. If a future commit re-introduces a
-  // direct call to these paths, the architectureFreeze test will catch it.
   return {
     primary,
-    indianApiPrimary:         ok,
+    indianApiPrimary:         indianForced || primary === 'indianapi',
     yahooEmergencyEnabled:    yahoo,
     nseDirectEnabled:         nse,
     removed_endpoints_called: [],
