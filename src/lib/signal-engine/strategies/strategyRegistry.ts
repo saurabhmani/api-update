@@ -171,7 +171,8 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     displayName: 'Fibonacci Pullback',
     direction: 'long',
     allowedRegimes: ['Strong Bullish', 'Bullish'],
-    blockedRegimes: ['Bearish', 'High Volatility Risk'],
+    // Explicitly disabled outside trending bull regimes (Phase 5 acceptance)
+    blockedRegimes: ['Bearish', 'Sideways', 'Weak', 'High Volatility Risk'],
     idealRsiRange: [42, 65],
     defaultConfidenceWeight: 0.95,
     category:            'pullback',
@@ -180,8 +181,11 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     timeframe:           'swing',
     signalType:          'fibonacci_pullback',
     strategyMode:        'CONFIRMED_ENABLED',
-    explanationTemplate: 'Price is reacting from a key Fibonacci retracement zone inside a bullish trend.',
-    invalidationLogic:   'Close below the 61.8% or 78.6% Fibonacci support zone invalidates the setup.',
+    explanationTemplate:
+      'ATR-confirmed impulse with price at a volatility-aware Fib zone (38.2/50/61.8/78.6). ' +
+      'Early watchlist until reaction confirmation; actionable when reaction evidence is present (same strategy id).',
+    invalidationLogic:
+      'Break of swing-low invalidation (ATR buffer), close through Fib 78.6%, entry expiry beyond the zone without trigger, or material regime shift voids the setup.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
     mtfPolicyId:         'fibonacci_pullback',
   },

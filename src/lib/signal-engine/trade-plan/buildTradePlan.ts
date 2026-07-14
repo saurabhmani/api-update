@@ -205,32 +205,47 @@ function buildFibonacciPullbackPlan(f: SignalFeatures): TradePlan {
 
   const entryRef = entryZoneHigh;
 
+  // Phase 5: stop from swing invalidation + ATR buffer
+  const swingLow = f.structure.fibSwingLow ?? f.structure.recentLow20;
+  const swingInvalidation = swingLow - 0.35 * atr;
   const useWideStop = close <= fib618Level;
   const fibStopAnchor = useWideStop ? fib786Level : fib618Level;
   const stopLoss = round(Math.min(
-    fibStopAnchor - STOP_ATR_MULTIPLIER * atr * 0.5,
-    close - STOP_ATR_MULTIPLIER * atr,
+    fibStopAnchor - STOP_ATR_MULTIPLIER * atr * 0.35,
+    swingInvalidation,
+    close - STOP_ATR_MULTIPLIER * atr * 0.75,
   ));
 
   const risk = Math.max(entryRef - stopLoss, atr * 0.5);
 
+  // Reject overly wide stops via collapsed R:R (caller may filter)
   const minTarget1 = round(entryRef + TARGET1_R_MULTIPLE * risk);
   let target1 = round(recentHigh20);
   if (target1 <= entryRef || safeDivide(target1 - entryRef, risk) < TARGET1_R_MULTIPLE) {
     target1 = minTarget1;
   }
+  // Prefer prior swing high when it clears R
+  if (f.structure.fibSwingHigh != null && f.structure.fibSwingHigh > entryRef) {
+    const swingT1 = round(f.structure.fibSwingHigh);
+    if (safeDivide(swingT1 - entryRef, risk) >= 1.0) {
+      target1 = swingT1;
+    }
+  }
 
+  // Phase 5 geometry: T1 = prior swing high; T2 = 127.2% extension (161.8% → target3)
   const minTarget2 = round(entryRef + TARGET2_R_MULTIPLE * risk);
-  let target2 = fib1272 != null ? round(fib1272) : minTarget2;
+  let target2 = fib1272 != null && fib1272 > target1 ? round(fib1272) : minTarget2;
   if (target2 <= target1 || target2 <= entryRef) {
     target2 = round(Math.max(minTarget2, target1 + risk * 0.5));
   }
 
+  const rr = round(safeDivide(target1 - entryRef, risk), 1);
+
   return {
-    entry: { type: 'breakout_confirmation', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
+    entry: { type: 'pullback_entry', zoneLow: entryZoneLow, zoneHigh: entryZoneHigh },
     stopLoss,
     targets: { target1, target2 },
-    rewardRiskApprox: round(safeDivide(target1 - entryRef, risk), 1),
+    rewardRiskApprox: rr,
   };
 }
 

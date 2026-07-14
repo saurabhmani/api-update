@@ -44,7 +44,7 @@ Identical normalized candle input + regime label → identical features (see `fe
 | Stochastic | `indicators/stochastic.ts` | %K / %D |
 | OBV | `indicators/obv.ts` | On-balance volume slope |
 | Bollinger | `indicators/bollingerBands.ts` | Squeeze detection |
-| Fibonacci | `indicators/fibonacci.ts` | Retracement levels |
+| Fibonacci | `indicators/fibonacci.ts` + `structure/fibZoneQuality.ts` + `structure/confirmedSwingAnchors.ts` | Retracements/extensions; ATR-confirmed impulse anchors; zone quality (Phase 5) |
 
 Constants: `constants/signalEngine.constants.ts`
 

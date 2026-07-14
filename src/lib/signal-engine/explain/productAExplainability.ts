@@ -13,10 +13,12 @@ import type {
   TradePlan,
   ProductAExplainability,
   RelativeStrengthFeatures,
+  FibonacciPullbackSnapshot,
 } from '../types/signalEngine.types';
 import { buildConfidenceExplanation } from '../scoring/confidenceCalibration';
 import { describeTradePlanCalculation } from '../trade-plan/tradePlanEnhancements';
 import { computePhase2ConfidenceAdjustment } from '../scoring/confidenceCalibration';
+import { buildFibonacciPullbackExplanation } from './buildFibonacciExplanation';
 
 const ENHANCED_FEATURE_LABELS: Record<string, string> = {
   trendStrength: 'Trend strength',
@@ -83,8 +85,10 @@ export function buildProductAExplainability(args: {
   reasons: string[];
   warnings: string[];
   rejectionReasons?: string[];
+  fibonacciSnapshot?: FibonacciPullbackSnapshot | null;
 }): ProductAExplainability {
   const adjustment = computePhase2ConfidenceAdjustment(args.features, args.strategy);
+  const fibExplain = buildFibonacciPullbackExplanation(args.fibonacciSnapshot);
 
   return {
     topContributingFeatures: topContributingFeatures(args.features),
@@ -97,9 +101,13 @@ export function buildProductAExplainability(args: {
     ),
     riskExplanation: buildRiskExplanation(args.risk, args.features),
     tradeRationale: [
+      ...fibExplain.slice(0, 6),
       ...args.reasons.slice(0, 3),
       ...describeTradePlanCalculation(args.tradePlan, args.features).slice(0, 3),
     ],
-    rejectionReasons: args.rejectionReasons ?? [],
+    rejectionReasons: [
+      ...(args.rejectionReasons ?? []),
+      ...(args.fibonacciSnapshot?.failureReasons ?? []),
+    ],
   };
 }

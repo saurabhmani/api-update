@@ -174,6 +174,14 @@ export interface StructureFeatures {
   fibNearestLevelName?: string;
   fibDistancePct?: number;
   fibZoneMatched?: boolean;
+  /** Phase 5 — confirmed impulse anchors (Fibonacci 2.0). */
+  fibSwingLow?: number;
+  fibSwingHigh?: number;
+  fibSwingLowTs?: string;
+  fibSwingHighTs?: string;
+  fibZoneQualityScore?: number;
+  fibTolerancePct?: number;
+  fibAnchorModelVersion?: string;
 }
 
 export interface ContextFeatures {
@@ -212,6 +220,8 @@ export interface SignalFeatures {
   context: ContextFeatures;
   /** Phase 2 enhanced quality scores — present when built via buildSignalFeatures. */
   enhanced?: EnhancedFeatures;
+  /** Internal source candles for Fibonacci 2.0 impulse/reaction (not wire). */
+  _sourceCandles?: Candle[];
 }
 
 // ── Confidence ───────────────────────────────────────────────
@@ -446,6 +456,42 @@ export const BEARISH_STRATEGIES: ReadonlySet<StrategyName> = new Set<StrategyNam
 export interface StrategyMatchResult {
   matched: boolean;
   rejectionReason?: string;
+  /** Phase 5 — early watchlist vs actionable (same strategy id). */
+  confirmationState?: 'early_watchlist' | 'actionable_confirmation';
+  fibonacciSnapshot?: FibonacciPullbackSnapshot;
+}
+
+/** Phase 5 snapshot attached to fibonacci_pullback candidates. */
+export interface FibonacciPullbackSnapshot {
+  modelVersion: string;
+  swingLowPrice: number;
+  swingHighPrice: number;
+  swingLowTs: string;
+  swingHighTs: string;
+  impulseAtrMultiple: number;
+  impulseBars: number;
+  directionalEfficiency: number;
+  activeLevel: string | null;
+  activeLevelPrice: number | null;
+  distanceAtr: number | null;
+  zoneQualityScore: number;
+  tolerancePct: number;
+  confluences: string[];
+  confirmationState: 'early_watchlist' | 'actionable_confirmation';
+  reaction: {
+    bullishRejectionWick: boolean;
+    bullishEngulfingOrStrongClose: boolean;
+    higherLowAfterTouch: boolean;
+    rsiTurningUp: boolean;
+    macdHistogramImproving: boolean;
+    volumeRecovery: boolean;
+    breakAboveReactionHigh: boolean;
+    evidenceCount: number;
+    evidenceLabels: string[];
+  };
+  invalidationLevel: number | null;
+  failureReasons: string[];
+  explain: string[];
 }
 
 export interface StrategyCandidate {
@@ -459,6 +505,8 @@ export interface StrategyCandidate {
   warnings: string[];
   /** Phase 2 structured explainability — internal only, not API wire change. */
   explainability?: ProductAExplainability;
+  confirmationState?: 'early_watchlist' | 'actionable_confirmation';
+  fibonacciSnapshot?: FibonacciPullbackSnapshot;
 }
 
 /** Phase 2 — structured signal explainability bundle. */

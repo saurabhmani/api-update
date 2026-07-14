@@ -21,31 +21,38 @@ export function buildWarnings(features: SignalFeatures, strategy?: StrategyName)
   const warnings: string[] = [];
 
   if (strategy === 'fibonacci_pullback') {
+    const tol = structure.fibTolerancePct ?? FIB_WARNING_TOLERANCE_PCT;
     const { fib382, fib50, fib618, fib786 } = structure;
     const inGoldenZone = structure.fibZoneMatched === true;
     const nearKeyFib =
-      (fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, FIB_WARNING_TOLERANCE_PCT))
-      || (fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_WARNING_TOLERANCE_PCT))
-      || (fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, FIB_WARNING_TOLERANCE_PCT));
+      (fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, tol))
+      || (fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, tol))
+      || (fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, tol))
+      || (fib786 !== undefined && isPriceNearFibLevel(trend.close, fib786, tol));
 
     if (!inGoldenZone || !nearKeyFib) {
-      warnings.push('Price is below the key Fibonacci retracement zone.');
+      warnings.push('Price is outside the volatility-aware Fibonacci zone.');
     }
     if (volume.volumeVs20dAvg < FIB_MIN_VOLUME_RATIO) {
       warnings.push('Fibonacci setup is weak because volume confirmation is missing.');
     }
-    if (
-      isBelowFibLevel(trend.close, fib618, FIB_WARNING_TOLERANCE_PCT)
-      || isBelowFibLevel(trend.close, fib786, FIB_WARNING_TOLERANCE_PCT)
-    ) {
+    if (isBelowFibLevel(trend.close, fib618, tol) || isBelowFibLevel(trend.close, fib786, tol)) {
       warnings.push('Setup is invalid if price closes below 61.8% or 78.6% retracement.');
+    }
+    if (structure.fibSwingLow != null && trend.close < structure.fibSwingLow) {
+      warnings.push('Impulse swing-low anchor is broken — setup invalidated.');
     }
     if (momentum.rsi14 > FIB_PULLBACK_RSI_HIGH) {
       warnings.push(`RSI at ${round(momentum.rsi14)} is overbought for a Fibonacci pullback entry`);
     }
-    if (context.marketRegime === 'Bearish' || context.marketRegime === 'High Volatility Risk') {
+    if (
+      context.marketRegime === 'Bearish'
+      || context.marketRegime === 'Sideways'
+      || context.marketRegime === 'Weak'
+      || context.marketRegime === 'High Volatility Risk'
+    ) {
       warnings.push(
-        `Market regime is ${context.marketRegime} — Fibonacci pullback confidence is reduced`,
+        `Market regime is ${context.marketRegime} — Fibonacci pullback is disabled or heavily reduced`,
       );
     }
   }

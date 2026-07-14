@@ -197,6 +197,15 @@ function evaluateOne(
   const isShort = BEARISH_STRATEGIES.has(name);
   const rawPlan = buildTradePlanForStrategy(features, name);
   const tradePlan = enhanceTradePlan(rawPlan, features, name, isShort);
+
+  // Phase 5 — reject Fib setups with unacceptable stop geometry / R:R
+  if (name === 'fibonacci_pullback' && tradePlan.rewardRiskApprox < 1.2) {
+    const reason = `Stop too wide for acceptable R:R (${tradePlan.rewardRiskApprox} < 1.2)`;
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
+    return;
+  }
+
   const stopDistPct = features.trend.close > 0
     ? Math.abs((features.trend.close - tradePlan.stopLoss) / features.trend.close) * 100
     : 0;
@@ -230,15 +239,39 @@ function evaluateOne(
   }
 
   recordStrategyEvaluation(name, 'matched');
+  const fibResult = result as {
+    confirmationState?: StrategyCandidate['confirmationState'];
+    fibonacciSnapshot?: StrategyCandidate['fibonacciSnapshot'];
+  };
+  const warningsOut = [...warnings];
+  if (fibResult.confirmationState === 'early_watchlist') {
+    warningsOut.push(
+      'Fibonacci early watchlist — zone reached; reaction/entry trigger not complete',
+    );
+  }
+  if (fibResult.fibonacciSnapshot?.explain?.length) {
+    warningsOut.push(...fibResult.fibonacciSnapshot.failureReasons.slice(0, 2));
+  }
+
   candidates.push({
     strategy: name,
     features,
     relativeStrength,
-    confidence,
+    confidence:
+      fibResult.confirmationState === 'early_watchlist'
+        ? {
+            ...confidence,
+            // Soft-cap watchlist so Phase-3 discovery stays watchlist-tier
+            finalScore: Math.min(confidence.finalScore, 58),
+          }
+        : confidence,
     risk,
     tradePlan,
-    reasons,
-    warnings,
+    reasons: [
+      ...reasons,
+      ...(fibResult.fibonacciSnapshot?.explain ?? []),
+    ],
+    warnings: warningsOut,
     explainability: buildProductAExplainability({
       features,
       strategy: name,
@@ -246,9 +279,15 @@ function evaluateOne(
       risk,
       tradePlan,
       relativeStrength,
-      reasons,
-      warnings,
+      reasons: [
+        ...reasons,
+        ...(fibResult.fibonacciSnapshot?.explain ?? []),
+      ],
+      warnings: warningsOut,
+      fibonacciSnapshot: fibResult.fibonacciSnapshot,
     }),
+    confirmationState: fibResult.confirmationState,
+    fibonacciSnapshot: fibResult.fibonacciSnapshot,
   });
 }
 

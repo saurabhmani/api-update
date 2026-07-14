@@ -30,4 +30,4 @@ npm run test:signals-gate
 npx tsc --noEmit
 ```
 
-**Do not start Phase 5 until signed off.**
+**Do not start Phase 6 until Phase 5 is signed off.**

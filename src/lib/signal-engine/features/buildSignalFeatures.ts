@@ -100,6 +100,7 @@ export function buildSignalFeaturesDetailed(
   const features: SignalFeatures = {
     ...base,
     enhanced: buildEnhancedFeatures(base, options.relativeStrength),
+    _sourceCandles: series,
   };
 
   return {

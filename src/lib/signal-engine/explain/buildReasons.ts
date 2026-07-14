@@ -58,22 +58,35 @@ export function buildReasons(features: SignalFeatures, strategy?: StrategyName):
         );
         break;
       case 'fibonacci_pullback': {
-        const { fib382, fib50, fib618 } = structure;
-        const near382 = fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, FIB_REASON_TOLERANCE_PCT);
-        const near50 = fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, FIB_REASON_TOLERANCE_PCT);
-        const near618 = fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, FIB_REASON_TOLERANCE_PCT);
+        const tol = structure.fibTolerancePct ?? FIB_REASON_TOLERANCE_PCT;
+        const { fib382, fib50, fib618, fib786 } = structure;
+        if (structure.fibSwingLow != null && structure.fibSwingHigh != null) {
+          reasons.push(
+            `Confirmed impulse anchors: swing low ${structure.fibSwingLow}` +
+              `${structure.fibSwingLowTs ? ` (${structure.fibSwingLowTs.slice(0, 10)})` : ''}` +
+              ` → swing high ${structure.fibSwingHigh}` +
+              `${structure.fibSwingHighTs ? ` (${structure.fibSwingHighTs.slice(0, 10)})` : ''}`,
+          );
+        }
         reasons.push('Price is holding near a key Fibonacci retracement support zone.');
+        if (structure.fibZoneQualityScore != null) {
+          reasons.push(`Fibonacci zone quality ${structure.fibZoneQualityScore}/100 (tol ${tol}%)`);
+        }
         if (trend.ema20Above50 && trend.closeAbove200Ema) {
           reasons.push('Fibonacci pullback is aligned with the bullish trend.');
         }
-        if (near382 || near50 || near618) {
+        const near382 = fib382 !== undefined && isPriceNearFibLevel(trend.close, fib382, tol);
+        const near50 = fib50 !== undefined && isPriceNearFibLevel(trend.close, fib50, tol);
+        const near618 = fib618 !== undefined && isPriceNearFibLevel(trend.close, fib618, tol);
+        const near786 = fib786 !== undefined && isPriceNearFibLevel(trend.close, fib786, tol);
+        if (near382 || near50 || near618 || near786) {
           const levelParts: string[] = [];
           if (near382) levelParts.push('38.2%');
           if (near50) levelParts.push('50%');
           if (near618) levelParts.push('61.8%');
-          const levelLabel = levelParts.join(' and ');
+          if (near786) levelParts.push('78.6%');
           reasons.push(
-            `Price is reacting from ${levelLabel} retracement with healthy momentum (RSI ${round(momentum.rsi14)})`,
+            `Active retracement ${levelParts.join(' / ')} with RSI ${round(momentum.rsi14)}`,
           );
         } else if (structure.fibNearestLevelName) {
           reasons.push(

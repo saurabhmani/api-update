@@ -1,5 +1,6 @@
 // ════════════════════════════════════════════════════════════════
-//  Structure Feature Builder
+//  Structure Feature Builder — Phase 5 uses confirmed swing anchors
+//  for Fibonacci when available (fallback: 20-bar high/low).
 // ════════════════════════════════════════════════════════════════
 
 import type { StructureFeatures, Candle } from '../types/signalEngine.types';
@@ -9,12 +10,12 @@ import {
   isPriceNearFibLevel,
   type FibonacciLevels,
 } from '../indicators/fibonacci';
+import { selectConfirmedBullishImpulse } from '../structure/confirmedSwingAnchors';
+import { scoreFibonacciZoneQuality, fibTolerancePct } from '../structure/fibZoneQuality';
+import { latestAtr } from '../indicators/atr';
 import { highs, lows, lastCandle } from '../utils/candles';
 import { round, pctChange, safeDivide } from '../utils/math';
 import { STRUCTURE_LOOKBACK } from '../constants/signalEngine.constants';
-
-/** Golden-zone proximity tolerance (%). Increase to 1.5 for wider matching. */
-const FIB_ZONE_TOLERANCE_PCT = 1;
 
 const FIB_LEVEL_KEYS: (keyof FibonacciLevels)[] = [
   'fib236',
@@ -31,43 +32,17 @@ function buildFibonacciStructureFeatures(
   swingHigh: number,
   swingLow: number,
   close: number,
-): Pick<
-  StructureFeatures,
-  | 'fib236'
-  | 'fib382'
-  | 'fib50'
-  | 'fib618'
-  | 'fib786'
-  | 'fib100'
-  | 'fib1272'
-  | 'fib1618'
-  | 'fibNearestLevel'
-  | 'fibNearestLevelName'
-  | 'fibDistancePct'
-  | 'fibZoneMatched'
-> {
+  tolerancePct: number,
+  extras?: Partial<StructureFeatures>,
+): Partial<StructureFeatures> {
   try {
     const levels = calculateFibonacciLevels(swingHigh, swingLow);
     const hasValidLevel = FIB_LEVEL_KEYS.some((key) => levels[key] !== null);
     if (!hasValidLevel) {
-      return {};
+      return { ...extras };
     }
 
-    const features: Pick<
-      StructureFeatures,
-      | 'fib236'
-      | 'fib382'
-      | 'fib50'
-      | 'fib618'
-      | 'fib786'
-      | 'fib100'
-      | 'fib1272'
-      | 'fib1618'
-      | 'fibNearestLevel'
-      | 'fibNearestLevelName'
-      | 'fibDistancePct'
-      | 'fibZoneMatched'
-    > = {};
+    const features: Partial<StructureFeatures> = { ...extras };
 
     for (const key of FIB_LEVEL_KEYS) {
       const value = levels[key];
@@ -83,15 +58,17 @@ function buildFibonacciStructureFeatures(
       features.fibDistancePct = round(Math.abs(pctChange(close, nearest.value)));
     }
 
-    const { fib382, fib50, fib618 } = levels;
+    const { fib382, fib50, fib618, fib786 } = levels;
     features.fibZoneMatched =
-      (fib382 !== null && isPriceNearFibLevel(close, fib382, FIB_ZONE_TOLERANCE_PCT))
-      || (fib50 !== null && isPriceNearFibLevel(close, fib50, FIB_ZONE_TOLERANCE_PCT))
-      || (fib618 !== null && isPriceNearFibLevel(close, fib618, FIB_ZONE_TOLERANCE_PCT));
+      (fib382 !== null && isPriceNearFibLevel(close, fib382, tolerancePct))
+      || (fib50 !== null && isPriceNearFibLevel(close, fib50, tolerancePct))
+      || (fib618 !== null && isPriceNearFibLevel(close, fib618, tolerancePct))
+      || (fib786 !== null && isPriceNearFibLevel(close, fib786, tolerancePct));
 
+    features.fibTolerancePct = tolerancePct;
     return features;
   } catch {
-    return {};
+    return { ...extras };
   }
 }
 
@@ -99,21 +76,25 @@ export function buildStructureFeatures(candles: Candle[]): StructureFeatures {
   const current = lastCandle(candles);
   const len = candles.length;
 
-  // Lookback excludes the current candle
   const lookbackStart = Math.max(0, len - STRUCTURE_LOOKBACK - 1);
   const lookbackEnd = len - 1;
   const lookbackCandles = candles.slice(lookbackStart, lookbackEnd);
 
-  // Guard: ensure lookback has at least 1 candle
+  const atr = candles.length >= 20 ? latestAtr(candles, 14) : current.close * 0.02;
+  const atrPct = atr > 0 ? (atr / current.close) * 100 : 2;
+  const tolerancePct = fibTolerancePct(atrPct);
+
+  // Phase 5 — prefer confirmed impulse anchors
+  const impulse = candles.length >= 40
+    ? selectConfirmedBullishImpulse(candles, { asOfIndex: len - 1 })
+    : null;
+
   if (lookbackCandles.length === 0) {
     const recentHigh20 = round(current.high);
     const recentLow20 = round(current.low);
-    const recentResistance20 = recentHigh20;
-    const recentSupport20 = recentLow20;
-
     return {
-      recentResistance20,
-      recentSupport20,
+      recentResistance20: recentHigh20,
+      recentSupport20: recentLow20,
       breakoutDistancePct: 0,
       distanceToResistancePct: 0,
       distanceToSupportPct: 0,
@@ -124,9 +105,19 @@ export function buildStructureFeatures(candles: Candle[]): StructureFeatures {
       consecutiveHigherLows: 0,
       consecutiveLowerHighs: 0,
       ...buildFibonacciStructureFeatures(
-        recentHigh20 ?? recentResistance20,
-        recentLow20 ?? recentSupport20,
+        impulse?.swingHigh.price ?? recentHigh20,
+        impulse?.swingLow.price ?? recentLow20,
         current.close,
+        tolerancePct,
+        impulse
+          ? {
+              fibSwingHigh: impulse.swingHigh.price,
+              fibSwingLow: impulse.swingLow.price,
+              fibSwingHighTs: impulse.swingHigh.ts,
+              fibSwingLowTs: impulse.swingLow.ts,
+              fibAnchorModelVersion: impulse.modelVersion,
+            }
+          : undefined,
       ),
     };
   }
@@ -144,25 +135,21 @@ export function buildStructureFeatures(candles: Candle[]): StructureFeatures {
   const distanceToResistancePct = pctChange(recentResistance20, current.close);
   const distanceToSupportPct = pctChange(current.close, recentSupport20);
 
-  // Inside day: current candle range is entirely within previous candle
   const prev = candles[len - 2];
   const isInsideDay = prev
     ? current.high <= prev.high && current.low >= prev.low
     : false;
 
-  // Range compression: compare current range to average lookback range
   const avgRange = lookbackCandles.reduce((s, c) => s + (c.high - c.low), 0) / lookbackCandles.length;
   const currentRange = current.high - current.low;
   const rangeCompressionRatio = round(safeDivide(currentRange, avgRange), 2);
 
-  // Consecutive higher lows (bullish structure)
   let consecutiveHigherLows = 0;
   for (let i = candles.length - 2; i > 0; i--) {
     if (candles[i].low > candles[i - 1].low) consecutiveHigherLows++;
     else break;
   }
 
-  // Consecutive lower highs (bearish structure)
   let consecutiveLowerHighs = 0;
   for (let i = candles.length - 2; i > 0; i--) {
     if (candles[i].high < candles[i - 1].high) consecutiveLowerHighs++;
@@ -171,12 +158,43 @@ export function buildStructureFeatures(candles: Candle[]): StructureFeatures {
 
   const roundedRecentHigh20 = round(recentHigh20);
   const roundedRecentLow20 = round(recentLow20);
-  const roundedRecentResistance20 = round(recentResistance20);
-  const roundedRecentSupport20 = round(recentSupport20);
+  const swingHigh = impulse?.valid ? impulse.swingHigh.price : roundedRecentHigh20;
+  const swingLow = impulse?.valid ? impulse.swingLow.price : roundedRecentLow20;
+
+  const fibExtras: Partial<StructureFeatures> = {};
+  if (impulse?.valid) {
+    fibExtras.fibSwingHigh = round(impulse.swingHigh.price);
+    fibExtras.fibSwingLow = round(impulse.swingLow.price);
+    fibExtras.fibSwingHighTs = impulse.swingHigh.ts;
+    fibExtras.fibSwingLowTs = impulse.swingLow.ts;
+    fibExtras.fibAnchorModelVersion = impulse.modelVersion;
+
+    const zq = scoreFibonacciZoneQuality({
+      close: current.close,
+      atr,
+      atrPct,
+      swingHigh: impulse.swingHigh.price,
+      swingLow: impulse.swingLow.price,
+      candles,
+      fromIndex: impulse.swingLow.index,
+      toIndex: len - 1,
+      trend: {
+        ema20: current.close,
+        ema50: current.close,
+        close: current.close,
+      },
+      volume: { volumeVs20dAvg: 1 },
+      structure: {
+        recentSupport20: roundedRecentLow20,
+        recentResistance20: roundedRecentHigh20,
+      },
+    });
+    fibExtras.fibZoneQualityScore = zq.score;
+  }
 
   return {
-    recentResistance20: roundedRecentResistance20,
-    recentSupport20: roundedRecentSupport20,
+    recentResistance20: round(recentResistance20),
+    recentSupport20: round(recentSupport20),
     breakoutDistancePct: round(breakoutDistancePct),
     distanceToResistancePct: round(distanceToResistancePct),
     distanceToSupportPct: round(distanceToSupportPct),
@@ -187,9 +205,11 @@ export function buildStructureFeatures(candles: Candle[]): StructureFeatures {
     consecutiveHigherLows: Math.min(consecutiveHigherLows, 10),
     consecutiveLowerHighs: Math.min(consecutiveLowerHighs, 10),
     ...buildFibonacciStructureFeatures(
-      roundedRecentHigh20 ?? roundedRecentResistance20,
-      roundedRecentLow20 ?? roundedRecentSupport20,
+      swingHigh,
+      swingLow,
       current.close,
+      tolerancePct,
+      fibExtras,
     ),
   };
 }

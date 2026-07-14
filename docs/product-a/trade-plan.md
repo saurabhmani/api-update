@@ -37,6 +37,20 @@ Controlled by `SIGNAL_P2_ROUND_PRICES` (default true).
 
 Stop is tightened using support/resistance ± `structureStopBufferAtr × ATR` when the resulting risk falls within configured ATR bounds (`minStopAtrMultiple`–`maxStopAtrMultiple`).
 
+### Phase 5 — Fibonacci Pullback 2.0 geometry
+
+For `fibonacci_pullback`:
+
+| Element | Method |
+|---------|--------|
+| Stop | `min(fib stop anchor, swingLow − 0.35×ATR, close − cushion)` |
+| Target 1 | Prior confirmed swing high when R ≥ 1.0 |
+| Target 2 | 127.2% Fib extension |
+| Target 3 | 161.8% Fib extension (via `resolveLongTarget3`) |
+| R:R gate | Candidates with `rewardRiskApprox < 1.2` rejected |
+
+See `docs/product-a/phase-5-fibonacci-pullback-2.md`.
+
 ### Phase 3 integration
 
 `enhancePhase3TradePlan()` applies the same logic to persisted `Phase3TradePlan` rows, recalculating R:R fields.
