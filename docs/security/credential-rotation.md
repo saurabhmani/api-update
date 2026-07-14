@@ -31,7 +31,7 @@ Template with placeholders only: repository `.env.example` (tracked). Never comm
 
 | Credential | Where used | Manual action | Done? |
 |------------|------------|---------------|-------|
-| `MYSQL_PASSWORD` (and prefer rotate DB user) | `src/lib/db`, migrations, workers | On MySQL: `ALTER USER … IDENTIFIED BY '<new>';` then set `MYSQL_PASSWORD` in `.env.local` / production `.env` | ☐ |
+| `MYSQL_PASSWORD` (and prefer rotate DB user) | `src/lib/db`, migrations, workers | On MySQL: `ALTER USER … IDENTIFIED BY '<new>';` then set `MYSQL_PASSWORD` in `.env.local` / production `.env` | ☑ local (2026-07-14) — production VPS still ☐ |
 | `REDIS_PASSWORD` | Redis cache / tick bridge (`REDIS_*`) | Rotate via Redis ACL or provider console; set `REDIS_PASSWORD` or keep `REDIS_DISABLED=1` until ready | ☐ |
 | `KITE_API_KEY` | Zerodha Kite Connect | Revoke/regenerate app key at [developers.kite.trade](https://developers.kite.trade/); set in env | ☐ |
 | `KITE_API_SECRET` | Kite session exchange | Regenerate with app; never log or commit | ☐ |

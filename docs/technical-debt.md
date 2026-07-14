@@ -69,18 +69,20 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 | `npm run build` | Yes | Green |
 | `npm run test:signals-gate` | Yes | Green (112 tests incl. scoring regression) |
 | `npm run validate:signal-engine-functional` | Yes | PASS |
-| `npm run check:signal-consistency` | Informational | Green for LGEINDIA/PFC; stale-candle NO_TRADE expected off-hours |
-| `npm run test:feature-consistency` | Yes | Green (3 tests) |
-| `npm run test:market-data-integrity` | Yes | Green (5 tests) |
-| `npm run test:signal-determinism` | Yes | Green (2 tests) |
-| `npm run test:trade-plan` | Yes | Green (4 tests) |
-| `npm run test:confidence-calibration` | Yes | Green (4 tests) |
-| `npm run test:rejection-engine` | Yes | Green (3 tests) |
+| `npm run check:signal-consistency` | Yes | Green (2026-07-14: 10/10 consistent) |
+| `npm run test:feature-consistency` | Post–Phase 0 | Green (3 tests) |
+| `npm run test:market-data-integrity` | Post–Phase 0 | Green (5 tests) |
+| `npm run test:signal-determinism` | Post–Phase 0 | Green (2 tests) |
+| `npm run test:trade-plan` | Post–Phase 0 | Green (4 tests) |
+| `npm run test:confidence-calibration` | Post–Phase 0 | Green (4 tests) |
+| `npm run test:rejection-engine` | Post–Phase 0 | Green (3 tests) |
 | `npm run benchmark:signal-quality` | Informational | Phase 1 vs Phase 2 replay comparison |
-| `npm run test:outcome-intelligence` | Yes | Green (4 tests) |
-| `npm run test:learning-snapshots` | Yes | Green (3 tests) |
-| `npm run test:performance-reporting` | Yes | Green (4 tests) |
+| `npm run test:outcome-intelligence` | Post–Phase 0 | Green (4 tests) |
+| `npm run test:learning-snapshots` | Post–Phase 0 | Green (3 tests) |
+| `npm run test:performance-reporting` | Post–Phase 0 | Green (4 tests) |
 | `npm run benchmark:confidence-calibration` | Informational | 61,970 outcomes; Brier 0.248213; ECE 0.07815 |
+
+Non-blocking full-suite debt: [`docs/product-a/phase-0-test-debt.md`](./product-a/phase-0-test-debt.md). Local MySQL rotation completed 2026-07-14; remaining upstream keys (Kite/Redis/Resend/News) stay on the operator checklist in `docs/security/credential-rotation.md`.
 
 ---
 
