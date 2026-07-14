@@ -152,6 +152,15 @@ export function evaluatePhase2QualityGates(input: Phase2QualityInput): Phase2Qua
     );
   }
 
+  // Phase 6 — excessive gap / event risk (explainable)
+  if (Math.abs(features.volatility.gapPct) > 4) {
+    record(
+      'abnormal_volatility',
+      `No trade — gap ${features.volatility.gapPct.toFixed(1)}% indicates elevated event risk`,
+      { gapPct: features.volatility.gapPct },
+    );
+  }
+
   if (gates.length === 0) {
     gates.push({ gate: 'phase2_quality', passed: true });
   }

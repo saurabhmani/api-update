@@ -13,6 +13,14 @@ export { runAllStrategies } from './strategy-engine/runStrategies';
 export { computeRelativeStrength, defaultRelativeStrength, computeEnhancedRelativeStrength } from './context/relativeStrength';
 export { detectEnhancedRegime, REGIME_MODEL_VERSION } from './regime/detectMarketRegime';
 export { resolveConflicts } from './strategy-engine/resolveConflicts';
+export { evaluateStrategyConsensus, CONSENSUS_MODEL_VERSION } from './consensus/correlationAwareConsensus';
+export { evaluateNoTradePolicy, NO_TRADE_POLICY_VERSION } from './core/noTradePolicy';
+export {
+  assessStrategyHealth,
+  getLatestStrategyHealth,
+  isStrategyPublishable,
+  STRATEGY_HEALTH_MODEL_VERSION,
+} from './governance/strategyHealth';
 export {
   STRATEGY_REGISTRY,
   isStrategyAllowedInRegime,

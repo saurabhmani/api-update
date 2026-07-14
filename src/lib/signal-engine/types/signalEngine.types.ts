@@ -498,7 +498,7 @@ export interface StrategyCandidate {
   strategy: StrategyName;
   features: SignalFeatures;
   relativeStrength: RelativeStrengthFeatures;
-  confidence: ConfidenceBreakdown;
+  confidence: SetupConfidenceResult | ConfidenceBreakdown;
   risk: RiskBreakdown;
   tradePlan: TradePlan;
   reasons: string[];

@@ -53,6 +53,12 @@ import {
   applyDataQualityConfidenceModifier,
   type DataQualityDecision,
 } from '../lineage/dataQualityDecision';
+import {
+  getLatestStrategyHealth,
+  isStrategyPublishable,
+} from '../governance/strategyHealth';
+import { consensusFromCandidate } from '../consensus/correlationAwareConsensus';
+import { evaluateNoTradePolicy } from '../core/noTradePolicy';
 
 interface StrategyEntry {
   name: StrategyName;
@@ -144,6 +150,18 @@ function evaluateOne(
     rejections.push({ strategy: name, reason });
     recordStrategyEvaluation(name, 'rejected', reason);
     return;
+  }
+
+  // Phase 6 — strategy health governance (never deletes history)
+  const healthSnap = getLatestStrategyHealth(name);
+  if (healthSnap) {
+    const pub = isStrategyPublishable(healthSnap.state);
+    if (!pub.allowWatchlist && !pub.allowConfirmed) {
+      const reason = pub.reason ?? `Strategy health ${healthSnap.state}`;
+      rejections.push({ strategy: name, reason });
+      recordStrategyEvaluation(name, 'rejected', reason);
+      return;
+    }
   }
 
   // Phase 3 — sole regime eligibility gate (strategyRegistry)
@@ -253,36 +271,84 @@ function evaluateOne(
     warningsOut.push(...fibResult.fibonacciSnapshot.failureReasons.slice(0, 2));
   }
 
+  let confOut = confidence;
+  if (fibResult.confirmationState === 'early_watchlist') {
+    confOut = { ...confidence, finalScore: Math.min(confidence.finalScore, 58) };
+  }
+
+  // Phase 6 — Restricted health → cannot publish confirmed
+  if (healthSnap) {
+    const pub = isStrategyPublishable(healthSnap.state);
+    if (!pub.allowConfirmed) {
+      confOut = {
+        ...confOut,
+        finalScore: Math.min(confOut.finalScore, 58),
+        band: 'Watchlist',
+        ...('signalTier' in confOut ? { signalTier: 'Watchlist' as const } : {}),
+      };
+      warningsOut.push(pub.reason ?? `Strategy health ${healthSnap.state}`);
+    } else if (pub.reason) {
+      warningsOut.push(pub.reason);
+    }
+  }
+
+  // Phase 6 — correlation-aware consensus (does not invent a new strategy)
+  const candidatePreview = {
+    strategy: name,
+    features,
+    relativeStrength,
+    confidence: confOut,
+    risk,
+    tradePlan,
+    reasons,
+    warnings: warningsOut,
+  } as StrategyCandidate;
+  const consensus = consensusFromCandidate(candidatePreview);
+  const noTrade = evaluateNoTradePolicy({
+    features,
+    strategy: name,
+    confidenceScore: confOut.finalScore,
+    rewardRisk: tradePlan.rewardRiskApprox,
+    riskScore: risk.totalScore,
+    calibrationSampleSize: 'calibrationSampleSize' in confOut
+      ? (confOut as { calibrationSampleSize?: number }).calibrationSampleSize ?? null
+      : null,
+    calibrationState: 'calibrationState' in confOut
+      ? String((confOut as { calibrationState?: string }).calibrationState ?? '')
+      : null,
+    signalTier: 'signalTier' in confOut
+      ? String((confOut as { signalTier?: string }).signalTier ?? '')
+      : null,
+    liquidityOk: features.context.liquidityPass,
+    dataQualityOk: opts.dataQuality ? !opts.dataQuality.rejectBeforeStrategies : true,
+    strategyHealth: healthSnap?.state ?? null,
+  });
+  if (noTrade.blocked) {
+    const reason = noTrade.explain[0] ?? 'No-trade policy blocked';
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
+    return;
+  }
+  warningsOut.push(...noTrade.findings.filter((f) => f.severity === 'soft').map((f) => f.message));
+  const reasonsOut = [...reasons, ...(fibResult.fibonacciSnapshot?.explain ?? []), ...consensus.explain.slice(0, 3)];
+
   candidates.push({
     strategy: name,
     features,
     relativeStrength,
-    confidence:
-      fibResult.confirmationState === 'early_watchlist'
-        ? {
-            ...confidence,
-            // Soft-cap watchlist so Phase-3 discovery stays watchlist-tier
-            finalScore: Math.min(confidence.finalScore, 58),
-          }
-        : confidence,
+    confidence: confOut,
     risk,
     tradePlan,
-    reasons: [
-      ...reasons,
-      ...(fibResult.fibonacciSnapshot?.explain ?? []),
-    ],
+    reasons: reasonsOut,
     warnings: warningsOut,
     explainability: buildProductAExplainability({
       features,
       strategy: name,
-      confidence,
+      confidence: confOut,
       risk,
       tradePlan,
       relativeStrength,
-      reasons: [
-        ...reasons,
-        ...(fibResult.fibonacciSnapshot?.explain ?? []),
-      ],
+      reasons: reasonsOut,
       warnings: warningsOut,
       fibonacciSnapshot: fibResult.fibonacciSnapshot,
     }),

@@ -315,8 +315,8 @@ export async function generatePhase2Signals(
       // ── No candidates ─────────────────────────────────────
       if (candidates.length === 0) continue;
 
-      // ── Conflict resolution ───────────────────────────────
-      const { winner, resolution } = resolveConflicts(candidates, regime, sectorContext);
+      // ── Conflict resolution (Phase 6 consensus + elite policy) ─
+      const { winner, resolution, extras } = resolveConflicts(candidates, regime, sectorContext);
       resolution.symbol = symbol;
 
       if (resolution.losingStrategies.length > 0) {
@@ -325,6 +325,32 @@ export async function generatePhase2Signals(
 
       // Early confidence filter REMOVED — API applies the final cut.
       void config;
+
+      // Phase 6 — unresolved direction conflict → skip symbol (no elite both sides)
+      if (extras.unresolvedConflictNoTrade) {
+        rejected.push({
+          symbol,
+          strategy: winner.strategy,
+          reason: 'No trade — conflicting high-quality strategies without a clear winner',
+        });
+        continue;
+      }
+
+      let publishedConfidence = winner.confidence.finalScore;
+      let publishedBand = winner.confidence.band;
+      const consensusExplain = extras.winnerConsensus?.explain ?? [];
+      const warningsOut = [...winner.warnings];
+      if (extras.eliteBlockedForSymbol) {
+        // Contradictory strategies cannot both be elite for same symbol/time
+        publishedConfidence = Math.min(publishedConfidence, 68);
+        publishedBand = publishedConfidence >= 55 ? 'Actionable' : 'Watchlist';
+        warningsOut.push(
+          'Elite publishing blocked: contradictory long/short high-quality setups on same symbol',
+        );
+      }
+      if (extras.winnerConsensus && !extras.winnerConsensus.broadSupport) {
+        warningsOut.push('Consensus support narrow — fewer independent evidence families');
+      }
 
       // ── Build context score ───────────────────────────────
       const contextScore = Math.round(
@@ -343,13 +369,13 @@ export async function generatePhase2Signals(
         action: ACTION_MAP[winner.strategy],
         marketRegime: regime.label,
         marketContextTag: contextTag(regime.label),
-        strengthTag: strengthTag(winner.confidence.finalScore),
+        strengthTag: strengthTag(publishedConfidence),
         strategyName: winner.strategy.replace(/_/g, ' '),
-        strategyConfidence: winner.confidence.finalScore,
+        strategyConfidence: publishedConfidence,
         contextScore,
 
-        confidenceScore: winner.confidence.finalScore,
-        confidenceBand: winner.confidence.band,
+        confidenceScore: publishedConfidence,
+        confidenceBand: publishedBand,
         riskScore: winner.risk.totalScore,
         riskBand: winner.risk.band,
 
@@ -358,15 +384,23 @@ export async function generatePhase2Signals(
         targets: winner.tradePlan.targets,
         rewardRiskApprox: winner.tradePlan.rewardRiskApprox,
 
-        reasons: winner.reasons,
-        warnings: winner.warnings,
+        reasons: [...winner.reasons, ...consensusExplain.slice(0, 4)],
+        warnings: warningsOut,
 
         features,
         relativeStrength: enhancedRs,
-        confidenceBreakdown: winner.confidence,
+        confidenceBreakdown: (() => {
+          const base = { ...winner.confidence, finalScore: publishedConfidence, band: publishedBand };
+          if (!('signalTier' in winner.confidence)) return base;
+          const prev = winner.confidence.signalTier;
+          return {
+            ...base,
+            signalTier: extras.eliteBlockedForSymbol && prev === 'Elite' ? 'Actionable' : prev,
+          };
+        })(),
         riskBreakdown: winner.risk,
 
-        status: winner.confidence.band === 'Watchlist' ? 'watchlist' : 'active',
+        status: publishedBand === 'Watchlist' ? 'watchlist' : 'active',
         generatedAt: now,
 
         // Phase 2 extensions
