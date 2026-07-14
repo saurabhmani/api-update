@@ -29,7 +29,7 @@ describe('outcome intelligence', () => {
     expect(outcome.holdingDurationBars).toBe(4);
     expect(outcome.expectedRewardRisk).toBe(1.5);
     expect(outcome.realizedRewardRisk).toBe(3.5);
-    expect(outcome.outcomeVersion).toBe('3.0.0');
+    expect(outcome.outcomeVersion).toBe('8.0.0');
     expect(outcome.evaluatedAt).toBe('2026-01-06 00:00:00');
   });
 

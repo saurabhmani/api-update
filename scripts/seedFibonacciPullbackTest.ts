@@ -42,7 +42,10 @@ const CLEANUP = process.argv.includes('--cleanup');
 
 function tradingDaysBack(count: number): string[] {
   const out: string[] = [];
+  // End on the previous calendar day so the last bar is never "today"
+  // (Phase 1 data-quality treats same-day last candles as incomplete).
   const cursor = new Date();
+  cursor.setUTCDate(cursor.getUTCDate() - 1);
   while (out.length < count) {
     const dow = cursor.getUTCDay();
     if (dow !== 0 && dow !== 6) {

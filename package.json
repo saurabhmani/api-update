@@ -101,6 +101,8 @@
     "test:phase7": "vitest run src/__tests__/phase7InstitutionalBacktesting.vitest.ts",
     "test:phase8": "vitest run src/__tests__/phase8ModelGovernance.vitest.ts",
     "test:phase9": "vitest run src/__tests__/phase9ManualSignalExperience.vitest.ts",
+    "test:product-a-release": "vitest run src/__tests__/filterDisplayableApproved.vitest.ts src/__tests__/engineHealthStatus.vitest.ts src/__tests__/liveFeedState.vitest.ts src/__tests__/dualSource.vitest.ts src/__tests__/eliteInstitutionalGate.vitest.ts src/__tests__/signalConsistencyRevalidation.vitest.ts src/__tests__/closedMarketSignalsExpiry.vitest.ts src/__tests__/displayableCountParity.vitest.ts src/__tests__/scoringTerminologyRegression.vitest.ts src/__tests__/phase5FibonacciPullback.vitest.ts src/__tests__/phase6StrategyRobustness.vitest.ts src/__tests__/phase7InstitutionalBacktesting.vitest.ts src/__tests__/phase8ModelGovernance.vitest.ts src/__tests__/phase9ManualSignalExperience.vitest.ts src/__tests__/outcomeIntelligence.vitest.ts",
+    "validate:product-a-release": "tsx scripts/runProductAReleaseGate.ts",
     "test:rejection-engine": "vitest run src/__tests__/rejectionEngine.vitest.ts",
     "benchmark:signal-quality": "tsx scripts/benchmarkSignalQuality.ts",
     "test:outcome-intelligence": "vitest run src/__tests__/outcomeIntelligence.vitest.ts",

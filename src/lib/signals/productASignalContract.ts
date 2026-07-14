@@ -7,7 +7,6 @@
 //  never marked actionable.
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
 import {
   buildWhyNotTradeReasons,
   buildWhyMayFail,
@@ -19,6 +18,23 @@ import {
   PRODUCT_A_PROHIBITED_ACTIONS,
   type ManualPositionSizing,
 } from './manualExecutionSupport';
+
+/** Client-safe display meta — do not import strategyRegistry (pulls DB via hub). */
+function resolveStrategyDisplay(raw: string, explicitName?: string | null): {
+  strategyId: string;
+  strategyName: string;
+} {
+  const strategyId = raw || 'unclassified';
+  if (explicitName && String(explicitName).trim()) {
+    return { strategyId, strategyName: String(explicitName).trim() };
+  }
+  const strategyName = strategyId
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ') || 'Unclassified';
+  return { strategyId, strategyName };
+}
 
 export const PRODUCT_A_SIGNAL_CONTRACT_VERSION = '9.0.0';
 
@@ -97,6 +113,7 @@ export interface BuildProductACardInput {
   strategy?: string | null;
   strategyId?: string | null;
   signal_type?: string | null;
+  strategyName?: string | null;
   strategyVersion?: string | null;
 
   confidence?: number | null;
@@ -268,7 +285,7 @@ function resolveSignalState(input: BuildProductACardInput): ProductASignalState 
 export function buildProductASignalCard(input: BuildProductACardInput): ProductASignalCard {
   const symbol = String(input.symbol ?? input.tradingsymbol ?? '').toUpperCase() || 'UNKNOWN';
   const strategyRaw = String(input.strategyId ?? input.strategy ?? input.signal_type ?? 'unknown');
-  const meta = getStrategyMeta(strategyRaw);
+  const { strategyId, strategyName } = resolveStrategyDisplay(strategyRaw, input.strategyName);
   const signalState = resolveSignalState(input);
   const actionable = signalState === 'elite' || signalState === 'actionable';
 
@@ -343,8 +360,8 @@ export function buildProductASignalCard(input: BuildProductACardInput): ProductA
     contractVersion: PRODUCT_A_SIGNAL_CONTRACT_VERSION,
     signalId: input.id ?? null,
     symbol,
-    strategyId: meta.strategyId,
-    strategyName: meta.strategyName,
+    strategyId,
+    strategyName,
     strategyVersion: input.strategyVersion ?? null,
     direction: (String(input.direction ?? 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY'),
     signalState,

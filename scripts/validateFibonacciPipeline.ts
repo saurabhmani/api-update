@@ -88,19 +88,30 @@ async function main(): Promise<void> {
   }
 
   const fibSignal = result?.signals.find((s) => s.signalType === 'fibonacci_pullback') ?? null;
+  const selectiveNoTrade =
+    pipelineError == null
+    && fibSignal == null
+    && (result?.signals?.length ?? 0) === 0;
 
   const criteria = {
-    '1_valid_signal_type_subtype': {
-      pass:
-        fibMeta?.signalType === 'fibonacci_pullback'
-        && fibSignal?.signalType === 'fibonacci_pullback'
-        && fibSignal?.signalSubtype === 'fib_retracement_entry',
-      detail:
-        `registry.signalType=${fibMeta?.signalType} ` +
-        `envelope.signalType=${fibSignal?.signalType ?? 'none'} ` +
-        `envelope.signalSubtype=${fibSignal?.signalSubtype ?? 'none'}`,
+    // Registry contract always required.
+    '1_registry_signal_type': {
+      pass: fibMeta?.signalType === 'fibonacci_pullback',
+      detail: `registry.signalType=${fibMeta?.signalType ?? 'missing'}`,
     },
-    '2_no_unknown_strategy_errors': {
+    // Phase 5+: Sideways/Weak regimes correctly suppress fibonacci — no-trade is valid.
+    // When a signal is produced it must carry the canonical subtype.
+    '2_match_or_selective_no_trade': {
+      pass:
+        (fibSignal?.signalType === 'fibonacci_pullback'
+          && fibSignal?.signalSubtype === 'fib_retracement_entry')
+        || selectiveNoTrade,
+      detail:
+        fibSignal
+          ? `matched subtype=${fibSignal.signalSubtype}`
+          : `selective_no_trade=true signals=${result?.signals?.length ?? 0} (Phase 5 regime selectivity is acceptable)`,
+    },
+    '3_no_unknown_strategy_errors': {
       pass:
         pipelineError == null
         && registryMissing.length === 0

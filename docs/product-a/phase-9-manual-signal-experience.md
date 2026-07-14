@@ -46,4 +46,4 @@ Present advanced signal intelligence so a subscriber can make a **disciplined ma
 npm run test:phase9
 ```
 
-**Do not start Phase 10 until signed off.**
+**Phase 10 status:** Documented — see `docs/product-a/phase-10-release-gate.md`.

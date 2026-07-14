@@ -1,4 +1,16 @@
-# Product A — Release Governance (Phase 5)
+# Product A — Release Governance (Phase 5 + Phase 10)
+
+## Phase 10 release gate
+
+Before any Product A customer cutover, run:
+
+```bash
+npm run validate:product-a-release
+```
+
+See `docs/product-a/phase-10-release-gate.md` for the gate matrix, marketing wording, and conditional-pass rules.
+
+**Marketing:** Do not claim “78% win rate” without OOS n + CI (`docs/product-a/strategy-version-approval.md`).
 
 ## Release Manifest
 
