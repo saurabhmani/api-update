@@ -24,6 +24,15 @@ vi.mock('@/providers/adapters/IndianAPIAdapter', () => ({
   getFundamentals: vi.fn(),
   getIndustryPeers: vi.fn(),
 }));
+vi.mock('@/providers/adapters/KiteAdapter', () => ({
+  getQuote: vi.fn(),
+  getHistorical: vi.fn(),
+  searchSymbol: vi.fn(),
+  getMovers: vi.fn(),
+  getCorporateIntel: vi.fn(),
+  getFundamentals: vi.fn(),
+  getBatchQuotes: vi.fn(),
+}));
 vi.mock('@/providers/adapters/YahooAdapter', () => ({
   getQuote: vi.fn(),
   getHistorical: vi.fn(),
@@ -36,7 +45,9 @@ vi.mock('@/providers/adapters/YahooAdapter', () => ({
 // Imports AFTER vi.mock so the mocked versions take effect.
 import MarketDataProvider, { registerDbRepo } from '@/providers/MarketDataProvider';
 import * as Indian from '@/providers/adapters/IndianAPIAdapter';
+import * as Kite from '@/providers/adapters/KiteAdapter';
 import * as Yahoo from '@/providers/adapters/YahooAdapter';
+import { UnsupportedFeatureError } from '@/providers/adapters/UnsupportedFeatureError';
 import { cache } from '@/lib/cache';
 import { StaleDataError, type MarketSnapshot } from '@/types/market';
 import { breaker } from '@/providers/resilience';
@@ -59,11 +70,15 @@ function resetBreakerFor(...providers: string[]): void {
 describe('MarketDataProvider', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Pin default provider so host .env (e.g. INDIANAPI_PRIMARY / MARKET_DATA_PROVIDER)
+    // cannot flip Phase-4 tests sideways.
+    process.env.INDIANAPI_PRIMARY = 'true';
+    process.env.MARKET_DATA_PROVIDER = 'indianapi';
     for (const sym of ['RELIANCE', 'TCS', 'INFY', 'X']) {
       await cache.del(`quote:${sym}`);
     }
     registerDbRepo({});
-    resetBreakerFor('indian', 'yahoo');
+    resetBreakerFor('indian', 'yahoo', 'kite');
   });
 
   // ── Chain ordering ────────────────────────────────────────────────
@@ -78,6 +93,7 @@ describe('MarketDataProvider', () => {
     expect(resp.fallback_reason).toBeNull();
     expect(resp.data.price).toBe(2501);
     expect(Yahoo.getQuote).not.toHaveBeenCalled();
+    expect(Kite.getQuote).not.toHaveBeenCalled();
   });
 
   it('falls through IndianAPI → Yahoo when primary fails and cache is cold', async () => {
@@ -176,5 +192,37 @@ describe('MarketDataProvider', () => {
     expect(resp.fallback_reason).not.toBeNull();
     expect(resp.fallback_reason).toContain('indian');
     expect(resp.fallback_reason).toContain('429');
+  });
+
+  // ── Phase 4 — Kite dual-run ───────────────────────────────────────
+
+  it('MARKET_DATA_PROVIDER=kite serves from KiteAdapter (source=kite)', async () => {
+    process.env.INDIANAPI_PRIMARY = 'false';
+    process.env.MARKET_DATA_PROVIDER = 'kite';
+    vi.mocked(Kite.getQuote).mockResolvedValue(makeSnap('RELIANCE', 2600));
+    const resp = await MarketDataProvider.getLiveSnapshot('RELIANCE');
+    expect(resp.source).toBe('kite');
+    expect(resp.provider_name).toBe('Kite Connect');
+    expect(resp.data.price).toBe(2600);
+    expect(Kite.getQuote).toHaveBeenCalled();
+    expect(Indian.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('kite UnsupportedFeatureError on movers falls back to IndianAPI', async () => {
+    process.env.INDIANAPI_PRIMARY = 'false';
+    process.env.MARKET_DATA_PROVIDER = 'kite';
+    vi.mocked(Kite.getMovers).mockRejectedValue(
+      new UnsupportedFeatureError('getMovers', 'no trending'),
+    );
+    vi.mocked(Indian.getMovers).mockResolvedValue({
+      gainers: [{ symbol: 'RELIANCE', price: 2500, changePercent: 2 }],
+      losers: [],
+      mostActive: [],
+    });
+    const resp = await MarketDataProvider.getMovers({ forceRefresh: true });
+    expect(resp.source).toBe('indian');
+    expect(resp.data.gainers[0]?.symbol).toBe('RELIANCE');
+    expect(Kite.getMovers).toHaveBeenCalled();
+    expect(Indian.getMovers).toHaveBeenCalled();
   });
 });

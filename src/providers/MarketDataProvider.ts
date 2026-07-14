@@ -77,9 +77,19 @@ import { guarded, breaker, type ProviderHealth } from './resilience';
 import { withProviderFrame } from '@/lib/marketData/enforcer';
 import * as IndianAPI from './adapters/IndianAPIAdapter';
 import type { NewsItem, BatchQuoteResult } from './adapters/IndianAPIAdapter';
+import * as Kite from './adapters/KiteAdapter';
+import { UnsupportedFeatureError } from './adapters/UnsupportedFeatureError';
+import {
+  KiteAuthenticationError,
+  KiteRateLimitError,
+} from '@/lib/kite/errors';
 import * as Yahoo from './adapters/YahooAdapter'; // @deprecated marker
 import { isMarketOpen } from '@/lib/marketData/marketHours';
-import { mayUseYahoo } from '@/lib/marketData/providerFlags'; // @deprecated marker
+import {
+  getMarketDataProvider,
+  isKitePrimary,
+  mayUseYahoo,
+} from '@/lib/marketData/providerFlags'; // @deprecated marker
 import { propagateTick } from '@/lib/marketData/tickPropagator';
 
 // Yahoo is GATED. Step 2 of the IndianAPI cutover forbids any // @deprecated marker
@@ -146,7 +156,7 @@ const PROVIDER_NAMES: Record<ProviderSource, string> = {
   cache:  'Cache',
   yahoo:  'Yahoo Finance', // @deprecated marker
   db:     'PostgreSQL',
-  kite:   'Kite WebSocket', // PRIMARY source for live market data // @deprecated marker
+  kite:   'Kite Connect',
 };
 
 const SOURCE_TYPES: Record<ProviderSource, ProviderSourceType> = {
@@ -171,8 +181,9 @@ function extractVendorTimestamp(data: unknown, fetchedAt: number): number {
 }
 
 function computeFallbackReason(source: ProviderSource, trail: AttemptLog[]): string | null {
-  // When the primary served the request directly, there is no fallback to explain.
-  if (source === 'indian' && trail.every(t => t.ok || t.source !== 'indian')) return null;
+  // When the configured primary served the request directly, there is no fallback to explain.
+  const primarySource: ProviderSource = isKitePrimary() ? 'kite' : 'indian';
+  if (source === primarySource && trail.every(t => t.ok || t.source !== primarySource)) return null;
   const failures = trail.filter(t => !t.ok);
   if (failures.length === 0) return null;
   return failures
@@ -219,9 +230,28 @@ function rejectIfStale<T>(resp: ProviderResponse<T>, signalCritical: boolean): P
 // Logging any of these 100× per poll cycle (one per symbol) drowns
 // real signal. We show one warning per source per minute.
 const KNOWN_FAILURE_RE =
-  /^(circuit open for |db repo not registered$|no row for symbol$|no series for symbol$|no movers$|no intel for symbol$)/i;
+  /^(circuit open for |db repo not registered$|no row for symbol$|no series for symbol$|no movers$|no intel for symbol$|KiteAdapter: unsupported feature)/i;
 const silencedAt: Map<string, number> = new Map();
 const SILENCE_WINDOW_MS = 60_000;
+
+/** True for Kite errors that MUST cascade rather than crash the request. */
+function isRecoverableKiteError(err: unknown): boolean {
+  return (
+    err instanceof UnsupportedFeatureError
+    || err instanceof KiteAuthenticationError
+    || err instanceof KiteRateLimitError
+  );
+}
+
+function logProviderEvent(
+  event: string,
+  meta: Record<string, unknown>,
+): void {
+  const parts = Object.entries(meta)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${String(v)}`);
+  console.log(`[PROVIDER] ${event}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
 
 async function tryStep<T>(
   source: ProviderSource,
@@ -231,25 +261,36 @@ async function tryStep<T>(
   const started = Date.now();
   try {
     const out = await fn();
-    trail.push({ source, ok: true, ms: Date.now() - started });
-    // Clear the silence marker so a new failure after recovery
-    // surfaces immediately rather than being suppressed.
+    const ms = Date.now() - started;
+    trail.push({ source, ok: true, ms });
     silencedAt.delete(source);
     return out;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    trail.push({ source, ok: false, error: message, ms: Date.now() - started });
+    const ms = Date.now() - started;
+    trail.push({ source, ok: false, error: message, ms });
+
+    // Recoverable Kite failures are expected during dual-run — log once
+    // at info so soak tests can grep without treating them as hard errors.
+    if (source === 'kite' && isRecoverableKiteError(err)) {
+      logProviderEvent('kite_recoverable_fail', {
+        source,
+        latency_ms: ms,
+        error: message.slice(0, 160),
+        fallback: 'next',
+      });
+      return null;
+    }
 
     if (KNOWN_FAILURE_RE.test(message)) {
       const now = Date.now();
       const last = silencedAt.get(source) ?? 0;
       if (now - last >= SILENCE_WINDOW_MS) {
-        // Log once per source per window, then silence.
-        log.warn('provider step failed (suppressing repeats for 60s)', { source, error: message });
+        log.warn('provider step failed (suppressing repeats for 60s)', { source, error: message, latency_ms: ms });
         silencedAt.set(source, now);
       }
     } else {
-      log.warn('provider step failed', { source, error: message });
+      log.warn('provider step failed', { source, error: message, latency_ms: ms });
     }
     return null;
   }
@@ -257,11 +298,12 @@ async function tryStep<T>(
 
 // ── getLiveSnapshot / getQuote ────────────────────────────────────── // @deprecated marker
 //
-// Canonical order (Priority 1A):
-//   1. IndianAPI  (PRIMARY)
-//   2. Cache      (only consulted when primary fails)
-//   3. Yahoo      (fallback) // @deprecated marker
-//   4. PostgreSQL (stale last-resort)
+// Provider selection (Phase 4):
+//   MARKET_DATA_PROVIDER=indianapi (DEFAULT) → IndianAPI first
+//   MARKET_DATA_PROVIDER=kite                 → Kite first, then cascade
+//
+// Fallback chain after the configured primary fails:
+//   Cache → (IndianAPI if Kite was primary) → Yahoo → PostgreSQL
 //
 // Every primary-success path accounts for its API cost via
 // apiBudgetGuard.spend(). Ad-hoc reads (outside the scheduler tiers)
@@ -276,26 +318,80 @@ export async function getLiveSnapshot(
   const key = quoteCacheKey(sym);
   const trail: AttemptLog[] = [];
   const marketOpen = isMarketOpen();
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
+  const startedAt = Date.now();
 
-  // ── 1. IndianAPI (PRIMARY live-quote source) ─────────────────
-  // The IndianAPI adapter exposes a single-symbol /stock endpoint.
-  // We hit it through the resilience guard so a transient outage
-  // automatically rotates to cache → fallback below.
-  // Spec FIX-DATA-PIPELINE §1: 5s timeout, max 2 attempts. Anything
-  // slower must release control to the cache → Yahoo → DB cascade so
-  // the operator never sees a 15s blocking call from a stalled
-  // upstream. Logged via [PROVIDER] tags so the success/fail path is
-  // grep-able from production logs.
-  console.log('[PROVIDER] IndianAPI getQuote →', sym);
+  logProviderEvent('request', {
+    method: 'getLiveSnapshot',
+    selected,
+    symbol: sym,
+  });
+
+  // ── 1a. Kite primary (opt-in only) ─────────────────────────────
+  if (kitePrimary) {
+    logProviderEvent('attempt', { provider: 'kite', method: 'getQuote', symbol: sym });
+    const kiteHit = await tryStep('kite', trail, () =>
+      withProviderFrame(() =>
+        guarded('kite', () => Kite.getQuote(sym), { timeoutMs: 5000, attempts: 2 }),
+      ),
+    );
+    if (kiteHit) {
+      logProviderEvent('success', {
+        provider: 'kite',
+        selected,
+        fallback: 'none',
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
+      await cache.set(key, kiteHit, QUOTE_TTL_S);
+      void propagateTick(kiteHit);
+      void spend('adhoc', 1);
+      return rejectIfStale(
+        wrap(kiteHit, 'kite', 'near-live', trail),
+        !!opts.signalCritical,
+      );
+    }
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'cache|indianapi|yahoo|db',
+      symbol: sym,
+      latency_ms: Date.now() - startedAt,
+    });
+
+    // Cache before spending IndianAPI when Kite was the configured primary.
+    if (!opts.forceRefresh) {
+      const cached = await cache.get<MarketSnapshot>(key);
+      if (cached) {
+        trail.push({ source: 'cache', ok: true });
+        logProviderEvent('success', {
+          provider: 'cache',
+          selected,
+          fallback: 'kite→cache',
+          latency_ms: Date.now() - startedAt,
+          symbol: sym,
+        });
+        return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
+      }
+    }
+  }
+
+  // ── 1b. IndianAPI (DEFAULT primary, or secondary after Kite miss) ─
+  logProviderEvent('attempt', { provider: 'indianapi', method: 'getQuote', symbol: sym });
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() =>
       guarded('indian', () => IndianAPI.getQuote(sym), { timeoutMs: 5000, attempts: 2 }), // @deprecated marker
     ),
   );
   if (primary) {
-    console.log('[PROVIDER] IndianAPI success', sym);
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      latency_ms: Date.now() - startedAt,
+      symbol: sym,
+    });
     await cache.set(key, primary, QUOTE_TTL_S);
-    // Fan into the per-symbol tick channel for /api/market/stream.
     void propagateTick(primary);
     void spend('adhoc', 1);
     return rejectIfStale(
@@ -303,40 +399,52 @@ export async function getLiveSnapshot(
       !!opts.signalCritical,
     );
   }
-  console.log('[PROVIDER] IndianAPI fail → cascading fallback for', sym);
+  logProviderEvent('fail', {
+    provider: 'indianapi',
+    selected,
+    symbol: sym,
+    next: 'cache|yahoo|db',
+  });
 
-  // ── 2. Cache (skip if forceRefresh) ─────────────────────────────
+  // ── 2. Cache (skip if forceRefresh) — indianapi-primary path ────
   if (!opts.forceRefresh) {
     const cached = await cache.get<MarketSnapshot>(key);
     if (cached) {
       trail.push({ source: 'cache', ok: true });
+      logProviderEvent('success', {
+        provider: 'cache',
+        selected,
+        fallback: 'cache',
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
       return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
     }
   }
 
   // ── 3. Yahoo emergency fallback ────────────────────────────────
-  // Spec FIX-DATA-PIPELINE §3: when IndianAPI fails AND there's no
-  // fresh cache, Yahoo is the next provider in the hard-fallback
-  // chain (NSE → Yahoo → snapshot lives in marketDataResolver; this
-  // is the per-symbol path). Gated via `yahooAllowed()` which now
-  // honours YAHOO_EMERGENCY_FALLBACK_ENABLED so the env can flip
-  // it on without a code change.
   if (yahooAllowed()) { // @deprecated marker
-    console.log('[PROVIDER] fallback used → Yahoo for', sym);
+    logProviderEvent('attempt', { provider: 'yahoo', method: 'getQuote', symbol: sym });
     const yah = await tryStep('yahoo', trail, () => // @deprecated marker
       withProviderFrame(() =>
         guarded('yahoo', () => Yahoo.getQuote(sym), { timeoutMs: 5000, attempts: 2 }), // @deprecated marker
       ),
     );
     if (yah) {
-      console.log('[PROVIDER] Yahoo success', sym);
+      logProviderEvent('success', {
+        provider: 'yahoo',
+        selected,
+        fallback: 'yahoo',
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
       await cache.set(key, yah, QUOTE_TTL_S);
       return rejectIfStale(
         wrap(yah, 'yahoo', marketOpen ? 'fallback-delayed' : 'stale', trail), // @deprecated marker
         !!opts.signalCritical,
       );
     }
-    console.log('[PROVIDER] Yahoo fail', sym);
+    logProviderEvent('fail', { provider: 'yahoo', symbol: sym });
   }
 
   // 4. PostgreSQL stale last-resort (legacy snapshot table, if registered)
@@ -347,9 +455,21 @@ export async function getLiveSnapshot(
     return row;
   });
   if (dbHit) {
+    logProviderEvent('success', {
+      provider: 'db',
+      selected,
+      fallback: 'db',
+      latency_ms: Date.now() - startedAt,
+      symbol: sym,
+    });
     return rejectIfStale(wrap(dbHit, 'db', 'stale', trail), !!opts.signalCritical);
   }
 
+  logProviderEvent('exhausted', {
+    selected,
+    symbol: sym,
+    latency_ms: Date.now() - startedAt,
+  });
   throw new StaleDataError(wrap(
     { symbol: sym, price: 0, ltp: 0, change: 0, changePercent: 0, volume: 0, open: 0, high: 0, low: 0, prevClose: 0, timestamp: 0 } as MarketSnapshot,
     'db',
@@ -374,6 +494,11 @@ export async function getHistorical(
   const sym = symbol.trim().toUpperCase();
   const key = historicalCacheKey(sym, range);
   const trail: AttemptLog[] = [];
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
+  const startedAt = Date.now();
+
+  logProviderEvent('request', { method: 'getHistorical', selected, symbol: sym, range });
 
   if (!opts.forceRefresh) {
     const cached = await cache.get<HistoricalSeries>(key);
@@ -383,10 +508,37 @@ export async function getHistorical(
     }
   }
 
+  if (kitePrimary) {
+    logProviderEvent('attempt', { provider: 'kite', method: 'getHistorical', symbol: sym });
+    const kiteHit = await tryStep('kite', trail, () =>
+      withProviderFrame(() => guarded('kite', () => Kite.getHistorical(sym, range))),
+    );
+    if (kiteHit && kiteHit.candles.length > 0) {
+      logProviderEvent('success', {
+        provider: 'kite',
+        selected,
+        fallback: 'none',
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
+      await cache.set(key, kiteHit);
+      void spend('hist', 1);
+      return rejectIfStale(wrap(kiteHit, 'kite', 'near-live', trail), !!opts.signalCritical);
+    }
+    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', symbol: sym });
+  }
+
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() => guarded('indian', () => IndianAPI.getHistorical(sym, range))),
   );
   if (primary && primary.candles.length > 0) {
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      latency_ms: Date.now() - startedAt,
+      symbol: sym,
+    });
     await cache.set(key, primary);
     void spend('hist', 1);
     return rejectIfStale(wrap(primary, 'indian', 'near-live', trail), !!opts.signalCritical);
@@ -397,6 +549,7 @@ export async function getHistorical(
       withProviderFrame(() => guarded('yahoo', () => Yahoo.getHistorical(sym, range))), // @deprecated marker
     );
     if (yah && yah.candles.length > 0) {
+      logProviderEvent('success', { provider: 'yahoo', selected, fallback: 'yahoo', symbol: sym });
       await cache.set(key, yah);
       return rejectIfStale(wrap(yah, 'yahoo', 'fallback-delayed', trail), !!opts.signalCritical); // @deprecated marker
     }
@@ -417,10 +570,31 @@ export async function getHistorical(
 
 export async function searchSymbols(query: string): Promise<ProviderResponse<SymbolSearchHit[]>> {
   const trail: AttemptLog[] = [];
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
+  logProviderEvent('request', { method: 'searchSymbols', selected, query: query.slice(0, 40) });
+
+  if (kitePrimary) {
+    const kiteHit = await tryStep('kite', trail, () =>
+      withProviderFrame(() => guarded('kite', () => Kite.searchSymbol(query))),
+    );
+    if (kiteHit && kiteHit.length > 0) {
+      logProviderEvent('success', { provider: 'kite', selected, fallback: 'none' });
+      void spend('search', 1);
+      return wrap(kiteHit, 'kite', 'near-live', trail);
+    }
+    logProviderEvent('fallback', { from: 'kite', to: 'indianapi' });
+  }
+
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() => guarded('indian', () => IndianAPI.searchSymbol(query))),
   );
   if (primary && primary.length > 0) {
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+    });
     void spend('search', 1);
     return wrap(primary, 'indian', 'near-live', trail);
   }
@@ -440,6 +614,8 @@ export async function searchSymbols(query: string): Promise<ProviderResponse<Sym
 export async function getMovers(opts: GetOptions = {}): Promise<ProviderResponse<MoversResult>> {
   const key = moversCacheKey();
   const trail: AttemptLog[] = [];
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
 
   if (!opts.forceRefresh) {
     const cached = await cache.get<MoversResult>(key);
@@ -455,10 +631,24 @@ export async function getMovers(opts: GetOptions = {}): Promise<ProviderResponse
     }
   }
 
+  // Kite has no movers — attempt records UnsupportedFeatureError then cascade to IndianAPI.
+  if (kitePrimary) {
+    logProviderEvent('attempt', { provider: 'kite', method: 'getMovers' });
+    await tryStep('kite', trail, () =>
+      withProviderFrame(() => guarded('kite', () => Kite.getMovers())),
+    );
+    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+  }
+
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() => guarded('indian', () => IndianAPI.getMovers())),
   );
   if (primary) {
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+    });
     await cache.set(key, primary, MOVERS_TTL_S);
     await redisCacheSet(key, primary, MOVERS_TTL_S);
     void spend('movers', 1);
@@ -487,6 +677,8 @@ export async function getCorporateIntel(
   const sym = symbol.trim().toUpperCase();
   const key = corporateIntelCacheKey(sym);
   const trail: AttemptLog[] = [];
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
 
   if (!opts.forceRefresh) {
     const cached = await cache.get<CorporateIntel>(key);
@@ -496,10 +688,24 @@ export async function getCorporateIntel(
     }
   }
 
+  if (kitePrimary) {
+    logProviderEvent('attempt', { provider: 'kite', method: 'getCorporateIntel', symbol: sym });
+    await tryStep('kite', trail, () =>
+      withProviderFrame(() => guarded('kite', () => Kite.getCorporateIntel(sym))),
+    );
+    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+  }
+
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() => guarded('indian', () => IndianAPI.getCorporateIntel(sym))),
   );
   if (primary) {
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      symbol: sym,
+    });
     await cache.set(key, primary);
     await redisCacheSet(key, primary, CORP_TTL_S);
     await redisCacheSet(`corp:stale:${sym}`, primary, 7 * 24 * 60 * 60);
@@ -532,10 +738,27 @@ export async function getFundamentals(
 ): Promise<ProviderResponse<Fundamentals>> {
   const sym = symbol.trim().toUpperCase();
   const trail: AttemptLog[] = [];
+  const selected = getMarketDataProvider();
+  const kitePrimary = selected === 'kite';
+
+  if (kitePrimary) {
+    logProviderEvent('attempt', { provider: 'kite', method: 'getFundamentals', symbol: sym });
+    await tryStep('kite', trail, () =>
+      withProviderFrame(() => guarded('kite', () => Kite.getFundamentals(sym))),
+    );
+    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+  }
+
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() => guarded('indian', () => IndianAPI.getFundamentals(sym))),
   );
   if (primary) {
+    logProviderEvent('success', {
+      provider: 'indianapi',
+      selected,
+      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      symbol: sym,
+    });
     // getFundamentals fans out to 3 upstream endpoints — account all 3.
     void spend('corp', 3);
     return rejectIfStale(wrap(primary, 'indian', 'near-live', trail), !!opts.signalCritical);
@@ -645,30 +868,75 @@ export async function getBatchLiveSnapshots(
   await spend('batch', estimatedCalls);
   const batchCallsMade = estimatedCalls;
 
+  const kitePrimary = isKitePrimary();
   let batch: BatchQuoteResult = { snapshots: [], missing: misses };
-  try {
-    batch = await withProviderFrame(() =>
-      guarded(
-        'indian',
-        () => IndianAPI.getBatchQuotes(misses),
-        // 60s outer cap on the whole emulated batch. Per-symbol
-        // /stock has its own ~15s axios timeout (INDIANAPI_TIMEOUT_MS);
-        // worst-case 25 symbols at concurrency=3 = ~9 rounds × 15s =
-        // 135s, but in practice most symbols return in <1s and only
-        // 1-2 stragglers hit the per-call timeout. 60s leaves room
-        // for the slow tail without holding the caller indefinitely.
-        // attempts=1: the adapter already absorbs per-symbol failures
-        // into `missing[]`, so a wrapper-level retry would just double
-        // the latency for symbols that already settled.
-        { timeoutMs: 60000, attempts: 1 },
-      ),
-    );
-  } catch (err) {
-    log.warn('emulated batch quote call failed — falling back to stale for misses', {
-      error: err instanceof Error ? err.message : String(err),
+  let batchSource: ProviderSource = 'indian';
+
+  if (kitePrimary) {
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getBatchQuotes',
       symbols: misses.length,
     });
-    batch = { snapshots: [], missing: misses };
+    try {
+      const kiteBatch = await withProviderFrame(() =>
+        guarded(
+          'kite',
+          () => Kite.getBatchQuotes(misses),
+          { timeoutMs: 60000, attempts: 1 },
+        ),
+      );
+      if (kiteBatch.snapshots.length > 0) {
+        batch = kiteBatch;
+        batchSource = 'kite';
+        logProviderEvent('success', {
+          provider: 'kite',
+          method: 'getBatchQuotes',
+          returned: kiteBatch.snapshots.length,
+          missing: kiteBatch.missing.length,
+        });
+      } else {
+        logProviderEvent('fallback', {
+          from: 'kite',
+          to: 'indianapi',
+          reason: 'empty_batch',
+        });
+      }
+    } catch (err) {
+      logProviderEvent('fallback', {
+        from: 'kite',
+        to: 'indianapi',
+        reason: err instanceof Error ? err.message.slice(0, 120) : 'error',
+      });
+    }
+  }
+
+  if (batch.snapshots.length === 0) {
+    try {
+      batch = await withProviderFrame(() =>
+        guarded(
+          'indian',
+          () => IndianAPI.getBatchQuotes(misses),
+          // 60s outer cap on the whole emulated batch. Per-symbol
+          // /stock has its own ~15s axios timeout (INDIANAPI_TIMEOUT_MS);
+          // worst-case 25 symbols at concurrency=3 = ~9 rounds × 15s =
+          // 135s, but in practice most symbols return in <1s and only
+          // 1-2 stragglers hit the per-call timeout. 60s leaves room
+          // for the slow tail without holding the caller indefinitely.
+          // attempts=1: the adapter already absorbs per-symbol failures
+          // into `missing[]`, so a wrapper-level retry would just double
+          // the latency for symbols that already settled.
+          { timeoutMs: 60000, attempts: 1 },
+        ),
+      );
+      batchSource = 'indian';
+    } catch (err) {
+      log.warn('emulated batch quote call failed — falling back to stale for misses', {
+        error: err instanceof Error ? err.message : String(err),
+        symbols: misses.length,
+      });
+      batch = { snapshots: [], missing: misses };
+    }
   }
 
   // 4. Fan successful rows out to the per-symbol cache — downstream
@@ -683,7 +951,7 @@ export async function getBatchLiveSnapshots(
     entries.push({
       symbol: snap.symbol,
       snapshot: snap,
-      source: 'indian',
+      source: batchSource,
       data_quality: 'near-live',
     });
   }

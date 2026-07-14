@@ -106,13 +106,17 @@ describe('architecture freeze — no direct vendor adapter imports', () => {
   });
 });
 
-describe('architecture freeze — Kite is broker/execution only', () => {
-  it('KiteAdapter is not referenced by MarketDataProvider', () => {
+describe('architecture freeze — Kite dual-run (Phase 4)', () => {
+  it('MarketDataProvider may import KiteAdapter for config-gated dual-run', () => {
     const providerSrc = readFileSync(
       join(PROVIDER_DIR, 'MarketDataProvider.ts'),
       'utf8',
     );
-    expect(providerSrc).not.toMatch(/from ['"]\.\/adapters\/KiteAdapter['"]/);
-    expect(providerSrc).not.toMatch(/import \* as Kite/);
+    // Phase 4: KiteAdapter is registered but selected only when
+    // MARKET_DATA_PROVIDER=kite (IndianAPI remains the default primary).
+    expect(providerSrc).toMatch(/from ['"]\.\/adapters\/KiteAdapter['"]/);
+    expect(providerSrc).toMatch(/import \* as Kite/);
+    // Default path must still reference IndianAPI.
+    expect(providerSrc).toMatch(/import \* as IndianAPI/);
   });
 });

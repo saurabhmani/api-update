@@ -7,16 +7,16 @@
 //  This avoids string-compare cost on every hot-path lookup and gives
 //  test code a single place to monkey-patch when needed.
 //
-//  Hard contract (Step 2 of the IndianAPI cutover):
-//    • MARKET_DATA_PROVIDER = 'indianapi' | 'yahoo' | 'kite' | 'none' // @deprecated marker
-//      Production must run with 'indianapi'. Anything else is an
-//      explicit operator opt-out and is logged at boot.
+//  Hard contract (Phase 4 — dual-run ready):
+//    • MARKET_DATA_PROVIDER = 'indianapi' | 'yahoo' | 'kite' | 'none' | 'legacy'
+//      Production DEFAULT is 'indianapi'. Set 'kite' only for soak tests.
+//    • INDIANAPI_PRIMARY=true still forces 'indianapi' (wins over
+//      MARKET_DATA_PROVIDER) so existing .env.local stays safe.
 //    • YAHOO_EMERGENCY_FALLBACK_ENABLED = true ONLY when an operator
 //      has consciously decided to allow 15-min-delayed Yahoo prices // @deprecated marker
-//      to back-stop a complete IndianAPI outage. Default false.
-//    • KITE_ENABLED — Kite has been removed from the runtime. The // @deprecated marker
-//      flag exists so future re-introduction is a config change, not
-//      a code change. Default false.
+//      to back-stop a complete live-feed outage. Default false.
+//    • KITE_ENABLED — optional soft gate for non-MDP paths. Selecting
+//      MARKET_DATA_PROVIDER=kite is enough for MarketDataProvider.
 //    • NSE_DIRECT_FALLBACK_ENABLED — gates the rare per-symbol NSE
 //      direct fetch documented in Step 5. Default true (capped by
 //      NSE_DIRECT_FALLBACK_MAX_SYMBOLS_PER_DAY).
@@ -25,7 +25,7 @@
 export type MarketDataProviderName =
   | 'indianapi'
   | 'yahoo' // @deprecated marker
-  | 'kite' // @deprecated marker
+  | 'kite'
   | 'none'
   /** Legacy kill-switch — flips production back to the pre-cutover
    *  Yahoo/Kite path. Activates the legacy_rollback feed-health // @deprecated marker
@@ -128,6 +128,11 @@ export function isIndianApiPrimary(): boolean {
   return getMarketDataProvider() === 'indianapi';
 }
 
+/** True when Kite Connect is the configured MarketDataProvider primary. */
+export function isKitePrimary(): boolean {
+  return getMarketDataProvider() === 'kite';
+}
+
 /** True when the operator has flipped the kill-switch to the
  *  pre-cutover legacy path. The resolver short-circuits on this
  *  flag and writes a `legacy_rollback` row to q365_data_feed_health
@@ -164,13 +169,13 @@ export function getLiveFeedProvider(): LiveFeedProvider {
 }
 
 /**
- * Returns true ONLY when a Kite branch is allowed to run at all. // @deprecated marker
- * Currently Kite is fully removed, so this requires both the new // @deprecated marker
- * KITE_ENABLED flag AND the explicit primary selection.
+ * Returns true when MarketDataProvider may invoke KiteAdapter as the
+ * primary vendor. Phase 4: `MARKET_DATA_PROVIDER=kite` is sufficient
+ * (and requires `INDIANAPI_PRIMARY` unset/false so selection resolves
+ * to kite). `KITE_ENABLED=true` alone does not flip the primary.
  */
-export function mayUseKite(): boolean { // @deprecated marker
-  if (!isKiteEnabled()) return false; // @deprecated marker
-  return getMarketDataProvider() === 'kite'; // @deprecated marker
+export function mayUseKite(): boolean {
+  return isKitePrimary();
 }
 
 // ── NSE-direct fallback knobs (Step 5) ───────────────────────────
@@ -233,6 +238,7 @@ export function getProviderFlagsSummary(): Record<string, unknown> {
   const dual = getDualSourceConfig();
   return {
     marketDataProvider:               getMarketDataProvider(),
+    kitePrimary:                      isKitePrimary(),
     liveFeedProvider:                 getLiveFeedProvider(),
     dualSourceEnabled:                dual.enabled,
     yahooEmergencyFallbackEnabled:    isYahooEmergencyFallbackEnabled(), // @deprecated marker
