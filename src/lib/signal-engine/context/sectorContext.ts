@@ -145,3 +145,29 @@ export function defaultSectorContext(symbol: string): SectorContext {
     stockCountInSector: 0,
   };
 }
+
+/**
+ * Map sector rotation snapshot into regime external evidence.
+ * Does not invent FII/DII — only uses rotation concentration + leaders.
+ */
+export function sectorRotationToRegimeEvidence(input: {
+  leaders: Array<{ sector: string; relativeStrength: number }>;
+  laggards: Array<{ sector: string; relativeStrength: number }>;
+  phase: string;
+}): import('../types/signalEngine.types').RegimeExternalEvidence {
+  const leaderRs = input.leaders.map((l) => Math.abs(l.relativeStrength));
+  const total = leaderRs.reduce((s, v) => s + v, 0) || 1;
+  const top = leaderRs[0] ?? 0;
+  const concentration = Math.min(1, top / total);
+  const participation =
+    input.phase === 'risk_on' || input.phase === 'rotation'
+      ? Math.min(100, 50 + (input.leaders.length * 10))
+      : input.phase === 'risk_off'
+        ? 25
+        : 40;
+  return {
+    sectorParticipation: participation,
+    sectorRotationConcentration: Math.round(concentration * 1000) / 1000,
+    sectorLeaders: input.leaders.map((l) => l.sector),
+  };
+}

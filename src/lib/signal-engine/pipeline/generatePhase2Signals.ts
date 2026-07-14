@@ -18,10 +18,10 @@ import type {
 } from '../types/signalEngine.types';
 import { DEFAULT_PHASE1_CONFIG } from '../constants/signalEngine.constants';
 import { detectEnhancedRegime } from '../regime/detectMarketRegime';
-import { buildSignalFeatures } from '../features/buildSignalFeatures';
+import { buildSignalFeaturesDetailed } from '../features/buildSignalFeatures';
 import { computeEnhancedRelativeStrength, defaultEnhancedRelativeStrength } from '../context/relativeStrength';
 import { buildSectorContextFromStock, defaultSectorContext } from '../context/sectorContext';
-import { isStrategyAllowedInRegime, STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
+import { evaluateStrategyRegimeEligibility, STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
 import { resolveConflicts } from '../strategy-engine/resolveConflicts';
 import { scoreForStrategy } from '../scoring/strategyScorers';
 import { scoreRisk } from '../scoring/riskScorer';
@@ -194,7 +194,20 @@ export async function generatePhase2Signals(
       }
 
       // ── Build features ────────────────────────────────────
-      const features = buildSignalFeatures(candles, regime.label, config.minAvgVolume, config.minPrice);
+      const features = buildSignalFeaturesDetailed(
+        candles,
+        regime.label,
+        config.minAvgVolume,
+        config.minPrice,
+        {
+          regimeDimensions: regime.dimensions,
+          regimeHysteresis: {
+            confirmationBarsHeld: regime.hysteresis.confirmationBarsHeld,
+            changed: regime.hysteresis.changed,
+            minConfirmationBars: regime.hysteresis.minConfirmationBars,
+          },
+        },
+      ).features;
       const featureCheck = validateFeatures(features);
       if (!featureCheck.valid) {
         rejected.push({ symbol, reason: featureCheck.reason! });
@@ -223,8 +236,8 @@ export async function generatePhase2Signals(
       const breakdowns: StrategyBreakdown[] = [];
 
       for (const [strategyName, evaluate] of Object.entries(STRATEGY_EVALUATORS) as [StrategyName, (f: SignalFeatures) => StrategyMatchResult][]) {
-        // Registry gating: check regime compatibility
-        const regimeCheck = isStrategyAllowedInRegime(strategyName, regime.label);
+        // Registry gating: structured regime eligibility (Phase 3)
+        const regimeCheck = evaluateStrategyRegimeEligibility(strategyName, regime);
         if (!regimeCheck.allowed) {
           rejected.push({ symbol, strategy: strategyName, reason: regimeCheck.reason! });
           breakdowns.push({

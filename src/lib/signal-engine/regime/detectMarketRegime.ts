@@ -1,129 +1,185 @@
 // ════════════════════════════════════════════════════════════════
-//  Market Regime Detector
+//  Market Regime Detector — Product A Phase 3
+//
+//  ONE regime engine. All classification flows through this module.
+//  Supporting calculators live under ./regime* but there is a single
+//  returned contract and a single source of strategy eligibility
+//  (strategyRegistry + evaluateStrategyRegimeEligibility).
 // ════════════════════════════════════════════════════════════════
 
-import type { Candle, MarketRegime, MarketRegimeLabel } from '../types/signalEngine.types';
-import { latestEma } from '../indicators/ema';
-import { latestRsi } from '../indicators/rsi';
-import { latestAtr } from '../indicators/atr';
-import { closes, lastCandle } from '../utils/candles';
-import { round, safeDivide } from '../utils/math';
-import { EMA_FAST, EMA_MID, EMA_SLOW, RSI_PERIOD, ATR_PERIOD } from '../constants/signalEngine.constants';
+import type {
+  Candle,
+  MarketRegime,
+  MarketRegimeLabel,
+  EnhancedMarketRegime,
+  RegimeDetectionOptions,
+  RegimeDimensions,
+} from '../types/signalEngine.types';
 import { BULLISH_ALLOWED_REGIMES } from '../constants/signalEngine.constants';
+import { round } from '../utils/math';
+import { buildRegimeEvidence } from './regimeEvidence';
+import {
+  classifyAllDimensions,
+  volatilityLabelFromState,
+  trendStateFromLabel,
+} from './regimeDimensions';
+import {
+  applyRegimeHysteresis,
+  getLastPublishedRegime,
+  setLastPublishedRegime,
+  REGIME_MIN_CONFIRMATION_BARS,
+} from './regimeHysteresis';
 
-import type { EnhancedMarketRegime } from '../types/signalEngine.types';
-import { computeEma } from '../indicators/ema';
+export const REGIME_MODEL_VERSION = '3.0.0';
 
-export function detectEnhancedRegime(benchmarkCandles: Candle[]): EnhancedMarketRegime {
-  const base = detectMarketRegime(benchmarkCandles);
-  const closePrices = closes(benchmarkCandles);
+export {
+  applyRegimeHysteresis,
+  getLastPublishedRegime,
+  setLastPublishedRegime,
+  clearLastPublishedRegime,
+  REGIME_MIN_CONFIRMATION_BARS,
+} from './regimeHysteresis';
+export { buildRegimeEvidence } from './regimeEvidence';
+export {
+  classifyAllDimensions,
+  classifyTrendState,
+  classifyVolatilityState,
+  classifyBreadthState,
+  classifyLiquidityState,
+  classifyTransitionState,
+  labelFromTrendAndVol,
+  trendStateFromLabel,
+  volatilityLabelFromState,
+} from './regimeDimensions';
 
-  // Regime strength (0-100): how many conditions align
-  const d = base.details;
+/**
+ * Full structured regime detection — production + backtest entry point.
+ */
+export function detectEnhancedRegime(
+  benchmarkCandles: Candle[],
+  options: RegimeDetectionOptions = {},
+): EnhancedMarketRegime {
+  const evidence = buildRegimeEvidence(benchmarkCandles, options.external);
+
+  const prev =
+    options.previous ??
+    (() => {
+      const mem = getLastPublishedRegime();
+      return mem
+        ? {
+            label: mem.label,
+            dimensions: mem.dimensions,
+            confirmationBarsHeld: mem.confirmationBarsHeld,
+            candidateLabel: mem.candidateLabel,
+          }
+        : null;
+    })();
+
+  const previousTrend = prev?.dimensions?.trend_state ?? (prev ? trendStateFromLabel(prev.label) : null);
+  const rawDimensions = classifyAllDimensions(evidence, previousTrend);
+
+  const hyst = applyRegimeHysteresis({
+    candidateTrend: rawDimensions.trend_state,
+    candidateVol: rawDimensions.volatility_state,
+    previousLabel: prev?.label ?? null,
+    previousDimensions: prev?.dimensions ?? null,
+    previousCandidateLabel: prev?.candidateLabel ?? null,
+    confirmationBarsHeld: prev?.confirmationBarsHeld ?? 0,
+    minConfirmationBars: REGIME_MIN_CONFIRMATION_BARS,
+  });
+
+  const publishedLabel = hyst.changed || prev == null ? hyst.candidateLabel : (prev!.label);
+  const dimensions = refineDimensionsForPublishedLabel(rawDimensions, publishedLabel);
+
+  // Strength / confidence
   let bullishCount = 0;
-  if (d.closeVsEma20 > 0) bullishCount++;
-  if (d.closeVsEma50 > 0) bullishCount++;
-  if (d.closeVsEma200 > 0) bullishCount++;
-  if (d.ema20VsEma50 > 0) bullishCount++;
-  if (d.ema50VsEma200 > 0) bullishCount++;
-  if (d.rsi >= 50 && d.rsi <= 70) bullishCount++;
-  const strength = round(bullishCount / 6 * 100);
+  if (evidence.closeVsEma20 > 0) bullishCount++;
+  if (evidence.closeVsEma50 > 0) bullishCount++;
+  if (evidence.closeVsEma200 > 0) bullishCount++;
+  if (evidence.ema20VsEma50 > 0) bullishCount++;
+  if (evidence.ema50VsEma200 > 0) bullishCount++;
+  if (evidence.rsi >= 50 && evidence.rsi <= 70) bullishCount++;
+  const strength = round((bullishCount / 6) * 100);
+  const confidence = round(
+    Math.min(
+      100,
+      strength * 0.6 +
+        hyst.transitionConfidence * 0.4 +
+        (publishedLabel.includes('Strong') ? 5 : 0),
+    ),
+  );
 
-  // Volatility regime
-  const volatilityRegime = d.atrPct > 3.0 ? 'Extreme' as const
-    : d.atrPct > 2.0 ? 'Elevated' as const
-    : d.atrPct > 1.0 ? 'Normal' as const
-    : 'Low' as const;
+  const result: EnhancedMarketRegime = {
+    label: publishedLabel,
+    allowBullishSignals: (BULLISH_ALLOWED_REGIMES as readonly string[]).includes(publishedLabel),
+    details: {
+      closeVsEma20: evidence.closeVsEma20,
+      closeVsEma50: evidence.closeVsEma50,
+      closeVsEma200: evidence.closeVsEma200,
+      ema20VsEma50: evidence.ema20VsEma50,
+      ema50VsEma200: evidence.ema50VsEma200,
+      rsi: evidence.rsi,
+      atrPct: evidence.atrPct,
+    },
+    strength,
+    volatilityRegime: volatilityLabelFromState(dimensions.volatility_state),
+    trendSlope: evidence.ema20SlopePct,
+    confidence,
+    dimensions,
+    evidence,
+    hysteresis: { ...hyst, previousLabel: prev?.label ?? null },
+    modelVersion: REGIME_MODEL_VERSION,
+  };
 
-  // Trend slope: EMA20 change over last 5 bars
-  const emaFull = computeEma(closePrices, EMA_FAST);
-  const len = emaFull.length;
-  const trendSlope = len >= 6 && !isNaN(emaFull[len - 1]) && !isNaN(emaFull[len - 6])
-    ? round(((emaFull[len - 1] - emaFull[len - 6]) / emaFull[len - 6]) * 100, 3)
-    : 0;
+  setLastPublishedRegime({
+    label: result.label,
+    dimensions: result.dimensions,
+    confirmationBarsHeld: result.hysteresis.confirmationBarsHeld,
+    candidateLabel: result.hysteresis.candidateLabel,
+  });
 
-  // Classification confidence
-  const confidence = round(Math.min(100, strength + (base.label.includes('Strong') ? 15 : 0)));
-
-  return { ...base, strength, volatilityRegime, trendSlope, confidence };
+  return result;
 }
 
-export function detectMarketRegime(benchmarkCandles: Candle[]): MarketRegime {
-  const closePrices = closes(benchmarkCandles);
-  const current = lastCandle(benchmarkCandles);
-
-  const ema20 = latestEma(closePrices, EMA_FAST);
-  const ema50 = latestEma(closePrices, EMA_MID);
-  const ema200 = latestEma(closePrices, EMA_SLOW);
-  const rsi = latestRsi(closePrices, RSI_PERIOD);
-  const atr = latestAtr(benchmarkCandles, ATR_PERIOD);
-  const atrPct = round(safeDivide(atr, current.close) * 100);
-
-  const closeVsEma20 = round(safeDivide(current.close - ema20, ema20) * 100);
-  const closeVsEma50 = round(safeDivide(current.close - ema50, ema50) * 100);
-  const closeVsEma200 = round(safeDivide(current.close - ema200, ema200) * 100);
-  const ema20VsEma50 = round(safeDivide(ema20 - ema50, ema50) * 100);
-  const ema50VsEma200 = round(safeDivide(ema50 - ema200, ema200) * 100);
-
-  const details = { closeVsEma20, closeVsEma50, closeVsEma200, ema20VsEma50, ema50VsEma200, rsi: round(rsi), atrPct };
-
-  const label = classifyRegime(details);
-
+/**
+ * Lightweight / Phase-1-compatible entry — same engine, thinner return type.
+ */
+export function detectMarketRegime(
+  benchmarkCandles: Candle[],
+  options: RegimeDetectionOptions = {},
+): MarketRegime {
+  const full = detectEnhancedRegime(benchmarkCandles, options);
   return {
-    label,
-    allowBullishSignals: (BULLISH_ALLOWED_REGIMES as readonly string[]).includes(label),
-    details,
+    label: full.label,
+    allowBullishSignals: full.allowBullishSignals,
+    details: full.details,
+    dimensions: full.dimensions,
+    evidence: full.evidence,
+    hysteresis: full.hysteresis,
+    modelVersion: full.modelVersion,
   };
 }
 
-function classifyRegime(d: MarketRegime['details']): MarketRegimeLabel {
-  // High volatility overrides everything
-  if (d.atrPct > 3.0) {
-    return 'High Volatility Risk';
+function refineDimensionsForPublishedLabel(
+  dims: RegimeDimensions,
+  label: MarketRegimeLabel,
+): RegimeDimensions {
+  // Keep vol extreme aligned with High Volatility Risk label
+  if (label === 'High Volatility Risk') {
+    return { ...dims, volatility_state: 'extreme', trend_state: dims.trend_state };
   }
-
-  // Strong Bullish: all EMAs aligned, RSI healthy, price above all
-  if (
-    d.closeVsEma20 > 0 &&
-    d.closeVsEma50 > 0 &&
-    d.closeVsEma200 > 0 &&
-    d.ema20VsEma50 > 0 &&
-    d.ema50VsEma200 > 0 &&
-    d.rsi >= 55 &&
-    d.rsi <= 75
-  ) {
-    return 'Strong Bullish';
-  }
-
-  // Bullish: price above key EMAs with positive structure
-  if (
-    d.closeVsEma20 > 0 &&
-    d.closeVsEma50 > 0 &&
-    d.ema20VsEma50 > 0 &&
-    d.rsi >= 50
-  ) {
-    return 'Bullish';
-  }
-
-  // Bearish: price below all EMAs, EMAs stacked bearishly
-  if (
-    d.closeVsEma20 < 0 &&
-    d.closeVsEma50 < 0 &&
-    d.closeVsEma200 < 0 &&
-    d.ema20VsEma50 < 0
-  ) {
-    return 'Bearish';
-  }
-
-  // Weak: price below short-term EMAs, some deterioration
-  if (
-    d.closeVsEma20 < 0 &&
-    d.closeVsEma50 < 0 &&
-    d.rsi < 45
-  ) {
-    return 'Weak';
-  }
-
-  // Default: Sideways
-  return 'Sideways';
+  return {
+    ...dims,
+    trend_state: trendStateFromLabel(label) === 'neutral' && label === 'Sideways'
+      ? 'neutral'
+      : label === 'Strong Bullish'
+        ? 'strong_bull'
+        : label === 'Bullish'
+          ? 'bull'
+          : label === 'Bearish'
+            ? 'strong_bear'
+            : label === 'Weak'
+              ? 'bear'
+              : dims.trend_state,
+  };
 }

@@ -13,10 +13,7 @@ export function evaluateBullishDivergence(features: SignalFeatures): StrategyMat
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  // ── Block in extreme volatility ──────────────────────────
-  if (context.marketRegime === 'High Volatility Risk') {
-    return reject('Divergence blocked in high volatility regime');
-  }
+  // Regime eligibility owned by strategyRegistry (evaluateOne gate).
 
   // ── Must have actual divergence ──────────────────────────
   if (!momentum.bullishDivergence) {

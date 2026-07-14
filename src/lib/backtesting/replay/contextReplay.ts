@@ -17,11 +17,22 @@ export interface ReplayContextSnapshot {
   regimeStrength: number;
   volatilityState: string;
   trendSlope: number;
+  /** Phase 3 structured dimensions */
+  dimensions?: {
+    trend_state: string;
+    volatility_state: string;
+    breadth_state: string;
+    liquidity_state: string;
+    transition_state: string;
+  };
+  transitionConfidence?: number;
+  modelVersion?: string;
 }
 
 /**
  * Capture market context at a specific replay date.
  * Uses the benchmark candles up to that date only (no lookahead).
+ * Same detectEnhancedRegime path as production.
  */
 export async function captureReplayContext(
   provider: CandleProvider,
@@ -40,6 +51,9 @@ export async function captureReplayContext(
       regimeStrength: enhanced.strength,
       volatilityState: enhanced.volatilityRegime,
       trendSlope: enhanced.trendSlope,
+      dimensions: enhanced.dimensions,
+      transitionConfidence: enhanced.hysteresis.transitionConfidence,
+      modelVersion: enhanced.modelVersion,
     };
   } catch {
     return null;

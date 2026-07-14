@@ -35,12 +35,7 @@ export function evaluateVolatilitySqueezeBreakout(f: SignalFeatures): StrategyMa
     return { matched: false, rejectionReason: 'Momentum does not confirm the expansion.' };
   }
 
-  // 5. Regime is supportive — the squeeze resolving lower in a
-  //    bearish tape is a different setup (and not what this strategy
-  //    is registered for).
-  if (context.marketRegime === 'Bearish' || context.marketRegime === 'High Volatility Risk') {
-    return { matched: false, rejectionReason: 'Regime is not supportive of a bullish squeeze resolution.' };
-  }
+  // 5. Regime eligibility owned by strategyRegistry (evaluateOne gate).
 
   // 6. Structure sanity — we should be near a recent high, not
   //    breaking out from a chaotic range.

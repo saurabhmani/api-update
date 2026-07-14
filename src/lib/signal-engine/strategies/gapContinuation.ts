@@ -7,15 +7,9 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
-import { BULLISH_ALLOWED_REGIMES } from '../constants/signalEngine.constants';
 
 export function evaluateGapContinuation(features: SignalFeatures): StrategyMatchResult {
   const { trend, momentum, volume, volatility, structure, context } = features;
-
-  // ── Regime: needs at least bullish context ────────────────
-  if (!(BULLISH_ALLOWED_REGIMES as readonly string[]).includes(context.marketRegime)) {
-    return reject(`Regime not suitable for gap trade: ${context.marketRegime}`);
-  }
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 

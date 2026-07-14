@@ -26,11 +26,33 @@ export function buildMacroContext(regime: EnhancedMarketRegime, sectorLeadership
     'High Volatility Risk': 'risk_off',
   };
 
+  // Prefer structured dimensions when present (Phase 3)
+  let marketTone = toneMap[regime.label] || 'neutral';
+  let riskMode = riskMap[regime.label] || 'neutral';
+  if (regime.dimensions) {
+    const t = regime.dimensions.trend_state;
+    if (t === 'strong_bull') marketTone = 'strongly_constructive';
+    else if (t === 'bull') marketTone = 'constructive';
+    else if (t === 'strong_bear') marketTone = 'hostile';
+    else if (t === 'bear') marketTone = 'cautious';
+    else marketTone = 'neutral';
+
+    if (regime.dimensions.liquidity_state === 'stressed' || regime.dimensions.volatility_state === 'extreme') {
+      riskMode = 'risk_off';
+    } else if (t === 'strong_bull') riskMode = 'risk_on';
+    else if (t === 'bull') riskMode = 'moderate_risk_on';
+    else if (t === 'neutral') riskMode = 'neutral';
+    else riskMode = 'risk_off';
+  }
+
   return {
-    marketTone: toneMap[regime.label] || 'neutral',
-    riskMode: riskMap[regime.label] || 'neutral',
+    marketTone,
+    riskMode,
     volatilityState: regime.volatilityRegime,
-    sectorLeadership,
+    sectorLeadership:
+      sectorLeadership.length > 0
+        ? sectorLeadership
+        : (regime.evidence?.sourcesAvailable.includes('sector_rotation') ? sectorLeadership : sectorLeadership),
     macroEventProximity: 'none',
   };
 }

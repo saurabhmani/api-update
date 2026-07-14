@@ -7,17 +7,10 @@
 
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
 
-const BEARISH_ALLOWED_REGIMES = ['Bearish', 'Weak', 'Sideways', 'High Volatility Risk'] as const;
-
 export function evaluateBearishBreakdown(features: SignalFeatures): StrategyMatchResult {
   const { trend, momentum, volume, volatility, structure, context } = features;
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
-
-  // ── Regime: not allowed in strong bull ─────────────────────
-  if (context.marketRegime === 'Strong Bullish') {
-    return reject('Bearish breakdown blocked in Strong Bullish regime');
-  }
 
   // ── Price at or below support ─────────────────────────────
   // SELL-balance tune: accept "near-support breakdown" within 1.5%

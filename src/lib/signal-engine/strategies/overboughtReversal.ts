@@ -24,11 +24,7 @@ export function evaluateOverboughtReversal(features: SignalFeatures): StrategyMa
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  // ── Regime: not allowed in Strong Bullish ─────────────────
-  // Fighting a roaring trend with mean-reversion is how you bleed.
-  if (context.marketRegime === 'Strong Bullish') {
-    return reject('Overbought reversal blocked in Strong Bullish regime');
-  }
+  // Regime eligibility owned by strategyRegistry (evaluateOne gate).
 
   // ── Overbought momentum (core trigger) ────────────────────
   // SELL-balance tune: RSI gate 68 → 60 per operator spec. Classic

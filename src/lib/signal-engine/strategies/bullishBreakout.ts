@@ -12,7 +12,6 @@ import {
   MAX_GAP_PCT,
   MAX_ATR_PCT,
   MAX_DISTANCE_FROM_EMA20_PCT,
-  BULLISH_ALLOWED_REGIMES,
 } from '../constants/signalEngine.constants';
 
 export function evaluateBullishBreakout(
@@ -25,10 +24,6 @@ export function evaluateBullishBreakout(
 
   if (!context.liquidityPass) {
     return reject('Liquidity filter failed');
-  }
-
-  if (!(BULLISH_ALLOWED_REGIMES as readonly string[]).includes(context.marketRegime)) {
-    return reject(`Market regime not allowed: ${context.marketRegime}`);
   }
 
   const breakoutThreshold = structure.recentResistance20 * breakoutBuffer;

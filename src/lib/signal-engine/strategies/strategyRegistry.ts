@@ -14,12 +14,16 @@
 import type {
   StrategyName, StrategyRegistryEntry, MarketRegimeLabel,
   EntryType, StrategyCategory, StrategyMode,
+  EnhancedMarketRegime, RegimeDimensions, StrategyRegimeMatrix,
+  StrategyRegimeEligibilityResult, RegimeTrendState, RegimeVolatilityState,
+  RegimeBreadthState, RegimeLiquidityState, RegimeTransitionState,
 } from '../types/signalEngine.types';
 import { getEffectiveStrategyEntryFields } from '@/lib/strategy-hub/effectiveStrategyConfig';
 import {
   resolveEffectiveStrategyMode,
   canStrategyProduceConfirmedSignal,
 } from './strategyModePolicy';
+import { trendStateFromLabel } from '../regime/regimeDimensions';
 
 export {
   resolveEffectiveStrategyMode,
@@ -492,34 +496,205 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
 };
 
 /**
- * Check if a strategy is allowed in the given market regime.
+ * Check if a strategy is allowed in the given market regime (legacy label).
+ * Prefer evaluateStrategyRegimeEligibility when structured dimensions exist.
  */
 export function isStrategyAllowedInRegime(
   strategy: StrategyName,
   regime: MarketRegimeLabel,
-): { allowed: boolean; reason?: string } {
+): { allowed: boolean; reason?: string; dimension?: string; rule?: string } {
+  const result = evaluateStrategyRegimeEligibility(strategy, { label: regime });
+  return {
+    allowed: result.allowed,
+    reason: result.reason,
+    dimension: result.dimension,
+    rule: result.rule,
+  };
+}
+
+/**
+ * Phase 3 — sole strategy↔regime eligibility authority.
+ * Rejection reasons always identify the dimension + rule.
+ */
+export function evaluateStrategyRegimeEligibility(
+  strategy: StrategyName,
+  regime: {
+    label: MarketRegimeLabel;
+    dimensions?: RegimeDimensions;
+    hysteresis?: { confirmationBarsHeld: number; changed: boolean; minConfirmationBars?: number };
+  },
+): StrategyRegimeEligibilityResult {
   const entry = STRATEGY_REGISTRY[strategy];
   if (!entry) {
-    return { allowed: false, reason: `Unknown strategy: ${strategy}` };
+    return {
+      allowed: false,
+      reason: `Unknown strategy: ${strategy}`,
+      dimension: 'label',
+      rule: 'not_allowed',
+      confidencePenalty: 0,
+      ideal: false,
+    };
   }
 
   const effective = getEffectiveStrategyEntryFields(strategy) ?? entry;
+  const matrix = entry.regimeMatrix ?? deriveRegimeMatrix(entry);
 
-  if (effective.blockedRegimes.includes(regime)) {
+  if (effective.blockedRegimes.includes(regime.label)) {
     return {
       allowed: false,
-      reason: `${entry.displayName} is blocked in ${regime} regime`,
+      reason: `${entry.displayName} blocked by label rule: ${regime.label}`,
+      dimension: 'label',
+      rule: 'blocked',
+      confidencePenalty: 0,
+      ideal: false,
     };
   }
 
-  if (!effective.allowedRegimes.includes(regime)) {
+  if (!effective.allowedRegimes.includes(regime.label)) {
     return {
       allowed: false,
-      reason: `${entry.displayName} not allowed in ${regime} regime (allowed: ${effective.allowedRegimes.join(', ')})`,
+      reason: `${entry.displayName} not allowed in ${regime.label} (allowed: ${effective.allowedRegimes.join(', ')})`,
+      dimension: 'label',
+      rule: 'not_allowed',
+      confidencePenalty: 0,
+      ideal: false,
     };
   }
 
-  return { allowed: true };
+  const dims: RegimeDimensions = regime.dimensions ?? {
+    trend_state: trendStateFromLabel(regime.label),
+    volatility_state: regime.label === 'High Volatility Risk' ? 'extreme' : 'normal',
+    breadth_state: 'selective',
+    liquidity_state: 'healthy',
+    transition_state: 'stable',
+  };
+
+  // Dimension blocked
+  for (const key of Object.keys(matrix.blocked) as (keyof typeof matrix.blocked)[]) {
+    const blockedVals = matrix.blocked[key];
+    if (!blockedVals || blockedVals.length === 0) continue;
+    const current = dims[key] as string;
+    if (blockedVals.includes(current as never)) {
+      return {
+        allowed: false,
+        reason: `${entry.displayName} blocked: ${key}=${current}`,
+        dimension: key,
+        rule: 'blocked',
+        confidencePenalty: 0,
+        ideal: false,
+      };
+    }
+  }
+
+  // Dimension allowed lists (when declared)
+  for (const key of Object.keys(matrix.allowed) as (keyof typeof matrix.allowed)[]) {
+    const allowedVals = matrix.allowed[key];
+    if (!allowedVals || allowedVals.length === 0) continue;
+    const current = dims[key] as string;
+    if (!allowedVals.includes(current as never)) {
+      return {
+        allowed: false,
+        reason: `${entry.displayName} not allowed: ${key}=${current} (allowed: ${allowedVals.join(', ')})`,
+        dimension: key,
+        rule: 'not_allowed',
+        confidencePenalty: 0,
+        ideal: false,
+      };
+    }
+  }
+
+  if (matrix.requiredTransitionStates && matrix.requiredTransitionStates.length > 0) {
+    if (!matrix.requiredTransitionStates.includes(dims.transition_state)) {
+      return {
+        allowed: false,
+        reason: `${entry.displayName} requires transition_state in [${matrix.requiredTransitionStates.join(', ')}] (got ${dims.transition_state})`,
+        dimension: 'transition_state',
+        rule: 'transition',
+        confidencePenalty: 0,
+        ideal: false,
+      };
+    }
+  }
+
+  const needBars = matrix.requiredTransitionConfirmationBars ?? 0;
+  if (needBars > 0 && regime.hysteresis) {
+    const held = regime.hysteresis.confirmationBarsHeld;
+    if (regime.hysteresis.changed === false && held > 0 && held < needBars) {
+      return {
+        allowed: false,
+        reason: `${entry.displayName} awaiting transition confirmation ${held}/${needBars}`,
+        dimension: 'transition_confirmation',
+        rule: 'transition',
+        confidencePenalty: 0,
+        ideal: false,
+      };
+    }
+  }
+
+  // Ideal check → penalty when allowed but non-ideal
+  let ideal = true;
+  for (const key of Object.keys(matrix.ideal) as (keyof typeof matrix.ideal)[]) {
+    const idealVals = matrix.ideal[key];
+    if (!idealVals || idealVals.length === 0) continue;
+    const current = dims[key] as string;
+    if (!idealVals.includes(current as never)) {
+      ideal = false;
+      break;
+    }
+  }
+  if (ideal && entry.idealMarketRegime.length > 0 && !entry.idealMarketRegime.includes(regime.label)) {
+    ideal = false;
+  }
+
+  const penalty = ideal ? 0 : matrix.nonIdealConfidencePenalty;
+
+  return {
+    allowed: true,
+    confidencePenalty: penalty,
+    ideal,
+    rule: penalty > 0 ? 'ideal_penalty' : undefined,
+    reason: penalty > 0
+      ? `${entry.displayName} permitted but non-ideal (penalty ${penalty})`
+      : undefined,
+  };
+}
+
+/** Derive dimension matrix from legacy label arrays when not explicitly set. */
+export function deriveRegimeMatrix(entry: StrategyRegistryEntry): StrategyRegimeMatrix {
+  const mapTrend = (labels: MarketRegimeLabel[]): RegimeTrendState[] =>
+    Array.from(new Set(labels.filter((l) => l !== 'High Volatility Risk').map(trendStateFromLabel)));
+
+  const blockedVol: RegimeVolatilityState[] = entry.blockedRegimes.includes('High Volatility Risk')
+    ? ['extreme']
+    : [];
+
+  const idealTrend = mapTrend(entry.idealMarketRegime);
+  const allowedTrend = mapTrend(entry.allowedRegimes);
+
+  return {
+    ideal: {
+      trend_state: idealTrend.length ? idealTrend : undefined,
+      volatility_state: ['compressed', 'normal'],
+      transition_state: ['stable', 'emerging'],
+    },
+    allowed: {
+      trend_state: allowedTrend.length ? allowedTrend : undefined,
+      volatility_state: blockedVol.length
+        ? (['compressed', 'normal', 'elevated'] as RegimeVolatilityState[])
+        : undefined,
+      liquidity_state: ['healthy', 'thin'] as RegimeLiquidityState[],
+    },
+    blocked: {
+      volatility_state: blockedVol.length ? blockedVol : undefined,
+      liquidity_state: ['stressed'] as RegimeLiquidityState[],
+      breadth_state: entry.direction === 'long'
+        ? (['capitulation'] as RegimeBreadthState[])
+        : undefined,
+    },
+    nonIdealConfidencePenalty: 5,
+    requiredTransitionStates: undefined,
+    requiredTransitionConfirmationBars: 0,
+  };
 }
 
 /**
@@ -528,6 +703,14 @@ export function isStrategyAllowedInRegime(
 export function getStrategiesForRegime(regime: MarketRegimeLabel): StrategyName[] {
   return (Object.keys(STRATEGY_REGISTRY) as StrategyName[]).filter(
     (name) => isStrategyAllowedInRegime(name, regime).allowed,
+  );
+}
+
+export function getStrategiesForStructuredRegime(
+  regime: Pick<EnhancedMarketRegime, 'label' | 'dimensions' | 'hysteresis'>,
+): StrategyName[] {
+  return (Object.keys(STRATEGY_REGISTRY) as StrategyName[]).filter(
+    (name) => evaluateStrategyRegimeEligibility(name, regime).allowed,
   );
 }
 

@@ -21,6 +21,59 @@ export type MarketRegimeLabel =
   | 'Bearish'
   | 'High Volatility Risk';
 
+/** Phase 3 structured dimensions — strategy logic should prefer these over the legacy label alone. */
+export type RegimeTrendState = 'strong_bull' | 'bull' | 'neutral' | 'bear' | 'strong_bear';
+export type RegimeVolatilityState = 'compressed' | 'normal' | 'elevated' | 'extreme';
+export type RegimeBreadthState = 'broad_participation' | 'selective' | 'deteriorating' | 'capitulation';
+export type RegimeLiquidityState = 'healthy' | 'thin' | 'stressed';
+export type RegimeTransitionState = 'stable' | 'emerging' | 'weakening' | 'reversal_risk';
+
+export interface RegimeDimensions {
+  trend_state: RegimeTrendState;
+  volatility_state: RegimeVolatilityState;
+  breadth_state: RegimeBreadthState;
+  liquidity_state: RegimeLiquidityState;
+  transition_state: RegimeTransitionState;
+}
+
+export interface RegimeEvidenceBreakdown {
+  closeVsEma20: number;
+  closeVsEma50: number;
+  closeVsEma200: number;
+  ema20VsEma50: number;
+  ema50VsEma200: number;
+  ema20SlopePct: number;
+  rsi: number;
+  adx: number | null;
+  atrPct: number;
+  /** 0–100 percentile of recent ATR%; null when series too short. */
+  atrPercentile: number | null;
+  gapPct: number;
+  recentGapAbsPctAvg: number;
+  /** Universe breadth — null when not provided (never fabricated). */
+  advanceDeclineRatio: number | null;
+  pctAboveEma20: number | null;
+  pctAboveEma50: number | null;
+  pctAboveEma200: number | null;
+  newHighsVsLows: number | null;
+  sectorParticipation: number | null;
+  sectorRotationConcentration: number | null;
+  distributionDayCount: number | null;
+  accumulationDayCount: number | null;
+  sourcesAvailable: string[];
+  sourcesUnavailable: string[];
+}
+
+export interface RegimeHysteresisState {
+  previousLabel: MarketRegimeLabel | null;
+  candidateLabel: MarketRegimeLabel;
+  confirmationBarsHeld: number;
+  minConfirmationBars: number;
+  transitionConfidence: number;
+  changed: boolean;
+  changeReason: string | null;
+}
+
 export interface MarketRegime {
   label: MarketRegimeLabel;
   allowBullishSignals: boolean;
@@ -33,6 +86,11 @@ export interface MarketRegime {
     rsi: number;
     atrPct: number;
   };
+  /** Phase 3 — always present from detectMarketRegime / detectEnhancedRegime. */
+  dimensions?: RegimeDimensions;
+  evidence?: RegimeEvidenceBreakdown;
+  hysteresis?: RegimeHysteresisState;
+  modelVersion?: string;
 }
 
 // ── Feature Groups ───────────────────────────────────────────
@@ -121,6 +179,9 @@ export interface StructureFeatures {
 export interface ContextFeatures {
   marketRegime: MarketRegimeLabel;
   liquidityPass: boolean;
+  /** Phase 3 structured dimensions when available from detectEnhancedRegime. */
+  regimeDimensions?: RegimeDimensions;
+  regimeHysteresis?: Pick<RegimeHysteresisState, 'confirmationBarsHeld' | 'changed' | 'minConfirmationBars'>;
 }
 
 /** Phase 2 — normalized 0..100 quality scores (deterministic). */
@@ -290,13 +351,43 @@ export interface RelativeStrengthFeatures {
   sectorStrengthScore: number;
 }
 
-// ── Enhanced Market Regime (Phase 2) ────────────────────────
+// ── Enhanced Market Regime (Phase 2 + Phase 3) ───────────────
 
 export interface EnhancedMarketRegime extends MarketRegime {
   strength: number;
+  /** Legacy string used by macro/UI; mirrors volatility_state. */
   volatilityRegime: 'Low' | 'Normal' | 'Elevated' | 'Extreme';
   trendSlope: number;
   confidence: number;
+  /** Phase 3 structured dimensions (required on new detections). */
+  dimensions: RegimeDimensions;
+  evidence: RegimeEvidenceBreakdown;
+  hysteresis: RegimeHysteresisState;
+  modelVersion: string;
+}
+
+/** Optional external evidence — never fabricate FII/DII or derivatives. */
+export interface RegimeExternalEvidence {
+  advanceDeclineRatio?: number | null;
+  pctAboveEma20?: number | null;
+  pctAboveEma50?: number | null;
+  pctAboveEma200?: number | null;
+  newHighsVsLows?: number | null;
+  sectorParticipation?: number | null;
+  /** 0–1 concentration of leadership in top sectors. */
+  sectorRotationConcentration?: number | null;
+  sectorLeaders?: string[];
+}
+
+export interface RegimeDetectionOptions {
+  /** Previous persisted state for hysteresis. */
+  previous?: {
+    label: MarketRegimeLabel;
+    dimensions?: RegimeDimensions;
+    confirmationBarsHeld?: number;
+    candidateLabel?: MarketRegimeLabel;
+  } | null;
+  external?: RegimeExternalEvidence | null;
 }
 
 // ── Strategy System ─────────────────────────────────────────
@@ -595,6 +686,13 @@ export interface StrategyRegistryEntry {
   invalidationLogic:   string;
   /** Convenience array of regimes where this strategy works best. */
   idealMarketRegime:   MarketRegimeLabel[];
+  /**
+   * Phase 3 — structured dimension eligibility.
+   * When present, evaluateStrategyRegimeEligibility uses these in
+   * addition to legacy allowed/blocked labels. Omitted → derived
+   * defaults from allowed/blocked/ideal arrays.
+   */
+  regimeMatrix?: StrategyRegimeMatrix;
   /** Phase 4 — true for strategies that need data we don't have on the
    *  EOD warehouse (intraday candles, weekly aggregates, VWAP, etc.).
    *  Detection MUST return INSUFFICIENT_DATA on these — never fake. */
@@ -607,6 +705,37 @@ export interface StrategyRegistryEntry {
   /** When true, effective mode drops to WATCHLIST_ONLY unless score
    *  floors clear (used by ema_crossover). */
   scoreGatedWatchlist?:  boolean;
+}
+
+/** Phase 3 strategy ↔ regime dimension matrix. */
+export interface StrategyRegimeMatrix {
+  ideal: Partial<RegimeDimensionsAllowList>;
+  allowed: Partial<RegimeDimensionsAllowList>;
+  blocked: Partial<RegimeDimensionsAllowList>;
+  /** Penalty applied when allowed but outside ideal (points on 0–100). */
+  nonIdealConfidencePenalty: number;
+  /** When set, strategy blocked unless transition_state is one of these. */
+  requiredTransitionStates?: RegimeTransitionState[];
+  /** Minimum hysteresis confirmation bars before eligible after a regime change. */
+  requiredTransitionConfirmationBars?: number;
+}
+
+export type RegimeDimensionsAllowList = {
+  trend_state: RegimeTrendState[];
+  volatility_state: RegimeVolatilityState[];
+  breadth_state: RegimeBreadthState[];
+  liquidity_state: RegimeLiquidityState[];
+  transition_state: RegimeTransitionState[];
+};
+
+export interface StrategyRegimeEligibilityResult {
+  allowed: boolean;
+  reason?: string;
+  /** Exact dimension that caused rejection, when applicable. */
+  dimension?: keyof RegimeDimensions | 'label' | 'transition_confirmation';
+  rule?: 'blocked' | 'not_allowed' | 'transition' | 'ideal_penalty';
+  confidencePenalty: number;
+  ideal: boolean;
 }
 
 // ── Sector Context ─────────────────────────────────────────

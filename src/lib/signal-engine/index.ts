@@ -11,10 +11,20 @@ export { generatePhase2Signals } from './pipeline/generatePhase2Signals';
 // Phase2PipelineResult exported from types below
 export { runAllStrategies } from './strategy-engine/runStrategies';
 export { computeRelativeStrength, defaultRelativeStrength, computeEnhancedRelativeStrength } from './context/relativeStrength';
-export { detectEnhancedRegime } from './regime/detectMarketRegime';
+export { detectEnhancedRegime, REGIME_MODEL_VERSION } from './regime/detectMarketRegime';
 export { resolveConflicts } from './strategy-engine/resolveConflicts';
-export { STRATEGY_REGISTRY, isStrategyAllowedInRegime, getStrategiesForRegime, getStrategyMode, resolveEffectiveStrategyMode, canStrategyProduceConfirmedSignal, applyStrategyModeCaps } from './strategies/strategyRegistry';
-export { buildSectorContextFromStock, defaultSectorContext } from './context/sectorContext';
+export {
+  STRATEGY_REGISTRY,
+  isStrategyAllowedInRegime,
+  evaluateStrategyRegimeEligibility,
+  getStrategiesForRegime,
+  getStrategiesForStructuredRegime,
+  getStrategyMode,
+  resolveEffectiveStrategyMode,
+  canStrategyProduceConfirmedSignal,
+  applyStrategyModeCaps,
+} from './strategies/strategyRegistry';
+export { buildSectorContextFromStock, defaultSectorContext, sectorRotationToRegimeEvidence } from './context/sectorContext';
 export { scoreForStrategy } from './scoring/strategyScorers';
 export { saveStrategyBreakdowns, saveConflictResolution, migratePhase2Tables } from './repository/saveStrategyBreakdowns';
 
@@ -76,6 +86,8 @@ export {
 } from './observability/strategyScanHistogram';
 export type { StrategyScanStats } from './observability/strategyScanHistogram';
 export { detectMarketRegime } from './regime/detectMarketRegime';
+export { buildRegimePerformanceReport } from './regime/regimePerformanceReport';
+export { persistRegimeChange } from './regime/persistRegimeChange';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';
 export { evaluateBearishBreakdown } from './strategies/bearishBreakdown';

@@ -12,11 +12,6 @@ export function evaluateMeanReversionBounce(features: SignalFeatures): StrategyM
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  // ── Block in extreme bearish (capitulation risk) ──────────
-  if (context.marketRegime === 'High Volatility Risk') {
-    return reject('Mean reversion blocked in high volatility regime');
-  }
-
   // ── Oversold condition ────────────────────────────────────
   // Price must be below or near EMA20 AND RSI oversold
   if (trend.distanceFrom20EmaPct > 0.5) {

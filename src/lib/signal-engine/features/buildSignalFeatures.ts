@@ -26,6 +26,12 @@ export interface BuildSignalFeaturesOptions {
   integrity?: CandleIntegrityOptions;
   relativeStrength?: RelativeStrengthFeatures;
   asset?: AssetDefinition;
+  /** Phase 3 — attach structured regime dimensions for eligibility. */
+  regimeDimensions?: import('../types/signalEngine.types').RegimeDimensions;
+  regimeHysteresis?: Pick<
+    import('../types/signalEngine.types').RegimeHysteresisState,
+    'confirmationBarsHeld' | 'changed' | 'minConfirmationBars'
+  >;
 }
 
 export interface BuildSignalFeaturesResult {
@@ -86,6 +92,8 @@ export function buildSignalFeaturesDetailed(
     context: {
       marketRegime,
       liquidityPass,
+      ...(options.regimeDimensions ? { regimeDimensions: options.regimeDimensions } : {}),
+      ...(options.regimeHysteresis ? { regimeHysteresis: options.regimeHysteresis } : {}),
     },
   };
 

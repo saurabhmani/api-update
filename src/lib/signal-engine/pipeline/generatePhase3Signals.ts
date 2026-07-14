@@ -16,7 +16,8 @@ import type {
 import { DEFAULT_PHASE1_CONFIG, getStrategyRelaxConfig } from '../constants/signalEngine.constants';
 import { DEFAULT_PHASE3_CONFIG, getSector } from '../constants/phase3.constants';
 import { createPipelineTracer, setAmbientTracer } from '../tracing/pipelineTracer';
-import { detectEnhancedRegime } from '../regime/detectMarketRegime';
+import { detectEnhancedRegime, REGIME_MODEL_VERSION } from '../regime/detectMarketRegime';
+import { persistRegimeChange } from '../regime/persistRegimeChange';
 import { buildSignalFeaturesDetailed } from '../features/buildSignalFeatures';
 import { buildEnhancedFeatures } from '../features/buildEnhancedFeatures';
 import { runAllStrategies, resetSellDebugAgg, flushSellDebugAgg } from '../strategy-engine/runStrategies';
@@ -417,6 +418,13 @@ export async function generatePhase3Signals(
       throw new Error(`Benchmark invalid: ${benchValid.reason}`);
     }
     regime = detectEnhancedRegime(benchmarkCandles);
+    try {
+      await persistRegimeChange(regime);
+    } catch (persistErr) {
+      console.warn(
+        `[PHASE3] regime change persist failed: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+      );
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
@@ -435,6 +443,35 @@ export async function generatePhase3Signals(
         ema20VsEma50: 0, ema50VsEma200: 0,
         rsi: 50, atrPct: 0,
       },
+      dimensions: {
+        trend_state: 'neutral',
+        volatility_state: 'normal',
+        breadth_state: 'selective',
+        liquidity_state: 'healthy',
+        transition_state: 'stable',
+      },
+      evidence: {
+        closeVsEma20: 0, closeVsEma50: 0, closeVsEma200: 0,
+        ema20VsEma50: 0, ema50VsEma200: 0, ema20SlopePct: 0,
+        rsi: 50, adx: null, atrPct: 0, atrPercentile: null,
+        gapPct: 0, recentGapAbsPctAvg: 0,
+        advanceDeclineRatio: null, pctAboveEma20: null, pctAboveEma50: null,
+        pctAboveEma200: null, newHighsVsLows: null,
+        sectorParticipation: null, sectorRotationConcentration: null,
+        distributionDayCount: null, accumulationDayCount: null,
+        sourcesAvailable: [],
+        sourcesUnavailable: ['benchmark', 'fii_dii', 'derivatives_oi', 'advance_decline'],
+      },
+      hysteresis: {
+        previousLabel: null,
+        candidateLabel: 'Sideways',
+        confirmationBarsHeld: 0,
+        minConfirmationBars: 2,
+        transitionConfidence: 0,
+        changed: false,
+        changeReason: 'benchmark_fallback',
+      },
+      modelVersion: REGIME_MODEL_VERSION,
     };
   }
 
@@ -748,6 +785,12 @@ export async function generatePhase3Signals(
             minWarmupBars: p1Config.minCandleCount,
             rejectIncompleteCurrent: true,
             asOfDay,
+          },
+          regimeDimensions: regime.dimensions,
+          regimeHysteresis: {
+            confirmationBarsHeld: regime.hysteresis.confirmationBarsHeld,
+            changed: regime.hysteresis.changed,
+            minConfirmationBars: regime.hysteresis.minConfirmationBars,
           },
         },
       );

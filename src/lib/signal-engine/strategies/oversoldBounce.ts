@@ -16,11 +16,6 @@ export function evaluateOversoldBounce(features: SignalFeatures): StrategyMatchR
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  const allowedRegimes = ['Sideways', 'Weak', 'Bearish', 'Bullish'];
-  if (!allowedRegimes.includes(context.marketRegime)) {
-    return reject(`Regime not allowed: ${context.marketRegime}`);
-  }
-
   // RSI must be deeply oversold (< 30)
   if (momentum.rsi14 >= 30) {
     return reject(`RSI not oversold enough: ${momentum.rsi14.toFixed(0)} (need < 30)`);

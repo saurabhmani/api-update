@@ -15,11 +15,6 @@ export function evaluateEmaCrossover(features: SignalFeatures): StrategyMatchRes
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  const allowedRegimes = ['Bullish', 'Strong Bullish', 'Sideways'];
-  if (!allowedRegimes.includes(context.marketRegime)) {
-    return reject(`Regime not allowed: ${context.marketRegime}`);
-  }
-
   // EMA-9 must be above EMA-21 (bullish crossover)
   if (trend.ema9 <= trend.ema21) {
     return reject('EMA-9 not above EMA-21');

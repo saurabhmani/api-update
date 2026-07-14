@@ -14,10 +14,7 @@ export function evaluateVolumeClimaxReversal(features: SignalFeatures): Strategy
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  // ── Block in extreme volatility (capitulation can continue) ─
-  if (context.marketRegime === 'High Volatility Risk') {
-    return reject('Volume climax reversal too risky in extreme volatility');
-  }
+  // Regime eligibility owned by strategyRegistry (evaluateOne gate).
 
   // ── Volume climax: extreme volume spike ──────────────────
   if (volume.volumeClimaxRatio < VOLUME_CLIMAX_THRESHOLD) {

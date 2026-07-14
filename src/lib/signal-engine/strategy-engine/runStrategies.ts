@@ -33,6 +33,7 @@ import { evaluateFailedBreakoutReversal   } from '../strategies/failedBreakoutRe
 import { evaluateBearishPullbackRejection } from '../strategies/bearishPullbackRejection';
 import { evaluateVolatilitySqueezeBreakout } from '../strategies/volatilitySqueezeBreakout';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
+import { STRATEGY_REGISTRY, evaluateStrategyRegimeEligibility } from '../strategies/strategyRegistry';
 import { scoreConfidenceForStrategy } from '../scoring/confidenceScorer';
 import { scoreRisk } from '../scoring/riskScorer';
 import { buildTradePlanForStrategy } from '../trade-plan/buildTradePlan';
@@ -40,7 +41,6 @@ import { enhanceTradePlan } from '../trade-plan/tradePlanEnhancements';
 import { buildReasons } from '../explain/buildReasons';
 import { buildWarnings } from '../explain/buildWarnings';
 import { buildProductAExplainability } from '../explain/productAExplainability';
-import { STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
 import {
   recordStrategyEvaluation,
 } from '../observability/strategyScanHistogram';
@@ -146,6 +146,24 @@ function evaluateOne(
     return;
   }
 
+  // Phase 3 — sole regime eligibility gate (strategyRegistry)
+  let regimePenalty = 0;
+  if (!opts.softPassed) {
+    const eligibility = evaluateStrategyRegimeEligibility(name, {
+      label: features.context.marketRegime,
+      dimensions: features.context.regimeDimensions,
+      hysteresis: features.context.regimeHysteresis,
+    });
+    if (!eligibility.allowed) {
+      const reason = eligibility.reason
+        ?? `Regime rejected (${eligibility.dimension ?? 'unknown'}:${eligibility.rule ?? 'blocked'})`;
+      rejections.push({ strategy: name, reason });
+      recordStrategyEvaluation(name, 'rejected', reason);
+      return;
+    }
+    regimePenalty = eligibility.confidencePenalty;
+  }
+
   const result = evaluate(features);
   if (!result.matched) {
     rejections.push({ strategy: name, reason: result.rejectionReason || 'Not matched' });
@@ -154,6 +172,12 @@ function evaluateOne(
   }
 
   let confidence = scoreConfidenceForStrategy(features, name, relativeStrength);
+  if (regimePenalty > 0) {
+    confidence = {
+      ...confidence,
+      finalScore: Math.max(0, confidence.finalScore - regimePenalty),
+    };
+  }
   if (opts.softPassed && REGIME_RELAX_PENALTY > 0) {
     confidence = {
       ...confidence,

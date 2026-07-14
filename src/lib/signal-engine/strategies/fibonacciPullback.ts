@@ -6,7 +6,6 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
-import { BULLISH_ALLOWED_REGIMES } from '../constants/signalEngine.constants';
 import { isPriceNearFibLevel } from '../indicators/fibonacci';
 
 /** Matches structure feature golden-zone tolerance (default 1%). */
@@ -21,10 +20,6 @@ export function evaluateFibonacciPullback(features: SignalFeatures): StrategyMat
   const { trend, momentum, volume, structure, context } = features;
 
   // ── Regime ────────────────────────────────────────────────
-  if (!(BULLISH_ALLOWED_REGIMES as readonly string[]).includes(context.marketRegime)) {
-    return reject(`Regime not allowed: ${context.marketRegime}`);
-  }
-
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
   // ── Fibonacci data ────────────────────────────────────────

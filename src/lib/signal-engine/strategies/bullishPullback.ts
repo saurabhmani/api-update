@@ -6,16 +6,11 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
-import { BULLISH_ALLOWED_REGIMES } from '../constants/signalEngine.constants';
 
 export function evaluateBullishPullback(features: SignalFeatures): StrategyMatchResult {
   const { trend, momentum, volume, volatility, context } = features;
 
   // ── Regime ────────────────────────────────────────────────
-  if (!(BULLISH_ALLOWED_REGIMES as readonly string[]).includes(context.marketRegime)) {
-    return reject(`Regime not allowed: ${context.marketRegime}`);
-  }
-
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
   // ── Uptrend confirmed ─────────────────────────────────────

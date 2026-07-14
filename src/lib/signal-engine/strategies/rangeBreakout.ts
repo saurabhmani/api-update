@@ -16,11 +16,6 @@ export function evaluateRangeBreakout(features: SignalFeatures): StrategyMatchRe
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  const allowedRegimes = ['Sideways', 'Bullish', 'Strong Bullish'];
-  if (!allowedRegimes.includes(context.marketRegime)) {
-    return reject(`Regime not allowed: ${context.marketRegime}`);
-  }
-
   // Range compression: ATR% below 2.5% indicates tight consolidation
   if (volatility.atrPct > 2.5) {
     return reject(`Volatility too high for range breakout: ATR% ${volatility.atrPct.toFixed(1)}`);

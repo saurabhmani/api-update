@@ -7,16 +7,11 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { SignalFeatures, StrategyMatchResult } from '../types/signalEngine.types';
-import { BULLISH_ALLOWED_REGIMES } from '../constants/signalEngine.constants';
 
 export function evaluateMomentumContinuation(features: SignalFeatures): StrategyMatchResult {
   const { trend, momentum, volume, volatility, context } = features;
 
   // ── Regime: needs bullish environment ─────────────────────
-  if (!(BULLISH_ALLOWED_REGIMES as readonly string[]).includes(context.marketRegime)) {
-    return reject(`Regime not suitable for momentum: ${context.marketRegime}`);
-  }
-
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
   // ── Confirmed uptrend ────────────────────────────────────

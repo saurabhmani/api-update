@@ -35,12 +35,7 @@ export function evaluateWeakTrendBreakdown(features: SignalFeatures): StrategyMa
 
   if (!context.liquidityPass) return reject('Liquidity filter failed');
 
-  // ── Regime: not allowed in Strong Bullish ─────────────────
-  // A broad rally lifts everything, even technically-weak names.
-  // Shorting them in that tape is typically a trap.
-  if (context.marketRegime === 'Strong Bullish') {
-    return reject('Weak trend breakdown blocked in Strong Bullish regime');
-  }
+  // Regime eligibility owned by strategyRegistry (evaluateOne gate).
 
   // ── Structural weakness: price at or below EMA50 ──────────
   // SELL-balance tune: allow close up to 1% ABOVE EMA50 (sideways
