@@ -14,7 +14,7 @@ set -uo pipefail
 ENV_FILE="${ENV_FILE:-./.env}"
 if [ ! -f "$ENV_FILE" ]; then
   echo "✗ FATAL  $ENV_FILE not found"
-  echo "  Create $ENV_FILE from your local secrets (.env.local) — there is no tracked .env.example"
+  echo "  Copy the template:  cp .env.example .env"
   exit 2
 fi
 

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { scoreConfidenceForStrategy } from '@/lib/signal-engine/scoring/confidenceScorer';
 import {
   calculateFinalScore,
+  computeCompositeScore,
   computeFinalScore as computeLegacySixFactorScore,
 } from '@/lib/signal-engine/scoring/scoringEngine';
 import { computeFinalScore as computeRankerFinalScore } from '@/lib/signal-engine/ranking/dynamicRanker';
@@ -82,7 +83,7 @@ describe('scoring terminology regression (Phase 0)', () => {
   });
 
   it('calculateFinalScore — uniform-70 VALID_SIGNAL fixture', () => {
-    const result = calculateFinalScore({
+    const input = {
       strategyQuality: 70,
       trendAlignment: 70,
       momentum: 70,
@@ -94,9 +95,12 @@ describe('scoring terminology regression (Phase 0)', () => {
       manipulationRiskPenalty: 0,
       stalenessPenalty: 0,
       volatilityShockPenalty: 0,
-    });
+    };
+    const result = calculateFinalScore(input);
     expect(result.finalScore).toBe(70);
     expect(result.classification).toBe('VALID_SIGNAL');
+    // Phase 0 alias — identical behaviour, no formula change
+    expect(computeCompositeScore(input)).toEqual(result);
   });
 
   it('computeLegacySixFactorScore — HIGH_CONVICTION fixture', () => {

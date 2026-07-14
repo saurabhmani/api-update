@@ -97,7 +97,7 @@ No source outside this path may publish **actionable** Product A signals to the 
 | Execution readiness | `execution/executionReadiness.ts` |
 | Lifecycle | `lifecycle/signalLifecycle.ts` |
 | Structural scoring adapter | `scoring/phase4FactorAdapter.ts` — `runPhase4Scoring()` |
-| Structural scorer | `scoring/scoringEngine.ts` — `calculateFinalScore()` |
+| Structural scorer (Composite Score) | `scoring/scoringEngine.ts` — `calculateFinalScore()` / `computeCompositeScore` |
 
 **Authority:** Phase 3 rejection decisions are final; Phase 4 cannot override them.
 

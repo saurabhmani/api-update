@@ -541,7 +541,7 @@ function substitutePenalty(v: number | null): { raw: number; applied: number } {
  * explanation-ready breakdown. The optional `weights` parameter
  * overrides FINAL_SCORE_WEIGHTS for per-strategy presets.
  *
- * @see docs/product-a/scoring-terminology.md — "Structural Final Score"
+ * @see docs/product-a/scoring-terminology.md — "Composite Score"
  */
 export function calculateFinalScore(
   input:    FinalScoreInput,
@@ -750,3 +750,6 @@ export function calculateFinalScore(
 
 /** Disambiguating alias — same function as `computeFinalScore`. */
 export { computeFinalScore as computeLegacySixFactorScore };
+
+/** Disambiguating alias — Setup/Composite Score API name for `calculateFinalScore`. */
+export { calculateFinalScore as computeCompositeScore };

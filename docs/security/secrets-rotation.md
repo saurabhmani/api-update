@@ -4,6 +4,8 @@
 **Date:** 2026-07-13  
 **Status:** All credentials previously present in a committed or shared `.env.local` are treated as **compromised**.
 
+Primary manual checklist for upstream services: [credential-rotation.md](./credential-rotation.md).
+
 ---
 
 ## Credentials Rotated (or Must Be Rotated)
@@ -35,18 +37,14 @@ openssl rand -hex 32
 
 ### 2. Update environment files
 
-1. Create or edit `.env.local` (dev) or `.env` (prod) — no tracked template is kept in repo.
-2. Fill required keys — **never** copy values from old shared files.
-3. Confirm `.env*` is gitignored (nothing under `.env*` is tracked).
+1. Copy `.env.example` → `.env.local` (dev) or `.env` (prod).
+2. Fill placeholders — **never** copy values from old shared files.
+3. Confirm `.env*` is gitignored except tracked `.env.example`.
+4. Complete manual upstream rotations listed in [credential-rotation.md](./credential-rotation.md).
 
 ### 3. Rotate upstream services
 
-| Service | Steps |
-|---------|-------|
-| MySQL | `ALTER USER … IDENTIFIED BY 'new_password';` then update env |
-| Redis | `ACL SETUSER default on >newpassword` or provider console |
-| Kite | Revoke app keys; regenerate access token via OAuth flow |
-| Resend | API keys → create new, delete old |
+Follow [credential-rotation.md](./credential-rotation.md). Do not invent credentials in source control.
 
 ### 4. Deploy and verify
 
@@ -74,19 +72,20 @@ pm2 restart all
 ## Local Setup Instructions
 
 1. Clone the repository.
-2. Create `.env.local` (gitignored) with at least: `MYSQL_*`, `SESSION_SECRET`, `ENCRYPTION_KEY`, `KITE_API_KEY`, `KITE_API_SECRET`, `KITE_ACCESS_TOKEN`, `MARKET_DATA_PROVIDER=kite`, `YAHOO_EMERGENCY_FALLBACK_ENABLED=true`, `NSE_DIRECT_FALLBACK_ENABLED=true`.
-3. Set `MYSQL_*` to a local MySQL instance with the `quantorus365` schema (`npm run db:migrate-all`).
-4. Set Kite credentials for the default primary (`MARKET_DATA_PROVIDER=kite`). Yahoo/NSE are fallbacks.
-5. Generate fresh `SESSION_SECRET` and `ENCRYPTION_KEY` (see above).
-6. `npm install && npm run dev`
+2. `cp .env.example .env.local`
+3. Fill placeholders; complete [credential-rotation.md](./credential-rotation.md) for upstream services.
+4. Set `MYSQL_*` to a local MySQL instance with the `quantorus365` schema (`npm run db:migrate-all`).
+5. Set Kite credentials for the default primary (`MARKET_DATA_PROVIDER=kite`). Yahoo/NSE are fallbacks.
+6. Ensure `SESSION_SECRET` and `ENCRYPTION_KEY` are fresh 64-char hex (or regenerate as above).
+7. `npm install && npm run dev`
 
-**Never** commit `.env.local`. There is no tracked `.env.example` in this repository.
+**Never** commit `.env.local`. The template at `.env.example` contains placeholders only.
 
 ---
 
 ## Repository Hygiene (Phase 0)
 
-- `.env*` — gitignored (no exception for a tracked example file)
+- `.env*` gitignored except tracked `.env.example`
 - `logs/`, `*.log`, `.next/`, `dist/`, `coverage/` — gitignored
 - `.cursor/`, `.claude/`, `.vscode/` — gitignored
 - Accidental `.claude/` artifacts removed from tracking in Phase 0

@@ -22,7 +22,6 @@
 
 import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus }            from '@/lib/marketData/marketHours';
-import { fetchYahooPublicQuote }      from '@/lib/marketData/yahooChartPublic';
 
 import {
   getActiveConfirmedSnapshots,
@@ -87,13 +86,10 @@ export async function enrichWithLiveLtp<
   if (rows.length === 0) return rows;
 
   const t0 = Date.now();
-  const market = getMarketStatus();
 
-  // Step 9 of the removed vendor cutover. Live enrichment goes through
-  // the central resolver — removed vendor batch primary, cache hit, NSE
-  // direct rare fallback, Yahoo emergency only when explicitly enabled. // @deprecated marker
-  // The resolver returns one envelope for the whole batch, so a 2-sec
-  // batch call replaces the previous 25-wide per-symbol Yahoo fan-out. // @deprecated marker
+  // Phase 0.5 — signal-path live enrichment uses marketDataResolver only.
+  // Cascade (kite → yahoo → nse → db) lives inside resolveBatch. Do not
+  // reintroduce parallel fetchQuote / Yahoo-direct chains here.
   type Target = { row: T; sym: string };
   const targets: Target[] = [];
   for (const row of rows) {
@@ -110,29 +106,11 @@ export async function enrichWithLiveLtp<
 
   if (targets.length > 0) {
     const symbols = targets.map((t) => t.sym);
-    // Always-on debug: shows the symbol set we're about to ask the
-    // resolver for. Operators grep on `[DEBUG] calling removed vendor` to
-    // confirm the live-enrichment path is firing.
     console.log(
-      `[DEBUG] calling removed vendor for symbols: [${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? `, +${symbols.length - 10} more` : ''}]`,
+      `[DEBUG] calling marketDataResolver for symbols: [${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? `, +${symbols.length - 10} more` : ''}]`,
     );
-    // Spec "FIX SLOW /api/signals" — hard wall-clock cap on the
-    // resolver call. Without this, a 47-tracker enrichment fan-out
-    // through removed vendor's emulated batch (cap=2, 45-60s per call)
-    // blocks the entire /api/signals response for 15-25 minutes on
-    // a slow upstream. The dev plan's per-IP throttle plus serialised
-    // axios calls means the only safe upper bound is a wall-clock
-    // race here — when the timeout wins, we ship the rows with
-    // livePrice=null (the UI already handles that as "no live tick"
-    // and renders the persisted entry/stop). The resolveBatch call
-    // is NOT cancelled — its results continue filling the per-symbol
-    // quote cache so the next poll within TTL gets fresh data.
-    //
-    // 5s default is a balance: long enough for a healthy upstream's
-    // 1-2s round-trip + cache miss, short enough that a stalled call
-    // can't dominate the response. Env-tunable via
-    // SIGNALS_ENRICH_TIMEOUT_MS for ops on a paid plan with faster
-    // upstream.
+    // Hard wall-clock cap so a stalled upstream cannot dominate /api/signals.
+    // On timeout: leave livePrice null (UI handles missing live tick).
     const ENRICH_TIMEOUT_MS = Math.max(
       1_000,
       Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
@@ -150,50 +128,20 @@ export async function enrichWithLiveLtp<
       console.warn(
         `[DEBUG] enrichWithLiveLtp timeout after ${enrichElapsed}ms ` +
         `(symbols=${symbols.length}, cap=${ENRICH_TIMEOUT_MS}ms) — ` +
-        `falling back to per-symbol quote fetch`,
+        `shipping rows without live prices (resolver-only; no parallel quote chain)`,
       );
     } else {
       console.log(
-        `[DEBUG] removed vendor response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
+        `[DEBUG] marketDataResolver response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
       );
       for (const { row, sym } of targets) {
         const snap = resolved.snapshots.get(sym);
         if (snap && Number.isFinite(snap.price) && snap.price > 0) {
           row.livePrice   = snap.price;
           row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
-          row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'kite'; // @deprecated marker
+          row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'kite';
           row.liveTickTs  = snap.timestamp || Date.now();
         }
-      }
-    }
-
-    // Fallback: symbols still missing after batch resolver (NIFTY500 lock,
-    // 429 rate-limit, timeout). Uses fetchQuote (removed vendor direct → Yahoo → DB).
-    const missing = targets.filter(({ row }) => row.livePrice == null || (row.livePrice ?? 0) <= 0);
-    if (missing.length > 0) {
-      const { fetchQuote } = await import('@/services/marketQuote');
-      const BATCH = 5;
-      for (let i = 0; i < missing.length; i += BATCH) {
-        const chunk = missing.slice(i, i + BATCH);
-        await Promise.all(chunk.map(async ({ row, sym }) => {
-          try {
-            const q = await fetchQuote(sym);
-            if (q?.lastPrice && q.lastPrice > 0) {
-              row.livePrice   = q.lastPrice;
-              row.livePChange = q.pChange;
-              row.liveSource  = market.isOpen ? 'kite' : 'yahoo';
-              row.liveTickTs  = Date.now();
-              return;
-            }
-          } catch { /* try yahoo next */ }
-          const yq = await fetchYahooPublicQuote(sym);
-          if (yq?.lastPrice && yq.lastPrice > 0) {
-            row.livePrice   = yq.lastPrice;
-            row.livePChange = yq.pChange;
-            row.liveSource  = 'yahoo';
-            row.liveTickTs  = yq.timestamp;
-          }
-        }));
       }
     }
 
@@ -222,7 +170,8 @@ export async function enrichWithLiveLtp<
     : 0;
 
   let freshnessLabel: string;
-  if (indianCount > 0 && market.isOpen)        freshnessLabel = 'NEAR_LIVE (legacy_vendor)';
+  const marketOpen = getMarketStatus().isOpen;
+  if (indianCount > 0 && marketOpen)           freshnessLabel = 'NEAR_LIVE (legacy_vendor)';
   else if (indianCount > 0)                    freshnessLabel = 'LAST_CLOSE (market closed — legacy_vendor)';
   else if (yahooCount > 0)                     freshnessLabel = 'EMERGENCY_YAHOO (delayed)'; // @deprecated marker
   else if (noneCount === rows.length)          freshnessLabel = 'NO_DATA (provider chain failed)';
@@ -238,7 +187,7 @@ export async function enrichWithLiveLtp<
     `status=${freshnessLabel}  elapsed=${Date.now() - t0}ms`,
   );
   console.log(
-    `[DATA] live_ratio=${liveRatio}%  market=${market.isOpen ? 'OPEN' : 'CLOSED'}`,
+    `[DATA] live_ratio=${liveRatio}%  market=${marketOpen ? 'OPEN' : 'CLOSED'}`,
   );
 
   return rows;

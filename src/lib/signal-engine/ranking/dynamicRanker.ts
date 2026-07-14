@@ -109,7 +109,7 @@ export interface RankerBreakdown {
  * Persisted as `q365_signals.final_score`; recomputed every rescore.
  *
  * @alias computeRankerFinalScore — disambiguates from scoringEngine.computeFinalScore.
- * @see docs/product-a/scoring-terminology.md — "Dynamic Ranker Score"
+ * @see docs/product-a/scoring-terminology.md — "Display / Live Rank"
  */
 export function computeFinalScore(
   input:  RankerInput,

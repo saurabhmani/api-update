@@ -12,13 +12,14 @@ Regression tests: `src/__tests__/scoringTerminologyRegression.vitest.ts` (includ
 | Name | Function | Module | Persisted as | When |
 |------|----------|--------|--------------|------|
 | **Setup Confidence** | `scoreConfidenceForStrategy()` | `scoring/confidenceScorer.ts` | `q365_signals.confidence_score` | After strategy match, before trade plan |
-| **Structural Final Score** | `calculateFinalScore()` | `scoring/scoringEngine.ts` | `q365_signals.composite_final_score`, `classification` | Phase 3/4 via `runPhase4Scoring()` |
-| **Dynamic Ranker Score** | `computeFinalScore()` | `ranking/dynamicRanker.ts` | `q365_signals.final_score` | At INSERT + every rescore tick |
+| **Composite Score** | `calculateFinalScore()` | `scoring/scoringEngine.ts` | `q365_signals.composite_final_score`, `classification` | Phase 3/4 via `runPhase4Scoring()` |
+| **Display / Live Rank** | `computeFinalScore()` | `ranking/dynamicRanker.ts` | `q365_signals.final_score` | At INSERT + every rescore tick |
 
-**Disambiguating aliases (Phase 0):**
+**Disambiguating aliases (Phase 0 — behaviour unchanged):**
 
-- `computeLegacySixFactorScore` — alias for `scoringEngine.computeFinalScore` (legacy six-factor model)
-- `computeRankerFinalScore` — alias for `dynamicRanker.computeFinalScore`
+- `computeLegacySixFactorScore` — alias for `scoringEngine.computeFinalScore` (legacy six-factor model; not the composite score)
+- `computeCompositeScore` — alias for `scoringEngine.calculateFinalScore` (Composite Score)
+- `computeRankerFinalScore` — alias for `dynamicRanker.computeFinalScore` (Display / Live Rank)
 
 ---
 
@@ -57,11 +58,11 @@ Runs immediately after strategy matching in `runStrategies.ts`. Applies the gene
 
 ---
 
-## 2. Structural Final Score — `calculateFinalScore()`
+## 2. Composite Score — `calculateFinalScore()`
 
 ### Purpose
 
-Produces the **authoritative structural score** that answers: *"Does this signal meet institutional quality thresholds across eight graded dimensions?"*
+Produces the **composite decision score** (also called structural final score in older notes) that answers: *"Does this signal meet institutional quality thresholds across eight graded dimensions?"*
 
 This is the Phase-4 classification engine. Eight weighted factor scores minus three penalties → 6-band result. Null factors are **ignored** and remaining weights renormalized (MATURATION_AUDIT_2026-05).
 
