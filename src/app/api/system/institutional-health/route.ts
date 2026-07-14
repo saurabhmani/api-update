@@ -29,6 +29,7 @@ import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import { db } from '@/lib/db';
+import { getCompositeProviderHealth } from '@/lib/monitor/providerHealth';
 
 export const runtime = 'nodejs';
 
@@ -87,17 +88,24 @@ export async function GET(): Promise<NextResponse> {
     Promise.resolve(safeProbe(() => indianApiQueueGauge(),    null)),
     probeCandleFreshness(market.isOpen),
   ]);
+  const composite = getCompositeProviderHealth();
 
   // Flag: is the pipeline broadly healthy?
   // Definition (any failing condition flips healthy=false):
   //   - candle feed frozen
   //   - IndianAPI breaker open AND no recent fallback success
+  //   - Kite primary + auth failed / rate limited without fallback health
   //   - last full scan failed AND no successful run since
   //   - approved_ratio < 0.001 over a >100-row sample (engine
   //     producing nothing despite running)
   const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
     || snapshot.providers.every((p) => !p.fallback_triggered);
   const breakerOpen = breaker?.open === true;
+  const kitePrimaryBroken =
+    composite.current_provider === 'kite'
+    && composite.kite.configured
+    && !composite.kite.available
+    && !fallbackHealthy;
   const lastScanOk =
     snapshot.full_scan.completes > 0
     && (snapshot.full_scan.last_completed_at != null);
@@ -108,6 +116,7 @@ export async function GET(): Promise<NextResponse> {
   const healthy =
     !candle.feed_frozen
     && !(breakerOpen && !fallbackHealthy)
+    && !kitePrimaryBroken
     && !approvedRatioBad
     && (lastScanOk || snapshot.full_scan.starts === 0);
 
@@ -123,6 +132,8 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     response_generated_at: new Date(startedAt).toISOString(),
     healthy,
+    current_provider: composite.current_provider,
+    fallback_provider: composite.fallback_provider,
     market: {
       is_open:    market.isOpen,
       state:      market.state,
@@ -132,6 +143,12 @@ export async function GET(): Promise<NextResponse> {
       indian_api: {
         breaker:          breaker ?? null,
         queue:            queue ?? null,
+        usage:            composite.indianapi.usage,
+        capabilities:     composite.indianapi.capabilities,
+        metrics:          composite.indianapi.metrics,
+      },
+      kite: {
+        ...composite.kite,
       },
       counters:           snapshot.providers,
       invalid_payload_count,

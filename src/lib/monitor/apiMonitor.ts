@@ -32,7 +32,7 @@ const FALLBACK_BUFFER_MAX = 25;
 const RECENT_REQUESTS_WINDOW_MS = 60_000;
 const RECENT_REQUESTS_BUCKET_MS = 1_000;
 
-export type MonitorProvider = 'indianapi' | 'nse' | 'yahoo' | 'snapshot' | 'cache' | 'db';
+export type MonitorProvider = 'indianapi' | 'kite' | 'nse' | 'yahoo' | 'snapshot' | 'cache' | 'db';
 
 // ── Public input shape ─────────────────────────────────────────────
 
@@ -264,6 +264,8 @@ export function recordProviderLatency(input: RecordProviderInput): void {
   // Spec QUOTA_TRACKING — every IndianAPI hop counts against the
   // 2,500/day · 70k–90k/month IST-aligned quota. Fire-and-forget;
   // a Redis hiccup must never break the monitor.
+  // Phase 8: Kite hops must NEVER credit IndianAPI monthly quotas —
+  // Kite availability lives in `@/lib/kite/health` (KiteClient.call).
   if (input.provider === 'indianapi') {
     void recordIndianApiQuota(1).catch(() => { /* non-fatal */ });
   }

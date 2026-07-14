@@ -28,6 +28,7 @@ import {
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
+import { getKiteHealth } from '@/lib/kite/health';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
@@ -46,10 +47,11 @@ async function probeLatestCandleMs(): Promise<number | null> {
 
 export async function GET(): Promise<Response> {
   const market = getMarketStatus();
-  const [snapshot, breaker, queue, latestMs] = await Promise.all([
+  const [snapshot, breaker, queue, kite, latestMs] = await Promise.all([
     Promise.resolve(getInstitutionalHealthSnapshot()),
     Promise.resolve(safe(() => indianApiBreakerState(), null)),
     Promise.resolve(safe(() => indianApiQueueGauge(), null)),
+    Promise.resolve(safe(() => getKiteHealth(), null)),
     probeLatestCandleMs(),
   ]);
   const candleReport = classifyCandleFreshness({
@@ -74,6 +76,20 @@ export async function GET(): Promise<Response> {
         }
       : null,
     queue:   queue ?? null,
+    kite: kite
+      ? {
+          configured:        kite.configured,
+          available:         kite.available,
+          auth_failed:       kite.auth_failed,
+          rate_limited:      kite.rate_limited,
+          rate_limit_events: kite.rate_limit_events,
+          requests:          kite.requests,
+          successes:         kite.successes,
+          failures:          kite.failures,
+          auth_failures:     kite.auth_failures,
+          avg_latency_ms:    kite.avg_latency_ms,
+        }
+      : null,
   });
 
   // Best-effort Redis mirror — fire-and-forget so a Redis stall does

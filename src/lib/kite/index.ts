@@ -50,6 +50,14 @@ export {
   isKiteErrorPayload,
 } from './errors';
 
+export {
+  getKiteHealth,
+  recordKiteCall,
+  isKiteConfigured,
+  _resetKiteHealthForTests,
+} from './health';
+export type { KiteHealthSnapshot, RecordKiteCallInput } from './health';
+
 export type {
   KiteConfig,
   KiteConnectionValidation,

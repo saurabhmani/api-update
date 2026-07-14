@@ -85,10 +85,13 @@ export async function GET(req: NextRequest): Promise<Response> {
   // when no requests have run yet (cold boot) we fall back to flags.
   const dataSource =
     lastReq?.provider === 'indianapi' ? 'IndianAPI' :
+    lastReq?.provider === 'kite'      ? 'Kite' :
     lastReq?.provider === 'cache'     ? 'Cache' :
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
     lastReq?.provider === 'yahoo'     ? 'Yahoo (Emergency)' : // @deprecated marker
-    flags.marketDataProvider === 'indianapi' ? 'IndianAPI' : String(flags.marketDataProvider);
+    flags.marketDataProvider === 'indianapi' ? 'IndianAPI' :
+    flags.marketDataProvider === 'kite' ? 'Kite' :
+    String(flags.marketDataProvider);
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :

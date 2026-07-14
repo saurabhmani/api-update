@@ -27,6 +27,9 @@ import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { db } from '@/lib/db';
+import { getQuotaReport } from '@/lib/monitor/apiQuota';
+import { getKiteHealth } from '@/lib/kite/health';
+import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
 
 export const runtime = 'nodejs';
 
@@ -54,6 +57,13 @@ export async function GET(): Promise<NextResponse> {
     market_open:      market.isOpen,
   });
   const breaker = safe(() => indianApiBreakerState(), null);
+  const kite = safe(() => getKiteHealth(), null);
+  let quota: Awaited<ReturnType<typeof getQuotaReport>> | null = null;
+  try {
+    quota = await getQuotaReport();
+  } catch {
+    quota = null;
+  }
 
   const alerts = evaluateAlerts({
     snapshot,
@@ -66,11 +76,30 @@ export async function GET(): Promise<NextResponse> {
     breaker: breaker
       ? { open: breaker.open, state: breaker.state, auth_failed: breaker.auth_failed }
       : null,
+    quota: quota
+      ? {
+          daily_percent:   quota.daily.percent,
+          monthly_percent: quota.monthly.percent,
+          state:           quota.state,
+        }
+      : null,
+    kite: kite
+      ? {
+          configured: kite.configured,
+          available: kite.available,
+          auth_failed: kite.auth_failed,
+          rate_limited: kite.rate_limited,
+          rate_limit_events: kite.rate_limit_events,
+          last_error_code: kite.last_error_code,
+        }
+      : null,
+    current_provider: getMarketDataProvider(),
   });
   const summary = summariseAlerts(alerts);
 
   return NextResponse.json({
     response_generated_at: startedAt,
+    current_provider:      getMarketDataProvider(),
     worst_severity:        summary.worst_severity,
     summary: {
       critical: summary.critical,

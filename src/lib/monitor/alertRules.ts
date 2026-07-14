@@ -80,6 +80,17 @@ export interface AlertEvaluationInput {
     monthly_percent: number;
     state:           string;
   } | null;
+  /** Phase 8 — Kite availability (no monthly quota). */
+  kite?: {
+    configured: boolean;
+    available: boolean;
+    auth_failed: boolean;
+    rate_limited: boolean;
+    rate_limit_events: number;
+    last_error_code: string | null;
+  } | null;
+  /** Selected MARKET_DATA_PROVIDER (read-only). */
+  current_provider?: string | null;
 }
 
 interface RuleConfig {
@@ -368,7 +379,7 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
         id:        'api_quota_near_limit',
         severity:  exhausted ? 'critical' : 'warning',
         title:     exhausted
-          ? 'IndianAPI quota exhausted — requests are being blocked'
+          ? 'IndianAPI unavailable — monthly/daily quota exhausted'
           : `IndianAPI quota at ${Math.round(worstPct)}% of limit`,
         detail:    `Daily ${Math.round(q.daily_percent * 100)}%, monthly ${Math.round(q.monthly_percent * 100)}% (state=${q.state}). Reduce polling / universe caps, or wait for the IST reset. Audit with npx tsx scripts/productionAudit.ts.`,
         context: {
@@ -376,7 +387,63 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
           monthly_percent: q.monthly_percent,
           state:           q.state,
           warning_pct:     cfg.quota_warning_pct,
+          provider:        'indianapi',
         },
+        triggered_at: now,
+      });
+    }
+  }
+
+  // ── kite_authentication_failed / kite_rate_limit ─────────────
+  const kite = input.kite;
+  if (kite?.configured) {
+    if (kite.auth_failed) {
+      alerts.push({
+        id:       'kite_authentication_failed',
+        severity: 'critical',
+        title:    'Kite authentication failed',
+        detail:   `Kite access token / session is invalid`
+          + (kite.last_error_code ? ` (${kite.last_error_code})` : '')
+          + `. Cascade to IndianAPI if configured; refresh KITE_ACCESS_TOKEN.`,
+        context: {
+          provider: 'kite',
+          auth_failed: true,
+          last_error_code: kite.last_error_code,
+          current_provider: input.current_provider ?? null,
+        },
+        triggered_at: now,
+      });
+    }
+    if (kite.rate_limited) {
+      alerts.push({
+        id:       'kite_rate_limit_exceeded',
+        severity: 'warning',
+        title:    'Kite rate limit exceeded',
+        detail:   `Kite soft rate-limit is active (`
+          + `${kite.rate_limit_events} events since boot). `
+          + `Scheduler should continue via IndianAPI fallback — do not invent monthly quotas.`,
+        context: {
+          provider: 'kite',
+          rate_limited: true,
+          rate_limit_events: kite.rate_limit_events,
+          current_provider: input.current_provider ?? null,
+        },
+        triggered_at: now,
+      });
+    }
+    if (
+      input.current_provider === 'kite'
+      && kite.configured
+      && !kite.available
+      && !kite.auth_failed
+      && !kite.rate_limited
+    ) {
+      alerts.push({
+        id:       'kite_unavailable',
+        severity: 'warning',
+        title:    'Kite unavailable',
+        detail:   'MARKET_DATA_PROVIDER=kite but Kite health reports unavailable.',
+        context: { provider: 'kite', available: false },
         triggered_at: now,
       });
     }

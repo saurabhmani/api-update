@@ -50,6 +50,19 @@ interface PromContext {
     throttle_wait_total_ms: number;
     served_total:           number;
   } | null;
+  /** Optional Kite health probe — auth / rate-limit / availability (no monthly quota). */
+  kite?: {
+    configured:         boolean;
+    available:          boolean;
+    auth_failed:        boolean;
+    rate_limited:       boolean;
+    rate_limit_events:  number;
+    requests:           number;
+    successes:          number;
+    failures:           number;
+    auth_failures:      number;
+    avg_latency_ms:     number;
+  } | null;
   /** Process instance identifier. Defaults to HOSTNAME or "unknown".
    *  Surfaced as an `instance` label on every metric so Prometheus
    *  can aggregate across replicas without colliding. */
@@ -349,6 +362,61 @@ export function renderPrometheusMetrics(ctx: PromContext): string {
       'Calls served through the rate limiter since process start.',
       'counter',
       [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.queue.served_total }],
+    );
+  }
+
+  // ── Kite (auth / rate-limit — NOT a monthly quota) ─────────────
+  if (ctx.kite) {
+    const kiteLabels = { ...baseLabels, provider: 'kite' };
+    e.metric(`${NAMESPACE}_provider_available`,
+      '1 when the labelled provider reports available.',
+      'gauge',
+      [{ labels: kiteLabels, value: ctx.kite.available ? 1 : 0 }],
+    );
+    e.metric(`${NAMESPACE}_provider_configured`,
+      '1 when the labelled provider has credentials configured.',
+      'gauge',
+      [{ labels: kiteLabels, value: ctx.kite.configured ? 1 : 0 }],
+    );
+    e.metric(`${NAMESPACE}_provider_auth_failed`,
+      '1 when the labelled provider auth-failed latch is set.',
+      'gauge',
+      [{ labels: kiteLabels, value: ctx.kite.auth_failed ? 1 : 0 }],
+    );
+    e.metric(`${NAMESPACE}_provider_rate_limited`,
+      '1 when the labelled provider is in a soft rate-limit cooldown.',
+      'gauge',
+      [{ labels: kiteLabels, value: ctx.kite.rate_limited ? 1 : 0 }],
+    );
+    e.metric(`${NAMESPACE}_provider_rate_limit_events_total`,
+      'Cumulative soft rate-limit events since process start (Kite; not a monthly quota).',
+      'counter',
+      [{ labels: kiteLabels, value: ctx.kite.rate_limit_events }],
+    );
+    e.metric(`${NAMESPACE}_provider_requests_total`,
+      'Cumulative upstream requests since process start for the labelled provider.',
+      'counter',
+      [{ labels: kiteLabels, value: ctx.kite.requests }],
+    );
+    e.metric(`${NAMESPACE}_provider_successes_total`,
+      'Cumulative successful upstream requests since process start.',
+      'counter',
+      [{ labels: kiteLabels, value: ctx.kite.successes }],
+    );
+    e.metric(`${NAMESPACE}_provider_failures_total`,
+      'Cumulative failed upstream requests since process start.',
+      'counter',
+      [{ labels: kiteLabels, value: ctx.kite.failures }],
+    );
+    e.metric(`${NAMESPACE}_provider_auth_failures_total`,
+      'Cumulative authentication failures since process start.',
+      'counter',
+      [{ labels: kiteLabels, value: ctx.kite.auth_failures }],
+    );
+    e.metric(`${NAMESPACE}_provider_avg_latency_ms`,
+      'Average upstream latency in milliseconds since process start.',
+      'gauge',
+      [{ labels: kiteLabels, value: ctx.kite.avg_latency_ms }],
     );
   }
 

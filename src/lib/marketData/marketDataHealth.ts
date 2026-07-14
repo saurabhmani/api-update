@@ -27,14 +27,17 @@ import {
 import { getLiveMarketFeedStats } from './liveMarketFeed';
 import { getStreamServerStats } from '@/lib/ws/streamServer';
 import { getLiveFeedState } from './liveFeedState';
+import { getKiteHealth, isKiteConfigured } from '@/lib/kite/health';
 
 export type HealthState = 'OK' | 'DEGRADED' | 'FAIL';
-export type HealthSource = 'indianapi' | 'yahoo' | 'none'; // @deprecated marker
+export type HealthSource = 'indianapi' | 'kite' | 'yahoo' | 'none'; // @deprecated marker yahoo
 
 export interface MarketDataHealth {
   health: HealthState;
   source: HealthSource;
   reason: string;
+  /** Selected MARKET_DATA_PROVIDER (additive Phase 8). */
+  current_provider?: string;
 
   tickRatePerSec: number;
   lastTickAgeMs:  number | null;
@@ -45,8 +48,7 @@ export interface MarketDataHealth {
     state: string;
     label: string;
   };
-  // Retained for response-shape compatibility. Kite has been removed, // @deprecated marker
-  // so these fields are constant.
+  // Retained for response-shape compatibility.
   ws: {
     state: string;
     loginRequired: boolean;
@@ -72,6 +74,13 @@ export interface MarketDataHealth {
   serverNow: number;
   liveFeed: ReturnType<typeof getLiveFeedState>;
   liveFeedProvider: string;
+  /** Phase 8 additive — null monthly quota for kite. */
+  kite?: {
+    configured: boolean;
+    available: boolean;
+    auth_failed: boolean;
+    rate_limited: boolean;
+  };
 }
 
 function isIndianApiKeyPresent(): boolean {
@@ -102,6 +111,8 @@ export function getMarketDataHealth(): MarketDataHealth {
   const provider = getMarketDataProvider();
   const indianKey = isIndianApiKeyPresent();
   const yahooEmergency = isYahooEmergencyFallbackEnabled(); // @deprecated marker
+  const kiteHealth = getKiteHealth();
+  const kiteConfigured = isKiteConfigured();
 
   const feed = getLiveMarketFeedStats();
   const ws = getStreamServerStats();
@@ -113,7 +124,31 @@ export function getMarketDataHealth(): MarketDataHealth {
 
   const liveProvider = feed.provider ?? 'indianapi';
 
-  if (provider === 'indianapi' && indianKey) {
+  if (provider === 'kite') {
+    if (!kiteConfigured) {
+      health = indianKey ? 'DEGRADED' : 'FAIL';
+      source = indianKey ? 'indianapi' : 'none';
+      reason = indianKey
+        ? 'MARKET_DATA_PROVIDER=kite but Kite credentials missing — expecting IndianAPI fallback'
+        : 'MARKET_DATA_PROVIDER=kite but KITE_API_KEY/KITE_ACCESS_TOKEN missing';
+    } else if (kiteHealth.auth_failed) {
+      health = 'DEGRADED';
+      source = 'kite';
+      reason = 'Kite authentication failed — live feed may use IndianAPI fallback';
+    } else if (kiteHealth.rate_limited) {
+      health = 'DEGRADED';
+      source = 'kite';
+      reason = 'Kite rate limit active — live feed may use IndianAPI fallback';
+    } else if (!mkt.isOpen) {
+      health = 'DEGRADED';
+      source = 'kite';
+      reason = `Market closed (${mkt.label}) — Kite returns last close`;
+    } else {
+      health = 'OK';
+      source = 'kite';
+      reason = `Kite live feed configured (${liveFeed.quality})`;
+    }
+  } else if (provider === 'indianapi' && indianKey) {
     if (!mkt.isOpen) {
       health = 'DEGRADED';
       source = 'indianapi';
@@ -157,6 +192,7 @@ export function getMarketDataHealth(): MarketDataHealth {
     health,
     source,
     reason,
+    current_provider: provider,
     tickRatePerSec: feed.tickRatePerSec,
     lastTickAgeMs: feed.lastTickAgeMs,
     subscribedCount: feed.subscribedCount,
@@ -190,5 +226,11 @@ export function getMarketDataHealth(): MarketDataHealth {
     serverNow: Date.now(),
     liveFeed,
     liveFeedProvider: liveProvider,
+    kite: {
+      configured: kiteConfigured,
+      available: kiteHealth.available,
+      auth_failed: kiteHealth.auth_failed,
+      rate_limited: kiteHealth.rate_limited,
+    },
   };
 }

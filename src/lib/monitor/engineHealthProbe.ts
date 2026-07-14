@@ -5,6 +5,8 @@ import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealt
 import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthStatus } from '@/types/dashboard';
+import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
+import { getKiteHealth } from '@/lib/kite/health';
 
 export interface EngineHealthProbeResult {
   status:      EngineHealthStatus;
@@ -56,6 +58,8 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
   const market = getMarketStatus();
   const snapshot = getInstitutionalHealthSnapshot();
   const breaker = safeProbe(() => indianApiBreakerState(), null);
+  const kite = safeProbe(() => getKiteHealth(), null);
+  const current = safeProbe(() => getMarketDataProvider(), 'indianapi');
 
   const [candleFrozen] = await Promise.all([
     isCandleFeedFrozen(market.isOpen),
@@ -64,6 +68,11 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
   const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
     || snapshot.providers.every((p) => !p.fallback_triggered);
   const breakerOpen = breaker?.open === true;
+  const kitePrimaryBroken =
+    current === 'kite'
+    && kite?.configured === true
+    && kite.available === false
+    && !fallbackHealthy;
   const lastScanOk =
     snapshot.full_scan.completes > 0
     && snapshot.full_scan.last_completed_at != null;
@@ -82,7 +91,18 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
     return {
       status:     'DEGRADED',
       marketOpen: market.isOpen,
-      message:    'Primary data provider circuit breaker open',
+      message:    'IndianAPI unavailable — circuit breaker open',
+    };
+  }
+  if (kitePrimaryBroken) {
+    return {
+      status:     'DEGRADED',
+      marketOpen: market.isOpen,
+      message: kite?.auth_failed
+        ? 'Kite authentication failed'
+        : kite?.rate_limited
+          ? 'Kite rate limit exceeded'
+          : 'Kite unavailable',
     };
   }
   if (approvedRatioBad) {

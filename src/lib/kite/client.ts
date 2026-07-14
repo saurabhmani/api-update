@@ -16,6 +16,7 @@ import {
   withKiteErrors,
 } from './errors';
 import type { KiteConfig } from './types';
+import { recordKiteCall } from './health';
 
 const log = logger.child({ component: 'kite.client' });
 
@@ -117,14 +118,34 @@ export class KiteClient {
   /**
    * Execute an SDK operation with centralized error normalization.
    * Example: `client.call((kc) => kc.getLTP(['NSE:RELIANCE']))`
+   * Phase 8: every hop updates the Kite health tracker.
    */
   async call<T>(fn: (kc: Connect) => Promise<T>): Promise<T> {
     if (!this.cfg.accessToken) {
-      throw new KiteConfigError(
+      const err = new KiteConfigError(
         'KITE_ACCESS_TOKEN is not set — call setAccessToken() or configure the env var',
       );
+      recordKiteCall({ operation: 'call', success: false, error: err, latencyMs: 0 });
+      throw err;
     }
-    return withKiteErrors(() => fn(this.kc));
+    const t0 = Date.now();
+    try {
+      const out = await withKiteErrors(() => fn(this.kc));
+      recordKiteCall({
+        operation: 'call',
+        success: true,
+        latencyMs: Date.now() - t0,
+      });
+      return out;
+    } catch (err) {
+      recordKiteCall({
+        operation: 'call',
+        success: false,
+        latencyMs: Date.now() - t0,
+        error: err,
+      });
+      throw err;
+    }
   }
 }
 

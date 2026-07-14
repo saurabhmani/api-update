@@ -15,7 +15,7 @@
 //  locks needed.
 // ════════════════════════════════════════════════════════════════
 
-export type ReportProvider = 'indianapi' | 'nse' | 'yahoo' | 'snapshot';
+export type ReportProvider = 'indianapi' | 'kite' | 'nse' | 'yahoo' | 'snapshot';
 
 export interface ProviderReport {
   /** Provider that served the most recent resolve. Null until the
@@ -23,15 +23,13 @@ export interface ProviderReport {
   last_provider:      ReportProvider | null;
   /** Cumulative call counts since process start. */
   indianapi_calls:    number;
+  kite_calls:         number;
   nse_calls:          number;
   yahoo_calls:        number;
   snapshot_calls:     number;
-  /** True when the most recent resolve cascaded past IndianAPI. Reset
-   *  to false on the next resolve that succeeds at the primary. */
+  /** True when the most recent resolve cascaded past the primary. */
   fallback_triggered: boolean;
-  /** Compact reason string from the most recent failure (e.g. the
-   *  IndianAPI error code or the NSE block marker). Null when the
-   *  most recent resolve succeeded. */
+  /** Compact reason string from the most recent failure. */
   last_error:         string | null;
   /** ISO timestamp of the last counter update. */
   last_updated_at:    string | null;
@@ -40,6 +38,7 @@ export interface ProviderReport {
 const state: ProviderReport = {
   last_provider:      null,
   indianapi_calls:    0,
+  kite_calls:         0,
   nse_calls:          0,
   yahoo_calls:        0,
   snapshot_calls:     0,
@@ -72,6 +71,7 @@ export function recordProviderCall(
 ): void {
   switch (provider) {
     case 'indianapi': state.indianapi_calls += 1; break;
+    case 'kite':      state.kite_calls      += 1; break;
     case 'nse':       state.nse_calls       += 1; break;
     case 'yahoo':     state.yahoo_calls     += 1; break;
     case 'snapshot':  state.snapshot_calls  += 1; break;
@@ -109,6 +109,7 @@ export function getProviderReport(): ProviderReport {
 export function _resetProviderReportForTests(): void {
   state.last_provider      = null;
   state.indianapi_calls    = 0;
+  state.kite_calls         = 0;
   state.nse_calls          = 0;
   state.yahoo_calls        = 0;
   state.snapshot_calls     = 0;

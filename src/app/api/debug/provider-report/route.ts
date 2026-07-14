@@ -28,6 +28,7 @@
 import { NextResponse } from 'next/server';
 import { getProviderReport } from '@/lib/marketData/providerReport';
 import { getMonitorSnapshot, type MonitorProvider } from '@/lib/monitor/apiMonitor';
+import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -53,14 +54,17 @@ export async function GET(): Promise<Response> {
     {
       last_provider:      r.last_provider,
       indianapi_calls:    r.indianapi_calls,
+      kite_calls:         r.kite_calls,
       nse_calls:          r.nse_calls,
       yahoo_calls:        r.yahoo_calls,
       snapshot_calls:     r.snapshot_calls,
       fallback_triggered: r.fallback_triggered,
       last_error:         r.last_error,
       last_updated_at:    r.last_updated_at,
+      current_provider:   getMarketDataProvider(),
       providers: {
         indianapi: summarize('indianapi'),
+        kite:      summarize('kite'),
         nse:       summarize('nse'),
         yahoo:     summarize('yahoo'),
         snapshot:  summarize('snapshot'),

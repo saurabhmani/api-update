@@ -27,6 +27,8 @@ import {
   INDIANAPI_PER_RUN_LIMIT,
 } from '@/providers/adapters/indianApiUsageTracker';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
+import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
+import { getKiteHealth } from '@/lib/kite/health';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -35,6 +37,8 @@ export async function GET(): Promise<Response> {
   const usage      = getApiUsage();
   const projection = getComplianceProjection();
   const market     = getMarketStatus();
+  const kite       = getKiteHealth();
+  const current_provider = getMarketDataProvider();
 
   const status = projection.label === 'UNSAFE' ? 503
                : projection.label === 'BORDERLINE' ? 200
@@ -45,6 +49,33 @@ export async function GET(): Promise<Response> {
       // ── Headline label ──────────────────────────────────────
       compliance:  projection.label,
       reasons:     projection.reasons,
+      current_provider,
+      // IndianAPI planning quota (unchanged — primary usage banner)
+      provider_limits: {
+        indianapi: {
+          kind: 'monthly_plan',
+          daily_limit: projection.daily_limit,
+          monthly_target: projection.monthly_target,
+          monthly_ceiling: projection.monthly_ceiling,
+        },
+        kite: {
+          kind: 'rate_limit_events',
+          monthly_quota: null,
+          rate_limit_events: kite.rate_limit_events,
+          auth_failed: kite.auth_failed,
+          available: kite.available,
+        },
+      },
+      kite: {
+        configured: kite.configured,
+        available: kite.available,
+        auth_failed: kite.auth_failed,
+        rate_limited: kite.rate_limited,
+        rate_limit_events: kite.rate_limit_events,
+        last_success_at: kite.last_success_at,
+        calls_today: kite.calls_today,
+        monthly_quota: null,
+      },
       // ── Daily ───────────────────────────────────────────────
       daily: {
         used:       projection.daily,
