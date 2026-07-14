@@ -46,4 +46,4 @@ npm run test:phase7
 npx tsc --noEmit
 ```
 
-**Do not start Phase 8 until signed off.**
+**Phase 8 status:** Implemented — see `docs/product-a/phase-8-model-governance.md`.

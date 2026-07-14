@@ -24,6 +24,11 @@
 //    - Every job records a row in q365_learning_job_runs with counts +
 //      duration so an operator can inspect the day's learning state at
 //      a glance.
+//    - Phase 8 governance: this scheduler OBSERVES and RECOMMENDS.
+//      It MUST NOT silently rewrite production weights. Auto-approve/
+//      auto-promote are OFF by default and still emit versioned
+//      approval events when explicitly enabled. Learning never bypasses
+//      Phase 3 rejection floors (modifiers are capped).
 //
 //  Triggering:
 //    - Manual:  `node -r ts-node/register src/lib/workers/learningScheduler.ts`
@@ -65,6 +70,12 @@ import {
   calibrateConfidence,
   computeAdaptiveRecommendation,
 } from '@/lib/signal-engine/feedback/outcomeTracker';
+import {
+  learningMayAutoApprove,
+  learningMayAutoPromote,
+  recordVersionedApprovalEvent,
+  assessOutcomeCompleteness,
+} from '@/lib/signal-engine/learning/modelGovernance';
 import {
   saveOutcome,
   ensurePhase4Tables,
@@ -245,6 +256,8 @@ export async function evaluateSignalOutcomes(): Promise<{
         {
           expectedRewardRisk: risk > 0 ? Math.abs(target1 - entry) / risk : 0,
           evaluatedAt: String(postCandles.at(-1)?.ts ?? sig.generated_at),
+          signalGeneratedAt: sig.generated_at,
+          signalStateAtResolution: 'evaluated',
         },
       );
       await saveOutcome(outcome);
@@ -491,13 +504,19 @@ export async function updateConfidenceCalibration(
   cells: number;
   auditRows: number;
   monotonicityOk: boolean;
+  productionModifiersUpdated: boolean;
+  completenessPassed: boolean;
 }> {
   console.log('[learning:B] updateConfidenceCalibration — start');
   const all = rows ?? (await loadOutcomesWithMeta(CALIBRATION_LOOKBACK_DAYS));
+  const completeness = assessOutcomeCompleteness(all.map((r) => r.outcome));
+  // Phase 8: production weight changes require explicit auto-approve + auto-promote.
+  // Default path OBSERVES metrics and records proposed modifiers without deploying them.
+  const mayDeploy = learningMayAutoApprove() && learningMayAutoPromote() && completeness.passed;
   const cycleId = `calib_${new Date().toISOString().slice(0, 10)}`;
   const prevMods = await loadLatestCalibrationModifiers();
 
-  // Legacy bucket-only snapshots (compat consumers)
+  // Legacy bucket-only snapshots (compat consumers) — freeze modifiers unless deploy allowed
   const byBucket = new Map<string, SignalOutcome[]>();
   for (const r of all) {
     const b = bucketForConfidence(r.confidence);
@@ -507,13 +526,21 @@ export async function updateConfidenceCalibration(
   }
 
   let persisted = 0;
+  let productionModifiersUpdated = false;
   for (const [bucket, outcomes] of Array.from(byBucket.entries())) {
     const snap = calibrateConfidence(bucket, outcomes);
-    await saveConfidenceCalibration(snap);
+    const oldMod = prevMods.get(groupKey(bucket, null, null, null)) ?? 0;
+    const proposed = snap.suggestedModifier ?? 0;
+    const deployed =
+      mayDeploy && outcomes.length >= CALIBRATION_MIN_PARTIAL
+        ? applyCycleBound(oldMod, proposed)
+        : oldMod;
+    if (deployed !== oldMod) productionModifiersUpdated = true;
+    await saveConfidenceCalibration({ ...snap, suggestedModifier: deployed });
     persisted++;
   }
 
-  // Hierarchy cells for production lookups + audit with cycle bounds
+  // Hierarchy cells: metrics always persisted; modifiers only when mayDeploy
   const cells = buildHierarchyCells(all);
   const appliedCells: EmpiricalBucketMetrics[] = [];
   let auditRows = 0;
@@ -522,11 +549,12 @@ export async function updateConfidenceCalibration(
     const key = groupKey(cell.bucket, cell.strategy, cell.regime, cell.volatilityState);
     const oldMod = prevMods.get(key) ?? 0;
     const proposed = cell.suggestedModifier;
-    // Below partial threshold: inform only — do not materially alter production
     const bounded =
-      cell.sampleSize < CALIBRATION_MIN_PARTIAL
+      !mayDeploy || cell.sampleSize < CALIBRATION_MIN_PARTIAL
         ? oldMod
         : applyCycleBound(oldMod, proposed);
+
+    if (bounded !== oldMod) productionModifiersUpdated = true;
 
     const applied: EmpiricalBucketMetrics = {
       ...cell,
@@ -569,6 +597,10 @@ export async function updateConfidenceCalibration(
       );
       persisted++;
 
+      const approverState = !mayDeploy || cell.sampleSize < CALIBRATION_MIN_PARTIAL || bounded === oldMod
+        ? 'pending'
+        : 'auto_applied';
+
       await saveCalibrationAudit({
         bucket: cell.bucket,
         strategyName: cell.strategy,
@@ -586,13 +618,32 @@ export async function updateConfidenceCalibration(
           ece: cell.expectedCalibrationError,
           evidenceWeight: cell.evidenceWeight,
           priorHitRate: cell.priorHitRate,
-          note: 'Phase 2 calibration — does not bypass Phase 3 gates',
+          completenessRate: completeness.completenessRate,
+          mayDeploy,
+          note: 'Phase 8 — observational by default; production deploy requires versioned approval flags',
         },
-        approverState: cell.sampleSize < CALIBRATION_MIN_PARTIAL ? 'pending' : 'auto_applied',
+        approverState,
         modelVersion: CONFIDENCE_MODEL_VERSION,
         cycleId,
       });
       auditRows++;
+
+      if (mayDeploy && bounded !== oldMod) {
+        recordVersionedApprovalEvent({
+          parameterId: `calib:${key}`,
+          action: 'deploy',
+          actor: 'learningScheduler',
+          reason: `Auto-deploy calibration modifier ${oldMod}→${bounded} (cycle ${cycleId})`,
+          evidence: {
+            sampleSize: cell.sampleSize,
+            proposed,
+            bounded,
+            completenessRate: completeness.completenessRate,
+          },
+          comparison: { oldMod, proposed, bounded },
+          rollbackTo: String(oldMod),
+        });
+      }
     }
   }
 
@@ -600,7 +651,9 @@ export async function updateConfidenceCalibration(
   const report = buildConfidenceReliabilityReport(appliedCells);
   console.log(
     `[learning:B] loaded=${all.length} buckets=${byBucket.size} cells=${cells.length} ` +
-      `persisted=${persisted} audit=${auditRows} monotonicityOk=${report.monotonicityOk}`,
+      `persisted=${persisted} audit=${auditRows} monotonicityOk=${report.monotonicityOk} ` +
+      `mayDeploy=${mayDeploy} productionModifiersUpdated=${productionModifiersUpdated} ` +
+      `completeness=${completeness.completenessRate}`,
   );
   return {
     loaded: all.length,
@@ -609,6 +662,8 @@ export async function updateConfidenceCalibration(
     cells: cells.length,
     auditRows,
     monotonicityOk: report.monotonicityOk,
+    productionModifiersUpdated,
+    completenessPassed: completeness.passed,
   };
 }
 

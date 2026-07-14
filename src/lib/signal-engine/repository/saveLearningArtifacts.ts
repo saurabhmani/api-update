@@ -159,6 +159,14 @@ export async function saveAdaptiveRecommendation(
   volatilityState: string | null,
   sector: string | null,
 ): Promise<void> {
+  // Observational only — Phase 8 appends evidence into reason/metadata;
+  // production weights change only via versioned approval/deploy.
+  const reasonWithEvidence =
+    rec.maxPermittedChange != null
+      ? `${rec.reason} | observational=true maxΔ=${rec.maxPermittedChange} ` +
+        `decay=${rec.decayWeight ?? 'n/a'} CI=[${rec.confidenceInterval?.lower ?? '?'},${rec.confidenceInterval?.upper ?? '?'}]`
+      : rec.reason;
+
   await db.query(
     `INSERT INTO q365_adaptive_recommendations
       (strategy_name, regime, volatility_state, sector,
@@ -172,7 +180,7 @@ export async function saveAdaptiveRecommendation(
       sector,
       rec.strategyEnvironmentFit,
       rec.recommendedConfidenceModifier,
-      rec.reason,
+      reasonWithEvidence,
       rec.sampleSize,
       rec.evidenceStrength,
     ],

@@ -55,7 +55,21 @@ export { buildExplanation, buildTraderNarrative } from './ai-explain/buildExplan
 export { buildMacroContext, defaultNewsContext, computeEventRisk } from './context/macroContext';
 export { computeContextualModifiers } from './context/contextualModifiers';
 export { computeFreshness } from './freshness/signalDecay';
-export { evaluateOutcome, aggregatePerformance, calibrateConfidence, computeAdaptiveRecommendation, defaultFeedbackState } from './feedback/outcomeTracker';
+export { evaluateOutcome, aggregatePerformance, calibrateConfidence, computeAdaptiveRecommendation, defaultFeedbackState, OUTCOME_INTELLIGENCE_VERSION } from './feedback/outcomeTracker';
+export {
+  assessOutcomeCompleteness,
+  approveAndDeployVersioned,
+  rollbackVersioned,
+  applyDriftRestrictions,
+  learningMayAutoApprove,
+  learningMayAutoPromote,
+  assertRecommendationIsObservational,
+  MODEL_GOVERNANCE_VERSION,
+} from './learning/modelGovernance';
+export {
+  evaluateChampionChallenger,
+  CHAMPION_CHALLENGER_VERSION,
+} from './learning/championChallenger';
 export { createMemoryEntry, buildPortfolioCommentary } from './memory/decisionMemory';
 export { saveOutcome, saveExplanation, saveDecisionMemory, loadFeedbackState, migratePhase4Tables } from './repository/savePhase4Artifacts';
 

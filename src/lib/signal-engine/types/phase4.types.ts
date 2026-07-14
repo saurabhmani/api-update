@@ -177,8 +177,17 @@ export interface SignalOutcome {
   /** 0..100; rewards entries that limit adverse excursion before payoff. */
   entryQualityScore?: number;
   timeToTargetBars?: number | null;
+  /** Phase 8 — bars to each target / stop (not proxy holding only). */
+  timeToTarget2Bars?: number | null;
+  timeToTarget3Bars?: number | null;
   timeToStopBars?: number | null;
   holdingDurationBars?: number;
+  /** Bars still open / unresolved at evaluation horizon. */
+  barsUnresolved?: number;
+  entryTimestamp?: string | null;
+  resolutionTimestamp?: string | null;
+  signalGeneratedAt?: string | null;
+  signalStateAtResolution?: string | null;
   exitReason?: 'target3' | 'target2' | 'target1' | 'stop' | 'horizon_close' | 'not_triggered';
   realizedReturnPct?: number;
   riskAdjustedReturn?: number;
@@ -238,6 +247,13 @@ export interface AdaptiveRecommendation {
   reason: string;
   sampleSize: number;
   evidenceStrength: 'strong' | 'moderate' | 'weak';
+  /** Phase 8 evidence / shrinkage fields (optional for legacy readers). */
+  timeWindowDays?: number;
+  decayWeight?: number;
+  parentGroupPrior?: number;
+  confidenceInterval?: { lower: number; upper: number };
+  maxPermittedChange?: number;
+  modelVersion?: string;
 }
 
 // ── Decision Memory ─────────────────────────────────────────

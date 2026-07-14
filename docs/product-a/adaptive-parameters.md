@@ -37,6 +37,16 @@ Each adaptive parameter record includes:
 - `q365_adaptive_parameter_audit` — full audit trail
 - `q365_adaptive_parameter_pointer` — active promoted pointer
 
-## Module Location
+## Phase 8 governance (extends Phase 4)
 
-`src/lib/signal-engine/adaptive/adaptiveParameterStore.ts`
+Learning recommendations remain **observational** until a versioned approval/deploy event.
+
+| Control | Default |
+|---------|---------|
+| `SIGNAL_ADAPTIVE_AUTO_APPROVE` | `false` |
+| `SIGNAL_ADAPTIVE_AUTO_PROMOTE` | `false` |
+| Outcome completeness gate | ≥ 85% before candidates |
+| Champion/challenger | Shadow only (`userVisibleArm: champion`) |
+| Drift | Restrict strategy health — never loosen thresholds |
+
+See `docs/product-a/phase-8-model-governance.md`.

@@ -11,7 +11,15 @@ export type DriftCategory =
   | 'strategy_drift'
   | 'feature_drift'
   | 'market_regime_drift'
-  | 'performance_drift';
+  | 'performance_drift'
+  // Phase 8 expansions
+  | 'precision_drift'
+  | 'calibration_drift'
+  | 'entry_trigger_drift'
+  | 'mfe_mae_drift'
+  | 'regime_distribution_drift'
+  | 'strategy_mix_drift'
+  | 'data_quality_drift';
 
 export interface DriftAlert {
   category: DriftCategory;
@@ -130,6 +138,72 @@ export function detectDrift(
         delta,
         detectedAt,
       });
+    }
+  }
+
+  // Phase 8 — entry-trigger / MFE-MAE / data-quality from snapshot overalls
+  const bOverall = b.overall;
+  const cOverall = c.overall;
+  if (bOverall.sampleCount >= 20 && cOverall.sampleCount >= 20) {
+    const trigDelta = cOverall.entryTriggeredRate - bOverall.entryTriggeredRate;
+    if (Math.abs(trigDelta) >= 0.08) {
+      alerts.push({
+        category: 'entry_trigger_drift',
+        severity: severity(trigDelta, 0.1, 0.18),
+        message: `Entry trigger rate shifted by ${(trigDelta * 100).toFixed(1)}pp`,
+        baselineValue: bOverall.entryTriggeredRate,
+        currentValue: cOverall.entryTriggeredRate,
+        delta: trigDelta,
+        detectedAt,
+      });
+    }
+
+    const mfeDelta = cOverall.avgMfePct - bOverall.avgMfePct;
+    const maeDelta = cOverall.avgMaePct - bOverall.avgMaePct;
+    if (Math.abs(mfeDelta) >= 0.4 || Math.abs(maeDelta) >= 0.4) {
+      alerts.push({
+        category: 'mfe_mae_drift',
+        severity: severity(Math.max(Math.abs(mfeDelta), Math.abs(maeDelta)), 0.6, 1.2),
+        message: `MFE Δ${mfeDelta.toFixed(2)}pp / MAE Δ${maeDelta.toFixed(2)}pp`,
+        baselineValue: bOverall.avgMfePct,
+        currentValue: cOverall.avgMfePct,
+        delta: mfeDelta,
+        detectedAt,
+      });
+    }
+
+    // Proxy data-quality: non-trigger + expired share
+    const qualityProxy = (o: typeof bOverall) => {
+      const expiredShare = (o.exitReasons.expired ?? 0) / Math.max(1, o.sampleCount);
+      return 1 - o.entryTriggeredRate + expiredShare;
+    };
+    const bQ = qualityProxy(bOverall);
+    const cQ = qualityProxy(cOverall);
+    const qualityDelta = cQ - bQ;
+    if (Math.abs(qualityDelta) >= 0.05) {
+      alerts.push({
+        category: 'data_quality_drift',
+        severity: severity(qualityDelta, 0.08, 0.15),
+        message: `Data-quality proxy shifted by ${(qualityDelta * 100).toFixed(1)}pp`,
+        baselineValue: bQ,
+        currentValue: cQ,
+        delta: qualityDelta,
+        detectedAt,
+      });
+    }
+  }
+
+  // Phase 8 — alias calibration as precision/calibration drift for governance
+  for (const a of [...alerts]) {
+    if (a.category === 'confidence_drift') {
+      alerts.push({ ...a, category: 'precision_drift', message: `Precision/ECE: ${a.message}` });
+      alerts.push({ ...a, category: 'calibration_drift', message: `Calibration: ${a.message}` });
+    }
+    if (a.category === 'strategy_drift') {
+      alerts.push({ ...a, category: 'strategy_mix_drift', message: `Strategy mix: ${a.message}` });
+    }
+    if (a.category === 'market_regime_drift') {
+      alerts.push({ ...a, category: 'regime_distribution_drift', message: `Regime mix: ${a.message}` });
     }
   }
 

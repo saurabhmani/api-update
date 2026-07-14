@@ -10,7 +10,7 @@ import {
   type EmpiricalOutcomeRow,
 } from '../scoring/empiricalCalibration';
 
-export const OUTCOME_INTELLIGENCE_VERSION = '3.0.0';
+export const OUTCOME_INTELLIGENCE_VERSION = '8.0.0';
 
 export interface OutcomeEvaluationOptions {
   /** Persisted expected R:R from the signal. Defaults to target1 geometry. */
@@ -18,6 +18,12 @@ export interface OutcomeEvaluationOptions {
   /** Stable evaluation timestamp for historical replay. */
   evaluatedAt?: string;
   metadataVersion?: string;
+  /** Signal generated_at — used for entry/resolution lifecycle completeness. */
+  signalGeneratedAt?: string | Date | null;
+  /** Lifecycle status on the signal row at evaluation time. */
+  signalStateAtResolution?: string | null;
+  /** Explicit entry trigger timestamp when known (else first post-candle). */
+  entryTimestamp?: string | null;
 }
 
 // ── Evaluate outcome from post-signal candle data ───────────
@@ -153,6 +159,26 @@ export function evaluateOutcome(
     ?? (lastCandleTs instanceof Date ? lastCandleTs.toISOString() : lastCandleTs)
     ?? new Date().toISOString();
 
+  const entryTsFromCandle = (() => {
+    if (barsToEntry == null || !postCandles[barsToEntry]?.ts) return null;
+    const t = postCandles[barsToEntry].ts!;
+    return t instanceof Date ? t.toISOString() : String(t);
+  })();
+  const resolutionTsFromCandle = (() => {
+    if (exitBar == null || !postCandles[exitBar]?.ts) {
+      return lastCandleTs instanceof Date
+        ? lastCandleTs.toISOString()
+        : lastCandleTs
+          ? String(lastCandleTs)
+          : null;
+    }
+    const t = postCandles[exitBar].ts!;
+    return t instanceof Date ? t.toISOString() : String(t);
+  })();
+
+  const resolved = stopBeforeTarget || target1BeforeStop || target2BeforeStop || target3BeforeStop;
+  const barsUnresolved = resolved ? 0 : postCandles.length;
+
   return {
     signalId, entryTriggered, barsToEntry,
     target1Hit: t1Hit, target2Hit: t2Hit, target3Hit: t3Hit, stopHit,
@@ -165,8 +191,17 @@ export function evaluateOutcome(
     outcomeVersion: OUTCOME_INTELLIGENCE_VERSION,
     entryQualityScore,
     timeToTargetBars: firstTargetBar,
+    timeToTarget2Bars: firstTarget2Bar,
+    timeToTarget3Bars: firstTarget3Bar,
     timeToStopBars: firstStopBar,
     holdingDurationBars: exitBar == null ? 0 : exitBar + 1,
+    barsUnresolved,
+    entryTimestamp: options.entryTimestamp ?? entryTsFromCandle,
+    resolutionTimestamp: resolutionTsFromCandle,
+    signalGeneratedAt: options.signalGeneratedAt
+      ? String(options.signalGeneratedAt)
+      : null,
+    signalStateAtResolution: options.signalStateAtResolution ?? (resolved ? 'resolved' : 'open_or_expired'),
     exitReason,
     realizedReturnPct,
     riskAdjustedReturn: realizedRewardRisk,
@@ -258,24 +293,102 @@ export function calibrateConfidence(
   };
 }
 
-// ── Adaptive Recommendation ─────────────────────────────────
+// ── Adaptive Recommendation (Phase 8 — shrinkage + evidence) ─
+
+const MAX_MODIFIER = 8; // absolute bound — cannot bypass Phase 3 rejection floors
 
 export function computeAdaptiveRecommendation(
   perf: StrategyPerformanceSnapshot,
+  opts: {
+    timeWindowDays?: number;
+    decayHalfLifeDays?: number;
+    parentPriorModifier?: number;
+    parentPriorSampleSize?: number;
+  } = {},
 ): AdaptiveRecommendation {
+  const timeWindowDays = opts.timeWindowDays ?? 90;
+  const decayHalfLifeDays = opts.decayHalfLifeDays ?? 45;
+  const parentPrior = opts.parentPriorModifier ?? 0;
+  const parentN = opts.parentPriorSampleSize ?? 200;
+
   if (perf.sampleSize < 20) {
-    return { strategyEnvironmentFit: 'insufficient_data', recommendedConfidenceModifier: 0, reason: 'Insufficient sample for recommendation', sampleSize: perf.sampleSize, evidenceStrength: 'weak' };
+    return {
+      strategyEnvironmentFit: 'insufficient_data',
+      recommendedConfidenceModifier: 0,
+      reason: 'Insufficient sample for recommendation',
+      sampleSize: perf.sampleSize,
+      evidenceStrength: 'weak',
+      timeWindowDays,
+      decayWeight: 0,
+      parentGroupPrior: parentPrior,
+      confidenceInterval: { lower: 0, upper: 1 },
+      maxPermittedChange: 0,
+      modelVersion: '8.0.0',
+    };
   }
 
-  let modifier = 0;
-  if (perf.environmentFit === 'excellent') modifier = 5;
-  else if (perf.environmentFit === 'good') modifier = 2;
-  else if (perf.environmentFit === 'poor') modifier = -5;
+  let rawModifier = 0;
+  if (perf.environmentFit === 'excellent') rawModifier = 5;
+  else if (perf.environmentFit === 'good') rawModifier = 2;
+  else if (perf.environmentFit === 'poor') rawModifier = -5;
 
-  const strength = perf.sampleSize >= 50 ? 'strong' as const : perf.sampleSize >= 30 ? 'moderate' as const : 'weak' as const;
-  const reason = `${perf.strategyName} in ${perf.regime}: win rate ${(perf.winRate * 100).toFixed(0)}% over ${perf.sampleSize} signals (${strength} evidence)`;
+  // Shrinkage toward parent-group prior — small/old samples pull less
+  const evidenceWeight = perf.sampleSize / (perf.sampleSize + parentN * 0.25);
+  const decayWeight = Math.exp(-Math.log(2) * (timeWindowDays / 2) / decayHalfLifeDays);
+  const shrunk = parentPrior * (1 - evidenceWeight * decayWeight)
+    + rawModifier * (evidenceWeight * decayWeight);
 
-  return { strategyEnvironmentFit: perf.environmentFit, recommendedConfidenceModifier: modifier, reason, sampleSize: perf.sampleSize, evidenceStrength: strength };
+  const maxPermittedChange = perf.sampleSize >= 80
+    ? MAX_MODIFIER
+    : perf.sampleSize >= 50
+      ? 5
+      : perf.sampleSize >= 30
+        ? 3
+        : 2;
+
+  const recommended = Math.max(
+    -maxPermittedChange,
+    Math.min(maxPermittedChange, Math.round(shrunk)),
+  );
+
+  // Wilson-ish CI on win rate
+  const n = perf.sampleSize;
+  const p = perf.winRate;
+  const z = 1.96;
+  const denom = 1 + z * z / n;
+  const centre = p + z * z / (2 * n);
+  const margin = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n);
+  const lower = Math.max(0, (centre - margin) / denom);
+  const upper = Math.min(1, (centre + margin) / denom);
+
+  const strength =
+    perf.sampleSize >= 50 && decayWeight >= 0.5
+      ? 'strong' as const
+      : perf.sampleSize >= 30
+        ? 'moderate' as const
+        : 'weak' as const;
+
+  const reason =
+    `${perf.strategyName} in ${perf.regime}: win ${(perf.winRate * 100).toFixed(0)}% ` +
+    `n=${perf.sampleSize} window=${timeWindowDays}d decay=${decayWeight.toFixed(2)} ` +
+    `shrink→${recommended} (raw ${rawModifier}, prior ${parentPrior}, cap ±${maxPermittedChange})`;
+
+  return {
+    strategyEnvironmentFit: perf.environmentFit,
+    recommendedConfidenceModifier: recommended,
+    reason,
+    sampleSize: perf.sampleSize,
+    evidenceStrength: strength,
+    timeWindowDays,
+    decayWeight: Math.round(decayWeight * 1000) / 1000,
+    parentGroupPrior: parentPrior,
+    confidenceInterval: {
+      lower: Math.round(lower * 1000) / 1000,
+      upper: Math.round(upper * 1000) / 1000,
+    },
+    maxPermittedChange,
+    modelVersion: '8.0.0',
+  };
 }
 
 // ── Default Feedback State ──────────────────────────────────
