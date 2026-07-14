@@ -46,6 +46,8 @@ Config **v2+** strips overlapping regime/ATR/gap/overextension penalties from se
 
 Still applied via `applyPhase2ConfidenceCalibration` when config v2 and `SIGNAL_P2_CONFIDENCE_CALIBRATION=true` (max ±`SIGNAL_P2_CONFIDENCE_MAX_ADJ`).
 
+The daily `multiTimeframeAlignment` proxy no longer contributes a calibration +1 — real MTF confirmation is applied once via `applyMultiTimeframeConfirmation` (see `multi-timeframe-confirmation.md`).
+
 ## Empirical calibration (production)
 
 Module: `empiricalCalibration.ts`. Fixed hit-rate tables are **priors only**.

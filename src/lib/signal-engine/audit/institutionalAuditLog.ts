@@ -91,6 +91,15 @@ export interface AlignmentBlock {
   fourHour:                  string;
   oneHour:                   string;
   explanation:               string;
+  /** Phase 4 canonical explain contract (optional for older audits). */
+  explain?: {
+    daily: { verdict: string; evidence: string };
+    fourHour: { verdict: string; evidence: string };
+    oneHour: { role: string; evidence: string };
+    overall: { score: number; state: string; summary: string };
+  };
+  actionable?: boolean;
+  modelVersion?: string;
 }
 
 export interface StressBlock {
@@ -205,6 +214,9 @@ function mapAlignment(a: MultiTimeframeAlignmentResult | null | undefined): Alig
     fourHour:                  a.fourHour.reason,
     oneHour:                   a.oneHour.reason,
     explanation:               a.explanation,
+    explain:                   a.explain,
+    actionable:                a.actionable,
+    modelVersion:              a.modelVersion,
   };
 }
 

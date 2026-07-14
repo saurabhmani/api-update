@@ -21,6 +21,8 @@ import { persistRegimeChange } from '../regime/persistRegimeChange';
 import { buildSignalFeaturesDetailed } from '../features/buildSignalFeatures';
 import { buildEnhancedFeatures } from '../features/buildEnhancedFeatures';
 import { runAllStrategies, resetSellDebugAgg, flushSellDebugAgg } from '../strategy-engine/runStrategies';
+import { fetchMtfCandleBundle } from '../multitimeframe/mtfCandleProvider';
+import { applyMultiTimeframeConfirmation } from '../multitimeframe/applyMtfConfirmation';
 import { evaluateDataQualityDecision } from '../lineage/dataQualityDecision';
 import { buildCorporateActionFields } from '../lineage/corporateActionGuard';
 import { buildCanonicalInputSnapshot } from '../lineage/canonicalInputSnapshot';
@@ -908,6 +910,50 @@ export async function generatePhase3Signals(
         });
         continue;
       }
+
+      // ── Phase 4: multi-timeframe confirmation (once per candidate) ─
+      // After strategy match, before composite / approval scoring.
+      // Never publishes standalone multi_timeframe_alignment signals.
+      let mtfCandidates = candidates.filter((c) => c.strategy !== 'multi_timeframe_alignment');
+      try {
+        const mtfBundle = await fetchMtfCandleBundle({
+          symbol,
+          daily: candles,
+          asOfMs: Date.now(),
+        });
+        mtfCandidates = mtfCandidates.map((c) => {
+          const { candidate } = applyMultiTimeframeConfirmation({
+            candidate: c,
+            symbol,
+            daily: mtfBundle.daily,
+            fourHour: mtfBundle.fourHour,
+            oneHour: mtfBundle.oneHour,
+            asOfMs: mtfBundle.asOfMs,
+          });
+          return candidate;
+        });
+        mtfCandidates.sort((a, b) => b.confidence.finalScore - a.confidence.finalScore);
+      } catch (mtfErr) {
+        // Missing MTF data must not increase confidence — apply with null LTF
+        mtfCandidates = mtfCandidates.map((c) => {
+          const { candidate } = applyMultiTimeframeConfirmation({
+            candidate: c,
+            symbol,
+            daily: candles,
+            fourHour: null,
+            oneHour: null,
+            asOfMs: Date.now(),
+          });
+          return candidate;
+        });
+        mtfCandidates.sort((a, b) => b.confidence.finalScore - a.confidence.finalScore);
+        if (PHASE3_TRACE) {
+          console.warn(
+            `[MTF] ${symbol}: ${mtfErr instanceof Error ? mtfErr.message : String(mtfErr)}`,
+          );
+        }
+      }
+
       stageReached.strategy_match++;
 
       // ── Best-per-direction emission (Nov 2026 SELL-balance fix) ─
@@ -930,7 +976,7 @@ export async function generatePhase3Signals(
       // of the top bullish candidate — avoids suppressing fib rows when
       // the more specific detector also fired.
       const bullishBest = (() => {
-        const bullish = candidates.filter((c) => !BEARISH_STRATEGIES.has(c.strategy));
+        const bullish = mtfCandidates.filter((c) => !BEARISH_STRATEGIES.has(c.strategy));
         if (bullish.length === 0) return undefined;
         const top = bullish[0];
         if (top.strategy !== 'bullish_pullback') return top;
@@ -939,8 +985,8 @@ export async function generatePhase3Signals(
         const gap = top.confidence.finalScore - fib.confidence.finalScore;
         return gap <= 8 ? fib : top;
       })();
-      const bearishBest = candidates.find((c) =>  BEARISH_STRATEGIES.has(c.strategy));
-      const toBuild: typeof candidates = [];
+      const bearishBest = mtfCandidates.find((c) =>  BEARISH_STRATEGIES.has(c.strategy));
+      const toBuild: typeof mtfCandidates = [];
       if (bullishBest && bearishBest) {
         const primary   = bullishBest.confidence.finalScore >= bearishBest.confidence.finalScore
           ? bullishBest : bearishBest;

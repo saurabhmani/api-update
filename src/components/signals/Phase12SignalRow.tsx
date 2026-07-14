@@ -26,6 +26,7 @@ import {
   toProfessionalLabel,
   type RejectionCode,
 } from '@/lib/signals/signalDisplayShaper';
+import { MultiTimeframeExplainPanel } from '@/components/signals/MultiTimeframeExplainPanel';
 
 // ── Shared band colour helpers ─────────────────────────────────
 
@@ -365,23 +366,35 @@ export function RiskRewardCell({ value }: { value?: number | null }) {
  */
 export function ExplanationSummary({
   explanation,
+  multiTimeframe,
   fallback = 'No explanation available.',
 }: {
   explanation?: SignalExplanation | null;
-  fallback?:    string;
+  multiTimeframe?: {
+    daily: { verdict: string; evidence: string };
+    fourHour: { verdict: string; evidence: string };
+    oneHour: { role: string; evidence: string };
+    overall: { score: number; state: string; summary: string };
+  } | null;
+  fallback?: string;
 }) {
   const text = explanation?.summary_reason?.trim() || fallback;
   return (
-    <div style={{
-      fontSize:   12,
-      lineHeight: 1.5,
-      color:      '#334155',
-      padding:    '6px 10px',
-      background: '#F8FAFC',
-      borderLeft: '3px solid #3B82F6',
-      borderRadius: 4,
-    }}>
-      {text}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{
+        fontSize:   12,
+        lineHeight: 1.5,
+        color:      '#334155',
+        padding:    '6px 10px',
+        background: '#F8FAFC',
+        borderLeft: '3px solid #3B82F6',
+        borderRadius: 4,
+      }}>
+        {text}
+      </div>
+      {multiTimeframe ? (
+        <MultiTimeframeExplainPanel {...multiTimeframe} />
+      ) : null}
     </div>
   );
 }

@@ -77,7 +77,8 @@ export function computePhase2ConfidenceAdjustment(
   if (e.trendStrength >= minEnhancedTrendForBonus) adj += 2;
   if (e.volumeQuality >= minEnhancedVolumeForBonus) adj += 1;
   if (e.momentumPersistence >= 60) adj += 1;
-  if (e.multiTimeframeAlignment >= 70) adj += 1;
+  // Phase 4: real MTF confirmation is applied exactly once via
+  // applyMultiTimeframeConfirmation — do NOT double-count the daily proxy here.
   if (e.relativeStrength >= 65) adj += 1;
 
   if (e.trendExhaustion >= maxTrendExhaustionPenalty) adj -= 3;

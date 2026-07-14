@@ -468,6 +468,13 @@ export interface ProductAExplainability {
   riskExplanation: string[];
   tradeRationale: string[];
   rejectionReasons: string[];
+  /** Phase 4 — canonical multi-timeframe confirmation block. */
+  multiTimeframe?: {
+    daily: { verdict: string; evidence: string };
+    fourHour: { verdict: string; evidence: string };
+    oneHour: { role: string; evidence: string };
+    overall: { score: number; state: string; summary: string };
+  };
 }
 
 // ── Signal Classification ───────────────────────────────────
@@ -686,13 +693,14 @@ export interface StrategyRegistryEntry {
   invalidationLogic:   string;
   /** Convenience array of regimes where this strategy works best. */
   idealMarketRegime:   MarketRegimeLabel[];
-  /**
-   * Phase 3 — structured dimension eligibility.
+  /** Phase 3 — structured dimension eligibility.
    * When present, evaluateStrategyRegimeEligibility uses these in
    * addition to legacy allowed/blocked labels. Omitted → derived
    * defaults from allowed/blocked/ideal arrays.
    */
   regimeMatrix?: StrategyRegimeMatrix;
+  /** Phase 4 — optional key into MTF_POLICIES (fibonacci_pullback, breakout, …). */
+  mtfPolicyId?: string;
   /** Phase 4 — true for strategies that need data we don't have on the
    *  EOD warehouse (intraday candles, weekly aggregates, VWAP, etc.).
    *  Detection MUST return INSUFFICIENT_DATA on these — never fake. */

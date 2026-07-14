@@ -88,6 +88,12 @@ export type { StrategyScanStats } from './observability/strategyScanHistogram';
 export { detectMarketRegime } from './regime/detectMarketRegime';
 export { buildRegimePerformanceReport } from './regime/regimePerformanceReport';
 export { persistRegimeChange } from './regime/persistRegimeChange';
+export {
+  evaluateMultiTimeframeAlignment,
+  applyAlignmentToConfidence,
+  MTF_MODEL_VERSION,
+} from './multitimeframe/multiTimeframeAlignment';
+export { applyMultiTimeframeConfirmation } from './multitimeframe/applyMtfConfirmation';
 export { evaluateBullishBreakout } from './strategies/bullishBreakout';
 export { evaluateBullishPullback } from './strategies/bullishPullback';
 export { evaluateBearishBreakdown } from './strategies/bearishBreakdown';

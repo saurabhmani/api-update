@@ -21,7 +21,12 @@ function insufficient(reason: string): StrategyMatchResult {
 }
 
 export function evaluateMultiTimeframeAlignment(_f: SignalFeatures): StrategyMatchResult {
-  return insufficient('Multi-timeframe alignment requires weekly + intraday data that is not yet wired.');
+  // Phase 4: multi_timeframe_alignment is confirmation-only — never an
+  // actionable standalone strategy. Real confirmation runs via
+  // applyMultiTimeframeConfirmation after a strategy match.
+  return insufficient(
+    'multi_timeframe_alignment is a confirmation factor, not a standalone actionable strategy',
+  );
 }
 
 export function evaluateVwapReclaimLong(_f: SignalFeatures): StrategyMatchResult {

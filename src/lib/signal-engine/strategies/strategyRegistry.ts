@@ -57,6 +57,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     explanationTemplate: 'Price closed above resistance with improving momentum. Approval requires volume confirmation and fresh candle validation.',
     invalidationLogic:   'Close below the prior resistance band invalidates the breakout structure.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
+    mtfPolicyId:         'breakout',
   },
 
   range_breakout: {
@@ -122,6 +123,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     explanationTemplate: 'Momentum continues in the direction of the prevailing trend; price is holding above short-term moving averages.',
     invalidationLogic:   'Loss of short-term trend support invalidates the continuation thesis.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
+    mtfPolicyId:         'momentum',
   },
 
   gap_continuation: {
@@ -181,6 +183,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     explanationTemplate: 'Price is reacting from a key Fibonacci retracement zone inside a bullish trend.',
     invalidationLogic:   'Close below the 61.8% or 78.6% Fibonacci support zone invalidates the setup.',
     idealMarketRegime:   ['Strong Bullish', 'Bullish'],
+    mtfPolicyId:         'fibonacci_pullback',
   },
 
   // ── Mean reversion family ──────────────────────────────────
@@ -201,6 +204,7 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     explanationTemplate: 'Price is recovering from an oversold zone, but confirmation is required before approval.',
     invalidationLogic:   'A fresh lower low without recovery invalidates the bounce setup.',
     idealMarketRegime:   ['Sideways', 'Weak'],
+    mtfPolicyId:         'mean_reversion',
   },
 
   oversold_bounce: {
@@ -410,6 +414,8 @@ export const STRATEGY_REGISTRY: Record<StrategyName, StrategyRegistryEntry> = {
     invalidationLogic:   'Loss of weekly trend support invalidates the alignment.',
     idealMarketRegime:   ['Bullish', 'Strong Bullish'],
     isConfirmationOnly:  true,
+    // Historic id retained for stored-data compatibility — never publish
+    // new standalone actionable signals under this identifier (Phase 4).
   },
 
   vwap_reclaim_long: {
