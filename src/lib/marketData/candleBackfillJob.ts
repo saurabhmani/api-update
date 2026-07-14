@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Candle Backfill Job — IndianAPI → `candles` warehouse
+//  Candle Backfill Job — Kite → IndianAPI → `candles` warehouse
 //
 //  Backfills daily EOD bars for active NSE symbols from q365_universe.
 //  Writes ONLY to the `candles` table (instrument_key + eod + 1day).
@@ -12,7 +12,7 @@
 
 import { db } from '@/lib/db';
 import {
-  fetchIndianApiDailyCandles,
+  fetchUpstreamDailyCandles,
   getIndianApiCandleRequestCount,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
@@ -27,6 +27,7 @@ import {
   INDIANAPI_PER_RUN_LIMIT,
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
+import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 import {
@@ -499,18 +500,23 @@ async function backfillOneSymbol(
     };
   }
 
-  let fetch = await fetchIndianApiDailyCandles(symbol, '1y');
+  let fetch = await fetchUpstreamDailyCandles(symbol, '1y');
   const isRetryable = (code: string | null | undefined) =>
-    code === 'RATE_LIMITED' || code === 'API_KEY_INVALID';
+    code === 'RATE_LIMITED'
+    || code === 'API_KEY_INVALID'
+    || code === 'KiteRateLimitError'
+    || code === 'KiteAuthenticationError';
   if (!fetch.ok && isRetryable(fetch.errorCode)) {
-    const backoffMs = fetch.errorCode === 'RATE_LIMITED'
+    const backoffMs = (
+      fetch.errorCode === 'RATE_LIMITED' || fetch.errorCode === 'KiteRateLimitError'
+    )
       ? RATE_LIMIT_BACKOFF_MS()
       : 60_000;
     console.warn(
       `[CANDLE BACKFILL] ${symbol} ${fetch.errorCode} — sleeping ${backoffMs}ms then one retry`,
     );
     await sleep(backoffMs);
-    fetch = await fetchIndianApiDailyCandles(symbol, '1y');
+    fetch = await fetchUpstreamDailyCandles(symbol, '1y');
   }
 
   if (!fetch.ok || fetch.candles.length === 0) {
@@ -596,9 +602,10 @@ export async function runCandleBackfillJob(
   });
 
   const { apiKey } = getIndianApiConfig();
-  if (!apiKey && !dryRun) {
+  if (!apiKey && !isKiteHistoricalConfigured() && !dryRun) {
     throw new Error(
-      'IndianAPI key missing — set INDIANAPI_API_KEY (or INDIANAPI_KEY) before running backfill',
+      'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
+      + 'and/or INDIANAPI_API_KEY before running backfill',
     );
   }
 

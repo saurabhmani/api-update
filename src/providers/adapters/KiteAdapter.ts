@@ -24,7 +24,8 @@ import {
   getQuote as kiteGetQuote,
   getQuotes as kiteGetQuotes,
   searchInstrument,
-  type KiteHistoricalInterval,
+  KiteAuthenticationError,
+  KiteRateLimitError,
 } from '@/lib/kite';
 import type {
   CorporateIntel,
@@ -44,6 +45,10 @@ import type {
   GetOptions,
   IMarketDataProvider,
 } from '@/providers/interfaces';
+import {
+  appIntervalToKiteWindow,
+  rangeToKiteWindow,
+} from '@/lib/marketData/historicalIntervalMap';
 import { unsupported, UnsupportedFeatureError } from './UnsupportedFeatureError';
 import {
   normalizeAppSymbol,
@@ -294,49 +299,16 @@ export async function getOHLCSnapshot(symbol: string): Promise<MarketSnapshot> {
 
 // ── Supported: historical ──────────────────────────────────────────
 
-interface RangeWindow {
-  interval: KiteHistoricalInterval;
-  from: Date;
-  to: Date;
+function isRecoverableHistoricalError(err: unknown): boolean {
+  return err instanceof KiteAuthenticationError || err instanceof KiteRateLimitError;
 }
 
-function rangeToKiteWindow(range: HistoricalRange): RangeWindow {
-  const to = new Date();
-  const from = new Date(to.getTime());
-
-  switch (range) {
-    case '1d':
-      // Intraday for the current session window (last calendar day).
-      from.setDate(from.getDate() - 1);
-      return { interval: '5minute', from, to };
-    case '5d':
-      from.setDate(from.getDate() - 7);
-      return { interval: 'day', from, to };
-    case '1mo':
-      from.setMonth(from.getMonth() - 1);
-      return { interval: 'day', from, to };
-    case '3mo':
-      from.setMonth(from.getMonth() - 3);
-      return { interval: 'day', from, to };
-    case '6mo':
-      from.setMonth(from.getMonth() - 6);
-      return { interval: 'day', from, to };
-    case '1y':
-      from.setFullYear(from.getFullYear() - 1);
-      return { interval: 'day', from, to };
-    case '5y':
-      from.setFullYear(from.getFullYear() - 5);
-      return { interval: 'day', from, to };
-    default:
-      from.setFullYear(from.getFullYear() - 1);
-      return { interval: 'day', from, to };
-  }
-}
-
-export async function getHistorical(
+async function fetchHistoricalWindow(
   symbol: string,
   range: HistoricalRange,
-  _signal?: AbortSignal,
+  interval: ReturnType<typeof rangeToKiteWindow>['interval'],
+  from: Date,
+  to: Date,
 ): Promise<HistoricalSeries> {
   const sym = normalizeAppSymbol(symbol);
   if (!sym) {
@@ -354,8 +326,6 @@ export async function getHistorical(
     return { symbol: sym, range, candles: [] };
   }
 
-  const { interval, from, to } = rangeToKiteWindow(range);
-
   try {
     const candles = await getHistoricalData({
       instrumentToken: ref.instrumentToken,
@@ -370,14 +340,48 @@ export async function getHistorical(
     log.warn('getHistorical failed', {
       symbol: sym,
       range,
+      interval,
       token: ref.instrumentToken,
       error: err instanceof Error ? err.message : String(err),
     });
-    // Match IndianAPIAdapter soft-fail: empty series rather than throw
-    // for ordinary upstream issues (auth errors still surface via throw
-    // from the service layer when the caller must halt).
+    // Auth / rate-limit must surface so consumers can fall back to IndianAPI.
+    if (isRecoverableHistoricalError(err)) throw err;
+    // Soft-fail ordinary upstream issues (empty series), matching IndianAPI.
     return { symbol: sym, range, candles: [] };
   }
+}
+
+export async function getHistorical(
+  symbol: string,
+  range: HistoricalRange,
+  _signal?: AbortSignal,
+): Promise<HistoricalSeries> {
+  const { interval, from, to } = rangeToKiteWindow(range);
+  return fetchHistoricalWindow(symbol, range, interval, from, to);
+}
+
+/**
+ * Historical fetch for chart / candle intervals (`1m`…`1month`).
+ * Uses the shared `historicalIntervalMap` — not a second mapping.
+ */
+export async function getHistoricalByInterval(
+  symbol: string,
+  appInterval: string,
+  range: HistoricalRange,
+  from?: Date | string | null,
+  to?: Date | string | null,
+): Promise<HistoricalSeries> {
+  const window = appIntervalToKiteWindow(appInterval, from, to);
+  if (!window) {
+    return { symbol: normalizeAppSymbol(symbol), range, candles: [] };
+  }
+  return fetchHistoricalWindow(
+    symbol,
+    range,
+    window.interval,
+    window.from,
+    window.to,
+  );
 }
 
 // ── Supported: symbol search ───────────────────────────────────────

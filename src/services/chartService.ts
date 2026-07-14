@@ -282,11 +282,18 @@ async function fromMySQL(
   }
 }
 
-// ── Layer 3: IndianAPI historical (Step 9 of cutover) ──────────────
+// ── Layer 3: Kite → IndianAPI historical (Phase 6) ─────────────────
 
 import {
   getHistorical as indianHistorical,
 } from '@/lib/marketData/providers/indianApiProvider';
+import {
+  getHistoricalForInterval as kiteHistoricalForInterval,
+} from '@/lib/marketData/providers/kiteHistoricalProvider';
+import {
+  chartIntervalToHistoricalRange,
+  isIntradayAppInterval,
+} from '@/lib/marketData/historicalIntervalMap';
 import type { HistoricalRange } from '@/types/market';
 
 const RANGE_FOR_INTERVAL: Record<ChartInterval, HistoricalRange> = {
@@ -300,20 +307,14 @@ const RANGE_FOR_INTERVAL: Record<ChartInterval, HistoricalRange> = {
   '1month':   '5y',
 };
 
-async function fromIndianApi(
+async function fromKite(
   symbol:   string,
   interval: ChartInterval,
-  _from?:   string,
-  _to?:     string,
+  from?:    string,
+  to?:      string,
   limit     = 200,
 ): Promise<OhlcvBar[]> {
-  // IndianAPI historical_data is daily-only. Never use it for sub-day
-  // intervals — that produced empty 5m/15m charts or mis-labelled daily bars.
-  if (INTRADAY_BUCKET_MIN[interval] != null && interval !== '1day') {
-    return [];
-  }
-
-  const inv = await indianHistorical(symbol, RANGE_FOR_INTERVAL[interval]);
+  const inv = await kiteHistoricalForInterval(symbol, interval, from, to);
   if (inv.status === 'failed' || !inv.data) return [];
   const bars = inv.data.candles.map((c) => ({
     ts:     new Date(c.t).toISOString(),
@@ -325,6 +326,47 @@ async function fromIndianApi(
     oi:     0,
   }));
   return bars.slice(-limit);
+}
+
+async function fromIndianApi(
+  symbol:   string,
+  interval: ChartInterval,
+  _from?:   string,
+  _to?:     string,
+  limit     = 200,
+): Promise<OhlcvBar[]> {
+  // IndianAPI historical_data is daily-only. Never use it for sub-day
+  // intervals — that produced empty 5m/15m charts or mis-labelled daily bars.
+  if (isIntradayAppInterval(interval)) {
+    return [];
+  }
+
+  const range = RANGE_FOR_INTERVAL[interval] ?? chartIntervalToHistoricalRange(interval);
+  const inv = await indianHistorical(symbol, range);
+  if (inv.status === 'failed' || !inv.data) return [];
+  const bars = inv.data.candles.map((c) => ({
+    ts:     new Date(c.t).toISOString(),
+    open:   c.o,
+    high:   c.h,
+    low:    c.l,
+    close:  c.c,
+    volume: c.v,
+    oi:     0,
+  }));
+  return bars.slice(-limit);
+}
+
+/** Upstream chart fill: Kite first, IndianAPI fallback (daily-capable only). */
+async function fromUpstreamHistorical(
+  symbol:   string,
+  interval: ChartInterval,
+  from?:    string,
+  to?:      string,
+  limit     = 200,
+): Promise<OhlcvBar[]> {
+  const kiteBars = await fromKite(symbol, interval, from, to, limit);
+  if (kiteBars.length > 0) return kiteBars;
+  return fromIndianApi(symbol, interval, from, to, limit);
 }
 
 async function fromMarketDataDaily(
@@ -446,35 +488,38 @@ export async function getChartData(
     }
   }
 
-  // Layer 3: Daily — refresh stale tail from IndianAPI + Yahoo, then merge
+  // Layer 3: Daily — refresh stale tail from Kite/IndianAPI + Yahoo, then merge
   if (interval === '1day') {
     if (candles.length === 0 || isDailySeriesStale(candles)) {
-      const freshIndian = await fromIndianApi(sym, interval, effectiveFrom, to, effectiveLimit);
-      const freshYahoo  = freshIndian.length < 5
+      const freshUpstream = await fromUpstreamHistorical(sym, interval, effectiveFrom, to, effectiveLimit);
+      const freshYahoo  = freshUpstream.length < 5
         ? await fromYahooPublic(sym, interval, effectiveLimit)
         : [];
-      const fresh = freshIndian.length > 0 ? freshIndian : freshYahoo;
+      const fresh = freshUpstream.length > 0 ? freshUpstream : freshYahoo;
       if (fresh.length > 0) {
         candles = candles.length > 0 ? mergeCandlesByDay(candles, fresh) : fresh;
-        source = freshIndian.length > 0 ? 'mysql' : 'yahoo';
+        source = freshUpstream.length > 0 ? 'mysql' : 'yahoo';
         persistChartCandles(instrumentKey, interval, fresh).catch(() => {});
       }
     }
   } else if (isIntraday) {
-    // Layer 3b: Intraday — Yahoo public chart during market hours or when DB is thin
+    // Layer 3b: Intraday — Kite first, then Yahoo public when DB is thin
     const needsRefresh = candles.length < 10 || isIntradaySeriesStale(candles);
     if (needsRefresh) {
-      const fresh = await fromYahooPublic(sym, interval, effectiveLimit);
+      const freshKite = await fromUpstreamHistorical(sym, interval, effectiveFrom, to, effectiveLimit);
+      const fresh = freshKite.length > 0
+        ? freshKite
+        : await fromYahooPublic(sym, interval, effectiveLimit);
       if (fresh.length > 0) {
         candles = fresh;
-        source  = 'yahoo';
+        source  = freshKite.length > 0 ? 'mysql' : 'yahoo';
         if (marketOpen) {
           persistChartCandles(instrumentKey, interval, fresh.slice(-120)).catch(() => {});
         }
       }
     }
   } else if (!candles.length) {
-    candles = await fromIndianApi(sym, interval, effectiveFrom, to, effectiveLimit);
+    candles = await fromUpstreamHistorical(sym, interval, effectiveFrom, to, effectiveLimit);
     source  = 'yahoo';
     if (candles.length > 0) {
       persistChartCandles(instrumentKey, interval, candles).catch(() => {});

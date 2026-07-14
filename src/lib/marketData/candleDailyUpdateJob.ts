@@ -2,7 +2,7 @@
 //  Candle Daily Update Job — post-close incremental EOD refresh
 //
 //  Fetches only missing latest daily bars for active NSE symbols.
-//  Uses IndianAPI `1mo` for incremental symbols; `1y` only when thin.
+//  Uses Kite (then IndianAPI) `1mo` for incremental; `1y` when thin.
 //  Writes ONLY to `candles` (market_data_daily is a view).
 //
 //  Usage:
@@ -12,7 +12,7 @@
 
 import { db } from '@/lib/db';
 import {
-  fetchIndianApiDailyCandles,
+  fetchUpstreamDailyCandles,
   getIndianApiCandleRequestCount,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
@@ -34,6 +34,7 @@ import {
   getApiUsage,
 } from '@/providers/adapters/IndianAPIAdapter';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
+import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import type { HistoricalRange } from '@/types/market';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
@@ -184,10 +185,13 @@ async function updateOneSymbol(
   const thin = stats.barCount < opts.minBars;
   const range: HistoricalRange = thin ? '1y' : '1mo';
 
-  let fetch = await fetchIndianApiDailyCandles(symbol, range);
-  if (!fetch.ok && fetch.errorCode === 'RATE_LIMITED') {
+  let fetch = await fetchUpstreamDailyCandles(symbol, range);
+  if (
+    !fetch.ok
+    && (fetch.errorCode === 'RATE_LIMITED' || fetch.errorCode === 'KiteRateLimitError')
+  ) {
     await sleep(RATE_LIMIT_BACKOFF_MS());
-    fetch = await fetchIndianApiDailyCandles(symbol, range);
+    fetch = await fetchUpstreamDailyCandles(symbol, range);
   }
 
   if (!fetch.ok || fetch.candles.length === 0) {
@@ -276,9 +280,10 @@ async function runCandleDailyUpdateJobInner(
   const targetTradingDay = getLatestCompletedTradingDay();
 
   const { apiKey } = getIndianApiConfig();
-  if (!apiKey && !dryRun) {
+  if (!apiKey && !isKiteHistoricalConfigured() && !dryRun) {
     throw new Error(
-      'IndianAPI key missing — set INDIANAPI_API_KEY before running daily update',
+      'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
+      + 'and/or INDIANAPI_API_KEY before running daily update',
     );
   }
 

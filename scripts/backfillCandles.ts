@@ -20,7 +20,8 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleBackfillJob, type BackfillSymbolSource } from '@/lib/marketData/candleBackfillJob';
-import { getHistorical } from '@/lib/marketData/providers/indianApiProvider';
+import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
+import { getHistorical as getKiteHistorical, isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import {
   EMERGENCY_REPAIR_MAX_FETCH,
@@ -86,22 +87,34 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
+  if (isKiteHistoricalConfigured()) {
+    console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via Kite ...`);
+    const kite = await getKiteHistorical(symbol, '1y');
+    const bars = kite.data?.candles?.length ?? 0;
+    if (kite.status === 'success' || kite.status === 'partial') {
+      console.log(`[CANDLE BACKFILL PREFLIGHT] OK (kite) — ${bars} bars returned`);
+      return true;
+    }
+    console.warn(
+      `[CANDLE BACKFILL PREFLIGHT] Kite miss — ${kite.errorCode}: ${kite.errorMessage} — trying IndianAPI`,
+    );
+  }
+
   const { apiKey, baseUrl } = getIndianApiConfig();
   if (!apiKey) {
-    console.error('[CANDLE BACKFILL PREFLIGHT] INDIANAPI_API_KEY is not set');
+    console.error(
+      '[CANDLE BACKFILL PREFLIGHT] neither Kite nor INDIANAPI_API_KEY is configured',
+    );
     return false;
   }
   console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via ${baseUrl} ...`);
-  const inv = await getHistorical(symbol, '1y');
+  const inv = await getIndianApiHistorical(symbol, '1y');
   const bars = inv.data?.candles?.length ?? 0;
   if (inv.status === 'success' || inv.status === 'partial') {
-    console.log(`[CANDLE BACKFILL PREFLIGHT] OK — ${bars} bars returned`);
+    console.log(`[CANDLE BACKFILL PREFLIGHT] OK (indianapi) — ${bars} bars returned`);
     return true;
   }
-  console.error(
-    `[CANDLE BACKFILL PREFLIGHT] FAIL — ${inv.errorCode ?? 'unknown'}: ` +
-    `${inv.errorMessage ?? inv.status}`,
-  );
+  console.error(`[CANDLE BACKFILL PREFLIGHT] FAIL — ${inv.errorCode}: ${inv.errorMessage}`);
   if (inv.errorMessage?.includes('screener.in')) {
     console.error(
       '[CANDLE BACKFILL PREFLIGHT] IndianAPI upstream dependency (screener.in) is failing. ' +

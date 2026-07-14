@@ -1,18 +1,20 @@
 // ════════════════════════════════════════════════════════════════
-//  Candle Fallback Chain — DB → IndianAPI → NSE (opt-in)
+//  Candle Fallback Chain — DB → Kite → IndianAPI → NSE (opt-in)
 //
-//  Provider priority for daily OHLCV:
+//  Provider priority for daily OHLCV (Phase 6):
 //    1. DB cache (market_data_daily) — always first; during an active
 //       pipeline scan (`isInFlight()`), evaluation reads are DB-only
-//       so strategy evaluation never burns IndianAPI quota.
-//    2. IndianAPI (`getHistorical`) — primary upstream for backfill /
-//       incremental refresh (candle ingest path only).
-//    3. NSE direct historical — fallback ONLY when
+//       so strategy evaluation never burns vendor quota.
+//    2. Kite (`KiteAdapter.getHistorical` via kiteHistoricalProvider)
+//       — primary upstream for backfill / incremental refresh.
+//    3. IndianAPI (`getHistorical`) — fallback when Kite fails
+//       (auth / rate-limit / empty / not configured).
+//    4. NSE direct historical — fallback ONLY when
 //       NSE_HISTORICAL_FETCH_ENABLED=true.
-//    4. DB thin — return whatever rows exist.
-//    5. Throw `CANDLE_NO_DATA`.
+//    5. DB thin — return whatever rows exist.
+//    6. Throw `CANDLE_NO_DATA`.
 //
-//  `refreshDailyCandles` → `getCandles` uses the IndianAPI ingest path.
+//  `refreshDailyCandles` → `getCandles` uses the upstream ingest path.
 //  Phase 3/4 `fetchDailyCandlesWithFallback` uses DB-only while a scan
 //  is in flight.
 // ════════════════════════════════════════════════════════════════
@@ -20,6 +22,10 @@
 import { db } from '@/lib/db';
 import type { Candle } from '@/lib/signal-engine';
 import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
+import {
+  getHistorical as getKiteHistorical,
+  isKiteHistoricalConfigured,
+} from '@/lib/marketData/providers/kiteHistoricalProvider';
 import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
@@ -41,7 +47,7 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
 /** Minimum bar count for the DB fast-path during strategy evaluation. */
 const MIN_BAR_THRESHOLD = () => envNum('CANDLE_MIN_BAR_THRESHOLD', 30, 500, 100);
 
-/** Bar depth above which ingest skips IndianAPI unless incremental refresh. */
+/** Bar depth above which ingest skips upstream unless incremental refresh. */
 export const SUFFICIENT_BAR_DEPTH = () =>
   envNum('CANDLE_SUFFICIENT_DEPTH', 30, 500, 100);
 
@@ -51,31 +57,39 @@ const DB_BARS_LIMIT = 300;
 
 let _nseUsed = 0;
 let _apiUsed = 0;
+let _kiteUsed = 0;
 let _dbUsed  = 0;
 let _failed  = 0;
 let _indianApiRequestCount = 0;
+let _kiteRequestCount = 0;
 
 export function resetCandleSourceCounters(): void {
   _nseUsed = 0;
   _apiUsed = 0;
+  _kiteUsed = 0;
   _dbUsed  = 0;
   _failed  = 0;
   _indianApiRequestCount = 0;
+  _kiteRequestCount = 0;
 }
 
 export function getCandleSourceCounters(): {
   nse_used: number;
   api_used: number;
+  kite_used: number;
   db_used: number;
   failed: number;
   indianapi_requests: number;
+  kite_requests: number;
 } {
   return {
     nse_used: _nseUsed,
     api_used: _apiUsed,
+    kite_used: _kiteUsed,
     db_used: _dbUsed,
     failed: _failed,
     indianapi_requests: _indianApiRequestCount,
+    kite_requests: _kiteRequestCount,
   };
 }
 
@@ -83,9 +97,13 @@ export function getIndianApiCandleRequestCount(): number {
   return _indianApiRequestCount;
 }
 
+export function getKiteCandleRequestCount(): number {
+  return _kiteRequestCount;
+}
+
 // ── Public types ───────────────────────────────────────────────────
 
-export type CandleSource = 'db' | 'indianapi' | 'nse' | 'db-thin';
+export type CandleSource = 'db' | 'kite' | 'indianapi' | 'nse' | 'db-thin';
 
 export type IndianApiCandleErrorCode =
   | 'API_KEY_MISSING'
@@ -97,7 +115,10 @@ export type IndianApiCandleErrorCode =
   | 'MALFORMED_RESPONSE'
   | 'BUDGET_EXCEEDED'
   | 'MARKET_CLOSED'
-  | 'BUDGET_THROTTLED';
+  | 'BUDGET_THROTTLED'
+  | 'KITE_NOT_CONFIGURED'
+  | 'KiteAuthenticationError'
+  | 'KiteRateLimitError';
 
 export interface CandleFetchResult {
   candles: Candle[];
@@ -107,7 +128,7 @@ export interface CandleFetchResult {
 }
 
 export interface DailyCandleFetchOptions {
-  /** When true, allow IndianAPI even if DB already has sufficient depth. */
+  /** When true, allow upstream even if DB already has sufficient depth. */
   incrementalRefresh?: boolean;
   /** When true, never call upstream (DB-only). Overrides scan detection. */
   dbOnly?: boolean;
@@ -122,6 +143,8 @@ export interface IndianApiCandleFetchResult {
   errorMessage: string | null;
   rawBarCount: number;
   validBarCount: number;
+  /** Which upstream filled this result (jobs/tests). */
+  provider?: 'kite' | 'indianapi' | null;
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────
@@ -168,17 +191,38 @@ function logIndianApiCandleRequest(symbol: string, endpoint: string): void {
   );
 }
 
+function logKiteCandleRequest(symbol: string, endpoint: string): void {
+  _kiteRequestCount += 1;
+  console.log(
+    `[KITE REQUEST] endpoint=${endpoint} symbol=${symbol} ` +
+    `request_count=${_kiteRequestCount}`,
+  );
+}
+
 function mapProviderErrorCode(
   errorCode: string | null | undefined,
   status?: number,
 ): IndianApiCandleErrorCode | string {
   const code = (errorCode ?? '').toUpperCase();
-  if (code === 'API_KEY_MISSING' || code.includes('NOT_CONFIGURED')) return 'API_KEY_MISSING';
+  if (code === 'API_KEY_MISSING' || code.includes('NOT_CONFIGURED') || code === 'KITE_NOT_CONFIGURED') {
+    return code === 'KITE_NOT_CONFIGURED' ? 'KITE_NOT_CONFIGURED' : 'API_KEY_MISSING';
+  }
   if (
     code === 'API_KEY_INVALID' || code === 'HTTP_403' || code === 'HTTP_401'
-    || code.includes('AUTH')
-  ) return 'API_KEY_INVALID';
-  if (code === 'HTTP_429' || code.includes('RATE') || code.includes('429')) return 'RATE_LIMITED';
+    || code.includes('AUTH') || code === 'KITEAUTHENTICATIONERROR'
+  ) {
+    return code.includes('KITE') || code === 'KITEAUTHENTICATIONERROR'
+      ? 'KiteAuthenticationError'
+      : 'API_KEY_INVALID';
+  }
+  if (
+    code === 'HTTP_429' || code.includes('RATE') || code.includes('429')
+    || code === 'KITERATELIMITERROR'
+  ) {
+    return code.includes('KITE') || code === 'KITERATELIMITERROR'
+      ? 'KiteRateLimitError'
+      : 'RATE_LIMITED';
+  }
   if (code === 'BUDGET_EXHAUSTED' || code === 'API_BUDGET_EXCEEDED') return 'BUDGET_EXCEEDED';
   if (code.includes('PER_RUN') || code.includes('PER_RUN_LIMIT')) return 'BUDGET_EXCEEDED';
   if (code === 'BUDGET_THROTTLED') return 'BUDGET_THROTTLED';
@@ -187,6 +231,14 @@ function mapProviderErrorCode(
   if (code === 'MALFORMED_RESPONSE') return 'MALFORMED_RESPONSE';
   if (status != null && status >= 500 && status < 600) return 'UPSTREAM_5XX';
   if (code.startsWith('HTTP_5')) return 'UPSTREAM_5XX';
+  // Preserve original casing for known Kite error names from the provider.
+  if (
+    errorCode === 'KiteAuthenticationError'
+    || errorCode === 'KiteRateLimitError'
+    || errorCode === 'KITE_NOT_CONFIGURED'
+  ) {
+    return errorCode;
+  }
   return errorCode ?? 'UPSTREAM_ERROR';
 }
 
@@ -217,6 +269,103 @@ function normalizeHistoricalCandles(
 }
 
 /**
+ * Fetch daily bars from KiteAdapter (via kiteHistoricalProvider).
+ * Never throws — maps failures into IndianApiCandleFetchResult codes.
+ */
+export async function fetchKiteDailyCandles(
+  symbol: string,
+  range: HistoricalRange = '1y',
+): Promise<IndianApiCandleFetchResult> {
+  const sym = symbol.toUpperCase();
+  const endpoint = `kite.historical:${range}`;
+
+  if (!isKiteHistoricalConfigured()) {
+    return {
+      ok: false,
+      candles: [],
+      errorCode: 'KITE_NOT_CONFIGURED',
+      errorMessage: 'KITE_API_KEY / KITE_ACCESS_TOKEN not set',
+      rawBarCount: 0,
+      validBarCount: 0,
+      provider: 'kite',
+    };
+  }
+
+  logKiteCandleRequest(sym, endpoint);
+
+  try {
+    const inv = await getKiteHistorical(sym, range);
+    if (inv.status !== 'success' || !inv.data) {
+      const code = mapProviderErrorCode(inv.errorCode);
+      console.warn(
+        `[KITE FETCH FAIL] symbol=${sym} code=${code} reason="${inv.errorMessage ?? ''}"`,
+      );
+      return {
+        ok: false,
+        candles: [],
+        errorCode: code,
+        errorMessage: inv.errorMessage,
+        rawBarCount: 0,
+        validBarCount: 0,
+        provider: 'kite',
+      };
+    }
+
+    const raw = inv.data.candles ?? [];
+    if (raw.length === 0) {
+      return {
+        ok: false,
+        candles: [],
+        errorCode: 'EMPTY_RESPONSE',
+        errorMessage: 'Kite returned zero candles',
+        rawBarCount: 0,
+        validBarCount: 0,
+        provider: 'kite',
+      };
+    }
+
+    const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(raw);
+    if (validBarCount === 0) {
+      return {
+        ok: false,
+        candles: [],
+        errorCode: 'MALFORMED_RESPONSE',
+        errorMessage: `All ${rawBarCount} Kite bars failed validation`,
+        rawBarCount,
+        validBarCount: 0,
+        provider: 'kite',
+      };
+    }
+
+    _kiteUsed++;
+    console.log(
+      `[KITE FETCH OK] symbol=${sym} bars=${validBarCount} raw_bars=${rawBarCount}`,
+    );
+    return {
+      ok: true,
+      candles,
+      errorCode: null,
+      errorMessage: null,
+      rawBarCount,
+      validBarCount,
+      provider: 'kite',
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[KITE FETCH FAIL] symbol=${sym} code=UPSTREAM_ERROR reason="${msg}"`);
+    return {
+      ok: false,
+      candles: [],
+      errorCode: 'UPSTREAM_ERROR',
+      errorMessage: msg,
+      rawBarCount: 0,
+      validBarCount: 0,
+      provider: 'kite',
+    };
+  }
+}
+
+/**
  * Fetch daily bars from IndianAPI for ingest/backfill. Never used from
  * strategy evaluation — callers must gate on `isInFlight()` / `dbOnly`.
  */
@@ -237,6 +386,7 @@ export async function fetchIndianApiDailyCandles(
       errorMessage: 'INDIANAPI_API_KEY (or INDIANAPI_KEY / INDIAN_API_KEY) is not set',
       rawBarCount: 0,
       validBarCount: 0,
+      provider: 'indianapi',
     };
   }
 
@@ -256,6 +406,7 @@ export async function fetchIndianApiDailyCandles(
         errorMessage: msg,
         rawBarCount: 0,
         validBarCount: 0,
+        provider: 'indianapi',
       };
     }
 
@@ -270,6 +421,7 @@ export async function fetchIndianApiDailyCandles(
         errorMessage: 'IndianAPI returned zero candles',
         rawBarCount: 0,
         validBarCount: 0,
+        provider: 'indianapi',
       };
     }
 
@@ -286,6 +438,7 @@ export async function fetchIndianApiDailyCandles(
         errorMessage: `All ${rawBarCount} upstream bars failed validation`,
         rawBarCount,
         validBarCount: 0,
+        provider: 'indianapi',
       };
     }
 
@@ -301,6 +454,7 @@ export async function fetchIndianApiDailyCandles(
       errorMessage: null,
       rawBarCount,
       validBarCount,
+      provider: 'indianapi',
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -312,8 +466,48 @@ export async function fetchIndianApiDailyCandles(
       errorMessage: msg,
       rawBarCount: 0,
       validBarCount: 0,
+      provider: 'indianapi',
     };
   }
+}
+
+/**
+ * Phase 6 upstream: Kite → IndianAPI.
+ * Preserves the IndianApiCandleFetchResult contract for jobs/scripts.
+ */
+export async function fetchUpstreamDailyCandles(
+  symbol: string,
+  range: HistoricalRange = '1y',
+): Promise<IndianApiCandleFetchResult> {
+  const kite = await fetchKiteDailyCandles(symbol, range);
+  if (kite.ok && kite.candles.length > 0) {
+    return kite;
+  }
+
+  console.warn(
+    `[CANDLE UPSTREAM] Kite miss symbol=${symbol.toUpperCase()} ` +
+    `code=${kite.errorCode ?? 'unknown'} — trying IndianAPI`,
+  );
+
+  const ia = await fetchIndianApiDailyCandles(symbol, range);
+  if (ia.ok && ia.candles.length > 0) {
+    return ia;
+  }
+
+  // Prefer the more specific Kite failure when IndianAPI also failed
+  // with a config miss and Kite was attempted (auth/rate-limit tests).
+  if (
+    kite.errorCode
+    && kite.errorCode !== 'KITE_NOT_CONFIGURED'
+    && (ia.errorCode === 'API_KEY_MISSING' || !ia.errorCode)
+  ) {
+    return kite;
+  }
+  return {
+    ...ia,
+    errorCode: ia.errorCode ?? kite.errorCode,
+    errorMessage: ia.errorMessage ?? kite.errorMessage,
+  };
 }
 
 // ── DB upsert ──────────────────────────────────────────────────────
@@ -426,27 +620,28 @@ export async function fetchDailyCandlesWithFallback(
   if (dbRows.length < min) {
     console.warn(
       `[CANDLE ERROR] insufficient data symbol=${sym} db_bars=${dbRows.length} ` +
-      `min=${min} — trying IndianAPI primary`,
+      `min=${min} — trying Kite → IndianAPI`,
     );
   }
 
-  // 2) IndianAPI — primary upstream for backfill
-  const ia = await fetchIndianApiDailyCandles(sym);
-  if (ia.ok && ia.candles.length > 0) {
-    await upsertToDb(sym, ia.candles);
+  // 2) Kite → IndianAPI upstream for backfill
+  const up = await fetchUpstreamDailyCandles(sym);
+  if (up.ok && up.candles.length > 0) {
+    await upsertToDb(sym, up.candles);
+    const src: CandleSource = up.provider === 'kite' ? 'kite' : 'indianapi';
     console.log(
-      `[CANDLE FALLBACK SOURCE] indianapi symbol=${sym} bars=${ia.candles.length} ` +
+      `[CANDLE FALLBACK SOURCE] ${src} symbol=${sym} bars=${up.candles.length} ` +
       `latency_ms=${Date.now() - t0}`,
     );
     return {
-      candles: ia.candles,
-      source: 'indianapi',
+      candles: up.candles,
+      source: src,
       hitUpstream: true,
       latencyMs: Date.now() - t0,
     };
   }
-  const iaErr = ia.errorCode ?? 'unknown';
-  console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} reason="${iaErr}"`);
+  const upErr = up.errorCode ?? 'unknown';
+  console.warn(`[UPSTREAM FETCH FAIL] symbol=${sym} reason="${upErr}"`);
 
   // 3) NSE — opt-in fallback only
   if (isNseHistoricalFetchEnabled()) {
@@ -486,7 +681,7 @@ export async function fetchDailyCandlesWithFallback(
 
   _failed++;
   throw new Error(
-    `CANDLE_NO_DATA symbol=${sym} indianapi="${iaErr}" ` +
+    `CANDLE_NO_DATA symbol=${sym} upstream="${upErr}" ` +
     `nse_enabled=${isNseHistoricalFetchEnabled()} db_bars=0`,
   );
 }
