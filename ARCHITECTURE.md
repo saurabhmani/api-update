@@ -28,7 +28,7 @@ flowchart TB
     Postgres[(PostgreSQL — sidecar / migrations)]
     Redis[(Redis or memory fallback)]
     Workers[server.js child workers]
-    External[IndianAPI, NSE direct, Yahoo emergency, news feeds]
+    External[removed vendor, NSE direct, Yahoo emergency, news feeds]
 
     Browser --> Proxy --> Pages
     Browser --> Proxy --> Api
@@ -51,7 +51,7 @@ flowchart TB
 | Runtime DB | **MySQL** (`mysql2/promise`) | `src/lib/db.ts` — dominant path for signals, auth, candles warehouse |
 | Sidecar DB | PostgreSQL (`pg`) | `src/lib/db/postgres.ts`, `migrations/postgres/`, service scaffolds |
 | Cache | Redis + in-memory | `src/lib/redis.ts`, `src/lib/cache.ts` |
-| Market data | **Kite** primary → IndianAPI fallback | `KiteAdapter` / `MarketDataProvider` / `marketDataResolver`; IndianAPI retained for unsupported features |
+| Market data | **Kite** primary → Yahoo → NSE → DB | `KiteAdapter` / `MarketDataProvider` / `marketDataResolver` |
 | Workers | `node-cron`, `tsx` | `src/lib/workers/scheduler.ts`, `dailyScanSchedule.ts` |
 | Auth | Cookie sessions, bcrypt, TOTP | `q200_session`, `src/services/auth.ts` |
 
@@ -105,7 +105,7 @@ sequenceDiagram
 | Manipulation one-shot | Daily 18:30 IST (UTC cron) | `manipulationScannerCli.ts` |
 | Learning one-shot | Daily 20:30 IST (UTC cron) | `learningScheduler.ts` |
 
-**Note:** Legacy in-process Kite ticker WS was removed. Live ticks use `LIVE_FEED_PROVIDER` (default Yahoo public chart poll) + in-process `tickBus` fan-out; quote primary remains Kite → IndianAPI via MarketDataProvider / resolver.
+**Note:** Legacy in-process Kite ticker WS was removed. Live ticks use `LIVE_FEED_PROVIDER` (default Yahoo public chart poll) + in-process `tickBus` fan-out; quote primary remains Kite → removed vendor via MarketDataProvider / resolver.
 
 **Dev:** `npm run dev` → `next dev`. In-process scheduler optional via `Q365_INPROC_SCHEDULER=1` (`bootInProc.ts`).
 
@@ -133,7 +133,7 @@ flowchart LR
 
     subgraph ingest [Candle input]
         DBOnly[fetchDailyCandlesWithFallback dbOnly=true]
-        EOD[runCandleDailyUpdateJob IndianAPI 16:00 IST]
+        EOD[runCandleDailyUpdateJob removed vendor 16:00 IST]
     end
 
     subgraph phase4 [Phase 4 pipeline]
@@ -161,7 +161,7 @@ flowchart LR
 
 **Key rules (current code):**
 
-1. **Scheduled scans use DB-only candles** — no IndianAPI during scan (`dailyScanSchedule.ts` passes `dbOnly: true`).
+1. **Scheduled scans use DB-only candles** — no removed vendor during scan (`dailyScanSchedule.ts` passes `dbOnly: true`).
 2. **`saveSignals()`** upserts `q365_signals` and upserts maturity tracker rows; it does **not** write confirmed snapshots.
 3. **`runSignalMaturityWorker()`** (60s interval) is the **only** promoter to `q365_confirmed_signal_snapshots`.
 4. **`runConfirmedSnapshotLifecycle()`** (30s) mutates snapshot status (TARGET_HIT, STOP_LOSS_HIT, EXPIRED, INVALIDATED) — no new promotions.
@@ -255,7 +255,7 @@ flowchart TD
     Enrich --> RB[resolveBatch — 5s wall clock cap]
     RB --> Closed{Market open?}
     Closed -->|no| CacheOnly[cache / snapshot only — no upstream]
-    Closed -->|yes| Chain[cache miss → IndianAPI → NSE direct → Yahoo emergency]
+    Closed -->|yes| Chain[cache miss → removed vendor → NSE direct → Yahoo emergency]
     Chain --> Fallback[per-symbol fetchQuote + Yahoo public]
     Fallback --> Row[livePrice on signal row]
     Row --> Perf[buildPerformanceReview → movePercent]
@@ -268,7 +268,7 @@ flowchart TD
 | `enrichWithLiveLtp` | `confirmedSignalsService.ts` | Sets `livePrice`, `livePChange`, `liveSource` on snapshot rows |
 | `buildPerformanceReview` | `signalDueDiligence.ts` | `movePercent` from `entry_price` + `livePrice` |
 
-**Env:** `SIGNALS_ENRICH_TIMEOUT_MS` (default **5000**), `NIFTY500_LOCK`, `MARKET_CLOSED_RESOLVER_GATE`, `YAHOO_EMERGENCY_FALLBACK_ENABLED`, `INDIANAPI_PRIMARY`, `FORCE_NSE_MODE`.
+**Env:** `SIGNALS_ENRICH_TIMEOUT_MS` (default **5000**), `NIFTY500_LOCK`, `MARKET_CLOSED_RESOLVER_GATE`, `YAHOO_EMERGENCY_FALLBACK_ENABLED`, `LEGACY_VENDOR_ENV`, `FORCE_NSE_MODE`.
 
 **Also used by:** `/api/signals/stream` (SSE), `/api/rankings`, `liveMarketFeed.ts`, `dualSource/dataSourceManager.ts`.
 
@@ -333,7 +333,7 @@ Controlled by `DAILY_SCAN_SCHEDULE_ENABLED` (default on). Timezone: `Asia/Kolkat
 | 09:45 | `45 9 * * 1-5` | Main morning scan — DB-only Phase 4 |
 | 12:30 | `30 12 * * 1-5` | `rescoreActiveSignals()` |
 | 14:45 | `45 14 * * 1-5` | Late rescore |
-| 16:00 | `0 16 * * 1-5` | Evening candle update — **IndianAPI** EOD (+ bhavcopy fallback) |
+| 16:00 | `0 16 * * 1-5` | Evening candle update — **removed vendor** EOD (+ bhavcopy fallback) |
 | 16:30 | `30 16 * * 1-5` | Evening scan — DB-only Phase 4 post-EOD |
 | 18:30 | `30 18 * * 1-5` | Manipulation scan (`skipIngestion: true`) |
 
@@ -384,10 +384,10 @@ Cron expressions overridable via `READINESS_CHECK_CRON`, `FIRST_MORNING_SCAN_CRO
 `src/lib/marketData/resolver/marketDataResolver.ts`:
 
 1. **NIFTY500 lock** — reject symbols outside universe (`NIFTY500_LOCK !== '0'`)
-2. **Market-closed gate** — no Kite/IndianAPI/NSE/Yahoo; cache or `MARKET_CLOSED` (`MARKET_CLOSED_RESOLVER_GATE`)
+2. **Market-closed gate** — no Kite/removed vendor/NSE/Yahoo; cache or `MARKET_CLOSED` (`MARKET_CLOSED_RESOLVER_GATE`)
 3. **Cache-first** — per-symbol quote cache
-4. **Configured primary** — **Kite** by default (`MARKET_DATA_PROVIDER` unset or `kite`); IndianAPI when `MARKET_DATA_PROVIDER=indianapi` or `INDIANAPI_PRIMARY=true`
-5. **IndianAPI** — first automatic fallback when Kite misses / auth / rate-limit / unsupported
+4. **Configured primary** — **Kite** by default (`MARKET_DATA_PROVIDER` unset or `kite`); removed vendor when `MARKET_DATA_PROVIDER=legacy_vendor` or `LEGACY_VENDOR_ENV=true`
+5. **removed vendor** — first automatic fallback when Kite misses / auth / rate-limit / unsupported
 6. **NSE direct** — rare fallback (`nseDirectProvider.ts`), caps via `NSE_DIRECT_FALLBACK_*`
 7. **Yahoo emergency** — only if `YAHOO_EMERGENCY_FALLBACK_ENABLED=true` (`mayUseYahoo()`)
 8. **Database / snapshot** — last-resort stale tier
@@ -395,25 +395,25 @@ Cron expressions overridable via `READINESS_CHECK_CRON`, `FIRST_MORNING_SCAN_CRO
 ### Provider flags (`providerFlags.ts`)
 
 - **Default primary:** `kite` when `MARKET_DATA_PROVIDER` is unset (Phase 9)
-- `INDIANAPI_PRIMARY=true` wins over `MARKET_DATA_PROVIDER` (immediate recovery)
-- Explicit `MARKET_DATA_PROVIDER=indianapi` keeps existing installs on IndianAPI
-- `LIVE_FEED_PROVIDER` — `yahoo` (default), `indianapi`, or `auto` for WS poll loop
-- `FORCE_NSE_MODE=1` — skip configured primary / IndianAPI toward NSE direct
+- `LEGACY_VENDOR_ENV=true` wins over `MARKET_DATA_PROVIDER` (immediate recovery)
+- Explicit `MARKET_DATA_PROVIDER=legacy_vendor` keeps existing installs on removed vendor
+- `LIVE_FEED_PROVIDER` — `yahoo` (default), `legacy_vendor`, or `auto` for WS poll loop
+- `FORCE_NSE_MODE=1` — skip configured primary / removed vendor toward NSE direct
 - `MARKET_DATA_PROVIDER=legacy` — resolver short-circuit (rollback kill-switch)
 
-### IndianAPI
+### removed vendor
 
 Retained permanently as **fallback + unsupported features** (movers, trending, news, corporate, mutual funds, forecasts). Do not remove adapters, quota system, or env vars.
 
 | Concern | Files |
 |---|---|
-| HTTP adapter | `src/providers/adapters/IndianAPIAdapter.ts` |
-| Endpoints catalog | `src/lib/marketData/providers/indianApiEndpoints.ts` |
-| High-level wrapper | `src/lib/marketData/providers/indianApiProvider.ts` |
-| Quota / budget | `indianApiUsageTracker.ts`, `providerRequestLog.ts`, `apiBudgetGuard.ts` |
-| 429 circuit breaker | Built into adapter (`INDIANAPI_429_BACKOFF_MS`) |
+| HTTP adapter | `src/providers/adapters/vendorAdapter.ts` |
+| Endpoints catalog | `src/lib/marketData/providers/upstreamVendor.ts` |
+| High-level wrapper | `src/lib/marketData/providers/upstreamVendor.ts` |
+| Quota / budget | `upstreamVendor.ts`, `providerRequestLog.ts`, `apiBudgetGuard.ts` |
+| 429 circuit breaker | Built into adapter (`LEGACY_VENDOR_ENV`) |
 
-**Verify script:** `npx tsx scripts/verifyIndianApiEndpoints.ts`
+**Verify script:** `npx tsx scripts/verifylegacy_vendorEndpoints.ts`
 
 ### Yahoo / Kite
 
@@ -422,7 +422,7 @@ Retained permanently as **fallback + unsupported features** (movers, trending, n
 
 ### Evening candles
 
-- `runCandleDailyUpdateJob()` — IndianAPI `historical_data`
+- `runCandleDailyUpdateJob()` — removed vendor `historical_data`
 - Warehouse tables: `candles`, `market_data_daily`
 - Bhavcopy fallback: `runDailyEodIngestion()` at 19:30 IST
 
@@ -552,7 +552,7 @@ No `.env.example` in repo. Production loads `.env` + non-overriding `.env.produc
 |---|---|
 | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_DATABASE` | Runtime DB |
 | `SESSION_SECRET` | Sessions / encryption fallback |
-| `INDIANAPI_API_KEY` (or aliases) | Live quotes + EOD candles |
+| `LEGACY_VENDOR_ENV` (or aliases) | Live quotes + EOD candles |
 
 ### Database
 
@@ -565,24 +565,24 @@ No `.env.example` in repo. Production loads `.env` + non-overriding `.env.produc
 | `REDIS_DISABLED` | — | `1` disables Redis |
 | `REDIS_HOST` | 127.0.0.1 | Redis host |
 
-### IndianAPI & market data
+### removed vendor & market data
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MARKET_DATA_PROVIDER` | `kite` (when unset) | Primary provider: `kite` \| `indianapi` \| `yahoo` \| `none` \| `legacy` |
-| `INDIANAPI_PRIMARY` | — | When `true`, forces IndianAPI as primary (wins over `MARKET_DATA_PROVIDER`) |
-| `INDIANAPI_BASE_URL` | `https://dev.indianapi.in` in code; prod often `https://stock.indianapi.in` | IndianAPI host (fallback + unsupported features) |
-| `INDIANAPI_ENABLED` | true | Soft enable for IndianAPI adapter path |
-| `INDIANAPI_TIMEOUT_MS` | 8000 (max 10000) | Per-request timeout |
-| `INDIANAPI_EMULATED_BATCH_MAX` | 25 | Batch fan-out cap |
-| `INDIANAPI_DAILY_SOFT_LIMIT` / `INDIANAPI_MONTHLY_LIMIT` | — | Budget caps (IndianAPI only — not applied to Kite) |
-| `INDIANAPI_PER_RUN_LIMIT` | — | Per pipeline run cap |
-| `INDIANAPI_429_BACKOFF_MS` | — | 429 circuit breaker cooldown |
+| `MARKET_DATA_PROVIDER` | `kite` (when unset) | Primary provider: `kite` \| `legacy_vendor` \| `yahoo` \| `none` \| `legacy` |
+| `LEGACY_VENDOR_ENV` | — | When `true`, forces removed vendor as primary (wins over `MARKET_DATA_PROVIDER`) |
+| `LEGACY_VENDOR_ENV` | `https://dev.legacy_vendor.in` in code; prod often `https://stock.legacy_vendor.in` | removed vendor host (fallback + unsupported features) |
+| `LEGACY_VENDOR_ENV` | true | Soft enable for removed vendor adapter path |
+| `LEGACY_VENDOR_ENV` | 8000 (max 10000) | Per-request timeout |
+| `LEGACY_VENDOR_ENV` | 25 | Batch fan-out cap |
+| `LEGACY_VENDOR_ENV` / `LEGACY_VENDOR_ENV` | — | Budget caps (removed vendor only — not applied to Kite) |
+| `LEGACY_VENDOR_ENV` | — | Per pipeline run cap |
+| `LEGACY_VENDOR_ENV` | — | 429 circuit breaker cooldown |
 | `KITE_API_KEY` / `KITE_ACCESS_TOKEN` | — | Required for Kite primary |
 | `SIGNALS_ENRICH_TIMEOUT_MS` | 5000 | `/api/signals` enrich wall clock |
 | `NSE_DIRECT_FALLBACK_*` | — | NSE direct caps and delays |
 | `YAHOO_EMERGENCY_FALLBACK_ENABLED` | false | Yahoo in resolver |
-| `LIVE_FEED_PROVIDER` | yahoo | WS poll upstream: yahoo / indianapi / auto |
+| `LIVE_FEED_PROVIDER` | yahoo | WS poll upstream: yahoo / legacy_vendor / auto |
 | `FORCE_NSE_MODE` | false | Skip configured primary toward NSE |
 
 ### Scheduler & signals
@@ -681,10 +681,10 @@ api-update/
 │   │   ├── backtesting/
 │   │   ├── news-engine/
 │   │   └── db/
-│   ├── providers/        # MarketDataProvider, IndianAPIAdapter
+│   ├── providers/        # MarketDataProvider, vendorAdapter
 │   ├── services/         # auth, marketQuote, …
 │   └── instrumentation.ts
-├── scripts/              # validate*, runDailyScanJob, verifyIndianApi*
+├── scripts/              # validate*, runDailyScanJob, verifylegacy_vendor*
 ├── migrations/mysql|postgres/
 ├── services/             # Standalone scaffolds
 ├── packages/             # contracts, eventbus, rpc
@@ -701,12 +701,12 @@ api-update/
 |---|---|
 | `docs/DAILY_SCAN_SCHEDULE.md` | IST scan schedule detail |
 | `docs/signal-engine-flow.md` | Phase pipeline background |
-| `docs/PROVIDER_REQUEST_POLICY.md` | IndianAPI budget policy (when IndianAPI is invoked) |
-| `docs/INDIANAPI_RETENTION.md` | Why IndianAPI remains; feature classification; uninstall verdict |
+| `docs/PROVIDER_REQUEST_POLICY.md` | removed vendor budget policy (when removed vendor is invoked) |
+| `docs/LEGACY_VENDOR_ENV.md` | Why removed vendor remains; feature classification; uninstall verdict |
 | `docs/api-inventory.md` | Route inventory (may lag code) |
 | `MIGRATION_PLAYBOOK.md` | MySQL → PostgreSQL migration notes |
 
-When in doubt, grep the codebase or run validation scripts (`validate:signal-engine-status`, `verifyIndianApiEndpoints.ts`, `validate:engines-health`).
+When in doubt, grep the codebase or run validation scripts (`validate:signal-engine-status`, `verifylegacy_vendorEndpoints.ts`, `validate:engines-health`).
 
 ---
 
@@ -722,7 +722,7 @@ Major updates from prior version (2026-07-04):
 6. **Daily Signal Intelligence Report** — Documented status logic (COMPLETE/PARTIAL/INSUFFICIENT), chip vs full report difference, non-persistence.
 7. **Outcome evaluation** — 20:00 IST cron, `q365_signal_outcomes`, min 5 post-signal bars.
 8. **Schedulers** — Full IST tables for `dailyScanSchedule`, `scheduler.ts`, `src/lib/scheduler.ts`; noted legacy opt-in crons and manipulation overlap.
-9. **Market data** — Kite is the default primary (Phase 9); IndianAPI retained for automatic fallback + unsupported features; Yahoo emergency-only; `LIVE_FEED_PROVIDER` for WS poll.
+9. **Market data** — Kite is the default primary (Phase 9); removed vendor retained for automatic fallback + unsupported features; Yahoo emergency-only; `LIVE_FEED_PROVIDER` for WS poll.
 10. **Database** — Emphasized MySQL runtime; added maturity/snapshot ER relationships.
 11. **Frontend mapping** — Signals page APIs, polling vs SSE behavior.
 12. **Implementation gaps** — New section for proposals, partial features, and doc/code mismatches.

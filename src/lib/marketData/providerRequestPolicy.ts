@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  IndianAPI request budget policy — operational guardrails
+//  removed vendor request budget policy — operational guardrails
 //
 //  Docs: docs/PROVIDER_REQUEST_POLICY.md
 // ════════════════════════════════════════════════════════════════
@@ -12,15 +12,15 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
 
 /** One-time initial warehouse load: ~1 req/symbol × NSE 1000 universe. */
 export const INITIAL_BACKFILL_EXPECTED_MIN = () =>
-  envNum('INDIAN_API_INITIAL_BACKFILL_EXPECTED_MIN', 500, 5_000, 1_000);
+  envNum('LEGACY_VENDOR_ENV', 500, 5_000, 1_000);
 
 export const INITIAL_BACKFILL_EXPECTED_MAX = () =>
-  envNum('INDIAN_API_INITIAL_BACKFILL_EXPECTED_MAX', 500, 5_000, 1_500);
+  envNum('LEGACY_VENDOR_ENV', 500, 5_000, 1_500);
 
 /** Per-run cap for a full initial backfill (1y daily per symbol). */
 export const INITIAL_BACKFILL_PER_RUN_LIMIT = () =>
   envNum(
-    'INDIAN_API_INITIAL_BACKFILL_PER_RUN_LIMIT',
+    'LEGACY_VENDOR_ENV',
     100,
     5_000,
     INITIAL_BACKFILL_EXPECTED_MAX(),
@@ -34,16 +34,16 @@ export const DAILY_UPDATE_MAX_REQUESTS = () =>
 export const EMERGENCY_REPAIR_MAX_FETCH = () =>
   envNum('CANDLE_REPAIR_MAX_FETCH', 1, 500, 50);
 
-/** Planned monthly burn (ops target); hard ceiling stays INDIANAPI_MONTHLY_LIMIT. */
+/** Planned monthly burn (ops target); hard ceiling stays LEGACY_VENDOR_ENV. */
 export const MONTHLY_PLANNING_MIN = () =>
-  envNum('INDIAN_API_MONTHLY_PLANNING_MIN', 5_000, 200_000, 22_000);
+  envNum('LEGACY_VENDOR_ENV', 5_000, 200_000, 22_000);
 
 export const MONTHLY_PLANNING_MAX = () =>
-  envNum('INDIAN_API_MONTHLY_PLANNING_MAX', 5_000, 200_000, 30_000);
+  envNum('LEGACY_VENDOR_ENV', 5_000, 200_000, 30_000);
 
 export const MONTHLY_PLANNING_TARGET = () =>
   envNum(
-    'INDIANAPI_MONTHLY_TARGET',
+    'LEGACY_VENDOR_ENV',
     MONTHLY_PLANNING_MIN(),
     MONTHLY_PLANNING_MAX() * 2,
     25_000,
@@ -102,12 +102,12 @@ export function getProviderRequestPolicy(): ProviderRequestPolicySnapshot {
       'Fetching candles inside strategy evaluation',
       'Fetching historical data during every signal scan',
       'Retrying failed provider requests too aggressively',
-      'Using IndianAPI when DB already has fresh candle data',
+      'Using removed vendor when DB already has fresh candle data',
     ],
   };
 }
 
-/** Resolve per-run IndianAPI cap for candle backfill jobs. */
+/** Resolve per-run removed vendor cap for candle backfill jobs. */
 export function resolveBackfillPerRunLimit(opts: {
   resume?: boolean;
   maxFetch?: number;

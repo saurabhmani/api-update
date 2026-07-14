@@ -327,7 +327,7 @@ bash scripts/deployAndValidate.sh  # requires Q365_SESSION_COOKIE in prod
 - [ ] `npm run validate:engines-health` pass
 - [ ] DB migrations applied (`npm run db:migrate:pg`)
 - [ ] `envSafetyLock` passes (no `FORCE_MARKET_OPEN` in prod)
-- [ ] IndianAPI quota within budget
+- [ ] removed vendor quota within budget
 - [ ] `deployAndValidate.sh` HTTP_AUTH mode passes
 - [ ] PM2 process healthy (`pm2 status`)
 - [ ] `/api/health` returns 200

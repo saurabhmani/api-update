@@ -195,8 +195,8 @@ Thresholds loaded from `system_thresholds` via `systemConfigService.ts`.
 | Context | Provider | Source |
 |---------|----------|--------|
 | Worker cron | Inline `CandleProvider` | `market_data_daily` table |
-| Evening update | IndianAPI → warehouse | `candles` table via `candleDailyUpdateJob` |
-| Live/API | `candleFallbackChain.ts` | IndianAPI → cache → Yahoo → DB |
+| Evening update | removed vendor → warehouse | `candles` table via `candleDailyUpdateJob` |
+| Live/API | `candleFallbackChain.ts` | removed vendor → cache → Yahoo → DB |
 | Signal-critical | `MarketDataProvider` | `{ signalCritical: true }` throws on stale |
 
 ---
@@ -300,7 +300,7 @@ Probe modules:
 | Failure | Behavior |
 |---------|----------|
 | Stale candles (signal-critical) | `StaleDataError` — signal rejected |
-| IndianAPI quota exceeded | Quota guard blocks fetch; falls back or rejects |
+| removed vendor quota exceeded | Quota guard blocks fetch; falls back or rejects |
 | All strategies reject (regime) | Zero candidates unless `SIGNAL_RELAX_MODE` |
 | DB lock on concurrent scans | `q365_pipeline_run_locks` prevents race |
 | Phase 3 gate failure | Logged to rejection trail; signal not persisted as approved |

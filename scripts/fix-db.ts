@@ -7,7 +7,7 @@
  *
  *   1. resetInvalidBatchId()   — promote rows where batch_id was set to
  *      a generation_source string ('api:run-signal-engine:adapter',
- *      'auto-recovery:indianapi') back to NULL so the route's stamp
+ *      'auto-recovery:legacy_vendor') back to NULL so the route's stamp
  *      UPDATE matches them on the next run.
  *
  *   2. reactivateExpiredFromCurrentBatch() — flip status='active' for
@@ -51,7 +51,7 @@ async function resetInvalidBatchId(): Promise<FixResult> {
   // not a per-run batch id like 'batch_1714895712345'.
   const knownBadValues = [
     'api:run-signal-engine:adapter',
-    'auto-recovery:indianapi',
+    'auto-recovery:legacy_vendor',
     'signal-engine:generatePhase4Signals',
   ];
   try {

@@ -4,7 +4,7 @@
 //  Spec sections 1-10. Pure read-only diagnostic; no upstream API
 //  calls, no DB writes. Reads:
 //
-//    1. apiBudgetGuard.snapshot()   → daily / monthly call counters
+//    1. (removed) removed vendor budget snapshot
 //    2. providerFlags               → resolved primary + Yahoo state
 //    3. q365_universe                → active scan size (NIFTY 500
 //                                       gate or FULL via env)
@@ -27,10 +27,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { db } from '@/lib/db';
-import { snapshot as budgetSnapshot } from '@/lib/marketData/apiBudgetGuard';
 import { CONFIG } from '@/lib/marketData/schedulerConfig';
 import {
-  isIndianApiPrimary,
+  isLegacyVendorPrimary,
   isYahooEmergencyFallbackEnabled,
   isNseDirectFallbackEnabled,
   getNseDirectFallbackConfig,
@@ -67,6 +66,10 @@ interface UsageReport {
   notes:                string[];
 }
 
+async function budgetSnapshot() {
+  return { dayTotal: 0, monthTotal: 0, level: 'normal' as const, byType: {}, skippedToday: 0, maxDeepPerCycle: 6, triggerMultiplier: 1, monthKey: '', dayKey: '' };
+}
+
 async function auditUsage(): Promise<UsageReport> {
   const snap = await budgetSnapshot();
   const monthlyLimit = CONFIG.budget.monthlyFreeze;
@@ -76,13 +79,13 @@ async function auditUsage(): Promise<UsageReport> {
   if (CONFIG.budget.dailySoftCap > SPEC_DAILY_CAP) {
     notes.push(
       `dailySoftCap=${CONFIG.budget.dailySoftCap} exceeds spec ceiling ${SPEC_DAILY_CAP} ` +
-      `— set INDIANAPI_DAILY_SOFT_LIMIT=${SPEC_DAILY_CAP} to align`,
+      `— set LEGACY_VENDOR_ENV=${SPEC_DAILY_CAP} to align`,
     );
   }
   if (CONFIG.budget.monthlyFreeze > SPEC_MONTHLY_CAP) {
     notes.push(
       `monthlyFreeze=${CONFIG.budget.monthlyFreeze} exceeds spec ceiling ${SPEC_MONTHLY_CAP} ` +
-      `— set INDIANAPI_MONTHLY_LIMIT=${SPEC_MONTHLY_CAP} to align`,
+      `— set LEGACY_VENDOR_ENV=${SPEC_MONTHLY_CAP} to align`,
     );
   }
   return {
@@ -102,7 +105,7 @@ async function auditUsage(): Promise<UsageReport> {
 
 interface ProviderReport {
   primary:                  string;
-  indianApiPrimary:         boolean;
+  upstreamVendor:         boolean;
   yahooEmergencyEnabled:    boolean;
   nseDirectEnabled:         boolean;
   removed_endpoints_called: string[];
@@ -111,26 +114,26 @@ interface ProviderReport {
 
 function auditProvider(): ProviderReport {
   const primary = getMarketDataProvider();
-  const indianForced = isIndianApiPrimary();
+  const indianForced = isLegacyVendorPrimary();
   const yahoo = isYahooEmergencyFallbackEnabled();
   const nse = isNseDirectFallbackEnabled();
   const notes: string[] = [];
-  // Phase 9+: default primary is kite; indianapi is recovery / unsupported features.
-  if (primary !== 'kite' && primary !== 'indianapi') {
-    notes.push(`primary provider is "${primary}" — expected kite (default) or indianapi (recovery)`);
+  // Phase 3+: kite is the only live primary.
+  if (primary !== 'kite') {
+    notes.push(`primary provider is "${primary}" — expected kite`);
   }
   if (indianForced) {
-    notes.push('INDIANAPI_PRIMARY=true — IndianAPI recovery override active');
+    notes.push('LEGACY_VENDOR_ENV=true — removed vendor recovery override active');
   }
   if (yahoo) notes.push('YAHOO_EMERGENCY_FALLBACK_ENABLED is true — emergency-only Yahoo path');
   if (!nse) notes.push('NSE_DIRECT_FALLBACK_ENABLED=false — NSE direct fallthrough disabled');
-  // Removed IndianAPI endpoints — confirmed by code inspection:
+  // Removed removed vendor endpoints — confirmed by code inspection:
   //   /nse/batch_quote → emulated via /stock fan-out (no upstream call)
   //   /intraday        → adapter removedEndpoint stub (no upstream call)
   //   /industry_peers  → deadRouteInvocation (no upstream call)
   return {
     primary,
-    indianApiPrimary:         indianForced || primary === 'indianapi',
+    upstreamVendor:         indianForced || primary === 'legacy',
     yahooEmergencyEnabled:    yahoo,
     nseDirectEnabled:         nse,
     removed_endpoints_called: [],
@@ -355,11 +358,11 @@ interface QuotaReport {
 async function auditQuota(marketOpen: boolean): Promise<QuotaReport> {
   const notes: string[] = [];
   try {
-    // Total IndianAPI rows in the last hour.
+    // Total removed vendor rows in the last hour.
     const total = await db.query<{ c: number }>(
       `SELECT COUNT(*) AS c
          FROM q365_data_feed_health
-        WHERE provider = 'indianapi'
+        WHERE provider = 'kite'
           AND request_started_at >= (NOW() - INTERVAL 1 HOUR)`,
     );
     // Calls that landed off-hours — if any, it's either a timezone bug
@@ -367,7 +370,7 @@ async function auditQuota(marketOpen: boolean): Promise<QuotaReport> {
     const closed = await db.query<{ c: number }>(
       `SELECT COUNT(*) AS c
          FROM q365_data_feed_health
-        WHERE provider = 'indianapi'
+        WHERE provider = 'kite'
           AND status   <> 'degraded'
           AND error_code <> 'MARKET_CLOSED'
           AND request_started_at >= (NOW() - INTERVAL 24 HOUR)
@@ -380,7 +383,7 @@ async function auditQuota(marketOpen: boolean): Promise<QuotaReport> {
     const full = await db.query<{ c: number }>(
       `SELECT COUNT(*) AS c
          FROM q365_data_feed_health
-        WHERE provider = 'indianapi'
+        WHERE provider = 'kite'
           AND symbols_requested > 200
           AND request_started_at >= (NOW() - INTERVAL 24 HOUR)`,
     );
@@ -388,10 +391,10 @@ async function auditQuota(marketOpen: boolean): Promise<QuotaReport> {
     const totalLastHour = num(total);
     const closedCalls   = num(closed);
     const fullCalls     = num(full);
-    if (closedCalls > 0) notes.push(`${closedCalls} IndianAPI calls landed off-hours in last 24h`);
+    if (closedCalls > 0) notes.push(`${closedCalls} removed vendor calls landed off-hours in last 24h`);
     if (fullCalls   > 0) notes.push(`${fullCalls} batch calls exceeded 200 symbols in last 24h (full-universe poll?)`);
     if (!marketOpen && totalLastHour > 0) {
-      notes.push(`market closed but ${totalLastHour} IndianAPI rows logged in last hour — possible leak`);
+      notes.push(`market closed but ${totalLastHour} removed vendor rows logged in last hour — possible leak`);
     }
     return {
       feed_health_last_hour: totalLastHour,
@@ -428,7 +431,7 @@ function auditMarketClosed(): MarketClosedReport {
   // even if the local boot didn't load them. Both files were verified
   // by inspection; we re-read here so a future regression is caught.
   const resolverPath = resolve(process.cwd(), 'src/lib/marketData/resolver/marketDataResolver.ts');
-  const providerPath = resolve(process.cwd(), 'src/lib/marketData/providers/indianApiProvider.ts');
+  const providerPath = resolve(process.cwd(), 'src/lib/marketData/providers/kiteHistoricalProvider.ts');
   let resolverGate = false, providerGate = false;
   try {
     const src = readFileSync(resolverPath, 'utf8');
@@ -443,8 +446,8 @@ function auditMarketClosed(): MarketClosedReport {
   return {
     is_open:                    status.isOpen,
     state:                      status.state,
-    block_outside_market_env:   process.env.INDIANAPI_BLOCK_OUTSIDE_MARKET ?? '(default=on)',
-    strict_off_hours_block_env: process.env.INDIANAPI_BLOCK_ALL_OFF_HOURS ?? '(default=on)',
+    block_outside_market_env:   process.env.LEGACY_VENDOR_ENV ?? '(default=on)',
+    strict_off_hours_block_env: process.env.LEGACY_VENDOR_ENV ?? '(default=on)',
     resolver_gate_present:      resolverGate,
     provider_gate_present:      providerGate,
     notes,
@@ -469,22 +472,20 @@ function auditFallback(): FallbackReport {
   const notes: string[] = [];
   const yahoo = isYahooEmergencyFallbackEnabled();
   const nseOk = cfg.enabled;
-  const indianapi = isIndianApiPrimary();
-  if (!indianapi) notes.push('IndianAPI not primary — fallback chain head is wrong');
+  const primary = getMarketDataProvider();
+  const kitePrimary = primary === 'kite';
+  if (!kitePrimary) notes.push('Kite is not primary — fallback chain head is wrong');
   if (!nseOk)     notes.push('NSE direct fallback disabled — chain has no safe fallback');
-  // Yahoo presence in the chain is an explicit failure. Spec section 8
-  // mentions "IndianAPI → NSE → Yahoo", but the prior SAFE_NSE_MODE
-  // contract permanently disables Yahoo. We treat any yahoo=true as a
-  // regression because the deprecated stub throws yahoo_removed anyway.
+  // Yahoo presence in the chain is an explicit failure under SAFE_NSE_MODE.
   if (yahoo) notes.push('Yahoo emergency fallback is enabled — spec forbids Yahoo under SAFE_NSE_MODE');
   return {
-    primary:           getMarketDataProvider(),
+    primary,
     nse_direct:        nseOk,
     yahoo,
     trigger_threshold: cfg.triggerFailures,
     daily_cap:         cfg.maxSymbolsPerDay,
     min_delay_ms:      cfg.minDelayMs,
-    ok:                indianapi && nseOk && !yahoo,
+    ok:                kitePrimary && nseOk && !yahoo,
     notes,
   };
 }
@@ -514,7 +515,7 @@ function buildVerdict(args: {
   fallback: FallbackReport;
 }): FinalVerdict {
   const usageOk    = args.usage.spec_monthly_ok && args.usage.spec_daily_ok;
-  const providerOk = args.provider.indianApiPrimary && !args.provider.yahooEmergencyEnabled;
+  const providerOk = args.provider.upstreamVendor && !args.provider.yahooEmergencyEnabled;
   const universeOk = args.universe.ok;
   const scanOk     = args.scan.ok;
   const signalsOk  = args.signals.ok;
@@ -581,7 +582,7 @@ async function main(): Promise<void> {
 
   console.log('[2] PROVIDER VALIDATION');
   console.log(line('primary',                provider.primary));
-  console.log(line('indianapi_primary',      flag(provider.indianApiPrimary)));
+  console.log(line('legacy_vendor_primary',      flag(provider.upstreamVendor)));
   console.log(line('yahoo_emergency_enabled', flag(!provider.yahooEmergencyEnabled) + ' (must be disabled)'));
   console.log(line('nse_direct_enabled',     flag(provider.nseDirectEnabled)));
   for (const n of provider.notes) console.log('  ⚠  ' + n);

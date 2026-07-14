@@ -46,7 +46,7 @@ chosen table has different column names, override via
 ### Already wired
 
 `MarketDataProvider.ts` calls `withProviderFrame(...)` around every
-IndianAPI and Yahoo adapter invocation. Anything downstream of
+removed vendor and Yahoo adapter invocation. Anything downstream of
 those adapter calls is automatically "authorized."
 
 ### Needs wiring (one line each)
@@ -93,7 +93,7 @@ test assertions.
 
 **Decision (Priority 0 architecture freeze):** Kite is **broker /
 execution only**. `MarketDataProvider` does not include a KiteAdapter
-in its chain. Live market-data truth is `IndianAPI → Cache → Yahoo →
+in its chain. Live market-data truth is `removed vendor → Cache → Yahoo →
 PostgreSQL`.
 
 Consequences, now implemented:
@@ -120,7 +120,7 @@ Inside `MarketDataProvider.getLiveSnapshot`:
 
 ```
 flag = off (default)             flag = on
-1. IndianAPI                     1. IndianAPI
+1. removed vendor                     1. removed vendor
 2. cache (10 min)                2. cache (10 min)
 3. Yahoo                         3. Postgres (snapshots_current)
 4. Postgres                      4. Yahoo
@@ -195,12 +195,12 @@ Until every box is checked, the foundation is load-bearing but
 **consolidation is incomplete**. That's the current state.
 
 
-## IndianAPI smoke-test snippets
+## removed vendor smoke-test snippets
 
-Replace `$INDIAN_API_KEY` with your key. **Never commit keys to this file.**
+Replace `$LEGACY_VENDOR_ENV` with your key. **Never commit keys to this file.**
 
 ```bash
-curl -H "X-Api-Key: $INDIAN_API_KEY" "https://stock.indianapi.in/NSE_most_active"
-curl -H "X-Api-Key: $INDIAN_API_KEY" "https://stock.indianapi.in/trending"
-curl -H "X-Api-Key: $INDIAN_API_KEY" "https://stock.indianapi.in/stock?name=RELIANCE"
+curl -H "X-Api-Key: $LEGACY_VENDOR_ENV" "https://stock.legacy_vendor.in/NSE_most_active"
+curl -H "X-Api-Key: $LEGACY_VENDOR_ENV" "https://stock.legacy_vendor.in/trending"
+curl -H "X-Api-Key: $LEGACY_VENDOR_ENV" "https://stock.legacy_vendor.in/stock?name=RELIANCE"
 ```

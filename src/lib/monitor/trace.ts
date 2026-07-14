@@ -28,7 +28,7 @@ function newTraceId(): string {
 }
 
 export interface TraceStep {
-  /** Layer name (e.g. 'route', 'resolver', 'IndianAPI', 'NSE', 'cache', 'DB'). */
+  /** Layer name (e.g. 'route', 'resolver', 'removed vendor', 'NSE', 'cache', 'DB'). */
   label:    string;
   /** Optional sub-detail (e.g. 'fallback', symbol count, error code). */
   detail?:  string;

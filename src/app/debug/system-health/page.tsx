@@ -165,11 +165,11 @@ function safetyFrom(s: SystemStatus): Safety {
 }
 
 function buildProviders(sysProviders: any, report: any): ProviderRow[] {
-  const order = ['indianapi', 'nse', 'yahoo', 'snapshot'] as const;
+  const order = ['kite', 'nse', 'yahoo', 'snapshot'] as const;
   return order.map((name) => {
     const p = sysProviders?.[name] ?? {};
     const reportCalls =
-      name === 'indianapi' ? report?.indianapi_calls :
+      name === 'kite' ? report?.kite_calls :
       name === 'nse'       ? report?.nse_calls :
       name === 'yahoo'     ? report?.yahoo_calls :
                              report?.snapshot_calls;
@@ -281,15 +281,15 @@ async function mockHealth(): Promise<SystemHealth> {
     avgLatencyMs:       drift(213, 30),
     maxLatencyMs:       drift(1820, 200),
     marketState: 'open', marketLabel: 'Market Open', mode: 'live',
-    dataSource: 'indianapi',
+    dataSource: 'kite',
     fallbacksToday: 4, fallbackTriggered: false, lastError: null,
-    lastProvider: 'indianapi',
+    lastProvider: 'kite',
     flags: {
       slowApi: false, highErrorRate: false, fallbackSpike: false,
       slowThresholdMs: 500, errorThreshold: 0.05,
     },
     providers: [
-      mkProv('indianapi', drift(612, 4), 4, 187, 980),
+      mkProv('kite', drift(612, 4), 4, 187, 980),
       mkProv('nse',       12, 1, 305, 612, 'NSE_NO_DATA'),
       mkProv('yahoo',     0,  0, 0,   0),
       mkProv('snapshot',  drift(38, 2), 0, 8,   22),
@@ -304,12 +304,12 @@ async function mockHealth(): Promise<SystemHealth> {
         id: 't1', route: '/api/signals',
         startedAt: new Date(Date.now() - 1000 * 8).toISOString(),
         totalMs: 320,
-        summary: '/api/signals → resolver → IndianAPI (120ms) → DB write → response (320ms total)',
+        summary: '/api/signals → resolver → removed vendor (120ms) → DB write → response (320ms total)',
         steps: [
           { label: 'Request', detail: '/api/signals' },
           { label: 'Route', detail: 'GET /api/signals' },
           { label: 'Resolver', detail: 'cache miss → upstream' },
-          { label: 'IndianAPI', detail: '47 symbols', durationMs: 120 },
+          { label: 'removed vendor', detail: '47 symbols', durationMs: 120 },
           { label: 'DB',  detail: 'persist signals',  durationMs: 14 },
           { label: 'Response', detail: '200',          durationMs: 320 },
         ],
@@ -318,12 +318,12 @@ async function mockHealth(): Promise<SystemHealth> {
         id: 't2', route: '/api/signals',
         startedAt: new Date(Date.now() - 1000 * 41).toISOString(),
         totalMs: 450,
-        summary: '/api/signals → resolver → IndianAPI HTTP_500 → fallback NSE (300ms) → response (450ms total)',
+        summary: '/api/signals → resolver → removed vendor HTTP_500 → fallback NSE (300ms) → response (450ms total)',
         steps: [
           { label: 'Request',   detail: '/api/signals' },
           { label: 'Route',     detail: 'GET /api/signals' },
           { label: 'Resolver',  detail: 'primary → fallback' },
-          { label: 'IndianAPI', detail: 'HTTP_500 (122ms)', durationMs: 122 },
+          { label: 'removed vendor', detail: 'HTTP_500 (122ms)', durationMs: 122 },
           { label: 'Fallback NSE', detail: '12 symbols',    durationMs: 300 },
           { label: 'Response',  detail: '200',              durationMs: 450 },
         ],
@@ -331,15 +331,15 @@ async function mockHealth(): Promise<SystemHealth> {
     ],
     errors: [
       { timestamp: new Date(Date.now() - 1000 * 41).toISOString(), route: '/api/signals', method: 'GET',
-        provider: 'indianapi', errorCode: 'HTTP_500', durationMs: 122 },
+        provider: 'kite', errorCode: 'HTTP_500', durationMs: 122 },
     ],
     slowRequests: [
       { timestamp: new Date(Date.now() - 1000 * 22).toISOString(), route: '/api/intelligence/stock',
-        durationMs: 612, provider: 'indianapi', fallback: false },
+        durationMs: 612, provider: 'kite', fallback: false },
     ],
     fallbackLog: [
       { timestamp: new Date(Date.now() - 1000 * 41).toISOString(), route: 'marketDataResolver',
-        fromProvider: 'indianapi', toProvider: 'nse', errorCode: 'HTTP_500' },
+        fromProvider: 'kite', toProvider: 'nse', errorCode: 'HTTP_500' },
     ],
 
     quota: (() => {
@@ -475,7 +475,7 @@ export default function SystemHealthPage() {
     setBusy('api');
     const r = await safeJson('/api/debug/provider-report');
     setBusy(null);
-    showToast(r ? `IndianAPI calls: ${r.indianapi_calls ?? 0}` : 'API test failed');
+    showToast(r ? `Kite calls: ${r.kite_calls ?? 0}` : 'API test failed');
   };
   const restart = () => {
     if (!confirm('Restart not exposed via UI. Use ops console.')) return;
@@ -544,7 +544,7 @@ export default function SystemHealthPage() {
         <div className={`sh-quota-banner ${data.quota.block_non_essential ? 'sh-quota-banner-critical' : ''}`}>
           <span className="sh-quota-banner-msg">
             {data.quota.block_all       && '🔴 BLOCKED · daily/monthly hard limit reached — only essential calls allowed'}
-            {!data.quota.block_all && data.quota.block_non_essential && '🔴 CRITICAL · usage > 90% — non-critical IndianAPI calls suppressed'}
+            {!data.quota.block_all && data.quota.block_non_essential && '🔴 CRITICAL · usage > 90% — non-critical removed vendor calls suppressed'}
             {!data.quota.block_non_essential && data.quota.limit_near && '⚠️ LIMIT NEAR · approaching daily 2,500 cap — reduce polling'}
           </span>
           <span className="sh-quota-banner-detail">
@@ -723,7 +723,7 @@ export default function SystemHealthPage() {
             {data.providers.map((p) => {
               const pct = Math.round((p.calls / maxProviderCalls) * 100);
               const colour =
-                p.name === 'indianapi' ? 'sh-color-cyan'   :
+                p.name === 'kite' ? 'sh-color-cyan'   :
                 p.name === 'nse'       ? 'sh-color-green'  :
                 p.name === 'yahoo'     ? 'sh-color-yellow' : 'sh-color-dim';
               return (

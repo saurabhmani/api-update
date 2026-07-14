@@ -1,5 +1,5 @@
 /**
- * Yahoo Finance quoteSummary fundamentals — free fallback when IndianAPI
+ * Yahoo Finance quoteSummary fundamentals — free fallback when removed vendor
  * is rate-limited or returns empty valuation fields.
  *
  * Uses Yahoo's public crumb flow (fc.yahoo.com cookie → getcrumb →

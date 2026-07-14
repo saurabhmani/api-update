@@ -46,22 +46,17 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     warnings.push(`SESSION_SECRET is short (${sessionSecret.length} chars). Recommend 32+ for production.`);
   }
 
-  // Kite Connect is the Phase 9 default primary when MARKET_DATA_PROVIDER
-  // is unset. Warn when kite primary is selected but credentials look missing.
-  const kitePrimary =
-    (process.env.INDIANAPI_PRIMARY ?? '').trim().toLowerCase() !== 'true'
-    && (process.env.INDIANAPI_PRIMARY ?? '').trim().toLowerCase() !== '1'
-    && (
-      !(process.env.MARKET_DATA_PROVIDER ?? '').trim()
-      || (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase() === 'kite'
-    );
+  // Kite Connect is the default primary when MARKET_DATA_PROVIDER is
+  // unset / unrecognized. Warn when credentials look missing.
+  const provider = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
+  const kitePrimary = !provider || provider === 'kite';
   if (kitePrimary) {
     const key = (process.env.KITE_API_KEY ?? '').trim();
     const token = (process.env.KITE_ACCESS_TOKEN ?? '').trim();
     if (!key || !token) {
       warnings.push(
         'MARKET_DATA_PROVIDER defaults to kite but KITE_API_KEY / KITE_ACCESS_TOKEN '
-        + 'look unset — expect IndianAPI fallback for quotes until Kite is configured.',
+        + 'look unset — expect yahoo/nse/db cascade for quotes until Kite is configured.',
       );
     }
   }

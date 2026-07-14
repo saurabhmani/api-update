@@ -1,8 +1,8 @@
 # Provider Request Policy
 
-Operational budget guidance for market-data ingestion. **Phase 9:** live quotes / historical candles default to **Kite**; IndianAPI remains the automatic fallback and the exclusive path for unsupported capabilities (movers, news, corporate, etc.). IndianAPI monthly/daily quotas still apply only to IndianAPI hops — do not invent Kite monthly quotas.
+Operational budget guidance for market-data ingestion. **Phase 9:** live quotes / historical candles default to **Kite**; removed vendor remains the automatic fallback and the exclusive path for unsupported capabilities (movers, news, corporate, etc.). removed vendor monthly/daily quotas still apply only to removed vendor hops — do not invent Kite monthly quotas.
 
-Operational budget for IndianAPI historical candle ingestion and signal scans (when IndianAPI is invoked). Enforced in code via `src/lib/marketData/providerRequestPolicy.ts` and quota guards in `providerRequestLog.ts`.
+Operational budget for removed vendor historical candle ingestion and signal scans (when removed vendor is invoked). Enforced in code via `src/lib/marketData/providerRequestPolicy.ts` and quota guards in `providerRequestLog.ts`.
 
 ## Initial backfill (run once)
 
@@ -11,7 +11,7 @@ Operational budget for IndianAPI historical candle ingestion and signal scans (w
 | When | One-time warehouse bootstrap |
 | Expected requests | **1,000–1,500** (~1 req/symbol × NSE 1000 universe) |
 | History | **1 year** daily candles per symbol (`1y` range) |
-| Per-run cap | `INDIAN_API_INITIAL_BACKFILL_PER_RUN_LIMIT` (default **1500**) |
+| Per-run cap | `LEGACY_VENDOR_ENV` (default **1500**) |
 
 ```bash
 npm run candles:backfill:preflight
@@ -23,7 +23,7 @@ Do **not** schedule full 1y backfill on a cron. After bootstrap, only repair thi
 
 ## Daily operations
 
-| Job | Time (IST) | Mode | IndianAPI requests |
+| Job | Time (IST) | Mode | removed vendor requests |
 |-----|------------|------|-------------------|
 | Morning scan | 08:30 | `scan` | **0** (DB-only) |
 | Evening update | 16:00 | `incremental-update` | **≤ 1,000** |
@@ -44,8 +44,8 @@ Cap env: `CANDLE_DAILY_UPDATE_MAX_FETCH=1000` (default).
 | Band | Requests |
 |------|----------|
 | Planned ops | **22,000–30,000** / month |
-| Soft target (`INDIANAPI_MONTHLY_TARGET`) | **25,000** (default) |
-| Hard ceiling (`INDIANAPI_MONTHLY_LIMIT`) | **100,000** (paid plan) |
+| Soft target (`LEGACY_VENDOR_ENV`) | **25,000** (default) |
+| Hard ceiling (`LEGACY_VENDOR_ENV`) | **100,000** (paid plan) |
 
 Reserve headroom above 30k for retries, repairs, testing, and future modules. Compliance label (`SAFE` / `BORDERLINE` / `UNSAFE`) uses the 25k target; hard stop uses the 100k ceiling.
 
@@ -67,7 +67,7 @@ Uses `resume: true` + `loadSymbolsNeedingBackfill()` so symbols with sufficient 
 - Fetching candles inside strategy evaluation (`dbOnly` / `evaluationRead` in `candleFallbackChain`)
 - Fetching historical data during every signal scan (`mode=scan` skips `refreshDailyCandles`)
 - Retrying failed provider requests too aggressively (backoff: `CANDLE_BACKFILL_RATE_LIMIT_BACKOFF_MS`, default 15s)
-- Using IndianAPI when DB already has fresh candle data (`shouldSkipSymbol`, daily update skip-if-updated)
+- Using removed vendor when DB already has fresh candle data (`shouldSkipSymbol`, daily update skip-if-updated)
 
 ## Validation
 

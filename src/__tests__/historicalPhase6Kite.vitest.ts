@@ -2,20 +2,18 @@
  * Phase 6 — historical candle pipeline via KiteAdapter.
  *
  * Covers interval mapping, Kite retrieval, empty/auth/rate-limit
- * failures, IndianAPI fallback, HistoricalSeries shape, and that
- * upstream jobs call fetchUpstreamDailyCandles.
+ * failures, HistoricalSeries shape, and that upstream jobs call
+ * fetchUpstreamDailyCandles (Kite-only).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   kiteGetHistorical,
   kiteGetHistoricalByInterval,
-  indianGetHistorical,
   loadKiteConfig,
 } = vi.hoisted(() => ({
   kiteGetHistorical: vi.fn(),
   kiteGetHistoricalByInterval: vi.fn(),
-  indianGetHistorical: vi.fn(),
   loadKiteConfig: vi.fn(() => ({
     apiKey: 'k',
     apiSecret: 's',
@@ -35,14 +33,6 @@ vi.mock('@/lib/kite', async () => {
 vi.mock('@/providers/adapters/KiteAdapter', () => ({
   getHistorical: kiteGetHistorical,
   getHistoricalByInterval: kiteGetHistoricalByInterval,
-}));
-
-vi.mock('@/lib/marketData/providers/indianApiProvider', () => ({
-  getHistorical: indianGetHistorical,
-}));
-
-vi.mock('@/lib/marketData/providers/indianApiEndpoints', () => ({
-  getIndianApiConfig: () => ({ apiKey: 'ia-key', baseUrl: 'https://example.test' }),
 }));
 
 import {
@@ -83,7 +73,6 @@ beforeEach(() => {
   resetCandleSourceCounters();
   kiteGetHistorical.mockReset();
   kiteGetHistoricalByInterval.mockReset();
-  indianGetHistorical.mockReset();
   loadKiteConfig.mockReturnValue({
     apiKey: 'k',
     apiSecret: 's',
@@ -124,7 +113,7 @@ describe('historicalIntervalMap', () => {
     expect(rangeToKiteWindow('1d').interval).toBe('5minute');
   });
 
-  it('maps chart intervals to IndianAPI HistoricalRange', () => {
+  it('maps chart intervals to HistoricalRange', () => {
     expect(chartIntervalToHistoricalRange('1day')).toBe('1y');
     expect(chartIntervalToHistoricalRange('1week')).toBe('5y');
     expect(chartIntervalToHistoricalRange('60minute')).toBe('3mo');
@@ -183,62 +172,40 @@ describe('kiteHistoricalProvider', () => {
   });
 });
 
-describe('fetchUpstreamDailyCandles — Kite → IndianAPI', () => {
+describe('fetchUpstreamDailyCandles — Kite-only', () => {
   it('serves from Kite when available', async () => {
     kiteGetHistorical.mockResolvedValue(series('INFY', 2));
     const r = await fetchUpstreamDailyCandles('INFY', '1y');
     expect(r.ok).toBe(true);
     expect(r.provider).toBe('kite');
     expect(r.candles).toHaveLength(2);
-    expect(indianGetHistorical).not.toHaveBeenCalled();
   });
 
-  it('falls back to IndianAPI on Kite auth failure', async () => {
+  it('returns Kite auth failure without secondary vendor', async () => {
     kiteGetHistorical.mockRejectedValue(new KiteAuthenticationError('auth'));
-    indianGetHistorical.mockResolvedValue({
-      provider: 'indianapi',
-      status: 'success',
-      errorCode: null,
-      errorMessage: null,
-      data: series('INFY', 4),
-    });
     const r = await fetchUpstreamDailyCandles('INFY', '1y');
-    expect(r.ok).toBe(true);
-    expect(r.provider).toBe('indianapi');
-    expect(r.candles).toHaveLength(4);
-    expect(indianGetHistorical).toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe('kite');
+    expect(r.errorCode).toBe('KiteAuthenticationError');
   });
 
-  it('falls back to IndianAPI on Kite rate limit', async () => {
+  it('returns Kite rate-limit failure without secondary vendor', async () => {
     kiteGetHistorical.mockRejectedValue(new KiteRateLimitError('429'));
-    indianGetHistorical.mockResolvedValue({
-      provider: 'indianapi',
-      status: 'success',
-      errorCode: null,
-      errorMessage: null,
-      data: series('TCS', 1),
-    });
     const r = await fetchUpstreamDailyCandles('TCS', '1y');
-    expect(r.ok).toBe(true);
-    expect(r.provider).toBe('indianapi');
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe('kite');
+    expect(r.errorCode).toBe('KiteRateLimitError');
   });
 
-  it('falls back to IndianAPI on empty Kite response', async () => {
+  it('returns empty Kite response without secondary vendor', async () => {
     kiteGetHistorical.mockResolvedValue({ symbol: 'TCS', range: '1y', candles: [] });
-    indianGetHistorical.mockResolvedValue({
-      provider: 'indianapi',
-      status: 'success',
-      errorCode: null,
-      errorMessage: null,
-      data: series('TCS', 5),
-    });
     const r = await fetchUpstreamDailyCandles('TCS', '1y');
-    expect(r.ok).toBe(true);
-    expect(r.provider).toBe('indianapi');
-    expect(r.candles).toHaveLength(5);
+    expect(r.ok).toBe(false);
+    expect(r.provider).toBe('kite');
+    expect(r.errorCode).toBe('EMPTY_RESPONSE');
   });
 
-  it('maps Kite-only fetch into engine candle shape (same as IndianAPI path)', async () => {
+  it('maps Kite-only fetch into engine candle shape', async () => {
     kiteGetHistorical.mockResolvedValue(series('RELIANCE', 1));
     const r = await fetchKiteDailyCandles('RELIANCE', '1y');
     expect(r.ok).toBe(true);
@@ -254,7 +221,7 @@ describe('fetchUpstreamDailyCandles — Kite → IndianAPI', () => {
 });
 
 describe('candle jobs contract', () => {
-  it('backfill/daily jobs import fetchUpstreamDailyCandles (not IndianAPI-only)', async () => {
+  it('backfill/daily jobs import fetchUpstreamDailyCandles (Kite-only)', async () => {
     const backfillSrc = await import('node:fs').then((fs) =>
       fs.readFileSync(
         new URL('../lib/marketData/candleBackfillJob.ts', import.meta.url),
@@ -269,7 +236,9 @@ describe('candle jobs contract', () => {
     );
     expect(backfillSrc).toMatch(/fetchUpstreamDailyCandles/);
     expect(dailySrc).toMatch(/fetchUpstreamDailyCandles/);
-    expect(backfillSrc).not.toMatch(/fetchIndianApiDailyCandles\(/);
-    expect(dailySrc).not.toMatch(/fetchIndianApiDailyCandles\(/);
+    expect(backfillSrc).not.toMatch(/fetchlegacy_vendorDailyCandles\(/);
+    expect(dailySrc).not.toMatch(/fetchlegacy_vendorDailyCandles\(/);
+    expect(backfillSrc).not.toMatch(/getlegacy_vendorConfig/);
+    expect(dailySrc).not.toMatch(/getlegacy_vendorConfig/);
   });
 });

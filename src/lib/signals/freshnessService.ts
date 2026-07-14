@@ -58,11 +58,11 @@ export type ScannerEngineKind =
 export interface KiteHealth { // @deprecated marker
   /** Aggregate state — OK | DEGRADED | FAIL. */
   health:               'OK' | 'DEGRADED' | 'FAIL';
-  /** What's currently feeding live prices. After the IndianAPI
-   *  cutover this is 'indianapi' | 'yahoo' | 'none'; the legacy // @deprecated marker
+  /** What's currently feeding live prices. After the removed vendor
+   *  cutover this is 'kite' | 'yahoo' | 'none'; the legacy // @deprecated marker
    *  values are kept on the union for backwards compat with older
    *  consumers that still read them. */
-  source:               'indianapi' | 'yahoo' | 'kite_ws' | 'kite_rest' | 'kite' | 'none'; // @deprecated marker
+  source:               'yahoo' | 'kite_ws' | 'kite_rest' | 'kite' | 'none'; // @deprecated marker
   /** True when the WS reports loginRequired (token expired). */
   login_required:       boolean;
   /** WS state — idle | connecting | open | closed. */
@@ -238,8 +238,8 @@ function probeKiteHealth(): KiteHealth { // @deprecated marker
   if (h.health === 'FAIL' && h.source === 'none') {
     status_label = h.ws.loginRequired ? 'login_required' : 'no_credentials';
     message = h.reason;
-  } else if (h.source === 'indianapi') {
-    // Post-IndianAPI cutover: an IndianAPI source maps to streaming-
+  } else if (h.source === 'kite') {
+    // Post-removed vendor cutover: an removed vendor source maps to streaming-
     // equivalent for the legacy status_label union.
     status_label = h.health === 'OK' ? 'streaming' : 'rest_only';
     message = h.reason;

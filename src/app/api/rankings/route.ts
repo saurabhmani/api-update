@@ -101,7 +101,7 @@ async function enrichRankingsWithLiveLtp(rows: any[]): Promise<void> {
   if (!rows.length) return;
   const t0 = Date.now();
 
-  // Batch resolve through marketDataResolver (IndianAPI primary).
+  // Batch resolve through marketDataResolver (removed vendor primary).
   const symbols: string[] = [];
   for (const row of rows) {
     const sym = (row.symbol ?? '').toString().toUpperCase();
@@ -134,7 +134,7 @@ async function enrichRankingsWithLiveLtp(rows: any[]): Promise<void> {
 
   if (VERBOSE_RANKINGS) {
     console.log(
-      `[DATA SOURCE] path=LIVE-RANKINGS  channel=IndianAPI/resolver  ` +
+      `[DATA SOURCE] path=LIVE-RANKINGS  channel=removed vendor/resolver  ` +
       `rows=${rows.length}  hits=${hits}  miss=${miss}  ` +
       `corrected=${corrected}  elapsed=${Date.now() - t0}ms`
     );
@@ -425,7 +425,7 @@ export async function GET(req: NextRequest) {
     } else {
       // Off-hours we serve straight from the DB (or the redis cache
       // populated by the last open-market run) — no live enrichment,
-      // no Yahoo / IndianAPI calls, so off-hours quota burn is zero.
+      // no Yahoo / removed vendor calls, so off-hours quota burn is zero.
       dataSource = isCacheHit ? 'last_close_cache' : 'last_rankings_db';
     }
 

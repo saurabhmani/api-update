@@ -1,7 +1,7 @@
 /**
- * scripts/backfillCandles.ts — IndianAPI daily candle backfill for NSE universe
+ * scripts/backfillCandles.ts — Kite daily candle backfill for NSE universe
  *
- * Quota-efficient workflow (limited IndianAPI requests):
+ * Quota-efficient workflow (bounded Kite requests):
  *   1. Plan (zero API calls):  npm run candles:backfill:plan
  *   2. Small live batch:       npm run candles:backfill:batch
  *   3. Repeat batch until plan shows fetched=0
@@ -20,9 +20,7 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleBackfillJob, type BackfillSymbolSource } from '@/lib/marketData/candleBackfillJob';
-import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import { getHistorical as getKiteHistorical, isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
-import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import {
   EMERGENCY_REPAIR_MAX_FETCH,
   INITIAL_BACKFILL_PER_RUN_LIMIT,
@@ -87,40 +85,20 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  if (isKiteHistoricalConfigured()) {
-    console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via Kite ...`);
-    const kite = await getKiteHistorical(symbol, '1y');
-    const bars = kite.data?.candles?.length ?? 0;
-    if (kite.status === 'success' || kite.status === 'partial') {
-      console.log(`[CANDLE BACKFILL PREFLIGHT] OK (kite) — ${bars} bars returned`);
-      return true;
-    }
-    console.warn(
-      `[CANDLE BACKFILL PREFLIGHT] Kite miss — ${kite.errorCode}: ${kite.errorMessage} — trying IndianAPI`,
-    );
-  }
-
-  const { apiKey, baseUrl } = getIndianApiConfig();
-  if (!apiKey) {
-    console.error(
-      '[CANDLE BACKFILL PREFLIGHT] neither Kite nor INDIANAPI_API_KEY is configured',
-    );
+  if (!isKiteHistoricalConfigured()) {
+    console.error('[CANDLE BACKFILL PREFLIGHT] Kite historical is not configured');
     return false;
   }
-  console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via ${baseUrl} ...`);
-  const inv = await getIndianApiHistorical(symbol, '1y');
-  const bars = inv.data?.candles?.length ?? 0;
-  if (inv.status === 'success' || inv.status === 'partial') {
-    console.log(`[CANDLE BACKFILL PREFLIGHT] OK (indianapi) — ${bars} bars returned`);
+  console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via Kite ...`);
+  const kite = await getKiteHistorical(symbol, '1y');
+  const bars = kite.data?.candles?.length ?? 0;
+  if (kite.status === 'success' || kite.status === 'partial') {
+    console.log(`[CANDLE BACKFILL PREFLIGHT] OK (kite) — ${bars} bars returned`);
     return true;
   }
-  console.error(`[CANDLE BACKFILL PREFLIGHT] FAIL — ${inv.errorCode}: ${inv.errorMessage}`);
-  if (inv.errorMessage?.includes('screener.in')) {
-    console.error(
-      '[CANDLE BACKFILL PREFLIGHT] IndianAPI upstream dependency (screener.in) is failing. ' +
-      'This is an provider-side outage — retry later or contact IndianAPI support.',
-    );
-  }
+  console.error(
+    `[CANDLE BACKFILL PREFLIGHT] FAIL — ${kite.errorCode}: ${kite.errorMessage}`,
+  );
   return false;
 }
 
@@ -140,7 +118,7 @@ async function main(): Promise<void> {
     if (!ok) {
       console.error(
         '[CANDLE BACKFILL] preflight failed — aborting live run. ' +
-        'Fix IndianAPI upstream or set CANDLE_BACKFILL_SKIP_PREFLIGHT=true to override.',
+        'Fix Kite credentials/token or set CANDLE_BACKFILL_SKIP_PREFLIGHT=true to override.',
       );
       process.exit(1);
     }
@@ -148,7 +126,7 @@ async function main(): Promise<void> {
 
   if (args.dryRun) {
     console.log(
-      '[CANDLE BACKFILL PLAN] dry-run — no IndianAPI calls, no DB writes. ' +
+      '[CANDLE BACKFILL PLAN] dry-run — no upstream calls, no DB writes. ' +
       '`fetched` = API requests that a live run would make.',
     );
   }
@@ -199,7 +177,7 @@ async function main(): Promise<void> {
     deferred_remaining: summary.deferredDueToBudget,
     candles_inserted: summary.candlesInserted,
     candles_updated: summary.candlesUpdated,
-    indianapi_requests_used: summary.indianApiRequestsUsed,
+    kite_requests_used: summary.upstreamVendor,
     duration_ms: summary.durationMs,
     dry_run: summary.dryRun,
   }, null, 2));

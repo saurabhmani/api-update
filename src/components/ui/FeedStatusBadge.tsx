@@ -7,7 +7,7 @@ interface Props {
   connected: boolean;
   lastAt:    number | null;
   status?:   MarketStreamStatus;
-  source?:   'indianapi' | 'yahoo' | null;
+  source?:   'kite' | 'yahoo' | null;
   staleMs?:  number;
   className?: string;
 }

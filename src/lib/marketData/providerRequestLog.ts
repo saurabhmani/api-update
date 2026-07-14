@@ -1,20 +1,19 @@
 // ════════════════════════════════════════════════════════════════
-//  Provider request log + quota guard (IndianAPI)
+//  Provider request log + quota guard (removed vendor)
 //
 //  Persists every billable upstream call to `provider_request_logs`
 //  and exposes aggregation + pre-job budget checks.
 //
 //  Recommended env (see docs/PROVIDER_REQUEST_POLICY.md):
-//    INDIAN_API_MONTHLY_BUDGET=100000   (alias: INDIANAPI_MONTHLY_LIMIT) — hard ceiling
-//    INDIANAPI_MONTHLY_TARGET=25000     — ops planning band 22k–30k
-//    INDIAN_API_DAILY_SOFT_LIMIT=4000   (alias: INDIANAPI_DAILY_LIMIT)
+//    LEGACY_VENDOR_ENV=100000   (alias: LEGACY_VENDOR_ENV) — hard ceiling
+//    LEGACY_VENDOR_ENV=25000     — ops planning band 22k–30k
+//    LEGACY_VENDOR_ENV=4000   (alias: LEGACY_VENDOR_ENV)
 //    CANDLE_DAILY_UPDATE_MAX_FETCH=1000 — evening update per-run cap
-//    INDIAN_API_HARD_STOP_ON_LIMIT=true
+//    LEGACY_VENDOR_ENV=true
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
 import { migrateProviderRequestLogs } from '@/lib/db/migrateProviderRequestLogs';
-import { getApiUsage } from '@/providers/adapters/indianApiUsageTracker';
 import { getProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 
 let _tableReady: Promise<void> | null = null;
@@ -35,8 +34,8 @@ function resolveBool(name: string, fallback: boolean): boolean {
   return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
 }
 
-export const INDIAN_API_HARD_STOP_ON_LIMIT = () =>
-  resolveBool('INDIAN_API_HARD_STOP_ON_LIMIT', true);
+export const LEGACY_VENDOR_ENV = () =>
+  resolveBool('LEGACY_VENDOR_ENV', true);
 
 export interface ProviderRequestLogInput {
   provider?: string;
@@ -62,7 +61,7 @@ export async function logProviderRequest(input: ProviderRequestLogInput): Promis
           error_message, requested_at, job_id, source_job, response_count)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.provider ?? 'indianapi',
+        input.provider ?? 'kite',
         input.endpoint.slice(0, 128),
         input.symbol?.toUpperCase().slice(0, 64) ?? ctx?.symbol?.toUpperCase() ?? null,
         input.requestType ?? ctx?.requestType ?? null,
@@ -114,10 +113,9 @@ export interface ProviderRequestAggregation {
 }
 
 export async function aggregateProviderRequests(
-  provider = 'indianapi',
+  provider = 'kite',
 ): Promise<ProviderRequestAggregation> {
   await ensureTable();
-  const usage = getApiUsage();
   const dayStart = istDayStartUtc();
   const monthStart = istMonthStartUtc();
 
@@ -152,16 +150,18 @@ export async function aggregateProviderRequests(
 
   const requestsToday = Number(dayRows[0]?.c ?? 0);
   const requestsMonth = Number(monthRows[0]?.c ?? 0);
-  const counterDaily = Math.max(requestsToday, usage.daily);
-  const counterMonthly = Math.max(requestsMonth, usage.monthly);
+  const counterDaily = requestsToday;
+  const counterMonthly = requestsMonth;
 
+  const monthlyBudget = Number(process.env.PROVIDER_MONTHLY_BUDGET) || 100_000;
+  const dailySoft = Number(process.env.PROVIDER_DAILY_SOFT_LIMIT) || 4_500;
   return {
     requests_today: requestsToday,
     requests_this_month: requestsMonth,
-    monthly_budget: usage.monthly_limit,
-    monthly_remaining: Math.max(0, usage.monthly_limit - counterMonthly),
-    daily_soft_limit: usage.daily_limit,
-    daily_remaining: Math.max(0, usage.daily_limit - counterDaily),
+    monthly_budget: monthlyBudget,
+    monthly_remaining: Math.max(0, monthlyBudget - counterMonthly),
+    daily_soft_limit: dailySoft,
+    daily_remaining: Math.max(0, dailySoft - counterDaily),
     by_job: jobRows.map((r) => ({
       source_job: r.source_job,
       count: Number(r.c),
@@ -201,7 +201,7 @@ export async function checkQuotaBeforeJob(
 ): Promise<QuotaGuardResult> {
   const agg = await aggregateProviderRequests();
   const estimate = Math.max(0, Math.floor(input.estimatedRequests));
-  const hardStop = INDIAN_API_HARD_STOP_ON_LIMIT() && !input.warnOnly;
+  const hardStop = LEGACY_VENDOR_ENV() && !input.warnOnly;
 
   const reasons: string[] = [];
   let action: QuotaGuardAction = 'allow';

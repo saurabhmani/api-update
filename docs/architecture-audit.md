@@ -77,7 +77,7 @@ Quantorus365 is an institutional stock intelligence and decision platform built 
 └─────────────────────────────────────────────────────────────────────────────┘
          │                    │                    │
          ▼                    ▼                    ▼
-   PostgreSQL            Redis (streams)      IndianAPI (primary)
+   PostgreSQL            Redis (streams)      removed vendor (primary)
    (auth, master,         market_ticks,         Yahoo (fallback)
     market, intel,        signals_stream        Cache (in-memory)
     app, ops, q365_*)     provider health
@@ -109,7 +109,7 @@ Quantorus365 is an institutional stock intelligence and decision platform built 
 **Canonical market-data chain:**
 
 ```
-IndianAPI (PRIMARY) → Cache (10-min TTL) → Yahoo (fallback) → PostgreSQL stale snapshot
+removed vendor (PRIMARY) → Cache (10-min TTL) → Yahoo (fallback) → PostgreSQL stale snapshot
 ```
 
 **Single provider entry point:** `src/providers/MarketDataProvider.ts`
@@ -126,7 +126,7 @@ src/
 ├── components/    # React UI (dashboard, signals, stock detail, layout)
 ├── lib/           # Core engines (signal, backtest, manipulation, news, market data)
 ├── services/      # Application service layer (43 services)
-├── providers/     # Market data adapters (IndianAPI, Yahoo)
+├── providers/     # Market data adapters (removed vendor, Yahoo)
 ├── hooks/         # React hooks
 ├── types/         # Shared TypeScript types
 ├── instrumentation.ts  # Boot: env validation, schema ensure, schedulers
@@ -180,7 +180,7 @@ graph TB
     end
 
     subgraph External
-        IndianAPI[IndianAPI REST]
+        removed vendor[removed vendor REST]
         Yahoo[Yahoo Finance]
     end
 
@@ -193,7 +193,7 @@ graph TB
     CoreEngines --> MDP
     CoreEngines --> DB
     CoreEngines --> Redis
-    MDP --> IndianAPI
+    MDP --> removed vendor
     MDP --> Yahoo
     MDP --> DB
     Scheduler --> SE
@@ -737,7 +737,7 @@ Legacy `/api/manipulation/*` re-exports `manipulation-engine/*` handlers.
 | Schedule (IST) | Job |
 |----------------|-----|
 | `30 8 * * 1-5` | Morning scan — DB Phase 4 signals |
-| `0 16 * * 1-5` | Evening candle update — IndianAPI → `candles` |
+| `0 16 * * 1-5` | Evening candle update — removed vendor → `candles` |
 | `30 16 * * 1-5` | Evening scan — fresh EOD signals |
 | `30 18 * * 1-5` | Manipulation scan |
 
@@ -1425,10 +1425,10 @@ npm run build  # next build --webpack
 |----------|----------|
 | Database | `DATABASE_URL`, `PG_*` |
 | Redis | `REDIS_URL`, `REDIS_PASSWORD` |
-| Market Data | `INDIAN_API_KEY`, `YAHOO_ENABLED` |
+| Market Data | `LEGACY_VENDOR_ENV`, `YAHOO_ENABLED` |
 | Auth | `SESSION_SECRET`, `ENCRYPTION_KEY` |
 | Feature Flags | `SIGNAL_RELAX_MODE`, `BACKTEST_SYNC_MODE`, `Q365_INPROC_SCHEDULER` |
-| Quota | `INDIAN_API_DAILY_CAP`, `INDIAN_API_MONTHLY_CAP` |
+| Quota | `LEGACY_VENDOR_ENV`, `LEGACY_VENDOR_ENV` |
 | Ops | `LOG_LEVEL`, `FORCE_MARKET_OPEN` |
 
 ### 15.4 Priority Action Items

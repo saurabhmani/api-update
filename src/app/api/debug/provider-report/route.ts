@@ -4,9 +4,8 @@
 //  Spec SMART_FALLBACK §7 — surfaces the in-process provider counters
 //  maintained by `@/lib/marketData/providerReport`. Returns:
 //    {
-//      last_provider:      "indianapi" | "nse" | "yahoo" | "snapshot" | null,
-//      indianapi_calls:    number,
-//      nse_calls:          number,
+//      last_provider:      "kite" | "nse" | "yahoo" | "snapshot" | null,
+//      //      nse_calls:          number,
 //      yahoo_calls:        number,
 //      snapshot_calls:     number,
 //      fallback_triggered: boolean,
@@ -53,8 +52,7 @@ export async function GET(): Promise<Response> {
   return NextResponse.json(
     {
       last_provider:      r.last_provider,
-      indianapi_calls:    r.indianapi_calls,
-      kite_calls:         r.kite_calls,
+            kite_calls:         r.kite_calls,
       nse_calls:          r.nse_calls,
       yahoo_calls:        r.yahoo_calls,
       snapshot_calls:     r.snapshot_calls,
@@ -63,7 +61,6 @@ export async function GET(): Promise<Response> {
       last_updated_at:    r.last_updated_at,
       current_provider:   getMarketDataProvider(),
       providers: {
-        indianapi: summarize('indianapi'),
         kite:      summarize('kite'),
         nse:       summarize('nse'),
         yahoo:     summarize('yahoo'),

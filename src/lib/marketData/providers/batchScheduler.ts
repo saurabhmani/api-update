@@ -12,10 +12,9 @@
 //  APIs except runTriggerTier(), and that one is gated by:
 //    (a) trigger score, (b) cooldown store, (c) budget guard.
 //
-//  Phase 7: ALL live quote / historical sync goes through
-//  MarketDataProvider (which follows MARKET_DATA_PROVIDER). Movers /
-//  trending / news stay on IndianAPI via MDP wrappers. Never import
-//  KiteAdapter here.
+//  Phase 7+: ALL live quote / historical sync goes through
+//  MarketDataProvider (Kite primary). Discovery/news tiers are
+//  rewritten in decommission Phase 2.
 //
 //  Contract preservation: per-symbol cache keys (quote:<SYMBOL>) are
 //  populated by the batch phase, so existing consumers reading through
@@ -24,7 +23,7 @@
 
 import { logger } from '@/lib/logger';
 import MarketDataProvider from '@/providers/MarketDataProvider';
-import * as IndianAPI from '@/providers/adapters/IndianAPIAdapter';
+import { getKiteHealth } from '@/lib/kite/health';
 import { persistSnapshot } from '@/services/LiveQuoteService';
 import { cacheSet as redisCacheSet, cacheGet as redisCacheGet } from '@/lib/redis';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
@@ -47,19 +46,54 @@ import {
   setCooldown,
   filterNotCoolingDown,
 } from '../cooldownStore';
-import {
-  canSpend,
-  spend,
-  snapshot as budgetSnapshot,
-  maxDeepForLevel,
-} from '../apiBudgetGuard';
+/** Phase 3 — removed vendor budget guard removed; always allow. */
+export type DegradationLevel = 'normal' | 'soft' | 'hard' | 'freeze';
+
+export interface BudgetSnapshot {
+  level: DegradationLevel;
+  dayTotal: number;
+  monthTotal: number;
+  maxDeepPerCycle: number;
+  triggerMultiplier: number;
+  skippedToday: number;
+  byType: Record<string, number>;
+  monthKey: string;
+  dayKey: string;
+}
+
+async function budgetSnapshot(): Promise<BudgetSnapshot> {
+  return {
+    level: 'normal',
+    dayTotal: 0,
+    monthTotal: 0,
+    maxDeepPerCycle: 6,
+    triggerMultiplier: 1,
+    skippedToday: 0,
+    byType: {},
+    monthKey: '',
+    dayKey: '',
+  };
+}
+
+function maxDeepForLevel(level: DegradationLevel): number {
+  if (level === 'freeze') return 0;
+  if (level === 'hard') return 2;
+  if (level === 'soft') return 4;
+  return 6;
+}
+
+async function canSpend(_tier: string, _n: number): Promise<{ allowed: boolean; level: DegradationLevel; reason?: string }> {
+  return { allowed: true, level: 'normal' };
+}
+
+async function spend(_tier: string, _n: number): Promise<void> { /* no-op */ }
 
 import type { MarketSnapshot, MoversBucket, MoversResult, ProviderResponse, ProviderSource } from '@/types/market';
 
 const log = logger.child({ component: 'batchScheduler' });
 
 /** Live upstream sources that may persist into DB / Redis quote cache. */
-const LIVE_QUOTE_SOURCES: ReadonlySet<ProviderSource> = new Set(['indian', 'kite']);
+const LIVE_QUOTE_SOURCES: ReadonlySet<ProviderSource> = new Set(['kite', 'yahoo', 'cache']);
 
 function logSchedulerProvider(
   event: string,
@@ -71,13 +105,9 @@ function logSchedulerProvider(
   console.log(`[PROVIDER] ${event}${parts.length ? ' ' + parts.join(' ') : ''}`);
 }
 
-// Construct a canonical ProviderResponse envelope for a snapshot we
-// just pulled via MarketDataProvider batch. Prefer the real envelope
-// from getLiveSnapshot when available; this helper is for batch-tier
-// rows that only expose { snapshot, source }.
 function wrapBatchResponse(
   snap: MarketSnapshot,
-  source: ProviderSource = 'indian',
+  source: ProviderSource = 'kite',
 ): ProviderResponse<MarketSnapshot> {
   const fetched_at = Date.now();
   const vendor_timestamp = typeof snap.timestamp === 'number' && snap.timestamp > 0
@@ -85,8 +115,9 @@ function wrapBatchResponse(
     : fetched_at;
   const provider_name =
     source === 'kite' ? 'Kite Connect'
-      : source === 'cache' ? 'Cache'
-        : 'IndianAPI';
+      : source === 'yahoo' ? 'Yahoo'
+        : source === 'cache' ? 'Cache'
+          : 'MarketData';
   return {
     data: snap,
     source,
@@ -274,7 +305,7 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
     // 1. Batch quotes — ONE (or a handful, chunked) request for the
     //    whole Tier1+Tier2 universe. Fans out to per-symbol cache,
     //    so downstream consumers are unaffected. MDP follows
-    //    MARKET_DATA_PROVIDER (kite | indianapi) + fallback chain.
+    //    MARKET_DATA_PROVIDER (kite) + fallback chain.
     logSchedulerProvider('attempt', {
       method: 'scheduler.batch.getBatchLiveSnapshots',
       selected,
@@ -282,7 +313,7 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
     });
     const batch = await MarketDataProvider.getBatchLiveSnapshots(universe);
 
-    // 2. Persist fresh LIVE snapshots (kite or indianapi). Cache/db
+    // 2. Persist fresh LIVE snapshots. Cache/db rows are already warm.
     //    rows are already warm for reads — do not re-persist them.
     let persistErrors = 0;
     const persistables = batch.entries.filter(
@@ -300,8 +331,7 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
       }
     });
 
-    // 3. Market-wide cheap endpoints (movers / trending — IndianAPI
-    //    only via MDP; Kite unsupported → MDP falls back).
+    // 3. Market-wide discovery endpoints (Phase 2: cache or empty).
     const [trending, shockers, mostActive] = await Promise.all([
       MarketDataProvider.getTrendingSymbols().catch(() => ({ data: [] as string[] })),
       MarketDataProvider.getPriceShockers().catch(() => ({ data: [] as string[] })),
@@ -315,7 +345,7 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
       ? Math.round((batchReceived / universe.length) * 1000) / 10
       : 0;
     const latencyMs = Date.now() - t0;
-    const fallbackTriggered = selected === 'kite' && batch.entries.some((e) => e.source === 'indian');
+    const fallbackTriggered = batch.entries.some((e) => e.source === 'yahoo' || e.source === 'cache');
 
     console.log('[SCAN_COVERAGE]', {
       stage:           'scheduler.batch',
@@ -332,26 +362,22 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
     logSchedulerProvider('success', {
       method: 'scheduler.batch',
       selected,
-      fallback: fallbackTriggered ? 'kite→indianapi' : 'none',
+      fallback: fallbackTriggered ? 'kite→yahoo|cache' : 'none',
       latency_ms: latencyMs,
       records: batchReceived,
       failures: persistErrors + batch.missingAfterBatch.length,
     });
-    // Provider freshness/breaker snapshot — IndianAPI breaker is still
-    // the ops canary for movers/news; quote primary may be Kite.
     try {
-      const breaker = IndianAPI.indianApiBreakerState();
+      const kite = getKiteHealth();
       console.log('[PROVIDER_HEALTH]', {
-        provider:             selected === 'kite' ? 'Kite|IndianAPI' : 'IndianAPI',
+        provider:             'kite',
         selected,
-        breaker_open:         breaker.open,
-        breaker_state:        breaker.state,
-        breaker_remaining_ms: breaker.remainingMs,
-        auth_failed:          breaker.auth_failed,
-        auth_failed_for_ms:   breaker.auth_failed_for_ms,
+        kite_available:       kite.available,
+        kite_auth_failed:     kite.auth_failed,
+        kite_rate_limited:    kite.rate_limited,
         batch_coverage_pct:   coveragePct,
       });
-    } catch { /* breaker probe is best-effort */ }
+    } catch { /* probe is best-effort */ }
     return {
       batchSymbols: universe.length,
       batchCallsMade: batch.batchCallsMade,
@@ -540,20 +566,18 @@ export async function runIntelTier(): Promise<TierReport<IntelTierDetails>> {
       };
     }
 
-    // 1. Market-wide news — one call (IndianAPI via MDP; not on Kite).
+    // 1. Market-wide news (cache / empty — live news via RSS routes).
     let marketNewsOk = false;
     try {
       const n = await MarketDataProvider.getMarketNews();
-      marketNewsOk = n.source === 'indian' || n.source === 'cache';
+      marketNewsOk = Boolean(n.data?.length) || n.source === 'cache';
     } catch (err) {
       log.warn('market news fetch failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
 
-    // 2. Company news — only for triggered symbols in the last cycle.
-    //    Cap at 3 per run so news doesn't balloon the budget.
-    //    Remains IndianAPI-backed via MarketDataProvider.
+    // 2. Company news — triggered symbols only.
     let companyNewsFetched = 0;
     const picksRec = await redisCacheGet<{ picks: Array<{ symbol: string }> }>(LAST_TRIGGER_PICKS_KEY);
     const candidates = (picksRec?.picks ?? []).map(p => p.symbol);
@@ -567,7 +591,7 @@ export async function runIntelTier(): Promise<TierReport<IntelTierDetails>> {
       if (!chk.allowed) return;
       try {
         const resp = await MarketDataProvider.getCompanyNews(sym);
-        if (resp.source === 'indian') {
+        if (resp.data && resp.data.length > 0) {
           companyNewsFetched += 1;
           await setCooldown(sym, 'news');
         }
@@ -759,18 +783,16 @@ export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetail
       cache_misses: cacheMisses,
     });
     try {
-      const breaker = IndianAPI.indianApiBreakerState();
+      const kite = getKiteHealth();
       console.log('[PROVIDER_HEALTH]', {
-        provider:             selected === 'kite' ? 'Kite|IndianAPI' : 'IndianAPI',
+        provider:             'kite',
         selected,
         stage:                'scheduler.heartbeat',
-        breaker_open:         breaker.open,
-        breaker_state:        breaker.state,
-        breaker_remaining_ms: breaker.remainingMs,
-        auth_failed:          breaker.auth_failed,
+        kite_available:       kite.available,
+        kite_auth_failed:     kite.auth_failed,
         cache_coverage_pct:   coveragePct,
       });
-    } catch { /* breaker probe is best-effort */ }
+    } catch { /* probe is best-effort */ }
 
     return { cacheHits, cacheMisses, upstreamCallsMade };
   });

@@ -14,8 +14,7 @@
 | `REDIS_PASSWORD` | Redis cache bridge | Rotate in Redis ACL; update env |
 | `SESSION_SECRET` | Cookie signing (`src/lib/auth`) | Generate new 64-char hex; **invalidates all sessions** |
 | `ENCRYPTION_KEY` | AES-256-GCM for stored tokens | Generate new 64-char hex; re-encrypt or purge encrypted rows |
-| `INDIANAPI_API_KEY` | Primary market data | Re-issue at IndianAPI dashboard |
-| `KITE_API_KEY` / `KITE_API_SECRET` / `KITE_ACCESS_TOKEN` | Broker (if enabled) | Regenerate at [Kite developer console](https://developers.kite.trade/) |
+| `KITE_API_KEY` / `KITE_API_SECRET` / `KITE_ACCESS_TOKEN` | Primary market data (Kite) | Regenerate at [Kite developer console](https://developers.kite.trade/) |
 | `RESEND_API_KEY` | OTP email delivery | Rotate in Resend dashboard |
 | `GNEWS_API_KEY`, `NEWSDATA_API_KEY`, `NEWSAPI_API_KEY`, `FINNHUB_API_KEY` | News feeds | Rotate per vendor |
 | `SEED_*_PASSWORD` | Dev bootstrap only | Remove from production env entirely |
@@ -36,9 +35,9 @@ openssl rand -hex 32
 
 ### 2. Update environment files
 
-1. Copy `.env.example` → `.env.local` (dev) or `.env` (prod).
-2. Fill placeholders — **never** copy values from old shared files.
-3. Confirm `.env*` is gitignored (`.env.example` is the only tracked env file).
+1. Create or edit `.env.local` (dev) or `.env` (prod) — no tracked template is kept in repo.
+2. Fill required keys — **never** copy values from old shared files.
+3. Confirm `.env*` is gitignored (nothing under `.env*` is tracked).
 
 ### 3. Rotate upstream services
 
@@ -46,7 +45,6 @@ openssl rand -hex 32
 |---------|-------|
 | MySQL | `ALTER USER … IDENTIFIED BY 'new_password';` then update env |
 | Redis | `ACL SETUSER default on >newpassword` or provider console |
-| IndianAPI | Dashboard → API keys → revoke old, create new |
 | Kite | Revoke app keys; regenerate access token via OAuth flow |
 | Resend | API keys → create new, delete old |
 
@@ -76,19 +74,19 @@ pm2 restart all
 ## Local Setup Instructions
 
 1. Clone the repository.
-2. `cp .env.example .env.local`
+2. Create `.env.local` (gitignored) with at least: `MYSQL_*`, `SESSION_SECRET`, `ENCRYPTION_KEY`, `KITE_API_KEY`, `KITE_API_SECRET`, `KITE_ACCESS_TOKEN`, `MARKET_DATA_PROVIDER=kite`, `YAHOO_EMERGENCY_FALLBACK_ENABLED=true`, `NSE_DIRECT_FALLBACK_ENABLED=true`.
 3. Set `MYSQL_*` to a local MySQL instance with the `quantorus365` schema (`npm run db:migrate-all`).
-4. Set `KITE_API_KEY` + `KITE_ACCESS_TOKEN` for the default Kite primary, and keep `INDIANAPI_API_KEY` configured for automatic fallback + unsupported features. Set `INDIANAPI_PRIMARY=true` for immediate IndianAPI recovery, or `MARKET_DATA_PROVIDER=legacy` only for offline DB-only scans.
+4. Set Kite credentials for the default primary (`MARKET_DATA_PROVIDER=kite`). Yahoo/NSE are fallbacks.
 5. Generate fresh `SESSION_SECRET` and `ENCRYPTION_KEY` (see above).
 6. `npm install && npm run dev`
 
-**Never** commit `.env.local`. The template at `.env.example` contains placeholders only.
+**Never** commit `.env.local`. There is no tracked `.env.example` in this repository.
 
 ---
 
 ## Repository Hygiene (Phase 0)
 
-- `.env*` (except `.env.example`) — gitignored
+- `.env*` — gitignored (no exception for a tracked example file)
 - `logs/`, `*.log`, `.next/`, `dist/`, `coverage/` — gitignored
 - `.cursor/`, `.claude/`, `.vscode/` — gitignored
 - Accidental `.claude/` artifacts removed from tracking in Phase 0

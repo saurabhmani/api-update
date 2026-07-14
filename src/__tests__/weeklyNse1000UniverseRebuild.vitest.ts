@@ -148,7 +148,7 @@ describe('weeklyNse1000UniverseRebuild', () => {
         deferredDueToBudget: 0,
         candlesInserted: 1000,
         candlesUpdated: 0,
-        indianApiRequestsUsed: 50,
+        upstreamVendor: 50,
         failures: [],
         durationMs: 100,
         dryRun: false,

@@ -342,7 +342,7 @@ These bypass `src/middleware.ts` auth entirely:
 
 | Path | Risk | Recommendation |
 |------|------|----------------|
-| `/api/run-signal-engine` | IndianAPI quota burn | `requireSession` + `pipelineLimiter` |
+| `/api/run-signal-engine` | removed vendor quota burn | `requireSession` + `pipelineLimiter` |
 | `/api/scanner/custom-universe/run` | Full universe scan | `requireSession` + `requireAdmin` |
 | `/api/backtests` POST | CPU/DB intensive | `requireSession` |
 | `/api/backtests/process-queue` | Queue drain | `requireSession` + admin |

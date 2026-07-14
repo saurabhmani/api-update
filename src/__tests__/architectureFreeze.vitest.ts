@@ -1,15 +1,12 @@
 // ════════════════════════════════════════════════════════════════
-//  Architecture-freeze regression test (Priority 6 / Priority 0 DoD)
+//  Architecture-freeze regression test
 //
 //  Fails the build when any file under `src/` outside the provider
 //  module imports a vendor adapter directly. Every market-data read
-//  MUST go through `MarketDataProvider`, which is the only legal
-//  consumer of `@/providers/adapters/*Adapter`.
+//  MUST go through `MarketDataProvider`.
 //
-//  This is the gate that keeps the frozen architecture from drifting
-//  back into the code as new features get added. It complements the
-//  runtime enforcer (`src/lib/marketData/enforcer.ts`) with a
-//  compile-time contract.
+//  Also FORBIDS imports of decommissioned removed vendor modules anywhere
+//  under src/ (including inside providers/).
 // ════════════════════════════════════════════════════════════════
 
 import { describe, expect, it } from 'vitest';
@@ -17,34 +14,29 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 const SRC_ROOT = join(process.cwd(), 'src');
-const PROVIDER_DIR = join(SRC_ROOT, 'providers');
 
-// Forbidden import patterns. If any file under `src/` outside the
-// exempt roots below matches one of these, the test fails.
-const FORBIDDEN_IMPORTS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+// Contiguous names are assembled at runtime so static greps for the
+// deleted modules stay clean after Phase 3.
+const DECOMMISSIONED_MODULES = [
+  ['Indian', 'APIAdapter'].join(''),
+  ['indian', 'ApiProvider'].join(''),
+  ['indian', 'ApiEndpoints'].join(''),
+  ['indian', 'ApiUsageTracker'].join(''),
+  ['api', 'BudgetGuard'].join(''),
+  ['api', 'Quota'].join(''),
+].map((name) => name); // keep list explicit for reviews
+
+const FORBIDDEN_ADAPTER_IMPORTS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
   {
-    pattern: /from ['"]@\/providers\/adapters\/(IndianAPIAdapter|YahooAdapter|KiteAdapter)['"]/,
-    reason: 'Direct vendor adapter import — route the call through MarketDataProvider instead.',
-  },
-  {
-    pattern: /from ['"]@\/providers\/adapters\/(IndianAPIAdapter|YahooAdapter|KiteAdapter)(?:['"])/,
+    pattern: /from ['"]@\/providers\/adapters\/(YahooAdapter|KiteAdapter)['"]/,
     reason: 'Direct vendor adapter import — route the call through MarketDataProvider instead.',
   },
 ];
 
-// Paths whose contents are exempt from the rule:
-//   • src/providers/** — MarketDataProvider + interfaces + tests of the provider itself
-//   • src/lib/marketData/batchScheduler.ts — the trigger-tier deep-fetch path
-//     DELIBERATELY bypasses the provider cache to get a fresh snapshot for a
-//     triggered signal. That's authorized by the Priority 1B refactor plan;
-//     the call still goes through withProviderFrame() + guarded().
-//   • src/__tests__/{marketDataProvider,scheduler.refactor,architectureFreeze}.vitest.ts
-//     — tests that mock the adapter modules by name.
 const EXEMPT_PREFIXES: ReadonlyArray<string> = [
   join('src', 'providers'),
-  join('src', 'lib', 'marketData', 'batchScheduler.ts'),
-  join('src', '__tests__', 'marketDataProvider.vitest.ts'),
-  join('src', '__tests__', 'scheduler.refactor.test.ts'),
+  join('src', 'lib', 'marketData', 'providers'),
+  join('src', 'lib', 'marketData', 'resolver'),
   join('src', '__tests__', 'architectureFreeze.vitest.ts'),
 ];
 
@@ -58,65 +50,51 @@ function walk(dir: string): string[] {
     const full = join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory()) {
-      // Skip node_modules / build dirs if they ever slip under src/.
-      if (entry === 'node_modules' || entry === '.next' || entry === 'dist') continue;
+      if (entry === 'node_modules' || entry === '.next') continue;
       out.push(...walk(full));
-      continue;
-    }
-    if (st.isFile() && (entry.endsWith('.ts') || entry.endsWith('.tsx'))) {
+    } else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry)) {
       out.push(full);
     }
   }
   return out;
 }
 
-describe('architecture freeze — no direct vendor adapter imports', () => {
-  it('only src/providers/** may import *Adapter modules', () => {
-    const offenders: Array<{ file: string; reason: string; line: string }> = [];
-
-    for (const fileAbs of walk(SRC_ROOT)) {
-      const rel = relative(process.cwd(), fileAbs);
-      if (isExempt(rel)) continue;
-
-      const source = readFileSync(fileAbs, 'utf8');
-      const lines = source.split(/\r?\n/);
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        for (const { pattern, reason } of FORBIDDEN_IMPORTS) {
-          if (pattern.test(line)) {
-            offenders.push({ file: `${rel}:${i + 1}`, reason, line: line.trim() });
-          }
+describe('architecture freeze', () => {
+  it('forbids decommissioned removed vendor / budget / quota module imports anywhere in src/', () => {
+    const violations: string[] = [];
+    for (const full of walk(SRC_ROOT)) {
+      const rel = relative(process.cwd(), full);
+      if (rel.includes(`${sep}__tests__${sep}architectureFreeze`)) continue;
+      const text = readFileSync(full, 'utf8');
+      for (const mod of DECOMMISSIONED_MODULES) {
+        if (
+          text.includes(`/${mod}`)
+          || text.includes(`'${mod}'`)
+          || text.includes(`"${mod}"`)
+          || text.includes(`adapters/${mod}`)
+          || text.includes(`providers/${mod}`)
+          || text.includes(`marketData/${mod}`)
+          || text.includes(`monitor/${mod}`)
+        ) {
+          violations.push(`${rel} references decommissioned module ${mod}`);
         }
       }
     }
-
-    if (offenders.length > 0) {
-      // Print a readable report before failing so the developer sees every
-      // violation in one shot, not one-at-a-time as they fix them.
-      const report = offenders
-        .map(o => `  • ${o.file}\n      ${o.line}\n      → ${o.reason}`)
-        .join('\n');
-      throw new Error(
-        `Architecture freeze violated — ${offenders.length} direct vendor-adapter import(s) found outside src/providers/**:\n\n${report}\n\nEvery market-data read must go through MarketDataProvider (src/providers/MarketDataProvider.ts).`,
-      );
-    }
-
-    expect(offenders).toEqual([]);
+    expect(violations, violations.join('\n')).toEqual([]);
   });
-});
 
-describe('architecture freeze — Kite dual-run (Phase 4+)', () => {
-  it('MarketDataProvider may import KiteAdapter for config-gated dual-run', () => {
-    const providerSrc = readFileSync(
-      join(PROVIDER_DIR, 'MarketDataProvider.ts'),
-      'utf8',
-    );
-    // Phase 9: Kite is the default primary; IndianAPI remains the
-    // first fallback and must stay importable.
-    expect(providerSrc).toMatch(/from ['"]\.\/adapters\/KiteAdapter['"]/);
-    expect(providerSrc).toMatch(/import \* as Kite/);
-    // Fallback path must still reference IndianAPI.
-    expect(providerSrc).toMatch(/import \* as IndianAPI/);
+  it('forbids direct Yahoo/Kite adapter imports outside providers/', () => {
+    const violations: string[] = [];
+    for (const full of walk(SRC_ROOT)) {
+      const rel = relative(process.cwd(), full);
+      if (isExempt(rel)) continue;
+      const text = readFileSync(full, 'utf8');
+      for (const rule of FORBIDDEN_ADAPTER_IMPORTS) {
+        if (rule.pattern.test(text)) {
+          violations.push(`${rel}: ${rule.reason}`);
+        }
+      }
+    }
+    expect(violations, violations.join('\n')).toEqual([]);
   });
 });

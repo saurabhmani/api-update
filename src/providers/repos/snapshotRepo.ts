@@ -211,7 +211,7 @@ export async function getHistoricalCandles(
 // ── Bind into Phase-1 MarketDataProvider ────────────────────────────
 //
 // Call this ONCE at app boot (instrumentation.ts / server.js). After
-// that, the provider's DB fallback tier is live: when IndianAPI +
+// that, the provider's DB fallback tier is live: when removed vendor +
 // cache + Yahoo all fail, `SELECT ... FROM market.snapshots_current` // @deprecated marker
 // returns the last known value tagged `source='db' quality='stale'`.
 export function registerOnMarketDataProvider(): void {

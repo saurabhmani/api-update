@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  symbolMapper — single canonical NSE→IndianAPI symbol translation.
+//  symbolMapper — single canonical NSE→removed vendor symbol translation.
 //
 //  Lookup chain (in order):
 //    1. Trim + uppercase + strip non-[A-Z0-9&._-].
@@ -16,8 +16,8 @@
 //  (TODO — out of scope for this PR).
 //
 //  No upstream call site should call symbol.toUpperCase() in front
-//  of the IndianAPI adapter any more. Every adapter method routes
-//  its input through mapToIndianApiSymbol first.
+//  of the removed vendor adapter any more. Every adapter method routes
+//  its input through mapToCanonicalSymbol first.
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
@@ -83,14 +83,14 @@ function clean(raw: string): string {
 }
 
 /**
- * Map an NSE symbol to the form IndianAPI expects.
+ * Map an NSE symbol to the form removed vendor expects.
  *
  *   - Cleans the input first.
  *   - Honours an operator override row in q365_symbol_mapping_override.
  *   - Falls back to the static dictionary (deliberately empty by default).
  *   - Otherwise returns the cleaned input unchanged.
  */
-export async function mapToIndianApiSymbol(nseSymbol: string): Promise<string> {
+export async function mapToCanonicalSymbol(nseSymbol: string): Promise<string> {
   const cleaned = clean(nseSymbol);
   if (!cleaned) return cleaned;
 
@@ -105,7 +105,7 @@ export async function mapToIndianApiSymbol(nseSymbol: string): Promise<string> {
 }
 
 /** Bulk variant — preserves input order. */
-export async function mapManyToIndianApiSymbol(
+export async function mapManyToCanonicalSymbol(
   nseSymbols: string[],
 ): Promise<string[]> {
   const overrides = await loadOverrideCache();

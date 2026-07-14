@@ -27,7 +27,7 @@ function input(symbol: string, price: number): Parameters<typeof upsertSnapshot>
     change: 1, changePercent: 0.5,
     volume: 1000, open: price - 1, high: price + 1, low: price - 2, prevClose: price - 1,
     timestamp: 1_700_000_000_000,
-    source: 'indian' as ProviderSource,
+    source: 'kite' as ProviderSource,
     dataQuality: 'near-live',
   };
 }

@@ -3,7 +3,7 @@
 //
 //  @deprecated  Yahoo Finance has been removed from production. Do
 //  not import from this file in new code. After Step 2 of the
-//  IndianAPI cutover, Yahoo is gated behind YAHOO_EMERGENCY_FALLBACK_ENABLED // @deprecated marker
+//  removed vendor cutover, Yahoo is gated behind YAHOO_EMERGENCY_FALLBACK_ENABLED // @deprecated marker
 //  and only consulted via the YahooAdapter as an emergency fallback // @deprecated marker
 //  inside MarketDataProvider — never directly.
 //

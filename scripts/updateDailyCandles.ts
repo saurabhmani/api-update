@@ -2,7 +2,7 @@
  * scripts/updateDailyCandles.ts — post-close incremental daily candle update
  *
  * Quota-efficient: skips symbols already on the latest completed trading day;
- * uses IndianAPI 1mo for incremental, 1y only when bar depth is insufficient.
+ * uses Kite 1mo for incremental, 1y only when bar depth is insufficient.
  *
  * Usage:
  *   npm run candles:daily
@@ -17,9 +17,7 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
-import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import { getHistorical as getKiteHistorical, isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
-import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
 import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
 
@@ -67,32 +65,18 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  if (isKiteHistoricalConfigured()) {
-    console.log(`[CANDLE DAILY PREFLIGHT] probing ${symbol} via Kite ...`);
-    const kite = await getKiteHistorical(symbol, '1mo');
-    const bars = kite.data?.candles?.length ?? 0;
-    if (kite.status === 'success' || kite.status === 'partial') {
-      console.log(`[CANDLE DAILY PREFLIGHT] OK (kite) — ${bars} bars (1mo)`);
-      return true;
-    }
-    console.warn(
-      `[CANDLE DAILY PREFLIGHT] Kite miss — ${kite.errorCode}: ${kite.errorMessage} — trying IndianAPI`,
-    );
-  }
-
-  const { apiKey, baseUrl } = getIndianApiConfig();
-  if (!apiKey) {
-    console.error('[CANDLE DAILY PREFLIGHT] neither Kite nor INDIANAPI_API_KEY is configured');
+  if (!isKiteHistoricalConfigured()) {
+    console.error('[CANDLE DAILY PREFLIGHT] Kite historical is not configured');
     return false;
   }
-  console.log(`[CANDLE DAILY PREFLIGHT] probing ${symbol} via ${baseUrl} ...`);
-  const inv = await getIndianApiHistorical(symbol, '1mo');
-  const bars = inv.data?.candles?.length ?? 0;
-  if (inv.status === 'success' || inv.status === 'partial') {
-    console.log(`[CANDLE DAILY PREFLIGHT] OK (indianapi) — ${bars} bars (1mo)`);
+  console.log(`[CANDLE DAILY PREFLIGHT] probing ${symbol} via Kite ...`);
+  const kite = await getKiteHistorical(symbol, '1mo');
+  const bars = kite.data?.candles?.length ?? 0;
+  if (kite.status === 'success' || kite.status === 'partial') {
+    console.log(`[CANDLE DAILY PREFLIGHT] OK (kite) — ${bars} bars (1mo)`);
     return true;
   }
-  console.error(`[CANDLE DAILY PREFLIGHT] FAIL — ${inv.errorCode}: ${inv.errorMessage}`);
+  console.error(`[CANDLE DAILY PREFLIGHT] FAIL — ${kite.errorCode}: ${kite.errorMessage}`);
   return false;
 }
 

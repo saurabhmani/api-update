@@ -58,7 +58,7 @@ function pickProviderFromResult(result: any): {
   const env = result.envelope ?? result.smartFallback ?? result;
   const raw = (env?.provider_used ?? env?.provider ?? null) as string | null;
   let provider: MonitorProvider | null = null;
-  if (raw === 'indianapi' || raw === 'nse' || raw === 'yahoo' ||
+  if (raw === 'kite' || raw === 'nse' || raw === 'yahoo' ||
       raw === 'snapshot'  || raw === 'cache' || raw === 'db') {
     provider = raw;
   } else if (raw === 'nse_direct')      provider = 'nse';

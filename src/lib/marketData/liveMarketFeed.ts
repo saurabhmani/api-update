@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  liveMarketFeed — server-side polling loop for subscribed symbols
 //
-//  Polls Yahoo (default) or IndianAPI for every symbol demanded by
+//  Polls Yahoo (default) or removed vendor for every symbol demanded by
 //  WebSocket clients or HTTP /api/market-data/subscribe heartbeats,
 //  then fans ticks into tickBus + tickPropagator so WS and SSE stay
 //  in sync.
@@ -42,7 +42,7 @@ const DEMAND_TTL_MS = Math.max(
 );
 const BATCH_SIZE = Math.max(
   1,
-  Number(process.env.INDIANAPI_EMULATED_BATCH_MAX) || 50,
+  Number(process.env.LEGACY_VENDOR_ENV) || 50,
 );
 const YAHOO_CONCURRENCY = Math.max(
   1,
@@ -196,7 +196,7 @@ function yahooQuoteToSnapshot(q: YahooPublicQuote): MarketSnapshot {
   };
 }
 
-async function pollIndianApiBatch(symbols: string[]): Promise<number> {
+async function polllegacy_vendorBatch(symbols: string[]): Promise<number> {
   let published = 0;
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
     const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -262,7 +262,7 @@ async function pollOnce(): Promise<void> {
     const marketOpen = isMarketOpen();
     let published = 0;
     if (!marketOpen) {
-      // Off-hours: daily bars are frozen, so never spend IndianAPI
+      // Off-hours: daily bars are frozen, so never spend removed vendor
       // quota here — Yahoo's public chart API alone keeps last-close
       // prices flowing to the UI. This also protects the 16:00 IST
       // EOD candle cron from being starved by live-poll 429s.
@@ -271,10 +271,10 @@ async function pollOnce(): Promise<void> {
       published = await pollDualSourceBatch(symbols);
     } else if (provider === 'yahoo') {
       published = await pollYahooBatch(symbols);
-    } else if (provider === 'indianapi') {
-      published = await pollIndianApiBatch(symbols);
+    } else if (provider === 'kite') {
+      published = await polllegacy_vendorBatch(symbols);
     } else {
-      published = await pollIndianApiBatch(symbols);
+      published = await polllegacy_vendorBatch(symbols);
       if (published === 0) published = await pollYahooBatch(symbols);
     }
     if (published === 0) {
@@ -403,7 +403,7 @@ export function getLiveMarketFeedStats() {
     lastError: store.lastError,
     pollMs: isMarketOpen() ? POLL_MS : CLOSED_POLL_MS,
     running: store.pollTimer != null,
-    // Off-hours the loop always polls Yahoo only (no IndianAPI quota
+    // Off-hours the loop always polls Yahoo only (no removed vendor quota
     // spend on frozen prices); dual applies during the live session.
     provider: !isMarketOpen()
       ? 'yahoo'

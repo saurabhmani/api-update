@@ -434,9 +434,9 @@ async function loadFromDb(): Promise<LoadResult> {
   // Dedupe + uppercase + placeholder filter, preserve DB order.
   // Spec "FIX UNIVERSE NOISE" — q365_universe sometimes contains
   // placeholder rows (DUMMYVEDL1..N, TEMP_*, TEST_*) that have no
-  // candle data anywhere upstream. They burn IndianAPI budget on
+  // candle data anywhere upstream. They burn removed vendor budget on
   // every scan (each gets a `[CANDLE ERROR] insufficient data ... falling
-  // back to IndianAPI live` round-trip that returns `status:failed`)
+  // back to removed vendor live` round-trip that returns `status:failed`)
   // and add real wall-clock time when the breaker is closed. Filter
   // them out at load time.
   const PLACEHOLDER_SYMBOL_RE = /^(DUMMY|TEST_|TEMP_|PLACEHOLDER_|XX_)/;

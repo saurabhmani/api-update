@@ -54,7 +54,7 @@ Baseline from `docs/test-debt.md` (2026-07-09). The **signals gate** (`npm run t
 | ~~`check:signal-consistency` LGEINDIA/PFC mismatches~~ | Signals | Medium | **Resolved Phase 1** — `getAuthoritativeSignalRow` + `preferredDirection` |
 | `check:signal-consistency` stale-candle `NO_TRADE` on closed market (ARE&M, etc.) | Signals | Low | Expected — live staleness gate; not a consistency bug |
 | Full Vitest suite ~87 failures | Platform | Low | Phase 1 |
-| `.env.local` corrupted lines in some dev copies | Platform | Low | **0** — use `.env.example` |
+| `.env.local` corrupted lines in some dev copies | Platform | Low | **0** — maintain a private backup of `.env.local` |
 | Confidence 80–89 bucket has 0% observed wins over 95 legacy outcomes | Analytics | Medium | Phase 3 report finding — investigate source population before any calibration change |
 | Revalidation reason append can truncate `reason_type` for LGEINDIA/PFC | Signals | Low | Existing persistence enum/schema mismatch; consistency result remains green |
 

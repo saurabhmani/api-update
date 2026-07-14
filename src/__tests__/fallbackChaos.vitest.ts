@@ -2,14 +2,14 @@
 //  Fallback chaos integration tests — Spec FALLBACK-CHAOS-2026-05
 //
 //  Drives the chaos surfaces directly:
-//    A. IndianAPI timeout         → InvalidProviderPayloadError
+//    A. removed vendor timeout         → InvalidProviderPayloadError
 //                                   throw is NOT the path; the resolver
 //                                   sees a network-level error.
 //                                   Verified via classifier state.
-//    B. IndianAPI 429             → breaker trips, cascade engages
-//    C. IndianAPI zero-price      → validator rejects
-//    D. IndianAPI malformed       → validator rejects
-//    E. IndianAPI partial payload → coverage gate handles separately
+//    B. removed vendor 429             → breaker trips, cascade engages
+//    C. removed vendor zero-price      → validator rejects
+//    D. removed vendor malformed       → validator rejects
+//    E. removed vendor partial payload → coverage gate handles separately
 //
 //  Goal: every chaos scenario produces the canonical [PROVIDER_*]
 //  / [FALLBACK_*] log path AND the institutional-health counter
@@ -57,16 +57,16 @@ describe('chaos: zero-price payload', () => {
   });
 
   it('assertValidSnapshot throws InvalidProviderPayloadError', () => {
-    expect(() => assertValidSnapshot('IndianAPI', { ...VALID, price: 0 }, VALID))
+    expect(() => assertValidSnapshot('removed vendor', { ...VALID, price: 0 }, VALID))
       .toThrow(InvalidProviderPayloadError);
   });
 
   it('institutional-health counter records the rejection', () => {
     expect(() => assertValidSnapshot(
-      'IndianAPI', { ...VALID, symbol: 'LT', price: 0 }, VALID,
+      'removed vendor', { ...VALID, symbol: 'LT', price: 0 }, VALID,
     )).toThrow();
     const s = getInstitutionalHealthSnapshot();
-    const indian = s.providers.find((p) => p.name === 'IndianAPI');
+    const indian = s.providers.find((p) => p.name === 'removed vendor');
     expect(indian?.invalid_payload).toBe(1);
     expect(indian?.rejected_symbol).toBe(1);
     expect(indian?.last_invalid_reason).toBe('PRICE_NON_POSITIVE');
@@ -89,7 +89,7 @@ describe('chaos: zero-volume during market hours', () => {
 
   it('counter shows AXISBANK rejected once', () => {
     expect(() => assertValidSnapshot(
-      'IndianAPI', { ...VALID, symbol: 'AXISBANK', volume: 0 }, VALID, { marketOpen: true },
+      'removed vendor', { ...VALID, symbol: 'AXISBANK', volume: 0 }, VALID, { marketOpen: true },
     )).toThrow();
     const s = getInstitutionalHealthSnapshot();
     expect(s.providers[0].invalid_payload).toBe(1);
@@ -129,16 +129,16 @@ describe('chaos: malformed payload (NaN / Infinity / missing fields)', () => {
 describe('chaos: fallback cascade transitions', () => {
   beforeEach(() => resetInstitutionalHealth());
 
-  it('records the indianapi → nse_direct cascade', () => {
-    recordFallbackTriggered('indianapi');
+  it('records the legacy_vendor → nse_direct cascade', () => {
+    recordFallbackTriggered('kite');
     recordFallbackSuccess('nse_direct');
     const s = getInstitutionalHealthSnapshot();
-    expect(s.providers.find((p) => p.name === 'indianapi')?.fallback_triggered).toBe(1);
+    expect(s.providers.find((p) => p.name === 'kite')?.fallback_triggered).toBe(1);
     expect(s.providers.find((p) => p.name === 'nse_direct')?.fallback_success).toBe(1);
   });
 
   it('records a failed fallback as fallback_failed', () => {
-    recordFallbackTriggered('indianapi');
+    recordFallbackTriggered('kite');
     recordFallbackFailed('nse_direct', 'NSE_NO_DATA');
     const s = getInstitutionalHealthSnapshot();
     expect(s.providers.find((p) => p.name === 'nse_direct')?.fallback_failed).toBe(1);
@@ -147,12 +147,12 @@ describe('chaos: fallback cascade transitions', () => {
 
   it('multiple cascade rounds accumulate', () => {
     for (let i = 0; i < 5; i++) {
-      recordFallbackTriggered('indianapi');
+      recordFallbackTriggered('kite');
       if (i % 2 === 0) recordFallbackSuccess('nse_direct');
       else             recordFallbackFailed('nse_direct', 'NSE_RATE_LIMITED');
     }
     const s = getInstitutionalHealthSnapshot();
-    const indian = s.providers.find((p) => p.name === 'indianapi');
+    const indian = s.providers.find((p) => p.name === 'kite');
     const nse    = s.providers.find((p) => p.name === 'nse_direct');
     expect(indian?.fallback_triggered).toBe(5);
     expect(nse?.fallback_success).toBe(3);
@@ -178,23 +178,23 @@ describe('chaos: partial payload (validator passes, coverage gate handles)', () 
   });
 });
 
-describe('chaos: total IndianAPI outage simulation', () => {
+describe('chaos: total removed vendor outage simulation', () => {
   beforeEach(() => resetInstitutionalHealth());
 
   it('records repeated cascade triggers as the outage persists', () => {
     // Simulate 10 consecutive cascade events.
     for (let i = 0; i < 10; i++) {
-      recordFallbackTriggered('indianapi');
+      recordFallbackTriggered('kite');
       recordFallbackSuccess('nse_direct');
     }
     const s = getInstitutionalHealthSnapshot();
-    expect(s.providers.find((p) => p.name === 'indianapi')?.fallback_triggered).toBe(10);
+    expect(s.providers.find((p) => p.name === 'kite')?.fallback_triggered).toBe(10);
     expect(s.providers.find((p) => p.name === 'nse_direct')?.fallback_success).toBe(10);
   });
 
   it('cascade also records when nse_direct itself fails after N attempts', () => {
     for (let i = 0; i < 5; i++) {
-      recordFallbackTriggered('indianapi');
+      recordFallbackTriggered('kite');
       recordFallbackFailed('nse_direct', 'NSE_BREAKER_OPEN');
     }
     const s = getInstitutionalHealthSnapshot();

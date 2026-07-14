@@ -3,7 +3,7 @@
 //  NSE cash session is closed.
 //
 //  BALANCED_REAL_DATA_MODE contract:
-//    - NEVER calls an upstream provider (IndianAPI / NSE direct / Yahoo).
+//    - NEVER calls an upstream provider (removed vendor / NSE direct / Yahoo).
 //    - Reads ONLY from MySQL — no synthetic injection, no fake-data
 //      backfill, no force_seed rows. Every row is real scanner output.
 //    - Two-tier filter ladder. Strict primary; relaxed fallback only

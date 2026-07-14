@@ -22,10 +22,6 @@ import {
 } from '@/lib/monitor/institutionalHealth';
 import { renderPrometheusMetrics } from '@/lib/monitor/prometheus';
 import { flushHealthToRedis } from '@/lib/monitor/redisCounters';
-import {
-  indianApiBreakerState,
-  indianApiQueueGauge,
-} from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { getKiteHealth } from '@/lib/kite/health';
@@ -47,10 +43,8 @@ async function probeLatestCandleMs(): Promise<number | null> {
 
 export async function GET(): Promise<Response> {
   const market = getMarketStatus();
-  const [snapshot, breaker, queue, kite, latestMs] = await Promise.all([
+  const [snapshot, kite, latestMs] = await Promise.all([
     Promise.resolve(getInstitutionalHealthSnapshot()),
-    Promise.resolve(safe(() => indianApiBreakerState(), null)),
-    Promise.resolve(safe(() => indianApiQueueGauge(), null)),
     Promise.resolve(safe(() => getKiteHealth(), null)),
     probeLatestCandleMs(),
   ]);
@@ -67,15 +61,9 @@ export async function GET(): Promise<Response> {
       feed_frozen:        candleReport.feed_frozen,
       market_open:        candleReport.market_open,
     },
-    breaker: breaker
-      ? {
-          state:       breaker.state,
-          open:        breaker.open,
-          remainingMs: breaker.remainingMs,
-          auth_failed: breaker.auth_failed,
-        }
-      : null,
-    queue:   queue ?? null,
+    // Soft optional — no vendor breaker/queue hard-deps at scrape time.
+    breaker: null,
+    queue:   null,
     kite: kite
       ? {
           configured:        kite.configured,

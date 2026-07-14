@@ -67,7 +67,7 @@ if (process.env.NODE_ENV === 'production') {
 // rescore + regen crons in its own Node process. Without this line the
 // Next.js process ALSO registers the same crons via bootInProcScheduler
 // (gated on Q365_INPROC_REGEN=1, which production sets) — so every
-// rescore + regen tick fires TWICE, doubling IndianAPI burn and racing
+// rescore + regen tick fires TWICE, doubling removed vendor burn and racing
 // on q365_signals writes (DB lock saves correctness but leaves wasted
 // quota + non-deterministic ordering). Forcing Q365_INPROC_SCHEDULER=0
 // here makes bootInProc.shouldBoot() return false in the Next process
@@ -86,7 +86,7 @@ const HOSTNAME  = process.env.HOST || '0.0.0.0';
 const DEV       = process.env.NODE_ENV !== 'production';
 
 // Kite WebSocket stream server removed — live ticks are served by
-// IndianAPI polling + WebSocket fan-out (see instrumentation.ts).
+// removed vendor polling + WebSocket fan-out (see instrumentation.ts).
 
 // tsx binary used to run TypeScript worker entrypoints. Same binary
 // PM2 used to invoke in the old ecosystem config.

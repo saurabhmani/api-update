@@ -3,7 +3,7 @@
 //
 //  Hits www.nseindia.com/api/historical/cm/equity for daily OHLCV
 //  bars. Used by the candle chain ONLY when:
-//    1. IndianAPI fetch failed/empty AND
+//    1. removed vendor fetch failed/empty AND
 //    2. NSE_HISTORICAL_FETCH_ENABLED=true is set in env (default OFF).
 //  scrapers, so this provider mirrors `nseDirectProvider`'s
 //  conservative contract:
@@ -54,7 +54,7 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
 }
 
 // Default OFF — NSE scraping is opt-in via NSE_HISTORICAL_FETCH_ENABLED=true.
-// IndianAPI is the primary upstream for daily candle backfill; NSE is a
+// removed vendor is the primary upstream for daily candle backfill; NSE is a
 // last-resort fallback when explicitly enabled by the operator.
 const NSE_HISTORICAL_ENABLED = () => envBool('NSE_HISTORICAL_FETCH_ENABLED', false);
 

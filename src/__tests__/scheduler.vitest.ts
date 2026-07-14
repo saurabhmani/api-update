@@ -4,7 +4,7 @@
 //  We don't test node-cron itself. What we test:
 //    • runBatchTier calls getBatchLiveSnapshots exactly once and
 //      reports the counts aggregated from the batch response.
-//    • runBatchTier persists every 'indian'-source snapshot and
+//    • runBatchTier persists every 'kite'-source snapshot and
 //      tolerates persistence failures (counts them, doesn't crash).
 //    • A batch provider failure is surfaced cleanly in the report.
 //    • runSchedulerPassOnce (legacy alias) maps to runBatchTier.
@@ -40,10 +40,10 @@ import type {
 } from '@/types/market';
 
 const PROVIDER_NAMES: Record<ProviderSource, string> = {
-  indian: 'IndianAPI', cache: 'Cache', yahoo: 'Yahoo Finance', db: 'PostgreSQL', kite: 'Kite (broker)',
+  cache: 'Cache', yahoo: 'Yahoo Finance', db: 'PostgreSQL', kite: 'Kite Connect',
 };
 const SOURCE_TYPES: Record<ProviderSource, ProviderSourceType> = {
-  indian: 'primary', cache: 'cache', yahoo: 'fallback', db: 'stale', kite: 'primary',
+  cache: 'cache', yahoo: 'fallback', db: 'stale', kite: 'primary',
 };
 
 function snap(sym: string): MarketSnapshot {
@@ -92,9 +92,9 @@ describe('scheduler runBatchTier', () => {
   it('issues a single batch call and reports received count', async () => {
     vi.mocked(MarketDataProvider.getBatchLiveSnapshots).mockResolvedValue({
       entries: [
-        entry('AAA', 'indian', 'near-live'),
-        entry('BBB', 'indian', 'near-live'),
-        entry('CCC', 'indian', 'near-live'),
+        entry('AAA', 'kite', 'near-live'),
+        entry('BBB', 'kite', 'near-live'),
+        entry('CCC', 'kite', 'near-live'),
       ],
       batchCallsMade: 1,
       missingAfterBatch: [],
@@ -113,7 +113,7 @@ describe('scheduler runBatchTier', () => {
   it('persists every live-source snapshot (indian or kite)', async () => {
     vi.mocked(MarketDataProvider.getBatchLiveSnapshots).mockResolvedValue({
       entries: [
-        entry('AAA', 'indian', 'near-live'),
+        entry('AAA', 'kite', 'near-live'),
         entry('BBB', 'kite', 'near-live'),
         entry('CCC', 'cache',  'cached-fresh'),   // already cached — not persisted
       ],
@@ -130,9 +130,9 @@ describe('scheduler runBatchTier', () => {
   it('counts persistence failures without crashing the tier', async () => {
     vi.mocked(MarketDataProvider.getBatchLiveSnapshots).mockResolvedValue({
       entries: [
-        entry('AAA', 'indian', 'near-live'),
-        entry('BBB', 'indian', 'near-live'),
-        entry('CCC', 'indian', 'near-live'),
+        entry('AAA', 'kite', 'near-live'),
+        entry('BBB', 'kite', 'near-live'),
+        entry('CCC', 'kite', 'near-live'),
       ],
       batchCallsMade: 1,
       missingAfterBatch: [],
@@ -162,8 +162,8 @@ describe('scheduler runBatchTier', () => {
   it('reports symbols missing from the batch response', async () => {
     vi.mocked(MarketDataProvider.getBatchLiveSnapshots).mockResolvedValue({
       entries: [
-        entry('AAA', 'indian', 'near-live'),
-        entry('BBB', 'indian', 'near-live'),
+        entry('AAA', 'kite', 'near-live'),
+        entry('BBB', 'kite', 'near-live'),
         { symbol: 'CCC', snapshot: null, source: 'db', data_quality: 'stale' },
       ],
       batchCallsMade: 1,

@@ -2,7 +2,7 @@
 //  Candle Daily Update Job — post-close incremental EOD refresh
 //
 //  Fetches only missing latest daily bars for active NSE symbols.
-//  Uses Kite (then IndianAPI) `1mo` for incremental; `1y` when thin.
+//  Uses Kite `1mo` for incremental; `1y` when thin.
 //  Writes ONLY to `candles` (market_data_daily is a view).
 //
 //  Usage:
@@ -13,7 +13,7 @@
 import { db } from '@/lib/db';
 import {
   fetchUpstreamDailyCandles,
-  getIndianApiCandleRequestCount,
+  getKiteCandleRequestCount,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
 import {
@@ -28,12 +28,6 @@ import {
   loadActiveUniverseSymbols,
   persistBarsForSymbol,
 } from '@/lib/marketData/candleBackfillJob';
-import {
-  beginPerRunBudget,
-  endPerRunBudget,
-  getApiUsage,
-} from '@/providers/adapters/IndianAPIAdapter';
-import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import type { HistoricalRange } from '@/types/market';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
@@ -88,16 +82,11 @@ export interface CandleDailyUpdateSummary {
 }
 
 function isPerRunBudgetExhausted(): boolean {
-  const usage = getApiUsage();
-  return usage.per_run_active && usage.per_run_exceeded;
+  return false;
 }
 
 function perRunBudgetFailureReason(): string {
-  const usage = getApiUsage();
-  return (
-    `PER_RUN_LIMIT_EXCEEDED (${usage.per_run_count}/${usage.per_run_limit}) — ` +
-    `re-run later or raise CANDLE_DAILY_UPDATE_MAX_FETCH`
-  );
+  return "PER_RUN_LIMIT_EXCEEDED";
 }
 
 function isAbortReason(reason: string | undefined): 'budget' | 'auth' | null {
@@ -279,16 +268,14 @@ async function runCandleDailyUpdateJobInner(
   const maxFetch = resolveDailyUpdateMaxFetch(options.maxFetch);
   const targetTradingDay = getLatestCompletedTradingDay();
 
-  const { apiKey } = getIndianApiConfig();
-  if (!apiKey && !isKiteHistoricalConfigured() && !dryRun) {
+  if (!isKiteHistoricalConfigured() && !dryRun) {
     throw new Error(
       'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
-      + 'and/or INDIANAPI_API_KEY before running daily update',
+      + 'before running daily update',
     );
   }
 
   resetCandleSourceCounters();
-  beginPerRunBudget(DAILY_UPDATE_MAX_REQUESTS());
 
   const symbols = options.symbols?.length
     ? options.symbols.map((s) => s.toUpperCase()).slice(0, universeLimit)
@@ -368,7 +355,7 @@ async function runCandleDailyUpdateJobInner(
       console.log(
         `[CANDLE DAILY UPDATE] progress ${processed}/${symbols.length} ` +
         `skipped=${summary.skippedAlreadyUpdated} fetched=${summary.fetched} ` +
-        `failed=${summary.failed} requests=${getIndianApiCandleRequestCount()}`,
+        `failed=${summary.failed} requests=${getKiteCandleRequestCount()}`,
       );
     }
 
@@ -377,8 +364,7 @@ async function runCandleDailyUpdateJobInner(
     }
   }
 
-  endPerRunBudget();
-  summary.requestsUsed = getIndianApiCandleRequestCount();
+  summary.requestsUsed = getKiteCandleRequestCount();
   summary.latestCandleDate = dryRun
     ? summary.latestCandleDate
     : await queryGlobalLatestCandleDate();

@@ -11,7 +11,16 @@ import type { MarketSnapshot, MoversResult } from '@/types/market';
 import { cacheGet } from '@/lib/redis';
 import { CONFIG, tierOf } from './schedulerConfig';
 import { filterNotCoolingDown } from './cooldownStore';
-import { snapshot as budgetSnapshot, maxDeepForLevel, triggerMultForLevel } from './apiBudgetGuard';
+/** Phase 3 — budget guard removed; always normal. */
+async function budgetSnapshot(): Promise<{ level: string }> {
+  return { level: 'normal' };
+}
+function maxDeepForLevel(_level: string): number {
+  return CONFIG.maxDeepFetchesPerCycle;
+}
+function triggerMultForLevel(_level: string): number {
+  return 1;
+}
 import { logger } from '@/lib/logger';
 
 const log = logger.child({ component: 'triggerEngine' });
@@ -89,7 +98,7 @@ function scoreSnapshot(
   if (mostActive.has(s.symbol)) { score += 15; reasons.push('inMostActive'); }
   if (freshNews.has(s.symbol))  { score += 20; reasons.push('freshNews'); }
 
-  // 52w proximity — requires yearHigh/yearLow (IndianAPI returns them
+  // 52w proximity — requires yearHigh/yearLow (removed vendor returns them
   // on /stock; batch endpoint may or may not — fall back to cached
   // CorporateIntel if your pipeline writes it).
   if (s.yearHigh && s.yearHigh > 0) {

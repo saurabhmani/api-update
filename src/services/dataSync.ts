@@ -2,8 +2,8 @@
  * Data Sync Service — Quantorus365
  *
  * 1. syncRankingsFromNse    — q365_universe batch quotes → rankings table
- *                             (IndianAPI via resolveBatch). Intraday movers
- *                             from IndianAPI /trending overlay % when available.
+ *                             (removed vendor via resolveBatch). Intraday movers
+ *                             from removed vendor /trending overlay % when available.
  * 2. syncInstrumentsFromCdn — public CDN instrument master (no auth)
  *
  * No broker OAuth. All sources are public or internal DB.
@@ -43,7 +43,7 @@ function pickName(g: Record<string, unknown>, sym: string): string {
   return String(g.symbolName ?? g.companyName ?? g.name ?? g.symbol ?? sym);
 }
 
-/** IndianAPI /trending movers — used to overlay fresher intraday % on universe rows. */
+/** removed vendor /trending movers — used to overlay fresher intraday % on universe rows. */
 async function loadMoversOverlay(): Promise<Map<string, { pct: number; ltp: number }>> {
   const map = new Map<string, { pct: number; ltp: number }>();
   try {
@@ -248,7 +248,7 @@ async function seedRankingsFromUniverse(
   };
 }
 
-/** Build rankings rows directly from IndianAPI movers when the list is large enough. */
+/** Build rankings rows directly from removed vendor movers when the list is large enough. */
 async function seedRankingsFromMovers(
   movers: Record<string, unknown>[],
 ): Promise<{ inserted: number; message: string } | null> {
@@ -310,7 +310,7 @@ async function seedRankingsFromMovers(
 
   return {
     inserted,
-    message: `Rankings updated: ${inserted} symbols from IndianAPI movers.`,
+    message: `Rankings updated: ${inserted} symbols from removed vendor movers.`,
   };
 }
 

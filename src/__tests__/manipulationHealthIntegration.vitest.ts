@@ -95,7 +95,7 @@ const baseHealthCtx = (): EngineHealthContext => ({
   generatedAt: new Date().toISOString(),
   marketStatus: { isOpen: true, label: 'Market Open', state: 'open' },
   feed: {
-    provider: 'indianapi',
+    provider: 'kite',
     lastSuccessAt: new Date().toISOString(),
     lastApiRequestAt: new Date().toISOString(),
     isBootstrap: false,

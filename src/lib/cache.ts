@@ -2,7 +2,7 @@
 //  In-memory market-data cache — Redis-ready interface
 //
 //  Used by MarketDataProvider as the second link in the fallback
-//  chain (IndianAPI → CACHE → Yahoo → DB). Purely in-process today;
+//  chain (removed vendor → CACHE → Yahoo → DB). Purely in-process today;
 //  swap the implementation for ioredis later without changing any
 //  call site — the Cache interface is the contract.
 //

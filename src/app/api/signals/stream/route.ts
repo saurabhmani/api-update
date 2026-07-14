@@ -114,7 +114,7 @@ type CachedSignalsResult = StreamCacheResult<unknown>;
  */
 async function enrichLivePricesForStream(rows: any[]): Promise<any[]> {
   // Per-tick enrichment via the central resolver. One batch call to
-  // IndianAPI (with cache-fan-out) replaces the previous per-symbol
+  // removed vendor (with cache-fan-out) replaces the previous per-symbol
   // Yahoo fan-out. The resolver also writes the per-symbol cache so // @deprecated marker
   // the next tick is served from cache without an upstream call.
   const targets = rows.map((r) => ({
@@ -139,7 +139,7 @@ async function enrichLivePricesForStream(rows: any[]): Promise<any[]> {
     if (snap && Number.isFinite(snap.price) && snap.price > 0) {
       row.livePrice   = snap.price;
       row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
-      row.liveSource  = result.provider === 'yahoo_emergency' ? 'yahoo' : 'indianapi'; // @deprecated marker
+      row.liveSource  = result.provider === 'yahoo_emergency' ? 'yahoo' : 'kite'; // @deprecated marker
       row.liveTickTs  = snap.timestamp || Date.now();
     }
   }

@@ -2,7 +2,7 @@
 //  kiteHistoricalProvider — Phase 6 historical envelope over
 //  KiteAdapter.getHistorical / getHistoricalByInterval.
 //
-//  Mirror of indianApiProvider for OHLC history only:
+//  OHLC history provider:
 //    • never throws to callers
 //    • returns ProviderInvocation-shaped envelope
 //    • maps auth / rate-limit / empty into stable error codes
@@ -151,7 +151,7 @@ export async function getHistorical(
   } catch (err) {
     const { code, message } = mapThrownError(err);
     console.log(
-      `[PROVIDER] fallback from=kite to=indianapi reason=${code} symbol=${sym}`,
+      `[PROVIDER] fallback from=kite to=legacy_vendor reason=${code} symbol=${sym}`,
     );
     return failedInv(endpoint, startedAt, t0, code, message);
   }
@@ -223,7 +223,7 @@ export async function getHistoricalForInterval(
   } catch (err) {
     const { code, message } = mapThrownError(err);
     console.log(
-      `[PROVIDER] fallback from=kite to=indianapi reason=${code} symbol=${sym}`,
+      `[PROVIDER] fallback from=kite to=legacy_vendor reason=${code} symbol=${sym}`,
     );
     return failedInv(endpoint, startedAt, t0, code, message);
   }

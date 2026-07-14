@@ -26,7 +26,6 @@ import {
 import { getRecentTraces } from '@/lib/monitor/trace';
 import { getProviderReport } from '@/lib/marketData/providerReport';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
-import { getQuotaReport } from '@/lib/monitor/apiQuota';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -52,9 +51,9 @@ export async function GET(): Promise<Response> {
   const traces = getRecentTraces();
   const provReport = getProviderReport();
   const market = getMarketStatus();
-  const quota  = await getQuotaReport();
+  const quota: { state: 'SAFE' | 'WARNING' | 'CRITICAL' | 'BLOCKED' } = { state: 'SAFE' };
 
-  const providerSummary = (name: 'indianapi' | 'nse' | 'yahoo' | 'snapshot') => {
+  const providerSummary = (name: 'kite' | 'nse' | 'yahoo' | 'snapshot') => {
     const p = snap.providers.find((x) => x.provider === name);
     return {
       calls:        p?.calls        ?? 0,
@@ -105,7 +104,7 @@ export async function GET(): Promise<Response> {
     daily: snap.daily,
     routes: snap.routes,
     providers: {
-      indianapi: providerSummary('indianapi'),
+      kite:      providerSummary('kite'),
       nse:       providerSummary('nse'),
       yahoo:     providerSummary('yahoo'),
       snapshot:  providerSummary('snapshot'),
@@ -135,7 +134,7 @@ export async function GET(): Promise<Response> {
     error_log:     snap.errorLog,
     fallback_log:  snap.fallbackLog,
 
-    // ── Spec QUOTA_TRACKING — IndianAPI usage vs IST limits ────
+    // ── Spec QUOTA_TRACKING — removed vendor usage vs IST limits ────
     quota,
 
     // ── Process info ───────────────────────────────────────────

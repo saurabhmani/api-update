@@ -18,7 +18,7 @@ const CONFIG = {
   outlierSpikeBps: 200,
 };
 
-function tick(source: 'yahoo' | 'indianapi', ltp: number, ts = Date.now()): NormalizedFeedTick {
+function tick(source: 'yahoo' | 'kite', ltp: number, ts = Date.now()): NormalizedFeedTick {
   return {
     symbol: 'RELIANCE',
     exchange: 'NSE',
@@ -43,7 +43,7 @@ describe('feedValidator', () => {
   it('confirms when both feeds agree', () => {
     const now = Date.now();
     const y = tick('yahoo', 2500, now);
-    const i = tick('indianapi', 2501, now);
+    const i = tick('kite', 2501, now);
     const result = validateCrossSourceFeeds('RELIANCE', y, i, CONFIG, now);
     expect(result.status).toBe('confirmed');
     expect(result.metrics.priceDiffBps).toBeLessThan(50);
@@ -52,7 +52,7 @@ describe('feedValidator', () => {
   it('flags data_mismatch on severe divergence', () => {
     const now = Date.now();
     const y = tick('yahoo', 2500, now);
-    const i = tick('indianapi', 3000, now);
+    const i = tick('kite', 3000, now);
     const result = validateCrossSourceFeeds('RELIANCE', y, i, CONFIG, now);
     expect(result.status).toBe('data_mismatch');
   });
@@ -76,7 +76,7 @@ describe('confidenceEngine', () => {
     const validation = validateCrossSourceFeeds(
       'RELIANCE',
       tick('yahoo', 2500, now),
-      tick('indianapi', 2500, now),
+      tick('kite', 2500, now),
       CONFIG,
       now,
     );
@@ -95,7 +95,7 @@ describe('confidenceEngine', () => {
 describe('approvalGateway', () => {
   const approvalConfig = {
     allowSingleSourceSignals: false,
-    authoritativeOnConflict: 'indianapi' as const,
+    authoritativeOnConflict: 'kite' as const,
     minConfidenceForSignal: 80,
   };
 
@@ -104,7 +104,7 @@ describe('approvalGateway', () => {
     const validation = validateCrossSourceFeeds(
       'RELIANCE',
       tick('yahoo', 2500, now),
-      tick('indianapi', 2500, now),
+      tick('kite', 2500, now),
       CONFIG,
       now,
     );
@@ -118,7 +118,7 @@ describe('approvalGateway', () => {
     const validation = validateCrossSourceFeeds(
       'RELIANCE',
       tick('yahoo', 2500, now),
-      tick('indianapi', 3200, now),
+      tick('kite', 3200, now),
       CONFIG,
       now,
     );
@@ -138,7 +138,7 @@ describe('dataSourceManager.processDualSourceSymbol', () => {
     const result = processDualSourceSymbol(
       'RELIANCE',
       tick('yahoo', 2500, now),
-      tick('indianapi', 2500, now),
+      tick('kite', 2500, now),
       now,
     );
     expect(result.validation.status).toBe('confirmed');

@@ -170,7 +170,7 @@ dependency status so the gateway can degrade gracefully.
 
 Per the Priority 0 architecture freeze:
 
-- [ ] **Phase 1 Tier 0** — every direct IndianAPI / Yahoo / Kite call
+- [ ] **Phase 1 Tier 0** — every direct removed vendor / Yahoo / Kite call
       migrated to `MarketDataProvider`. `MarketDataProvider` itself
       no longer touches Kite; Kite is broker/execution only.
       See `MIGRATION_PLAYBOOK.md` Tier 0 for the remaining files.
@@ -193,8 +193,8 @@ establishes:
 ## Env vars added
 
 ```
-INDIAN_API_KEY=                                 # (aliases INDIANAPI_KEY)
-INDIAN_API_BASE_URL=https://stock.indianapi.in  # (aliases INDIANAPI_BASE_URL)
+LEGACY_VENDOR_ENV=                                 # (aliases LEGACY_VENDOR_ENV)
+LEGACY_VENDOR_ENV=https://stock.legacy_vendor.in  # (aliases LEGACY_VENDOR_ENV)
 YAHOO_ENABLED=true
 MARKET_INGESTION_PORT=4100
 # MARKET_INGESTION_URL=http://market-ingestion.internal:4100

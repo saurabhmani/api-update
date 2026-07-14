@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  yahooCandles — NEUTRALIZED STUB // @deprecated marker
 //
-//  @deprecated  Historical candles now flow through IndianAPI
+//  @deprecated  Historical candles now flow through removed vendor
 //  (`MarketDataProvider.getHistorical`). Do not import this file
 //  in new code.
 //
@@ -19,7 +19,7 @@ export interface OhlcBar {
   volume: number;
 }
 
-export type CandleSource = 'kite' | 'indianapi' | 'db' | 'nse' | 'yahoo'; // yahoo = legacy alias
+export type CandleSource = 'kite' | 'kite' | 'db' | 'nse' | 'yahoo'; // yahoo = legacy alias
 
 export type CandleFetchResult =
   | { ok: true;  candles: OhlcBar[]; source: CandleSource }

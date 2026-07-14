@@ -1,4 +1,4 @@
-// Cross-source validation — compare Yahoo vs IndianAPI before signals.
+// Cross-source validation — compare Yahoo vs Kite before signals.
 
 import { isMarketOpen } from '@/lib/marketData/marketHours';
 import type {
@@ -37,7 +37,7 @@ function ohlcConsistent(a: NormalizedFeedTick, b: NormalizedFeedTick): boolean {
 export function validateCrossSourceFeeds(
   symbol: string,
   yahoo: NormalizedFeedTick | null,
-  indian: NormalizedFeedTick | null,
+  kiteTick: NormalizedFeedTick | null,
   config: Pick<
     DualSourceConfig,
     'priceToleranceBps' | 'volumeTolerancePct' | 'timestampToleranceMs' | 'outlierSpikeBps'
@@ -47,7 +47,7 @@ export function validateCrossSourceFeeds(
   const reasons: string[] = [];
   const marketOpen = isMarketOpen();
 
-  if (!yahoo && !indian) {
+  if (!yahoo && !kiteTick) {
     return {
       symbol,
       status: 'no_reliable_data',
@@ -61,15 +61,15 @@ export function validateCrossSourceFeeds(
         delayedUpdate: false,
       },
       yahoo,
-      indianapi: indian,
+      kite: kiteTick,
       reasons: ['both_sources_failed'],
       validatedAt: now,
     };
   }
 
-  if (!yahoo || !indian) {
-    const present = yahoo ?? indian!;
-    const missing = yahoo ? 'indianapi' : 'yahoo';
+  if (!yahoo || !kiteTick) {
+    const present = yahoo ?? kiteTick!;
+    const missing = yahoo ? 'kite' : 'yahoo';
     const age = now - present.sourceTimestamp;
     const delayed = marketOpen && age > config.timestampToleranceMs;
     if (delayed) reasons.push(`${missing}_missing_and_present_feed_delayed`);
@@ -87,19 +87,19 @@ export function validateCrossSourceFeeds(
         delayedUpdate: delayed,
       },
       yahoo,
-      indianapi: indian,
+      kite: kiteTick,
       reasons,
       validatedAt: now,
     };
   }
 
-  const priceDiffBps = bpsDiff(yahoo.ltp, indian.ltp);
-  const volumeDiffPct = pctDiff(yahoo.volume, indian.volume);
-  const timestampSkewMs = Math.abs(yahoo.sourceTimestamp - indian.sourceTimestamp);
-  const ohlcOk = ohlcConsistent(yahoo, indian);
+  const priceDiffBps = bpsDiff(yahoo.ltp, kiteTick.ltp);
+  const volumeDiffPct = pctDiff(yahoo.volume, kiteTick.volume);
+  const timestampSkewMs = Math.abs(yahoo.sourceTimestamp - kiteTick.sourceTimestamp);
+  const ohlcOk = ohlcConsistent(yahoo, kiteTick);
   const outlier = priceDiffBps >= config.outlierSpikeBps;
   const yahooAge = now - yahoo.sourceTimestamp;
-  const indianAge = now - indian.sourceTimestamp;
+  const indianAge = now - kiteTick.sourceTimestamp;
   const delayed = marketOpen && (
     yahooAge > config.timestampToleranceMs || indianAge > config.timestampToleranceMs
   );
@@ -141,7 +141,7 @@ export function validateCrossSourceFeeds(
       delayedUpdate: delayed,
     },
     yahoo,
-    indianapi: indian,
+    kite: kiteTick,
     reasons,
     validatedAt: now,
   };

@@ -7,7 +7,7 @@
 //  prices by calling NSE direct in safe mode for ~25 NIFTY top names.
 //  After that, the standard resolver flow takes over —
 //
-//      IndianAPI primary → cache → NSE direct rare fallback
+//      removed vendor primary → cache → NSE direct rare fallback
 //
 //  This module is the ONLY component allowed to call NSE direct
 //  proactively. It is gated by THREE independent conditions:
@@ -186,7 +186,7 @@ async function persistToSnapshotTable(snapshots: MarketSnapshot[]): Promise<numb
 
 async function persistToQuoteCache(snapshots: MarketSnapshot[]): Promise<void> {
   // Off-hours TTL because bootstrap typically runs during cold boot;
-  // if it runs during market hours, the next IndianAPI poll naturally
+  // if it runs during market hours, the next removed vendor poll naturally
   // overwrites these entries within QUOTE_TTL_S.
   await Promise.all(snapshots.map((s) =>
     cache.set(quoteCacheKey(s.symbol.toUpperCase()), s, QUOTE_TTL_OFFHRS_S),

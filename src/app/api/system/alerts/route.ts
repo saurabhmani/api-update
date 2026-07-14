@@ -3,7 +3,7 @@
 //
 //  Production alerting endpoint. Evaluates the alertRules rule set
 //  against the current institutional-health snapshot + auxiliary
-//  probes (candle freshness, IndianAPI breaker) and returns the
+//  probes (candle freshness, kite health) and returns the
 //  triggered alerts.
 //
 //  Output shape:
@@ -23,11 +23,9 @@ import { NextResponse } from 'next/server';
 
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
 import { evaluateAlerts, summariseAlerts } from '@/lib/monitor/alertRules';
-import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { db } from '@/lib/db';
-import { getQuotaReport } from '@/lib/monitor/apiQuota';
 import { getKiteHealth } from '@/lib/kite/health';
 import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
 
@@ -56,14 +54,7 @@ export async function GET(): Promise<NextResponse> {
     latest_candle_ms: latestMs,
     market_open:      market.isOpen,
   });
-  const breaker = safe(() => indianApiBreakerState(), null);
   const kite = safe(() => getKiteHealth(), null);
-  let quota: Awaited<ReturnType<typeof getQuotaReport>> | null = null;
-  try {
-    quota = await getQuotaReport();
-  } catch {
-    quota = null;
-  }
 
   const alerts = evaluateAlerts({
     snapshot,
@@ -73,16 +64,8 @@ export async function GET(): Promise<NextResponse> {
       feed_frozen:        candleReport.feed_frozen,
       market_open:        candleReport.market_open,
     },
-    breaker: breaker
-      ? { open: breaker.open, state: breaker.state, auth_failed: breaker.auth_failed }
-      : null,
-    quota: quota
-      ? {
-          daily_percent:   quota.daily.percent,
-          monthly_percent: quota.monthly.percent,
-          state:           quota.state,
-        }
-      : null,
+    breaker: null,
+    quota: null,
     kite: kite
       ? {
           configured: kite.configured,

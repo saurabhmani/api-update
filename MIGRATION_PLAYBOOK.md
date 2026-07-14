@@ -91,7 +91,7 @@ work lands.
 | `src/app/api/signals/route.ts` | calls resolver directly | `MarketDataProvider.getLiveSnapshot({ signalCritical: true })` |
 
 **Action:** Route all of these through `MarketDataProvider`. The
-provider now enforces the canonical chain `IndianAPI → Cache → Yahoo
+provider now enforces the canonical chain `removed vendor → Cache → Yahoo
 → PostgreSQL` with a full `ProviderResponse` envelope
 (`provider_name`, `source_type`, `vendor_timestamp`, `freshness_ms`,
 `fallback_reason`, `data_quality`). **Kite is not in the market-data
@@ -108,7 +108,7 @@ no read paths to break.
 | `ops.scheduler_runs` | `src/lib/workers/scheduler.ts`, `src/lib/workers/learningScheduler.ts`, `src/lib/workers/manipulationScanner.ts`, `src/lib/workers/newsIngestionScheduler.ts`, `src/lib/scheduler.ts` |
 | `ops.provider_health_logs` | `src/providers/resilience.ts` (add insert hook), `src/app/api/health/route.ts`, `src/app/api/monitor/run-checks/route.ts` |
 | `ops.dead_letter_events` | `src/lib/news-engine/feedback/linkageTracker.ts`, `src/services/auditLogService.ts` |
-| `ops.audit_raw_payloads` | both adapters (`IndianAPIAdapter`, `YahooAdapter`) — optional tee on success path |
+| `ops.audit_raw_payloads` | both adapters (`vendorAdapter`, `YahooAdapter`) — optional tee on success path |
 
 ### Tier 2 — Master data (read-heavy, low write volume)
 

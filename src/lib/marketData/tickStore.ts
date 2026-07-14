@@ -1,4 +1,4 @@
-// @deprecated — Kite tick store; not consulted by the IndianAPI resolver.
+// @deprecated — Kite tick store; not consulted by the removed vendor resolver.
 // ════════════════════════════════════════════════════════════════
 //  TickStore — in-memory, Map-based snapshot of the live feed
 //

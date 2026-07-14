@@ -7,7 +7,7 @@
  *   GET  /api/signals?action=all&limit=50
  *
  * Confirms:
- *   • mode=scan uses DB candles (zero IndianAPI during scan)
+ *   • mode=scan uses DB candles (zero removed vendor during scan)
  *   • Signal bands spread across tiers
  *   • Portfolio-blocked rows are persisted, not silently dropped
  *   • Fibonacci Pullback remains selective (not over-relaxed)
@@ -202,7 +202,7 @@ async function fibonacciSelectivityProbe(): Promise<Criterion> {
 
 async function runDirectScanFallback(): Promise<{
   mode: string;
-  indianapi_requests_used: number;
+  upstream_candle_requests_used: number;
   data_source_used: string;
   scanned_symbols: number;
   signals_saved: number;
@@ -235,7 +235,7 @@ async function runDirectScanFallback(): Promise<{
   );
   return {
     mode: 'scan',
-    indianapi_requests_used: 0,
+    upstream_candle_requests_used: 0,
     data_source_used: 'db',
     scanned_symbols: result.meta.scanned,
     signals_saved: result.meta.signalsSaved,
@@ -327,9 +327,9 @@ async function main(): Promise<void> {
     );
 
     const summary = scanRes.data?.summary ?? scanRes.data ?? {};
-    const indianApiUsed = Number(
-      summary.indianapi_requests_used
-      ?? scanRes.data?.indianapi_requests_used
+    const upstreamVendor = Number(
+      summary.upstream_candle_requests_used
+      ?? scanRes.data?.upstream_candle_requests_used
       ?? -1,
     );
     const dataSource = String(summary.data_source_used ?? scanRes.data?.data_source_used ?? '');
@@ -343,11 +343,11 @@ async function main(): Promise<void> {
         : scanRes.error ?? `HTTP ${scanRes.status}`,
     };
 
-    criteria['3_db_only_no_indianapi'] = {
-      pass: scanRes.ok && indianApiUsed === 0 && (dataSource === 'db' || dataSource === ''),
+    criteria['3_db_only_no_legacy_vendor'] = {
+      pass: scanRes.ok && upstreamVendor === 0 && (dataSource === 'db' || dataSource === ''),
       detail:
-        `indianapi_requests_used=${indianApiUsed} data_source_used=${dataSource || 'db'} ` +
-        `(mode=scan must not call IndianAPI during strategy evaluation)`,
+        `upstream_candle_requests_used=${upstreamVendor} data_source_used=${dataSource || 'db'} ` +
+        `(mode=scan must not call removed vendor during strategy evaluation)`,
     };
 
     // ── GET /api/signals ────────────────────────────────────────
@@ -381,10 +381,10 @@ async function main(): Promise<void> {
         pass: direct.mode === 'scan' && direct.scanned_symbols > 0,
         detail: `via=direct_fallback scanned=${direct.scanned_symbols} saved=${direct.signals_saved}`,
       };
-      criteria['3_db_only_no_indianapi'] = {
-        pass: direct.indianapi_requests_used === 0 && direct.data_source_used === 'db',
+      criteria['3_db_only_no_legacy_vendor'] = {
+        pass: direct.upstream_candle_requests_used === 0 && direct.data_source_used === 'db',
         detail:
-          `indianapi_requests_used=${direct.indianapi_requests_used} ` +
+          `upstream_candle_requests_used=${direct.upstream_candle_requests_used} ` +
           `data_source_used=${direct.data_source_used} (direct DB provider)`,
       };
     }
@@ -398,10 +398,10 @@ async function main(): Promise<void> {
       pass: direct.mode === 'scan' && direct.scanned_symbols > 0,
       detail: `via=direct_fallback scanned=${direct.scanned_symbols} saved=${direct.signals_saved}`,
     };
-    criteria['3_db_only_no_indianapi'] = {
-      pass: direct.indianapi_requests_used === 0 && direct.data_source_used === 'db',
+    criteria['3_db_only_no_legacy_vendor'] = {
+      pass: direct.upstream_candle_requests_used === 0 && direct.data_source_used === 'db',
       detail:
-        `indianapi_requests_used=${direct.indianapi_requests_used} ` +
+        `upstream_candle_requests_used=${direct.upstream_candle_requests_used} ` +
         `data_source_used=${direct.data_source_used} (direct DB provider)`,
     };
   }
@@ -442,10 +442,10 @@ async function main(): Promise<void> {
   const total = Object.keys(criteria).length;
   const httpRequired = ['1_status_endpoint', '4_signals_endpoint'];
   const httpPass = httpRequired.every((k) => criteria[k]?.pass)
-    || (criteria['2_scan_mode_scan']?.pass && criteria['3_db_only_no_indianapi']?.pass);
+    || (criteria['2_scan_mode_scan']?.pass && criteria['3_db_only_no_legacy_vendor']?.pass);
   const corePass = [
     '2_scan_mode_scan',
-    '3_db_only_no_indianapi',
+    '3_db_only_no_legacy_vendor',
     '6_band_spread_db',
     '7_portfolio_blocked_contract',
     '8_portfolio_blocked_persisted',

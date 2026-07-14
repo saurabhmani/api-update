@@ -31,7 +31,7 @@ vi.mock('@/lib/marketData/candleDailyUpdateJob', () => ({
 vi.mock('@/lib/marketData/candleFallbackChain', () => ({
   fetchDailyCandlesWithFallback: vi.fn(),
   resetCandleSourceCounters: vi.fn(),
-  getIndianApiCandleRequestCount: vi.fn(() => 0),
+  getUpstreamCandleRequestCount: vi.fn(() => 0),
 }));
 vi.mock('@/lib/marketData/eod/eodIngestionPipeline', () => ({
   runDailyEodIngestion: vi.fn(),

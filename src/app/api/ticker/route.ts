@@ -54,7 +54,7 @@ const LIMIT     = 30;
 const TICKER_YAHOO_TIMEOUT_MS = (() => {
   const raw = Number(process.env.TICKER_YAHOO_TIMEOUT_MS);
   if (Number.isFinite(raw) && raw >= 500) return Math.floor(raw);
-  // Spec TICKER-504-FIX — bump default to 6s to allow for IndianAPI
+  // Spec TICKER-504-FIX — bump default to 6s to allow for removed vendor
   // rate-limiter serialization (30 symbols @ 500ms gap = 15s queue depth
   // worst-case, but with concurrency=3 it's 5s). 4s was too tight.
   return 6_000;

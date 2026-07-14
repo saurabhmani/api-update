@@ -9,8 +9,7 @@
 //    • elite gate counters     (institutionalHealth.ts)
 //    • full-scan counters      (institutionalHealth.ts)
 //    • heartbeat counters      (institutionalHealth.ts)
-//    • IndianAPI breaker state (IndianAPIAdapter.indianApiBreakerState)
-//    • IndianAPI queue gauge   (IndianAPIAdapter.indianApiQueueGauge)
+//    • kite + yahoo/nse soft placeholders (providerHealth.ts)
 //    • candle freshness        (latest candle ts → quality band)
 //    • market state            (marketHours.getMarketStatus)
 //
@@ -21,10 +20,6 @@
 import { NextResponse } from 'next/server';
 
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
-import {
-  indianApiBreakerState,
-  indianApiQueueGauge,
-} from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
@@ -77,15 +72,9 @@ async function probeCandleFreshness(marketOpen: boolean): Promise<CandleFreshnes
 
 export async function GET(): Promise<NextResponse> {
   const startedAt = Date.now();
-  // Market state — drives the candle freshness band thresholds.
   const market = getMarketStatus();
-  // Pull every counter / probe in parallel where possible. The DB
-  // probe + breaker + queue gauges are cheap individually; combining
-  // them in one response saves three round-trips for SRE pollers.
-  const [snapshot, breaker, queue, candle] = await Promise.all([
+  const [snapshot, candle] = await Promise.all([
     Promise.resolve(getInstitutionalHealthSnapshot()),
-    Promise.resolve(safeProbe(() => indianApiBreakerState(), null)),
-    Promise.resolve(safeProbe(() => indianApiQueueGauge(),    null)),
     probeCandleFreshness(market.isOpen),
   ]);
   const composite = getCompositeProviderHealth();
@@ -93,14 +82,11 @@ export async function GET(): Promise<NextResponse> {
   // Flag: is the pipeline broadly healthy?
   // Definition (any failing condition flips healthy=false):
   //   - candle feed frozen
-  //   - IndianAPI breaker open AND no recent fallback success
   //   - Kite primary + auth failed / rate limited without fallback health
   //   - last full scan failed AND no successful run since
-  //   - approved_ratio < 0.001 over a >100-row sample (engine
-  //     producing nothing despite running)
+  //   - approved_ratio < 0.001 over a >100-row sample
   const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
     || snapshot.providers.every((p) => !p.fallback_triggered);
-  const breakerOpen = breaker?.open === true;
   const kitePrimaryBroken =
     composite.current_provider === 'kite'
     && composite.kite.configured
@@ -115,18 +101,12 @@ export async function GET(): Promise<NextResponse> {
 
   const healthy =
     !candle.feed_frozen
-    && !(breakerOpen && !fallbackHealthy)
     && !kitePrimaryBroken
     && !approvedRatioBad
     && (lastScanOk || snapshot.full_scan.starts === 0);
 
-  // Derived: "stale rows blocked since boot" = the count of rows the
-  // elite gate dropped because they were stale or expired. Already
-  // tracked by recordEliteGateRun's `stale_blocked_total`.
   const stale_blocked = snapshot.elite.stale_blocked_total;
-  // Derived: "invalid payload count" = sum across all providers.
   const invalid_payload_count = snapshot.providers.reduce((s, p) => s + p.invalid_payload, 0);
-  // Derived: "fallback activation count" = sum of fallback_triggered.
   const fallback_activation_count = snapshot.providers.reduce((s, p) => s + p.fallback_triggered, 0);
 
   return NextResponse.json({
@@ -140,16 +120,11 @@ export async function GET(): Promise<NextResponse> {
       label:      market.label ?? null,
     },
     provider: {
-      indian_api: {
-        breaker:          breaker ?? null,
-        queue:            queue ?? null,
-        usage:            composite.indianapi.usage,
-        capabilities:     composite.indianapi.capabilities,
-        metrics:          composite.indianapi.metrics,
-      },
       kite: {
         ...composite.kite,
       },
+      yahoo:              composite.yahoo,
+      nse:                composite.nse,
       counters:           snapshot.providers,
       invalid_payload_count,
       fallback_activation_count,
@@ -177,10 +152,4 @@ export async function GET(): Promise<NextResponse> {
       uptime_s:   snapshot.uptime_s,
     },
   });
-}
-
-/** Wraps a synchronous probe so a thrown error becomes the fallback
- *  value instead of poisoning the whole response. */
-function safeProbe<T>(fn: () => T, fallback: T): T {
-  try { return fn(); } catch { return fallback; }
 }

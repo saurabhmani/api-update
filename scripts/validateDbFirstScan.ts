@@ -16,7 +16,7 @@ import { db } from '@/lib/db';
 import { loadActiveUniverseSymbols } from '@/lib/marketData/candleBackfillJob';
 import {
   fetchDailyCandlesWithFallback,
-  getIndianApiCandleRequestCount,
+  getUpstreamCandleRequestCount,
   readDailyCandlesFromDb,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
@@ -42,7 +42,7 @@ interface ValidationReport {
   };
   api_probe: {
     symbols_tested: number;
-    indianapi_requests: number;
+    upstream_candle_requests: number;
   };
   insufficient_counter_probe: {
     mock_rejections: number;
@@ -78,7 +78,7 @@ function buildMockSummary(
   rejectedInsufficient: number,
   signalsGenerated: number,
   signalsSaved: number,
-  indianApiRequests: number,
+  upstreamVendor: number,
 ): Record<string, unknown> {
   return {
     mode: 'scan',
@@ -87,8 +87,8 @@ function buildMockSummary(
     rejected_insufficient_candles: rejectedInsufficient,
     signals_generated: signalsGenerated,
     signals_saved: signalsSaved,
-    data_source_used: indianApiRequests > 0 ? 'db+indianapi' : 'db',
-    indianapi_requests_used: indianApiRequests,
+    data_source_used: upstreamVendor > 0 ? 'db+legacy_vendor' : 'db',
+    upstream_candle_requests_used: upstreamVendor,
   };
 }
 
@@ -99,7 +99,7 @@ function summaryFieldsAreNumeric(summary: Record<string, unknown>): boolean {
     'rejected_insufficient_candles',
     'signals_generated',
     'signals_saved',
-    'indianapi_requests_used',
+    'upstream_candle_requests_used',
   ];
   return numericKeys.every((k) => {
     const v = summary[k];
@@ -138,7 +138,7 @@ async function main(): Promise<void> {
     });
     if (result.candles.length > 0) dbReads++;
   }
-  const indianApiAfterDbOnly = getIndianApiCandleRequestCount();
+  const upstreamVendor = getUpstreamCandleRequestCount();
 
   const mockLog = [
     { symbol: 'THIN1', reason: 'Insufficient candles: 12 < 80' },
@@ -207,14 +207,14 @@ async function main(): Promise<void> {
     insufficient,
     0,
     0,
-    indianApiAfterDbOnly,
+    upstreamVendor,
   );
 
   const criteria: Record<string, CriterionResult> = {
-    '1_no_indianapi_per_symbol_on_scan': {
-      pass: indianApiAfterDbOnly === 0,
+    '1_no_legacy_vendor_per_symbol_on_scan': {
+      pass: upstreamVendor === 0,
       detail:
-        `DB-only fetch on ${sample.length} symbols → indianapi_requests=${indianApiAfterDbOnly} ` +
+        `DB-only fetch on ${sample.length} symbols → upstream_candle_requests=${upstreamVendor} ` +
         `(expected 0; db_reads_with_bars=${dbReads})`,
     },
     '2_sufficient_candles_scanned': {
@@ -257,7 +257,7 @@ async function main(): Promise<void> {
     },
     api_probe: {
       symbols_tested: sample.length,
-      indianapi_requests: indianApiAfterDbOnly,
+      upstream_candle_requests: upstreamVendor,
     },
     insufficient_counter_probe: {
       mock_rejections: mockLog.length,

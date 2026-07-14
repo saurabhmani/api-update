@@ -1,6 +1,6 @@
 // Dual-source market data — canonical types for cross-vendor validation.
 
-export type FeedSourceId = 'yahoo' | 'indianapi';
+export type FeedSourceId = 'yahoo' | 'kite';
 
 export type ValidationStatus =
   | 'confirmed'
@@ -73,7 +73,7 @@ export interface FeedValidationResult {
   status:            ValidationStatus;
   metrics:           CrossSourceMetrics;
   yahoo:             NormalizedFeedTick | null;
-  indianapi:         NormalizedFeedTick | null;
+  kite:              NormalizedFeedTick | null;
   reasons:           string[];
   validatedAt:       number;
 }
@@ -121,13 +121,13 @@ export interface DualSourceConfig {
   authoritativeOnConflict: FeedSourceId | null;
   minConfidenceForSignal:  number;
   yahooConcurrency:        number;
-  indianConcurrency:       number;
+  kiteConcurrency:       number;
 }
 
 export interface DualSourceMonitoringSnapshot {
   enabled:              boolean;
   yahoo:                FeedHealthSlice;
-  indianapi:            FeedHealthSlice;
+  kite:                 FeedHealthSlice;
   lastValidationAt:     number | null;
   symbolsTracked:       number;
   confirmedCount:       number;
@@ -142,7 +142,7 @@ export interface DualSourceMonitoringSnapshot {
     confirmationStatus: ConfirmationStatus;
     confidenceScore:    number;
     yahooLtp:           number | null;
-    indianLtp:          number | null;
+    kiteLtp:          number | null;
     priceDiffBps:       number | null;
     validatedAt:        number;
   }>;

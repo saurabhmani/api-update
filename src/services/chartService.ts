@@ -282,30 +282,11 @@ async function fromMySQL(
   }
 }
 
-// ── Layer 3: Kite → IndianAPI historical (Phase 6) ─────────────────
+// ── Layer 3: Kite historical ───────────────────────────────────────
 
-import {
-  getHistorical as indianHistorical,
-} from '@/lib/marketData/providers/indianApiProvider';
 import {
   getHistoricalForInterval as kiteHistoricalForInterval,
 } from '@/lib/marketData/providers/kiteHistoricalProvider';
-import {
-  chartIntervalToHistoricalRange,
-  isIntradayAppInterval,
-} from '@/lib/marketData/historicalIntervalMap';
-import type { HistoricalRange } from '@/types/market';
-
-const RANGE_FOR_INTERVAL: Record<ChartInterval, HistoricalRange> = {
-  '1minute':  '1mo',
-  '5minute':  '1mo',
-  '15minute': '1mo',
-  '30minute': '1mo',
-  '60minute': '3mo',
-  '1day':     '1y',
-  '1week':    '5y',
-  '1month':   '5y',
-};
 
 async function fromKite(
   symbol:   string,
@@ -328,35 +309,7 @@ async function fromKite(
   return bars.slice(-limit);
 }
 
-async function fromIndianApi(
-  symbol:   string,
-  interval: ChartInterval,
-  _from?:   string,
-  _to?:     string,
-  limit     = 200,
-): Promise<OhlcvBar[]> {
-  // IndianAPI historical_data is daily-only. Never use it for sub-day
-  // intervals — that produced empty 5m/15m charts or mis-labelled daily bars.
-  if (isIntradayAppInterval(interval)) {
-    return [];
-  }
-
-  const range = RANGE_FOR_INTERVAL[interval] ?? chartIntervalToHistoricalRange(interval);
-  const inv = await indianHistorical(symbol, range);
-  if (inv.status === 'failed' || !inv.data) return [];
-  const bars = inv.data.candles.map((c) => ({
-    ts:     new Date(c.t).toISOString(),
-    open:   c.o,
-    high:   c.h,
-    low:    c.l,
-    close:  c.c,
-    volume: c.v,
-    oi:     0,
-  }));
-  return bars.slice(-limit);
-}
-
-/** Upstream chart fill: Kite first, IndianAPI fallback (daily-capable only). */
+/** Upstream chart fill: Kite only (DB remains Layer 2). */
 async function fromUpstreamHistorical(
   symbol:   string,
   interval: ChartInterval,
@@ -364,9 +317,7 @@ async function fromUpstreamHistorical(
   to?:      string,
   limit     = 200,
 ): Promise<OhlcvBar[]> {
-  const kiteBars = await fromKite(symbol, interval, from, to, limit);
-  if (kiteBars.length > 0) return kiteBars;
-  return fromIndianApi(symbol, interval, from, to, limit);
+  return fromKite(symbol, interval, from, to, limit);
 }
 
 async function fromMarketDataDaily(
@@ -488,7 +439,7 @@ export async function getChartData(
     }
   }
 
-  // Layer 3: Daily — refresh stale tail from Kite/IndianAPI + Yahoo, then merge
+  // Layer 3: Daily — refresh stale tail from Kite + Yahoo, then merge
   if (interval === '1day') {
     if (candles.length === 0 || isDailySeriesStale(candles)) {
       const freshUpstream = await fromUpstreamHistorical(sym, interval, effectiveFrom, to, effectiveLimit);

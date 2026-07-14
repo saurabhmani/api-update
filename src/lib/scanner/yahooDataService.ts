@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  yahooDataService — NEUTRALIZED STUB // @deprecated marker
-//  @deprecated — Step 9 of the IndianAPI cutover replaces every call
-//  site with marketDataResolver / IndianAPI. Don't add new importers.
+//  @deprecated — Step 9 of the removed vendor cutover replaces every call
+//  site with marketDataResolver / removed vendor. Don't add new importers.
 //
 //  Yahoo Finance integration has been removed. The scanner-side // @deprecated marker
 //  OHLCV+quote fetcher's public surface is preserved so importers

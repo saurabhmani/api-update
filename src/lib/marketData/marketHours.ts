@@ -121,7 +121,7 @@ export function getMarketStatus(): MarketStatus {
   // Saturday=6, Sunday=0 → market closed. Weekdays=1..5 → real session.
   // The "7-day mode" hardcode was a dev convenience that was bleeding
   // into production: weekend ticks were running rescore/regen and
-  // burning IndianAPI quota on bars that don't move. Revert to the
+  // burning removed vendor quota on bars that don't move. Revert to the
   // honest calendar check; off-hours quota burn now stops automatically.
   const isWeekday = weekday >= 1 && weekday <= 5;
   const todayIst  = istDateString(ist);

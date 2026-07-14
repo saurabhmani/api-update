@@ -7,7 +7,7 @@
 //
 //    • Disabled by default. Operator must set NSE_DIRECT_FALLBACK_ENABLED=true.
 //    • Triggered ONLY when the resolver has seen N consecutive
-//      IndianAPI failures (default 3). Never used during normal ops.
+//      removed vendor failures (default 3). Never used during normal ops.
 //    • NEVER used for full universe scans. The caller is expected to
 //      pass <= MAX_SYMBOLS_PER_DAY symbols, all from the allow-list:
 //        - confirmed signals
@@ -60,7 +60,7 @@ export interface NseDirectResult {
 // We keep snapshots in the same `cacheGet/cacheSet` layer the rest of
 // the codebase uses (Redis when configured, in-process map otherwise).
 // 3 minutes is the spec midpoint and lines up with the resolver's
-// `QUOTE_TTL_S` for IndianAPI cache so the two layers stay coherent.
+// `QUOTE_TTL_S` for removed vendor cache so the two layers stay coherent.
 const NSE_QUOTE_CACHE_TTL_S = Math.max(60, Math.min(600,
   Number(process.env.NSE_DIRECT_CACHE_TTL_S) || 180,
 ));

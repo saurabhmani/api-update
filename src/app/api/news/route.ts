@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/session';
 import { db } from '@/lib/db';
 import { cacheGet, cacheSet } from '@/lib/redis';
-import { getCompanyNews } from '@/providers/MarketDataProvider';
 import { fetchNews, fetchStockNews } from '@/services/newsService';
 import { getNewsForSymbol } from '@/lib/news-engine/repository/readNewsEvents';
 import { resolveInstrumentProfile } from '@/services/marketQuote';
@@ -212,7 +211,7 @@ function dedupeNews(items: StockNewsItem[]): StockNewsItem[] {
 
 /**
  * Symbol-specific news for stock / market detail pages.
- * Priority: news-engine DB → IndianAPI company news → GNews/NewsData → filtered RSS.
+ * Priority: news-engine DB → GNews/NewsData → filtered RSS.
  */
 async function fetchSymbolNews(
   symbol: string,
@@ -224,7 +223,7 @@ async function fetchSymbolNews(
 }> {
   const sym = symbol.toUpperCase();
   const companyName = (companyHint && companyHint.trim()) || (await resolveCompanyName(sym));
-  const sources = { engine: 0, indianapi: 0, external: 0, rss: 0 };
+  const sources = { engine: 0, external: 0, rss: 0 };
   const merged: StockNewsItem[] = [];
 
   // 1) News-engine DB (already entity-linked to this symbol)
@@ -246,32 +245,7 @@ async function fetchSymbolNews(
     }
   } catch { /* schema may be empty */ }
 
-  // 2) IndianAPI /company_news
-  if (merged.length < limit) {
-    try {
-      const res = await getCompanyNews(sym);
-      const items = res.data ?? [];
-      sources.indianapi = items.length;
-      for (const n of items) {
-        const title = String(n.headline ?? '').trim();
-        if (!title) continue;
-        const published = typeof n.publishedAt === 'number'
-          ? new Date(n.publishedAt).toISOString()
-          : new Date().toISOString();
-        merged.push({
-          id:           `ia-${Buffer.from(`${title}:${n.url ?? ''}`).toString('base64').slice(0, 24)}`,
-          title,
-          summary:      n.summary ?? null,
-          url:          n.url || '#',
-          published_at: published,
-          source:       n.source ?? 'IndianAPI',
-          symbol:       sym,
-        });
-      }
-    } catch { /* quota / upstream unavailable */ }
-  }
-
-  // 3) External search (GNews / NewsData) with symbol + company query
+  // 2) External search (GNews / NewsData) with symbol + company query
   if (merged.length < limit) {
     try {
       const query = companyName
@@ -298,7 +272,7 @@ async function fetchSymbolNews(
     } catch { /* keys may be missing */ }
   }
 
-  // 4) Last resort: market RSS filtered to symbol / company name
+  // 3) Last resort: market RSS filtered to symbol / company name
   if (merged.length < limit) {
     try {
       const rss = await fetchAllRssNews(80);

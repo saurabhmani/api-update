@@ -16,7 +16,7 @@ const GLOBAL_KEY = '__q365_dual_source_monitor__';
 interface MonitorGlobal {
   enabled: boolean;
   yahoo: FeedHealthSlice;
-  indianapi: FeedHealthSlice;
+  kite: FeedHealthSlice;
   bySymbol: Map<string, DualSourceBatchResult>;
   lastValidationAt: number | null;
 }
@@ -40,7 +40,7 @@ function monitor(): MonitorGlobal {
     g[GLOBAL_KEY] = {
       enabled: false,
       yahoo: emptyHealth('yahoo'),
-      indianapi: emptyHealth('indianapi'),
+      kite: emptyHealth('kite'),
       bySymbol: new Map(),
       lastValidationAt: null,
     };
@@ -68,7 +68,7 @@ export function recordSourceFetch(
   now = Date.now(),
 ): void {
   const m = monitor();
-  const slice = source === 'yahoo' ? m.yahoo : m.indianapi;
+  const slice = source === 'yahoo' ? m.yahoo : m.kite;
   if (ok) {
     slice.lastSuccessAt = now;
     slice.successCount += 1;
@@ -122,7 +122,7 @@ export function getDualSourceMonitoringSnapshot(): DualSourceMonitoringSnapshot 
       confirmationStatus: row.confirmation.status,
       confidenceScore: row.approval.confidenceScore,
       yahooLtp: row.validation.yahoo?.ltp ?? null,
-      indianLtp: row.validation.indianapi?.ltp ?? null,
+      kiteLtp: row.validation.kite?.ltp ?? null,
       priceDiffBps: row.validation.metrics.priceDiffBps,
       validatedAt: row.validation.validatedAt,
     });
@@ -133,7 +133,7 @@ export function getDualSourceMonitoringSnapshot(): DualSourceMonitoringSnapshot 
   return {
     enabled: m.enabled,
     yahoo: { ...m.yahoo },
-    indianapi: { ...m.indianapi },
+    kite: { ...m.kite },
     lastValidationAt: m.lastValidationAt,
     symbolsTracked: m.bySymbol.size,
     confirmedCount: confirmed,

@@ -6,9 +6,8 @@ node_modules/
 out/
 build/
 
-# env files (IMPORTANT)
+# env files (IMPORTANT — keep only local/private env; nothing tracked)
 .env*
-!.env.example
 
 # logs
 logs/

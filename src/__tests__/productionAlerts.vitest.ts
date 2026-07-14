@@ -16,8 +16,6 @@ import {
   recordEliteGateRun,
   recordFullScanStart,
   recordFullScanComplete,
-  recordFallbackTriggered,
-  recordFallbackSuccess,
   recordInvalidPayload,
   getInstitutionalHealthSnapshot,
 } from '@/lib/monitor/institutionalHealth';
@@ -58,34 +56,22 @@ describe('alertRules', () => {
     expect(alerts.find((a) => a.id === 'feed_frozen')?.severity).toBe('critical');
   });
 
-  it('breaker_open is critical when no fallback success', () => {
+  it('legacy breaker_open input is ignored (alert removed)', () => {
     const i = inputBase();
     i.breaker = { open: true, state: 'open', auth_failed: false };
-    const alerts = evaluateAlerts(i);
-    const breaker = alerts.find((a) => a.id === 'breaker_open');
-    expect(breaker?.severity).toBe('critical');
-  });
-
-  it('breaker_open demoted to warning when fallback healthy', () => {
-    recordFallbackTriggered('indianapi');
-    recordFallbackSuccess('nse_direct');
-    const i = inputBase();
-    i.snapshot = getInstitutionalHealthSnapshot();
-    i.breaker = { open: true, state: 'half_open', auth_failed: false };
-    const alerts = evaluateAlerts(i);
-    expect(alerts.find((a) => a.id === 'breaker_open')?.severity).toBe('warning');
+    expect(evaluateAlerts(i).find((a) => a.id === 'breaker_open')).toBeUndefined();
   });
 
   it('invalid_payload_spike triggers above floor', () => {
     // Hammer the validator counter past the default floor of 50.
-    for (let i = 0; i < 60; i++) recordInvalidPayload('IndianAPI', 'PRICE_NON_POSITIVE');
+    for (let i = 0; i < 60; i++) recordInvalidPayload('removed vendor', 'PRICE_NON_POSITIVE');
     const i = inputBase();
     i.snapshot = getInstitutionalHealthSnapshot();
     expect(evaluateAlerts(i).find((a) => a.id === 'invalid_payload_spike')?.severity).toBe('warning');
   });
 
   it('invalid_payload_spike escalates to critical at 5x floor', () => {
-    for (let i = 0; i < 260; i++) recordInvalidPayload('IndianAPI', 'PRICE_NON_POSITIVE');
+    for (let i = 0; i < 260; i++) recordInvalidPayload('removed vendor', 'PRICE_NON_POSITIVE');
     const i = inputBase();
     i.snapshot = getInstitutionalHealthSnapshot();
     expect(evaluateAlerts(i).find((a) => a.id === 'invalid_payload_spike')?.severity).toBe('critical');
@@ -214,18 +200,12 @@ describe('alertRules', () => {
     expect(evaluateAlerts(i).find((a) => a.id === 'pipeline_stuck_in_flight')).toBeUndefined();
   });
 
-  it('api_quota_near_limit warns above 90% and escalates at 100%', () => {
+  it('legacy api_quota_near_limit input is ignored (alert removed)', () => {
     const i = inputBase();
     i.quota = { daily_percent: 0.92, monthly_percent: 0.4, state: 'CRITICAL' };
-    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')?.severity).toBe('warning');
+    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')).toBeUndefined();
 
     i.quota = { daily_percent: 1.0, monthly_percent: 0.5, state: 'BLOCKED' };
-    expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')?.severity).toBe('critical');
-  });
-
-  it('api_quota_near_limit suppressed below the warning band', () => {
-    const i = inputBase();
-    i.quota = { daily_percent: 0.6, monthly_percent: 0.3, state: 'SAFE' };
     expect(evaluateAlerts(i).find((a) => a.id === 'api_quota_near_limit')).toBeUndefined();
   });
 
@@ -261,7 +241,7 @@ describe('renderPrometheusMetrics', () => {
   });
 
   it('emits HELP+TYPE preamble exactly once per metric', () => {
-    recordInvalidPayload('IndianAPI', 'PRICE_NON_POSITIVE');
+    recordInvalidPayload('removed vendor', 'PRICE_NON_POSITIVE');
     recordInvalidPayload('NseDirect', 'NETWORK');
     const body = renderPrometheusMetrics({
       snapshot: getInstitutionalHealthSnapshot(),
@@ -270,7 +250,7 @@ describe('renderPrometheusMetrics', () => {
     const helpCount = (body.match(/^# HELP institutional_provider_invalid_payload_total/gm) ?? []).length;
     expect(helpCount).toBe(1);
     // BOTH providers appear as samples under the same metric.
-    expect(body).toMatch(/provider="IndianAPI"/);
+    expect(body).toMatch(/provider="removed vendor"/);
     expect(body).toMatch(/provider="NseDirect"/);
   });
 

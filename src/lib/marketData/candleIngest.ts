@@ -1,18 +1,18 @@
 /**
- * Daily OHLC ingest — IndianAPI primary, NSE opt-in fallback.
+ * Daily OHLC ingest — removed vendor primary, NSE opt-in fallback.
  *
  * The signal engine reads daily bars from `market_data_daily` (and the
  * `candles` table via persistCandle). This module is the ingest writer:
- * it pulls day-bars from IndianAPI for symbols that need refresh, upserts
+ * it pulls day-bars from removed vendor for symbols that need refresh, upserts
  * them into `candles`, and returns a structured summary.
  *
- * Strategy evaluation NEVER calls IndianAPI — Phase 3/4 reads DB cache
+ * Strategy evaluation NEVER calls removed vendor — Phase 3/4 reads DB cache
  * via `fetchDailyCandlesWithFallback` while a scan is in flight.
  */
 
 import { getCandles } from './getCandles';
 import type { OhlcBar, CandleSource } from './getCandles';
-import { getIndianApiCandleRequestCount } from './candleFallbackChain';
+import { getUpstreamCandleRequestCount } from './candleFallbackChain';
 import { persistCandle } from '@/services/marketDataService';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
@@ -75,7 +75,7 @@ export interface RefreshCandlesResult {
   ageHoursBefore: number | null;
   ageHoursAfter:  number | null;
   durationMs:     number;
-  indianApiRequests: number;
+  upstreamVendor: number;
 }
 
 // ── Internal helpers ───────────────────────────────────────────
@@ -116,7 +116,7 @@ async function fetchLatestTsPerSymbol(symbols: string[]): Promise<LatestRow[]> {
   });
 }
 
-/** When IndianAPI refresh fails, verify stored bars are still usable. */
+/** When removed vendor refresh fails, verify stored bars are still usable. */
 const FALLBACK_MIN_BARS = Math.max(
   10,
   Number(process.env.CANDLE_FALLBACK_MIN_BARS) || 50,
@@ -158,7 +158,7 @@ async function checkStoredBarsFallback(symbol: string): Promise<{
 
 /**
  * Fetch fresh daily bars for a single symbol and upsert into `candles`.
- * Uses IndianAPI primary; NSE only when NSE_HISTORICAL_FETCH_ENABLED=true.
+ * Uses removed vendor primary; NSE only when NSE_HISTORICAL_FETCH_ENABLED=true.
  */
 async function ingestOneSymbol(
   symbol: string,
@@ -255,7 +255,7 @@ async function mapWithConcurrency<T, R>(
 // ── Public API ─────────────────────────────────────────────────
 
 /**
- * Refresh daily OHLC bars via IndianAPI (primary), scoped to a universe.
+ * Refresh daily OHLC bars via removed vendor (primary), scoped to a universe.
  * Symbols selected for refresh always use incrementalRefresh so upstream
  * is called even when DB depth is already sufficient.
  */
@@ -292,7 +292,7 @@ export async function refreshDailyCandles(
     ageHoursBefore: null,
     ageHoursAfter:  null,
     durationMs:     0,
-    indianApiRequests: 0,
+    upstreamVendor: 0,
   };
 
   if (symbols.length === 0) {
@@ -441,7 +441,7 @@ export async function refreshDailyCandles(
 
   // Step 4(b): hard per-cycle cap. The 15-min ticks during the
   // session must never page through the full universe — that path
-  // burned ~58k IndianAPI calls/month. The cap keeps an upper bound
+  // burned ~58k removed vendor calls/month. The cap keeps an upper bound
   // even if pickRefreshSubset() returns a larger list than expected.
   const MAX_PER_CYCLE = Math.max(1, Number(process.env.CANDLE_MAX_PER_CYCLE) || 100);
   if (!opts.noCap && toRefresh.length > MAX_PER_CYCLE) {
@@ -481,7 +481,7 @@ export async function refreshDailyCandles(
   const TOTAL_TO_PROCESS = toRefresh.length;
   console.log(`[BATCH] candle refresh starting — total=${TOTAL_TO_PROCESS} concurrency=${INGEST_CONCURRENCY}`);
   let processedCount = 0;
-  const bySource: Record<string, number> = { indianapi: 0, nse: 0 };
+  const bySource: Record<string, number> = { legacy_vendor: 0, nse: 0 };
   let fallbackCount = 0;
   await mapWithConcurrency(toRefresh, INGEST_CONCURRENCY, async (row) => {
     try {
@@ -534,8 +534,8 @@ export async function refreshDailyCandles(
     );
   }
   console.log(
-    `[CANDLE REFRESH] indianapi_requests=${result.indianApiRequests} ` +
-    `indianapi_symbols=${bySource.indianapi ?? 0} nse_symbols=${bySource.nse ?? 0}`,
+    `[CANDLE REFRESH] upstream_candle_requests=${result.upstreamVendor} ` +
+    `legacy_vendor_symbols=${bySource.legacy_vendor ?? 0} nse_symbols=${bySource.nse ?? 0}`,
   );
 
   // ── 4. Measure freshness AFTER ───────────────────────────────
@@ -550,16 +550,16 @@ export async function refreshDailyCandles(
     : null;
 
   result.durationMs = Date.now() - t0;
-  result.indianApiRequests = getIndianApiCandleRequestCount();
+  result.upstreamVendor = getUpstreamCandleRequestCount();
 
   log.info('Candle refresh complete', {
     durationMs: result.durationMs,
     refreshed: result.refreshed,
     attempted: toRefresh.length,
     barsIngested: result.barsIngested,
-    indianapi: bySource.indianapi ?? 0,
+    legacy_vendor: bySource.legacy_vendor ?? 0,
     nse: bySource.nse ?? 0,
-    indianApiRequests: result.indianApiRequests,
+    upstreamVendor: result.upstreamVendor,
     failed: result.failed.length,
     latestBefore: result.latestTsBefore ?? 'none',
     ageHoursBefore: result.ageHoursBefore ?? null,

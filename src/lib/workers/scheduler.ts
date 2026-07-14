@@ -7,7 +7,7 @@
  *     09:20 IST  — pre-open warmup
  *     09:30 → 15:30 IST @ 10m — intraday refresh loop
  *     15:35 IST  — post-close reconciliation
- *   Every pass goes through `MarketDataProvider` (IndianAPI → cache
+ *   Every pass goes through `MarketDataProvider` (removed vendor → cache
  *   → Yahoo → PostgreSQL) and writes one structured run log. // @deprecated marker
  *
  *   This file is the worker-process boot wrapper that `npm run
@@ -19,7 +19,7 @@
  *     09:45 IST — main DB-only morning scan
  *     12:30 IST — active signal rescore
  *     14:45 IST — late rescore / confirmation
- *     16:00 IST — evening incremental candle update (IndianAPI)
+ *     16:00 IST — evening incremental candle update (removed vendor)
  *     16:30 IST — final EOD DB-only scan
  *     19:00 IST — nightly backtest
  *     18:30 IST — manipulation scan (scan-only, separate pipeline)
@@ -501,7 +501,7 @@ setInterval(() => {
 //
 // PRODUCTION-READINESS 2026-07 §6.2 — evaluates the signal-pipeline
 // alert rules (no confirmed signals during market hours, live feed
-// stale, scanner stuck in-flight, IndianAPI quota >90%) plus the
+// stale, scanner stuck in-flight, removed vendor quota >90%) plus the
 // PRODUCTION-ALERTS-2026-05 set, and delivers warning/critical hits
 // via Slack / email / system notifications. The q365_alerts store
 // dedups by rule id so persistent conditions don't spam.
@@ -580,7 +580,7 @@ log.info('worker-scheduler ready', {
     '09:45 main morning scan (DB-only)',
     '12:30 midday rescore',
     '14:45 late rescore',
-    '16:00 evening EOD candle update (IndianAPI)',
+    '16:00 evening EOD candle update (removed vendor)',
     '16:30 evening scan (DB-only)',
     '18:30 manipulation scan (scan-only)',
   ],

@@ -122,13 +122,38 @@ import {
 import { isInNifty500, getNifty500Symbols } from '@/lib/marketData/nifty500Universe';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
-import {
-  indianApiBreakerState,
-  getApiUsage,
-  beginPerRunBudget,
-  endPerRunBudget,
-  INDIANAPI_PER_RUN_LIMIT,
-}                                     from '@/providers/adapters/IndianAPIAdapter';
+/** Phase 3 — removed vendor adapter removed; stubs keep call sites compiling. */
+function upstreamVendor(): {
+  open: boolean; state: string; auth_failed: boolean; remainingMs: number;
+  until: number | null; auth_failed_for_ms: number;
+} {
+  return {
+    open: false, state: 'closed', auth_failed: false, remainingMs: 0,
+    until: null, auth_failed_for_ms: 0,
+  };
+}
+function getApiUsage(): {
+  daily: number; monthly: number; daily_limit: number; monthly_limit: number;
+  daily_exceeded: boolean; monthly_exceeded: boolean;
+  per_run_active: boolean; per_run_exceeded: boolean;
+  per_run_count: number; per_run_limit: number;
+  daily_percent: number; monthly_percent: number;
+} {
+  return {
+    daily: 0, monthly: 0, daily_limit: 0, monthly_limit: 0,
+    daily_exceeded: false, monthly_exceeded: false,
+    per_run_active: false, per_run_exceeded: false,
+    per_run_count: 0, per_run_limit: 0,
+    daily_percent: 0, monthly_percent: 0,
+  };
+}
+function beginPerRunBudget(_n?: number): void { /* no-op */ }
+function endPerRunBudget(): {
+  count: number; limit: number; hit: boolean; durationMs: number;
+} {
+  return { count: 0, limit: 0, hit: false, durationMs: 0 };
+}
+const LEGACY_VENDOR_ENV = Number(process.env.SIGNAL_RUN_UNIVERSE_CAP) || 100;
 // fetchFromYahooCached import removed: only used by enrichWithLiveLtp,
 // which moved to @/lib/signals/confirmedSignalsService.
 import { getMarketStatus, isMarketOverrideEnabled } from '@/lib/marketData/marketHours';
@@ -343,7 +368,7 @@ const AUTO_SCAN_COLDSTART_MIN_MS = 60_000;
 //
 //  Symptom this fixes: when the strict confirmed-snapshot pool is
 //  empty, the route fans out to `resolveBatch(NIFTY500.head)` to
-//  produce live IndianAPI prices for the price view. On the dev
+//  produce live removed vendor prices for the price view. On the dev
 //  plan each /stock call is ~5–10s under load, so a 20-symbol fan-out
 //  serialised through the adapter's rate limiter takes 1–2 minutes.
 //  Without this cache that cost paid on every poll.
@@ -352,14 +377,14 @@ const AUTO_SCAN_COLDSTART_MIN_MS = 60_000;
 //  poll on a cold cache still pays the full fan-out. This route-
 //  level cache short-circuits any subsequent poll within
 //  LIVE_MARKET_TTL_MS even before the resolver layer is consulted —
-//  zero IndianAPI calls, zero rate-limiter chain entries, single
+//  zero removed vendor calls, zero rate-limiter chain entries, single
 //  Map lookup.
 //
 //  Keyed by `limit` because the fan-out size is `min(limit, N)`
 //  and different limits produce different result sets.
 // ────────────────────────────────────────────────────────────────
 type LiveMarketSource =
-  | 'indianapi' | 'cache' | 'nse_direct' | 'yahoo_emergency'
+  | 'kite' | 'cache' | 'nse_direct' | 'yahoo_emergency'
   | 'market_close_snapshot' | 'none';
 interface LiveMarketCacheEntry {
   ts:     number;
@@ -386,7 +411,7 @@ function putLiveMarketCache(
   liveMarketCache.set(limit, { ts: Date.now(), data, source });
 }
 
-// Hard wall-clock cap on the live-empty resolver call. The IndianAPI
+// Hard wall-clock cap on the live-empty resolver call. The removed vendor
 // dev plan's per-IP throttle can stall a /stock call for 5–10s; a 20-
 // symbol fan-out worst-case is well over a minute. Capping the await
 // at 10s lets the request fall through to the snapshot fallback and
@@ -602,7 +627,7 @@ function pipelineHealthEnvelope(opts: {
   next_action:         'wait_for_recovery' | 'bootstrap' | 'enable_scheduler' | 'inspect_error' | 'healthy';
   bootstrap_endpoint:  string;
   manual_run_endpoint: string;
-  indianapi_breaker:   {
+  legacy_vendor_breaker:   {
     open:               boolean;
     remaining_ms:       number;
     reopens_at:         string | null;
@@ -627,15 +652,15 @@ function pipelineHealthEnvelope(opts: {
     || (autoScanState.lastError != null && autoScanState.lastCompletedAt != null);
   // Read breaker state ONCE so we can use it for both the
   // recommendation and the response envelope below.
-  const breakerNow = indianApiBreakerState();
+  const breakerNow = upstreamVendor();
   let recommendation: string | null = null;
   let nextAction: 'wait_for_recovery' | 'bootstrap' | 'enable_scheduler' | 'inspect_error' | 'healthy' = 'healthy';
   // Auth failure takes priority — until the key is fixed, every other
   // recommendation is meaningless because Phase 4's candle calls also
-  // depend on IndianAPI.
+  // depend on removed vendor.
   if (breakerNow.auth_failed) {
     recommendation =
-      'IndianAPI returned 403 (auth failed). Verify INDIANAPI_API_KEY in .env.local matches the live key from your IndianAPI dashboard. ' +
+      'removed vendor returned 403 (auth failed). Verify LEGACY_VENDOR_ENV in .env.local matches the live key from your removed vendor dashboard. ' +
       'Common cause: env file edit truncated the key. Restart the server after fixing.';
     nextAction = 'inspect_error';
   } else if (!schedActive) {
@@ -678,7 +703,7 @@ function pipelineHealthEnvelope(opts: {
     next_action:         nextAction,
     bootstrap_endpoint:  '/api/signals?action=all&bootstrap=true',
     manual_run_endpoint: '/api/run-signal-engine?sync=true',
-    indianapi_breaker: {
+    legacy_vendor_breaker: {
       open:               breakerNow.open,
       remaining_ms:       breakerNow.remainingMs,
       reopens_at:         breakerNow.until ? new Date(breakerNow.until).toISOString() : null,
@@ -701,13 +726,13 @@ function pipelineHealthEnvelope(opts: {
  */
 async function runAutoScanRecovery(reason: string): Promise<void> {
   const pipelineStartedAt = Date.now();
-  // Spec — surface the IndianAPI breaker state at every recovery
+  // Spec — surface the removed vendor breaker state at every recovery
   // entry so an operator grepping the console can see whether the
   // pipeline ran with or without live upstream access. Combined with
   // the [CANDLE] fallback log, this makes it explicit that the
   // pipeline RAN regardless of breaker state — running on stored
   // bars when the upstream is throttled.
-  const breakerSnapshot = indianApiBreakerState();
+  const breakerSnapshot = upstreamVendor();
   console.log(
     `[BREAKER STATUS] open=${breakerSnapshot.open} ` +
     `${breakerSnapshot.open ? `remaining_ms=${breakerSnapshot.remainingMs} reopens_at=${breakerSnapshot.until ? new Date(breakerSnapshot.until).toISOString() : 'n/a'}` : ''}`,
@@ -790,7 +815,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     // 500-call ceiling so a manual run + an auto-recovery on the
     // same day still get fair per-run budgets.
     beginPerRunBudget();
-    console.log(`[API RUN] start limit=${INDIANAPI_PER_RUN_LIMIT} reason="${reason}"`);
+    console.log(`[API RUN] start limit=${LEGACY_VENDOR_ENV} reason="${reason}"`);
     // Spec "FAIL FAST IF NO EXECUTION" — explicit "lock acquired,
     // about to import + run" trace tag. Pairs with [PIPELINE START]
     // above; if [API RUN] start fires but no [PIPELINE INVOKE] /
@@ -822,7 +847,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     // Spec INSTITUTIONAL §C (calibrated 2026-05) — recovery scans the
     // FULL universe by default, mirroring the manual /api/run-signal-engine
     // route. The legacy 50-symbol cap dates from a cold-cache era when
-    // IndianAPI was the only provider and the candle warmup took >30min
+    // removed vendor was the only provider and the candle warmup took >30min
     // for 500 symbols. With the market-aware candle scheduler now
     // keeping the universe warm continuously, the recovery's slice
     // doesn't need to be different from the manual run.
@@ -863,7 +888,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     // Stage 2 — candle warmup.
     //
     // Spec "FIX 429" — when stored bars in market_data_daily are
-    // already fresh enough for Phase 4, SKIP the IndianAPI fan-out
+    // already fresh enough for Phase 4, SKIP the removed vendor fan-out
     // entirely. This is the load-bearing fix for the dev-plan 429
     // storm: hammering /historical_data with `force: true` for 50
     // symbols when each call already 429s burns 3-10s per symbol on
@@ -913,7 +938,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     }
 
     // Spec "FIX CANDLE WARMUP HANG" — refreshDailyCandles fan-outs to
-    // IndianAPI per-symbol with `force: true`. When the upstream is
+    // removed vendor per-symbol with `force: true`. When the upstream is
     // 429-throttled / unauthenticated / network-flaky, each call's
     // retry-backoff stretches the wall-clock to 5-15 minutes for 50
     // symbols. During that time autoScanState.stage stays frozen at
@@ -1027,7 +1052,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     // Stage 3 — Phase 4.
     // Spec "FIX CANDLE FETCH LOGIC" — auto-recovery uses the same
     // unified fallback chain as /api/run-signal-engine: DB-fast →
-    // IndianAPI live → NSE direct → DB-thin → throw. Without this
+    // removed vendor live → NSE direct → DB-thin → throw. Without this
     // the auto-recovery's DB-only provider would silently produce
     // zero candles whenever market_data_daily lagged a refresh, even
     // though the manual route had a working fallback.
@@ -1058,11 +1083,11 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
       signals: { length: number };
     };
     let result: Phase4Lite;
-    console.log(`[SCAN START] universe=${recoveryUniverse.length} source=auto-recovery:indianapi`);
+    console.log(`[SCAN START] universe=${recoveryUniverse.length} source=auto-recovery:legacy_vendor`);
     // Spec "FIX UNIVERSE BLOWUP" — Phase 4 was previously called with
     // p1Config=undefined, which falls back to DEFAULT_PHASE1_CONFIG
     // (the FULL ~500-symbol universe) regardless of the 50-symbol
-    // recovery cap. Combined with IndianAPI's slow per-call latency
+    // recovery cap. Combined with removed vendor's slow per-call latency
     // (45s+ on the dev plan), this made auto-recovery runs effectively
     // never complete: the candle warmup timed out after 30s, then
     // Phase 3's prefetch tried to fetch 500 symbols' worth of candles
@@ -1086,7 +1111,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
         undefined, undefined,
         phase1ConfigForRecovery,
         undefined,
-        { generationSource: 'auto-recovery:indianapi' },
+        { generationSource: 'auto-recovery:legacy_vendor' },
       );
       console.log(
         `[AUTO-RECOVERY] Phase4 done: scanned=${result.meta.scanned} ` +
@@ -1126,7 +1151,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
       const stamp = await dbModule.query(
         `UPDATE q365_signals
             SET batch_id = ?
-          WHERE generation_source = 'auto-recovery:indianapi'
+          WHERE generation_source = 'auto-recovery:legacy_vendor'
             AND batch_id IS NULL
             AND created_at >= FROM_UNIXTIME(?)`,
         [autoBatchId, Math.floor(pipelineStartedAt / 1000)],
@@ -1145,7 +1170,7 @@ async function runAutoScanRecovery(reason: string): Promise<void> {
     // probe reads, so the dashboard sees a non-null timestamp.
     autoScanState = { ...autoScanState, stage: 'heartbeat' };
     try {
-      await markPipelineHeartbeat('auto-recovery:indianapi');
+      await markPipelineHeartbeat('auto-recovery:legacy_vendor');
       stageState.heartbeat = 'completed';
       console.log('[PIPELINE] Heartbeat updated');
     } catch (err: unknown) {
@@ -1252,7 +1277,7 @@ async function triggerAutoScanIfEmpty(
   }
 
   // Spec "OPTIMIZE API USAGE" §5 — refuse to fire a fresh recovery
-  // when the daily IndianAPI budget is already exhausted. A
+  // when the daily removed vendor budget is already exhausted. A
   // recovery does ~50 candle calls + ~503 Phase-4 quotes; firing it
   // when we're at the limit either fails-fast inside the adapter
   // (every call throws API_BUDGET_EXCEEDED) or, worse, hammers
@@ -1469,7 +1494,7 @@ async function triggerAutoScanIfEmpty(
     lastReason:  reason,
     lastError:   null,
   };
-  console.log(`[AUTO-RECOVERY] triggering IndianAPI-backed recovery (${reason})`);
+  console.log(`[AUTO-RECOVERY] triggering removed vendor-backed recovery (${reason})`);
 
   // Fire-and-forget by default — the dashboard polls every few
   // seconds and a 30-60s synchronous wait would stall every poll
@@ -1509,37 +1534,21 @@ let __envStampLogged = false;
 function logEnvStampOnce(): void {
   if (__envStampLogged) return;
   __envStampLogged = true;
-  // Spec "FIX 403" §2 + §8 — surface IndianAPI key load status at
-  // startup. Reveals only LENGTH and the first 5 chars (the prefix
-  // sk-live-* is documented in their public examples) so an operator
-  // can tell at a glance whether (a) the key is loaded at all, (b)
-  // it's been truncated by a bad env edit. Never logs the full secret.
-  const apiKeyRaw = (
-    process.env.INDIANAPI_API_KEY?.trim()
-    || process.env.INDIANAPI_KEY?.trim()
-    || process.env.INDIAN_API_KEY?.trim()
-    || ''
-  );
-  const apiKeyLoaded = apiKeyRaw.length > 0;
-  // Empirically, valid IndianAPI live keys are ~48 chars. Below 30 is
-  // almost certainly truncated.
-  const apiKeyLikelyTruncated = apiKeyLoaded && apiKeyRaw.length < 30;
-  if (!apiKeyLoaded) {
+  const kiteKey = (process.env.KITE_API_KEY ?? '').trim();
+  const kiteToken = (process.env.KITE_ACCESS_TOKEN ?? '').trim();
+  const kiteConfigured = Boolean(kiteKey && kiteToken);
+  if (!kiteConfigured) {
     console.error(
-      '[ENV STAMP] INDIANAPI_API_KEY is NOT loaded. Every IndianAPI call will throw "key not configured". ' +
-      'Add INDIANAPI_API_KEY=<key> to .env.local and restart.',
-    );
-  } else if (apiKeyLikelyTruncated) {
-    console.error(
-      `[ENV STAMP] INDIANAPI_API_KEY is loaded but only ${apiKeyRaw.length} chars long — likely TRUNCATED ` +
-      `(valid live keys are typically 48 chars). Re-paste the full key in .env.local and restart.`,
+      '[ENV STAMP] KITE_API_KEY / KITE_ACCESS_TOKEN not fully loaded. ' +
+      'Live quotes will fall back to Yahoo/NSE/DB until Kite is configured.',
     );
   }
   console.log('[ENV STAMP]', {
     NODE_ENV:              process.env.NODE_ENV ?? 'unknown',
     MYSQL_HOST:            process.env.MYSQL_HOST ?? 'unset',
     MYSQL_DATABASE:        process.env.MYSQL_DATABASE ?? 'unset',
-    KITE_ONLY:             process.env.KITE_ONLY ?? 'unset',
+    MARKET_DATA_PROVIDER:  process.env.MARKET_DATA_PROVIDER ?? 'kite(default)',
+    KITE_CONFIGURED:       kiteConfigured,
     REDIS_DISABLED:        process.env.REDIS_DISABLED ?? 'unset',
     CUSTOM_UNIVERSE_PATH:  process.env.CUSTOM_UNIVERSE_PATH ?? 'unset',
     Q365_INPROC_SCHEDULER: process.env.Q365_INPROC_SCHEDULER ?? 'unset',
@@ -1548,10 +1557,6 @@ function logEnvStampOnce(): void {
     ENABLE_MANIPULATION_JOIN: process.env.ENABLE_MANIPULATION_JOIN ?? 'unset',
     SIGNALS_TARGET_CAP:    process.env.SIGNALS_TARGET_CAP ?? 'unset',
     SIGNALS_MAX_LIMIT:     process.env.SIGNALS_MAX_LIMIT ?? 'unset',
-    INDIANAPI_API_KEY_LOADED:    apiKeyLoaded,
-    INDIANAPI_API_KEY_LENGTH:    apiKeyRaw.length,
-    INDIANAPI_API_KEY_PREFIX:    apiKeyLoaded ? apiKeyRaw.slice(0, 5) + '…' : 'unset',
-    INDIANAPI_API_KEY_TRUNCATED: apiKeyLikelyTruncated,
   });
 }
 
@@ -1691,7 +1696,7 @@ export async function GET(req: NextRequest) {
       //   2. The response carries `mode: 'market_closed'` so the UI
       //      can render the market_data list instead of an empty
       //      signals card.
-      //   3. ZERO IndianAPI calls — read is a single SELECT against
+      //   3. ZERO removed vendor calls — read is a single SELECT against
       //      q365_market_close_snapshot.
       //
       // Existing legacy fields (signals=[], validation_status, etc.)
@@ -2687,7 +2692,7 @@ export async function GET(req: NextRequest) {
       // not-yet-tradable scanner candidates. This is the same loader
       // the closed-market branch uses — it's purely DB SQL, so it's
       // fast (<100ms) and reliable. Surfacing signals[] before the
-      // 10s IndianAPI timeout means the dashboard always shows trade
+      // 10s removed vendor timeout means the dashboard always shows trade
       // candidates immediately, even when the market_data fetch is
       // stuck waiting for upstream.
       //
@@ -3068,14 +3073,14 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // ── Spec "FIX INDIANAPI NOT BEING CALLED" §1 + §6 + §8 ────────
+      // ── Spec "FIX legacy_vendor NOT BEING CALLED" §1 + §6 + §8 ────────
       // When the market is OPEN and confirmed signals are empty, the
-      // price-view (`market_data`) is backed by a live IndianAPI fetch
+      // price-view (`market_data`) is backed by a live removed vendor fetch
       // before falling through to q365_market_close_snapshot.
       //
       // Order now (matches §8 priority):
       //   1. 30s TTL cache                → instant hit on warm cache
-      //   2. resolveBatch(NIFTY500 head)  → IndianAPI primary, with
+      //   2. resolveBatch(NIFTY500 head)  → removed vendor primary, with
       //                                     a hard timeout so the dev-
       //                                     plan throttle can't hold
       //                                     the request for minutes
@@ -3095,7 +3100,7 @@ export async function GET(req: NextRequest) {
         // ── 0. Skip live-empty fan-out when a scan is in flight ────
         // Spec "FIX 81s POLL DURING SCAN" — when /api/run-signal-engine
         // is currently scanning (isInFlight()=true), the live-empty
-        // branch fans out to IndianAPI for 5 symbols + retries on a
+        // branch fans out to removed vendor for 5 symbols + retries on a
         // 10s timeout + falls through to q365_market_close_snapshot.
         // That's 81s observed wall-clock for an /api/signals poll —
         // for data the in-flight scan will commit to q365_signals
@@ -3124,8 +3129,8 @@ export async function GET(req: NextRequest) {
           );
         } else if (scanInFlight) {
           // Already logged above — fall through to the snapshot fallback.
-        } else if (indianApiBreakerState().state === 'open') {
-          // ── 1b. IndianAPI 429 breaker is FULLY open — short-circuit ──
+        } else if (upstreamVendor().state === 'open') {
+          // ── 1b. removed vendor 429 breaker is FULLY open — short-circuit ──
           //
           // Skipped only in the 'open' state (not 'half_open'). In
           // 'half_open', one probe call is allowed through and may
@@ -3133,7 +3138,7 @@ export async function GET(req: NextRequest) {
           // attempt that probe rather than skipping it.
           //
           // When the breaker is open, calling resolveBatch wastes the
-          // full LIVE_RESOLVE_TIMEOUT_MS budget: IndianAPI fast-fails,
+          // full LIVE_RESOLVE_TIMEOUT_MS budget: removed vendor fast-fails,
           // then NSE direct queues sequentially behind its
           // NSE_DIRECT_FALLBACK_MIN_DELAY_MS rate limit (typically
           // 7s/symbol), and the wall-clock cap cuts everything off
@@ -3141,13 +3146,13 @@ export async function GET(req: NextRequest) {
           //
           // When the breaker is open, skip resolveBatch entirely and
           // fall through to q365_market_close_snapshot below.
-          const breakerInfo = indianApiBreakerState();
+          const breakerInfo = upstreamVendor();
           console.log(
-            `[DATA] live-empty path SKIPPED — IndianAPI breaker ${breakerInfo.state} for ${Math.round(breakerInfo.remainingMs / 1000)}s more; serving directly from snapshot table`,
+            `[DATA] live-empty path SKIPPED — removed vendor breaker ${breakerInfo.state} for ${Math.round(breakerInfo.remainingMs / 1000)}s more; serving directly from snapshot table`,
           );
         } else {
-          // ── 2. Live IndianAPI fan-out, time-bounded ────────────
-          // Cap fan-out size at min(limit, 5) per "FIX INDIANAPI
+          // ── 2. Live removed vendor fan-out, time-bounded ────────────
+          // Cap fan-out size at min(limit, 5) per "FIX legacy_vendor
           // TIMEOUT" §2 — small batches keep each tick short under
           // the dev-plan throttle. Race against LIVE_RESOLVE_TIMEOUT_MS
           // so a single stalled /stock call doesn't hold the request
@@ -3156,7 +3161,7 @@ export async function GET(req: NextRequest) {
             0, Math.max(1, Math.min(limit, 5)),
           );
           console.log(
-            `[DEBUG] live-empty path → IndianAPI fetch for ${universeHead.length} symbols (timeout=${LIVE_RESOLVE_TIMEOUT_MS}ms)`,
+            `[DEBUG] live-empty path → removed vendor fetch for ${universeHead.length} symbols (timeout=${LIVE_RESOLVE_TIMEOUT_MS}ms)`,
           );
 
           // Helper that races one resolveBatch call against the
@@ -3254,13 +3259,13 @@ export async function GET(req: NextRequest) {
           if (resolvedFinal && resolvedFinal.snapshots?.size > 0) {
             const provider = resolvedFinal.provider;
             // Resolver returns only the providers we ship as live
-            // (indianapi / cache / nse_direct / yahoo_emergency).
+            // (legacy_vendor / cache / nse_direct / yahoo_emergency).
             // The closed-market gate path returns 'snapshot' — we
             // already skipped that path because market is open here.
             // Treat 'snapshot' / 'none' defensively as a miss so we
             // never claim live data when none was produced.
             if (
-              provider === 'indianapi'
+              provider === 'kite'
               || provider === 'cache'
               || provider === 'nse_direct'
               || provider === 'yahoo_emergency'
@@ -3357,7 +3362,7 @@ export async function GET(req: NextRequest) {
       } else {
         console.log(
           `[DATA] live-empty SKIPPED — signals_already_shipped count=${shippedMainCount} ` +
-          `(avoiding ${LIVE_RESOLVE_TIMEOUT_MS}ms IndianAPI fan-out on top of relaxed/strict rows)`,
+          `(avoiding ${LIVE_RESOLVE_TIMEOUT_MS}ms removed vendor fan-out on top of relaxed/strict rows)`,
         );
       }
       console.log(`[DATA] signals generated count=${finalRows.length} buy=${buyCount} sell=${sellCount} emerging=${responsePayloadBase.emerging_count}`);
@@ -3368,11 +3373,11 @@ export async function GET(req: NextRequest) {
       //   1. confirmed_signals       → strict pool non-empty
       //   2. q365_signals_relaxed    → relaxed-tier rows surfaced
       //   3. q365_signals_candidates → only candidates, no tradable rows
-      //   4. resolver provider       → IndianAPI / cache / NSE / Yahoo served live
+      //   4. resolver provider       → removed vendor / cache / NSE / Yahoo served live
       //   5. market_close_snapshot   → snapshot table was the last resort
       const dataSourceTag:
         'confirmed_signals' | 'q365_signals_relaxed' | 'q365_signals_candidates'
-        | 'indianapi' | 'cache' | 'nse_direct' | 'yahoo_emergency'
+        | 'kite' | 'cache' | 'nse_direct' | 'yahoo_emergency'
         | 'market_close_snapshot' | 'none' =
         finalRows.length > 0
           ? 'confirmed_signals'
@@ -3390,7 +3395,7 @@ export async function GET(req: NextRequest) {
       //   1. confirmed_signals      → finalRows non-empty (strict pool)
       //   2. q365_signals_relaxed   → relaxed-tier surfaced from q365_signals
       //   3. q365_signals_candidates → scanner candidates only
-      //   4. resolver provider      → IndianAPI / cache / NSE / Yahoo served live
+      //   4. resolver provider      → removed vendor / cache / NSE / Yahoo served live
       //   5. market_close_snapshot  → snapshot table is the LAST resort
       // Spec "RELAX DATA QUALITY" §4 + §6 — coverage label + log.
       // Computed from the resolver's coverage % when the live-empty
@@ -4209,7 +4214,7 @@ export async function GET(req: NextRequest) {
         } : {}),
         ...(includeInvalidated ? { invalidated_signals: invalidatedSignals } : {}),
         // Coverage-quality label (separate from signal_quality):
-        //   HIGH    >90% IndianAPI returned for the requested set
+        //   HIGH    >90% removed vendor returned for the requested set
         //   MEDIUM  70-90%
         //   LOW     50-70%   (partial-mode region)
         //   NONE    <50% or resolver didn't run

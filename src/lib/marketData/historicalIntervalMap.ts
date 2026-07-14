@@ -179,7 +179,7 @@ export function appIntervalToKiteWindow(
   return { interval: kiteInterval, from, to };
 }
 
-/** IndianAPI historical_data is daily-only — map chart intervals to HistoricalRange. */
+/** removed vendor historical_data is daily-only — map chart intervals to HistoricalRange. */
 export function chartIntervalToHistoricalRange(interval: string): HistoricalRange {
   const canonical = canonicalizeAppInterval(interval);
   switch (canonical) {
@@ -207,7 +207,7 @@ export function chartIntervalToHistoricalRange(interval: string): HistoricalRang
   }
 }
 
-/** True when the interval is sub-daily (Kite can serve; IndianAPI cannot). */
+/** True when the interval is sub-daily (Kite can serve; removed vendor cannot). */
 export function isIntradayAppInterval(interval: string): boolean {
   const kite = mapAppIntervalToKite(interval);
   return kite != null && kite !== 'day';

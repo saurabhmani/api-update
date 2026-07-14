@@ -9,7 +9,7 @@
 //  later with a new angle is usually the SAME event for signal-
 //  engine purposes.
 //
-//  Source: IndianAPI /news (via MarketDataProvider.getCorporateIntel
+//  Source: removed vendor /news (via MarketDataProvider.getCorporateIntel
 //  which already hits /news as part of the intel payload). Falls
 //  back to an empty list on error — callers treat absence as "no
 //  news" rather than a fatal error.
@@ -60,7 +60,7 @@ export function dedupNews(items: NewsItem[]): NewsItem[] {
 // ── Fetch ───────────────────────────────────────────────────────────
 //
 // MarketDataProvider.getCorporateIntel returns the /stock payload
-// which, in the public IndianAPI shape, carries a `news` array. We
+// which, in the public removed vendor shape, carries a `news` array. We
 // lift + normalize it. If the adapter evolves to expose a direct
 // getNews method, swap the body here without the caller noticing.
 

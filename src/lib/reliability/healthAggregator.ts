@@ -1,7 +1,6 @@
 // Platform Reliability — aggregate health metrics from all subsystems
 
 import { getMonitorSnapshot } from '@/lib/monitor/apiMonitor';
-import { getQuotaReport } from '@/lib/monitor/apiQuota';
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness, type CandleSource } from '@/lib/marketData/candleFreshness';
@@ -100,11 +99,11 @@ function buildDataLoaderStatus(
   providerLogs: Awaited<ReturnType<typeof fetchProviderHealthLogs>>,
   snap: ReturnType<typeof getMonitorSnapshot>,
 ): DataLoaderStatus[] {
-  const providers = ['indianapi', 'nse', 'yahoo', 'snapshot'];
+  const providers = ['kite', 'nse', 'yahoo', 'snapshot'];
   const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
 
   return providers.map((provider) => {
-    const logs = providerLogs.filter((l) => l.provider.toLowerCase().includes(provider.replace('indianapi', 'indian')));
+    const logs = providerLogs.filter((l) => l.provider.toLowerCase().includes(provider));
     const successes = logs.filter((l) => l.event === 'success');
     const failures = logs.filter((l) => l.event === 'failure' || l.event === 'circuit_open');
     const failures24h = failures.filter((l) => new Date(l.created_at).getTime() >= cutoff24h).length;
@@ -262,7 +261,19 @@ function deriveOverallStatus(
 
 export async function collectReliabilityDashboard(): Promise<ReliabilityDashboard> {
   const snap = getMonitorSnapshot();
-  const quota = await getQuotaReport();
+  const quota = {
+    daily: { used: 0, limit: 0, remaining: 0, percent: 0 },
+    monthly: {
+      used: 0, safe_limit: 0, hard_limit: 0,
+      remaining_safe: 0, remaining_hard: 0, percent: 0, percent_safe: 0,
+    },
+    state: 'SAFE' as 'SAFE' | 'WARNING' | 'CRITICAL' | 'BLOCKED',
+    limit_near: false,
+    reduce_polling: false,
+    block_non_essential: false,
+    block_all: false,
+    resets: { daily_at: '', monthly_at: '' },
+  };
   const market = getMarketStatus();
   const inst = getInstitutionalHealthSnapshot();
   const latestMs = await probeLatestCandleMs();

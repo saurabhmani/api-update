@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  liveFeedState — institutional live-feed health tracker
 //
-//  Tracks the upstream poll loop (IndianAPI → tickBus → WS fan-out)
+//  Tracks the upstream poll loop (removed vendor → tickBus → WS fan-out)
 //  and classifies freshness during market hours:
 //    fresh        — ticks arriving within DELAYED_MS
 //    delayed      — no tick for DELAYED_MS … STALE_MS

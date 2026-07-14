@@ -104,7 +104,7 @@ export async function evaluateAutoRecovery(
   const { rows } = await db.query<{ cnt: number }>(
     `SELECT COUNT(*) AS cnt
        FROM q365_signals
-      WHERE generation_source = 'auto-recovery:indianapi'
+      WHERE generation_source = 'auto-recovery:legacy_vendor'
         AND DATE(CONVERT_TZ(generated_at, '+00:00', '+05:30')) = ?`,
     [today],
   );

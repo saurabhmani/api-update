@@ -1,6 +1,6 @@
 /**
  * simulateTradingDay.ts — minute-by-minute simulation of an IST
- * trading day (or weekend day) with per-path IndianAPI call counts.
+ * trading day (or weekend day) with per-path removed vendor call counts.
  *
  * Why a pure simulator instead of a fake-timers boot of the real
  * crons: `node-cron` schedules against the system clock and doesn't
@@ -83,7 +83,7 @@ function batchFetch(symbols: string[], path: string, nowMin: number): void {
 }
 
 /** Per-symbol historical fetch (one call per symbol — that's how
- *  IndianAPI's `/historical_data` works). Used by candle refresh. */
+ *  removed vendor's `/historical_data` works). Used by candle refresh. */
 function historicalBatch(symbols: string[], path: string): void {
   inc(path, symbols.length);
 }

@@ -181,7 +181,7 @@ async function runDirectScan(): Promise<Record<string, unknown>> {
     signals_saved: result.meta.signalsSaved,
     meta_scanned: result.meta.scanned,
     meta_rejected: result.meta.rejected,
-    indianapi_requests_used: 0,
+    upstream_candle_requests_used: 0,
   };
 }
 

@@ -14,7 +14,7 @@
 #    2. Creates the logs/ directory
 #    3. Installs npm dependencies (including dotenv)
 #    4. Builds Next.js for production
-#    5. Creates .env.local from .env.example if it doesn't exist yet
+#    5. Requires .env.local to exist (create/edit it with secrets before setup)
 #    6. Runs all database migrations
 #    7. Starts all PM2 processes
 #    8. Prints the nginx config block you need to add
@@ -49,13 +49,9 @@ fi
 mkdir -p "$APP_DIR/logs"
 ok "logs/ directory ready"
 
-# ── 3. Create .env.local if missing ──────────────────────────────────
+# ── 3. Require .env.local ────────────────────────────────────────────
 if [ ! -f "$APP_DIR/.env.local" ]; then
-  cp "$APP_DIR/.env.example" "$APP_DIR/.env.local"
-  warn ".env.local created from .env.example — EDIT IT NOW before continuing"
-  warn "Required: MYSQL_*, SESSION_SECRET, ENCRYPTION_KEY, KITE_API_KEY, KITE_API_SECRET, NEXT_PUBLIC_APP_URL"
-  echo ""
-  read -p "  Press ENTER after you have edited .env.local to continue..." _
+  fail ".env.local is missing — create it with MYSQL_*, SESSION_SECRET, ENCRYPTION_KEY, KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN, NEXT_PUBLIC_APP_URL before continuing"
 else
   ok ".env.local already exists"
 fi

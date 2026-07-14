@@ -9,7 +9,7 @@
 //  forever — defeating the rotation.
 //
 //  Atomic write (tmp + rename) so concurrent reads never see a
-//  half-written file. Stored next to the IndianAPI usage file
+//  half-written file. Stored next to the removed vendor usage file
 //  under `.next/` so both share the same persistence root.
 // ════════════════════════════════════════════════════════════════
 

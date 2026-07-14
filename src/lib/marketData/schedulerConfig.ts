@@ -111,7 +111,7 @@ export const CONFIG: SchedulerConfig = {
   },
 
   budget: (() => {
-    // Step 8 of the IndianAPI cutover. The IndianAPI plan is
+    // Step 8 of the removed vendor cutover. The removed vendor plan is
     // 100,000 requests/month with a 2,500–3,000/day safe target.
     // The degradation thresholds map to the spec:
     //   85% of monthly  → 'soft'   (drop hist + non-critical adhoc)
@@ -121,22 +121,22 @@ export const CONFIG: SchedulerConfig = {
     //                                feed-health checks pass)
     //
     // Operators can override any of these with the legacy env names
-    // (BUDGET_MONTHLY_*); INDIANAPI_MONTHLY_LIMIT / DAILY_SOFT_LIMIT
-    // are also honoured per the new .env.example. The first env var
+    // (BUDGET_MONTHLY_*); LEGACY_VENDOR_ENV / DAILY_SOFT_LIMIT
+    // are also honoured. The first env var
     // that resolves wins, then the spec defaults fill in.
     const monthlyLimit =
-      envNum('INDIANAPI_MONTHLY_LIMIT', envNum('BUDGET_MONTHLY_HARD_LIMIT', 100_000));
+      envNum('LEGACY_VENDOR_ENV', envNum('BUDGET_MONTHLY_HARD_LIMIT', 100_000));
     const dailyTarget  =
-      envNum('INDIANAPI_DAILY_SOFT_LIMIT', envNum('BUDGET_DAILY_SOFT_CAP', 3_000));
-    // Honour INDIANAPI_BUDGET_REDUCE_THRESHOLD (soft / 'reduce polling')
-    // and INDIANAPI_BUDGET_CRITICAL_THRESHOLD ('only critical calls'),
+      envNum('LEGACY_VENDOR_ENV', envNum('BUDGET_DAILY_SOFT_CAP', 3_000));
+    // Honour LEGACY_VENDOR_ENV (soft / 'reduce polling')
+    // and LEGACY_VENDOR_ENV ('only critical calls'),
     // both already shipped in .env.local. Until 2026-05-01 these env
     // values were ignored — the soft/hard caps were hard-coded at
     // 85% / 95% — so an operator could not tune the adaptive ladder
     // without editing source. Both fall back to the legacy 0.85/0.95
     // when unset.
-    const reduceThr   = Number(process.env.INDIANAPI_BUDGET_REDUCE_THRESHOLD)   || 0.85;
-    const criticalThr = Number(process.env.INDIANAPI_BUDGET_CRITICAL_THRESHOLD) || 0.95;
+    const reduceThr   = Number(process.env.LEGACY_VENDOR_ENV)   || 0.85;
+    const criticalThr = Number(process.env.LEGACY_VENDOR_ENV) || 0.95;
     const monthlySoftCap   = envNum('BUDGET_MONTHLY_SOFT_CAP',    Math.round(monthlyLimit * reduceThr));
     const monthlyHardLimit = envNum('BUDGET_MONTHLY_HARD_LIMIT',  Math.round(monthlyLimit * criticalThr));
     const monthlyFreeze    = envNum('BUDGET_MONTHLY_FREEZE',      monthlyLimit);

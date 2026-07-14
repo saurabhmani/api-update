@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  payloadValidator — provider per-row gate
 //
-//  Spec PROVIDER-NORMALIZE-2026-05: every adapter (IndianAPI, NSE,
+//  Spec PROVIDER-NORMALIZE-2026-05: every adapter (removed vendor, NSE,
 //  Yahoo, …) must reject rows with price <= 0, volume <= 0 during
 //  market hours, NaN/Infinity, and never let the row enter the
 //  scoring pipeline. The validator is the single source of truth.
@@ -144,12 +144,12 @@ describe('validateMarketSnapshot', () => {
 
 describe('assertValidSnapshot', () => {
   it('returns the snapshot when valid', () => {
-    expect(assertValidSnapshot('IndianAPI', validSnap, validSnap, { marketOpen: true })).toBe(validSnap);
+    expect(assertValidSnapshot('removed vendor', validSnap, validSnap, { marketOpen: true })).toBe(validSnap);
   });
 
   it('throws InvalidProviderPayloadError when invalid', () => {
     expect(() => assertValidSnapshot(
-      'IndianAPI',
+      'removed vendor',
       { ...validSnap, price: 0 },
       { ...validSnap, price: 0 },
       { marketOpen: true },

@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_q365_universe_active
   ON q365_universe (is_active);
 
 -- Symbol-mapping override table — populated only when the upstream
--- IndianAPI rejects an NSE symbol with the default mapping. See
+-- removed vendor rejects an NSE symbol with the default mapping. See
 -- src/lib/marketData/symbolMapper.ts for the lookup chain.
 CREATE TABLE IF NOT EXISTS q365_symbol_mapping_override (
   nse_symbol  VARCHAR(32) PRIMARY KEY,

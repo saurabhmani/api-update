@@ -158,7 +158,7 @@ async function pathB(cookie: string | null): Promise<void> {
     path: 'B', name: 'liveFeed',
     pass: feed.ok && feedHealthyOrClosed,
     detail: `quality=${quality} marketOpen=${marketOpen}`,
-    debugHint: 'npx tsx scripts/probeLiveWs.ts; check STREAM_WS_DISABLED and IndianAPI breaker',
+    debugHint: 'npx tsx scripts/probeLiveWs.ts; check STREAM_WS_DISABLED and removed vendor breaker',
   });
 
   const dual = await fetchJson('/api/market-data/dual-source/status', null);

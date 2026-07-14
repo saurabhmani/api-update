@@ -30,11 +30,11 @@ describe('institutionalHealth counters', () => {
   });
 
   it('records invalid payload + rejected_symbol per provider', () => {
-    recordInvalidPayload('IndianAPI', 'PRICE_NON_POSITIVE');
-    recordInvalidPayload('IndianAPI', 'VOLUME_ZERO_DURING_MARKET_HOURS');
+    recordInvalidPayload('removed vendor', 'PRICE_NON_POSITIVE');
+    recordInvalidPayload('removed vendor', 'VOLUME_ZERO_DURING_MARKET_HOURS');
     recordInvalidPayload('NseDirect', 'PRICE_NON_POSITIVE');
     const s = getInstitutionalHealthSnapshot();
-    const indian = s.providers.find((p) => p.name === 'IndianAPI');
+    const indian = s.providers.find((p) => p.name === 'removed vendor');
     const nse    = s.providers.find((p) => p.name === 'NseDirect');
     expect(indian?.invalid_payload).toBe(2);
     expect(indian?.rejected_symbol).toBe(2);
@@ -43,12 +43,12 @@ describe('institutionalHealth counters', () => {
   });
 
   it('tracks fallback chain transitions', () => {
-    recordFallbackTriggered('indianapi');
+    recordFallbackTriggered('kite');
     recordFallbackSuccess('nse_direct');
-    recordFallbackTriggered('indianapi');
+    recordFallbackTriggered('kite');
     recordFallbackFailed('nse_direct', 'NSE_NO_DATA');
     const s = getInstitutionalHealthSnapshot();
-    const indian = s.providers.find((p) => p.name === 'indianapi');
+    const indian = s.providers.find((p) => p.name === 'kite');
     const nse    = s.providers.find((p) => p.name === 'nse_direct');
     expect(indian?.fallback_triggered).toBe(2);
     expect(nse?.fallback_success).toBe(1);

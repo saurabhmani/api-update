@@ -143,7 +143,7 @@ async function main() {
   let meta: Awaited<ReturnType<typeof fetchInstrumentMeta>> | null = null;
   try {
     meta = await fetchInstrumentMeta(SYMBOL, quote);
-    if (!meta.pe && !meta.eps && !meta.marketCap) finIssues.push('Fundamentals empty (IndianAPI may be rate-limited)');
+    if (!meta.pe && !meta.eps && !meta.marketCap) finIssues.push('Fundamentals empty (removed vendor may be rate-limited)');
   } catch (e: any) {
     finIssues.push(`ERROR fundamentals: ${e?.message}`);
   }
@@ -170,7 +170,7 @@ async function main() {
     const res = await getCompanyNews(SYMBOL);
     companyNews = res.data ?? [];
   } catch (e: any) {
-    newsIssues.push(`IndianAPI company news: ${e?.message}`);
+    newsIssues.push(`removed vendor company news: ${e?.message}`);
   }
   if (engineNews.length === 0 && companyNews.length === 0) {
     newsIssues.push('No symbol-specific news from any source');
@@ -178,7 +178,7 @@ async function main() {
 
   results.push(tab('News & Events', {
     engine_db_count: engineNews.length,
-    indianapi_count: companyNews.length,
+    legacy_vendor_count: companyNews.length,
     sample_title: (companyNews[0] as any)?.headline ?? (engineNews[0] as any)?.title ?? null,
   }, newsIssues));
 

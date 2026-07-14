@@ -46,7 +46,7 @@
 | `.env.production` | May be committed as baseline | Review for placeholder-only values |
 | `.cookies.tmp` | Should be gitignored | Session cookie scratch file |
 
-**Recommendation:** Verify `.cookies.tmp` is in `.gitignore`. Never commit files with live `INDIAN_API_KEY`, `SESSION_SECRET`, or DB passwords.
+**Recommendation:** Verify `.cookies.tmp` is in `.gitignore`. Never commit files with live `LEGACY_VENDOR_ENV`, `SESSION_SECRET`, or DB passwords.
 
 ### 1.3 Runtime Secret Leakage
 
@@ -121,7 +121,7 @@
 |----------|-------------|------------|
 | `SESSION_SECRET` | CRITICAL | Required, ≥32 chars |
 | `MYSQL_PASSWORD` / `PGPASSWORD` | CRITICAL | DB access |
-| `INDIAN_API_KEY` / `INDIANAPI_API_KEY` | CRITICAL | Market data quota |
+| `LEGACY_VENDOR_ENV` / `LEGACY_VENDOR_ENV` | CRITICAL | Market data quota |
 | `ENCRYPTION_KEY` | HIGH | 64-char hex for TOTP |
 | `REDIS_PASSWORD` | HIGH | Session cache |
 | `SERVICE_AUTH_TOKEN` | HIGH | Inter-service auth |
@@ -153,10 +153,10 @@
 
 | Variable | Purpose |
 |----------|---------|
-| `INDIANAPI_PER_RUN_LIMIT` | Per-scan API call cap |
+| `LEGACY_VENDOR_ENV` | Per-scan API call cap |
 | `CANDLE_MAX_PER_CYCLE` | Candle fetch cap |
-| `INDIANAPI_BUDGET_REDUCE_THRESHOLD` | Budget throttle (0.85) |
-| `INDIANAPI_BUDGET_CRITICAL_THRESHOLD` | Budget halt (0.95) |
+| `LEGACY_VENDOR_ENV` | Budget throttle (0.85) |
+| `LEGACY_VENDOR_ENV` | Budget halt (0.95) |
 
 ---
 

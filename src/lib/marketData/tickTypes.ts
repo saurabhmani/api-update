@@ -1,4 +1,4 @@
-// @deprecated — Kite tick types. The IndianAPI resolver does not
+// @deprecated — Kite tick types. The removed vendor resolver does not
 // consume these. Eligible for deletion.
 // ════════════════════════════════════════════════════════════════
 //  Shared tick-layer types

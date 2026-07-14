@@ -4,7 +4,7 @@
  * Spec NSE_BOOTSTRAP_COMPLETED: prime an empty deployment with real
  * NSE quotes for the NIFTY 500 universe. Runs ONCE; subsequent
  * invocations exit without touching NSE. After this seed lands, the
- * runtime resolver takes over (IndianAPI primary → NSE fallback →
+ * runtime resolver takes over (removed vendor primary → NSE fallback →
  * Yahoo fallback; market-closed → DB only).
  *
  * Usage:
@@ -418,7 +418,7 @@ interface BootstrapReport {
   approved:          number;
   rejected:          number;
   skipped_no_price:  number;
-  provider_used:     'indianapi' | 'nse' | 'yahoo' | 'none';
+  provider_used:     'kite' | 'nse' | 'yahoo' | 'none';
   data_quality:      'REAL_ONLY' | 'SNAPSHOT' | 'NONE';
   /** Spec BALANCE §6 — direction balance summary. */
   buy_count:    number;

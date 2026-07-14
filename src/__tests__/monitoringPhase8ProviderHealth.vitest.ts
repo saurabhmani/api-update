@@ -1,10 +1,10 @@
 /**
- * Phase 8 — dual-provider monitoring (IndianAPI + Kite).
+ * Phase 8 — kite-primary monitoring (+ yahoo/nse placeholders).
  *
  * Covers metrics, rate-limit / auth tracking, health composite,
  * alert copy, and provider switching without inventing Kite quotas.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   recordKiteCall,
@@ -35,8 +35,7 @@ beforeEach(() => {
   try { _resetApiMonitorForTests(); } catch { /* optional */ }
   process.env.KITE_API_KEY = 'k';
   process.env.KITE_ACCESS_TOKEN = 't';
-  process.env.INDIANAPI_PRIMARY = 'true';
-  delete process.env.MARKET_DATA_PROVIDER;
+  process.env.MARKET_DATA_PROVIDER = 'kite';
 });
 
 afterEach(() => {
@@ -44,26 +43,25 @@ afterEach(() => {
   delete process.env.KITE_API_KEY;
   delete process.env.KITE_ACCESS_TOKEN;
   delete process.env.MARKET_DATA_PROVIDER;
-  delete process.env.INDIANAPI_PRIMARY;
 });
 
-describe('Phase 8 — IndianAPI metrics preserved', () => {
-  it('providerReport still tracks indianapi_calls', () => {
-    recordProviderCall('indianapi');
-    recordProviderCall('indianapi');
+describe('Phase 8 — yahoo/nse monitor metrics', () => {
+  it('providerReport tracks yahoo_calls', () => {
+    recordProviderCall('yahoo');
+    recordProviderCall('yahoo');
     const r = getProviderReport();
-    expect(r.indianapi_calls).toBe(2);
-    expect(r.last_provider).toBe('indianapi');
+    expect(r.yahoo_calls).toBe(2);
+    expect(r.last_provider).toBe('yahoo');
   });
 
-  it('apiMonitor records indianapi latency without inventing kite quota', () => {
+  it('apiMonitor records yahoo latency without inventing kite quota', () => {
     recordProviderLatency({
-      provider: 'indianapi',
+      provider: 'yahoo',
       durationMs: 40,
       success: true,
     });
     const snap = getMonitorSnapshot();
-    const p = snap.providers.find((x) => x.provider === 'indianapi');
+    const p = snap.providers.find((x) => x.provider === 'yahoo');
     expect(p?.calls).toBeGreaterThanOrEqual(1);
   });
 });
@@ -96,7 +94,7 @@ describe('Phase 8 — Kite metrics', () => {
     expect(h.last_error_code).toBe('KiteAuthenticationError');
   });
 
-  it('tracks rate-limit events separately from IndianAPI quotas', () => {
+  it('tracks rate-limit events without inventing monthly quotas', () => {
     recordKiteCall({
       operation: 'getBatchQuotes',
       success: false,
@@ -116,20 +114,21 @@ describe('Phase 8 — Kite metrics', () => {
 });
 
 describe('Phase 8 — mixed provider + health composite', () => {
-  it('composite reports both providers and current_provider', () => {
-    process.env.INDIANAPI_PRIMARY = 'false';
+  it('composite reports kite + yahoo/nse placeholders', () => {
     process.env.MARKET_DATA_PROVIDER = 'kite';
     recordKiteCall({ success: true, latencyMs: 10 });
-    recordProviderCall('indianapi');
+    recordProviderCall('yahoo');
 
     const c = getCompositeProviderHealth();
     expect(c.current_provider).toBe('kite');
-    expect(c.fallback_provider).toBe('indianapi');
+    expect(c.fallback_provider).toBe('yahoo|nse|db');
     expect(c.kite.monthly_quota).toBeNull();
     expect(c.kite.capabilities).toContain('quotes');
-    expect(c.indianapi.capabilities).toContain('movers');
+    expect(c.yahoo.status).toBe('placeholder');
+    expect(c.nse.status).toBe('placeholder');
+    expect(c.yahoo.capabilities).toContain('quotes');
     expect(c.kite.metrics.successes).toBeGreaterThanOrEqual(1);
-    expect(c.report.indianapi_calls).toBeGreaterThanOrEqual(1);
+    expect(c.report.yahoo_calls).toBeGreaterThanOrEqual(1);
   });
 
   it('alerts fire for kite auth and rate-limit', () => {
@@ -165,26 +164,25 @@ describe('Phase 8 — mixed provider + health composite', () => {
     expect(rateAlerts.some((a) => a.id === 'kite_rate_limit_exceeded')).toBe(true);
   });
 
-  it('IndianAPI quota alert copy stays provider-aware', () => {
+  it('legacy quota / breaker inputs never emit removed alert ids', () => {
     const snapshot = getInstitutionalHealthSnapshot();
     const alerts = evaluateAlerts({
       snapshot,
       quota: { daily_percent: 1.0, monthly_percent: 0.5, state: 'BLOCKED' },
+      breaker: { open: true, state: 'open', auth_failed: false },
     });
-    const q = alerts.find((a) => a.id === 'api_quota_near_limit');
-    expect(q?.title).toMatch(/IndianAPI/);
+    expect(alerts.find((a) => a.id === 'api_quota_near_limit')).toBeUndefined();
+    expect(alerts.find((a) => a.id === 'breaker_open')).toBeUndefined();
   });
 
   it('provider switching flips current_provider without inventing Kite monthly quotas', () => {
-    process.env.INDIANAPI_PRIMARY = 'true';
-    delete process.env.MARKET_DATA_PROVIDER;
-    expect(getCompositeProviderHealth().current_provider).toBe('indianapi');
+    process.env.MARKET_DATA_PROVIDER = 'yahoo';
+    expect(getCompositeProviderHealth().current_provider).toBe('yahoo');
 
-    process.env.INDIANAPI_PRIMARY = 'false';
     process.env.MARKET_DATA_PROVIDER = 'kite';
     const switched = getCompositeProviderHealth();
     expect(switched.current_provider).toBe('kite');
-    expect(switched.fallback_provider).toBe('indianapi');
+    expect(switched.fallback_provider).toBe('yahoo|nse|db');
     expect(switched.kite.monthly_quota).toBeNull();
   });
 });

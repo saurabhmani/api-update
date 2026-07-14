@@ -4,11 +4,11 @@
 
 /**
  * Thrown by `KiteAdapter` (and future vendors) for endpoints that are
- * part of `IMarketDataProvider` / the IndianAPI surface but have no
+ * part of `IMarketDataProvider` / the removed vendor surface but have no
  * Zerodha Kite Connect equivalent (news, movers, corporate intel, …).
  *
  * Callers that later wire Kite into MarketDataProvider should catch
- * this and fall through to IndianAPI / cache / empty — never treat it
+ * this and fall through to removed vendor / cache / empty — never treat it
  * as a transient network failure.
  */
 export class UnsupportedFeatureError extends Error {

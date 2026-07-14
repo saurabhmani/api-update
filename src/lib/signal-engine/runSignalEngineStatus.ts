@@ -39,7 +39,7 @@ export interface SignalEngineCompletedRun {
   rejectedProviderError: number;
   signalsGenerated: number;
   signalsSaved: number;
-  indianApiRequestsUsed: number;
+  upstreamVendor: number;
   dataSource: string;
   lastError: string | null;
   failedSymbolsSample: SignalEngineFailedSymbol[];
@@ -65,7 +65,7 @@ export interface SignalEngineStatusSnapshot {
   rejectedProviderError: number | null;
   signalsGenerated: number | null;
   signalsSaved: number | null;
-  indianApiRequestsUsed: number | null;
+  upstreamVendor: number | null;
   dataSource: string | null;
   lastError: string | null;
   failedSymbolsSample: SignalEngineFailedSymbol[];
@@ -141,7 +141,7 @@ export function failSignalEngineRun(opts: {
   rejectedProviderError?: number;
   signalsGenerated?: number;
   signalsSaved?: number;
-  indianApiRequestsUsed?: number;
+  upstreamVendor?: number;
   dataSource?: string;
   failedSymbolsSample?: SignalEngineFailedSymbol[];
 }): void {
@@ -162,7 +162,7 @@ export function failSignalEngineRun(opts: {
     rejectedProviderError: opts.rejectedProviderError ?? 0,
     signalsGenerated: opts.signalsGenerated ?? 0,
     signalsSaved: opts.signalsSaved ?? 0,
-    indianApiRequestsUsed: opts.indianApiRequestsUsed ?? 0,
+    upstreamVendor: opts.upstreamVendor ?? 0,
     dataSource: opts.dataSource ?? 'unknown',
     lastError: opts.error,
     failedSymbolsSample: opts.failedSymbolsSample ?? [],
@@ -184,7 +184,7 @@ function idleFieldsFromLast(last: SignalEngineCompletedRun | null): SignalEngine
       rejectedProviderError: null,
       signalsGenerated: null,
       signalsSaved: null,
-      indianApiRequestsUsed: null,
+      upstreamVendor: null,
       dataSource: null,
       lastError: null,
       failedSymbolsSample: [],
@@ -204,7 +204,7 @@ function idleFieldsFromLast(last: SignalEngineCompletedRun | null): SignalEngine
     rejectedProviderError: last.rejectedProviderError,
     signalsGenerated: last.signalsGenerated,
     signalsSaved: last.signalsSaved,
-    indianApiRequestsUsed: last.indianApiRequestsUsed,
+    upstreamVendor: last.upstreamVendor,
     dataSource: last.dataSource,
     lastError: last.lastError,
     failedSymbolsSample: last.failedSymbolsSample,
@@ -249,7 +249,7 @@ export function buildSignalEngineStatus(opts: {
     rejectedProviderError: null,
     signalsGenerated: null,
     signalsSaved: null,
-    indianApiRequestsUsed: null,
+    upstreamVendor: null,
     dataSource: null,
     lastError: null,
     failedSymbolsSample: [],

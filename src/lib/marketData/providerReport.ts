@@ -6,23 +6,15 @@
 //  resolves?" without grepping log files.
 //
 //  Process-local. Counters reset on restart — that's intentional.
-//  Operators that need long-term provider attribution should query
-//  q365_data_feed_health, which the resolver already populates per
-//  call via logFeedHealth(). The report here is the human-readable
-//  in-memory rollup; the SQL log is the authoritative audit trail.
-//
-//  Concurrency: single Node.js event loop; mutations are sync. No
-//  locks needed.
 // ════════════════════════════════════════════════════════════════
 
-export type ReportProvider = 'indianapi' | 'kite' | 'nse' | 'yahoo' | 'snapshot';
+export type ReportProvider = 'kite' | 'nse' | 'yahoo' | 'snapshot';
 
 export interface ProviderReport {
   /** Provider that served the most recent resolve. Null until the
    *  first call lands. */
   last_provider:      ReportProvider | null;
   /** Cumulative call counts since process start. */
-  indianapi_calls:    number;
   kite_calls:         number;
   nse_calls:          number;
   yahoo_calls:        number;
@@ -37,7 +29,6 @@ export interface ProviderReport {
 
 const state: ProviderReport = {
   last_provider:      null,
-  indianapi_calls:    0,
   kite_calls:         0,
   nse_calls:          0,
   yahoo_calls:        0,
@@ -48,8 +39,7 @@ const state: ProviderReport = {
 };
 
 export interface RecordCallOptions {
-  /** True when this provider served the request as a fallback (i.e.
-   *  the primary IndianAPI returned a true failure first). */
+  /** True when this provider served the request as a fallback. */
   fallback?: boolean;
   /** Compact failure reason, when applicable. Pass null on success
    *  to clear the previous error marker. */
@@ -57,20 +47,13 @@ export interface RecordCallOptions {
 }
 
 /**
- * Record a single provider hop. Call once per successful resolve, or
- * once per cascade leg when the resolver moves IndianAPI → NSE → Yahoo.
- * `provider='snapshot'` is the off-hours / DB-snapshot path.
- *
- * Pass `fallback: true` when this is a NON-primary success (NSE / Yahoo
- * after IndianAPI failed). The flag is overwritten on every call so
- * the latest resolve always wins.
+ * Record a single provider hop.
  */
 export function recordProviderCall(
   provider: ReportProvider,
   opts: RecordCallOptions = {},
 ): void {
   switch (provider) {
-    case 'indianapi': state.indianapi_calls += 1; break;
     case 'kite':      state.kite_calls      += 1; break;
     case 'nse':       state.nse_calls       += 1; break;
     case 'yahoo':     state.yahoo_calls     += 1; break;
@@ -84,10 +67,7 @@ export function recordProviderCall(
 
 /**
  * Update `last_error` (and optionally `last_provider`) WITHOUT bumping
- * any counter. Use this after a recordProviderCall(...) when later code
- * paths discover the call failed and want to surface the reason in the
- * debug report. Avoids the double-count footgun where a single upstream
- * attempt would otherwise increment the call counter twice.
+ * any counter.
  */
 export function updateLastError(
   error: string | null,
@@ -104,11 +84,9 @@ export function getProviderReport(): ProviderReport {
   return { ...state };
 }
 
-/** Test helper — wipe counters between cases. Production code should
- *  never need this. */
+/** Test helper — wipe counters between cases. */
 export function _resetProviderReportForTests(): void {
   state.last_provider      = null;
-  state.indianapi_calls    = 0;
   state.kite_calls         = 0;
   state.nse_calls          = 0;
   state.yahoo_calls        = 0;

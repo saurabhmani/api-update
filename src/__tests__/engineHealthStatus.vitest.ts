@@ -10,7 +10,7 @@ const baseFeedCtx = (feed: Partial<EngineHealthContext['feed']>, marketOpen = tr
   generatedAt: new Date().toISOString(),
   marketStatus: { isOpen: marketOpen, label: marketOpen ? 'Market Open' : 'Market Closed', state: marketOpen ? 'open' : 'closed' },
   feed: {
-    provider: 'indianapi',
+    provider: 'kite',
     lastSuccessAt: new Date().toISOString(),
     lastApiRequestAt: new Date().toISOString(),
     isBootstrap: false,
@@ -153,7 +153,7 @@ describe('buildIndicatorHealthNode — lite response rows', () => {
     generatedAt: new Date().toISOString(),
     marketStatus: { isOpen: true, label: 'Market Open', state: 'open' },
     feed: {
-      provider: 'indianapi', lastSuccessAt: null, lastApiRequestAt: null,
+      provider: 'kite', lastSuccessAt: null, lastApiRequestAt: null,
       isBootstrap: false, isFallback: false, staleMinutes: 10,
       freshnessLabel: 'fresh', coveragePercent: 90,
       symbolsRequested: 100, symbolsReturned: 90, candleAgeHours: 1,

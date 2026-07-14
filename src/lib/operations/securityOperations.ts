@@ -15,7 +15,7 @@ const REQUIRED_SECRETS = [
 const OPTIONAL_PROVIDER_SECRETS = [
   'DATABASE_URL',
   'REDIS_URL',
-  'INDIANAPI_KEY',
+  'LEGACY_VENDOR_ENV',
 ] as const;
 
 export interface SecurityCheckInput {

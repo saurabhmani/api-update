@@ -2,17 +2,15 @@
 //  MarketDataResolver — the SINGLE entry point every consumer uses
 //  for live prices and batch snapshots.
 //
-//  Resolver order (Phase 9 — Kite default, IndianAPI first fallback):
+//  Resolver order (Phase 1 decommission — Kite primary, no vendor API):
 //    0. Market-closed gate — when NSE is closed, NO upstream call
-//       runs (Kite, IndianAPI, NSE direct, Yahoo are all skipped).
+//       runs (Kite, NSE direct, Yahoo are all skipped).
 //       Returns cache hits if any, else `provider='snapshot'` +
 //       `errorCode='MARKET_CLOSED'`.
-//    1. Configured primary via providerFlags:
-//         MARKET_DATA_PROVIDER unset / kite (DEFAULT) → Kite, then IndianAPI
-//         MARKET_DATA_PROVIDER=indianapi             → IndianAPI
-//       (INDIANAPI_PRIMARY=true still forces IndianAPI — same as MDP.)
-//    2. Fresh cache hit
-//    3. NSE direct rare fallback (only on TRUE primary failures)
+//    1. Cache-first (skipped when forceRefresh=true)
+//    2. Kite (always tried when not legacy / closed)
+//    3. NSE direct rare fallback (only after consecutive primary
+//       true-failures trip the configured threshold)
 //    4. Yahoo emergency (only when YAHOO_EMERGENCY_FALLBACK_ENABLED)
 //    → otherwise DATA_DEGRADED.
 //
@@ -29,13 +27,6 @@
 import { logger } from '@/lib/logger';
 import type { MarketSnapshot } from '@/types/market';
 import {
-  getNseBatchLivePrice,
-  getStockDetails,
-  type ProviderInvocation,
-  type InvocationStatus,
-  type InvocationQuality,
-} from '../providers/indianApiProvider';
-import {
   fetchNseDirectQuotes,
   type NseDirectResult,
 } from '../providers/nseDirectProvider';
@@ -45,10 +36,7 @@ import {
   QUOTE_TTL_S,
 } from '@/lib/cache';
 import {
-  isNseDirectFallbackEnabled,
   isYahooEmergencyFallbackEnabled, // @deprecated marker
-  isIndianApiPrimary,
-  isKitePrimary,
   getMarketDataProvider,
   getPrimaryFallbackProvider,
   isLegacyRollbackActive,
@@ -74,10 +62,36 @@ import {
 
 const log = logger.child({ component: 'marketDataResolver' });
 
+// ── Local ProviderInvocation envelope (formerly re-exported) ───────
+
+export type InvocationStatus = 'success' | 'partial' | 'failed' | 'degraded';
+export type InvocationQuality = 'HIGH' | 'MEDIUM' | 'LOW';
+
+/** Per-call envelope previously sourced from the removed primary vendor
+ *  module. Kept here so consumers of `ProviderInvocation` keep compiling.
+ *  `provider` is a free-form string (e.g. 'kite' | 'nse_direct'). */
+export interface ProviderInvocation<T> {
+  provider: string;
+  endpoint: string;
+  requestStartedAt:   string;
+  responseReceivedAt: string;
+  latencyMs:          number;
+  status:             InvocationStatus;
+  dataQuality:        InvocationQuality;
+  symbolsRequested: number;
+  symbolsReturned:  number;
+  coveragePercent:  number;
+  staleSymbols:  string[];
+  failedSymbols: string[];
+  freshnessScore: number;
+  errorCode:    string | null;
+  errorMessage: string | null;
+  data: T | null;
+}
+
 // ── Public envelope ────────────────────────────────────────────────
 
 export type ResolverProvider =
-  | 'indianapi'
   | 'kite'
   | 'cache'
   | 'nse_direct'
@@ -95,7 +109,7 @@ export type ResolverQuality = InvocationQuality;
 /** Per-row payload keyed by canonical `${exchange}:${symbol}` in
  *  `ResolverResult.data`. Each row records the provider that
  *  produced it so a partial-coverage response can mix sources
- *  (e.g. some rows from cache, some from IndianAPI). */
+ *  (e.g. some rows from cache, some from Kite). */
 export interface ResolverRow {
   ltp:       number;
   open:      number;
@@ -126,10 +140,10 @@ export interface ResolverResult {
   errorMessage: string | null;
 
   /** True when the result came from a non-primary provider after the
-   *  primary (IndianAPI) was attempted and produced a TRUE failure
+   *  primary (Kite) was attempted and produced a TRUE failure
    *  (timeout / network / 5xx / empty / invalid). False when the
    *  primary served the request, when the cache served it without an
-   *  upstream attempt, or when a non-true IndianAPI outcome (409,
+   *  upstream attempt, or when a non-true primary outcome (409,
    *  internal-engine block, MARKET_CLOSED, BUDGET_*) suppressed the
    *  cascade per spec. */
   fallbackUsed: boolean;
@@ -145,16 +159,16 @@ export interface ResolverResult {
   data: Record<string, ResolverRow>;
 }
 
-// ── Tracking: consecutive IndianAPI failures (Step 5 trigger) ──────
+// ── Tracking: consecutive primary (Kite) failures (NSE trigger) ────
 
-let consecutiveIndianFailures = 0;
+let consecutivePrimaryFailures = 0;
 
-function noteIndianOutcome(ok: boolean): void {
-  consecutiveIndianFailures = ok ? 0 : consecutiveIndianFailures + 1;
+function notePrimaryOutcome(ok: boolean): void {
+  consecutivePrimaryFailures = ok ? 0 : consecutivePrimaryFailures + 1;
 }
 
-export function getConsecutiveIndianApiFailures(): number {
-  return consecutiveIndianFailures;
+export function getConsecutivePrimaryFailures(): number {
+  return consecutivePrimaryFailures;
 }
 
 // ── Internal helpers ───────────────────────────────────────────────
@@ -192,44 +206,6 @@ function emptyResult(opts: {
     snapshots:        new Map(),
     data:             {},
   };
-}
-
-// ── Failure classifier (spec §2) ──────────────────────────────────
-//
-// Spec: "Treat as failure ONLY if timeout / network error / 5xx
-// response / empty/invalid data. DO NOT treat: 409, internal engine
-// block." When the primary returns a NON-true failure we MUST NOT
-// cascade to the NSE direct or Yahoo legs — those are reserved for
-// real IndianAPI outages, not for legitimate upstream signals like
-// a 409 conflict, a budget-guard refusal, the market-closed gate,
-// or a removed-route stub.
-//
-// The error codes referenced here come from `runIndianApi` (in
-// indianApiProvider.ts) — match them by exact string.
-const NON_FAILURE_INDIAN_CODES = new Set<string>([
-  'MARKET_CLOSED',       // internal engine block — market hours gate
-  'BUDGET_THROTTLED',    // internal engine block — budget guard
-  'BUDGET_EXHAUSTED',    // internal engine block — budget guard
-  'ROUTE_REMOVED',       // upstream route absent on this plan
-  'HTTP_409',            // explicit 409 conflict — not an outage
-]);
-
-interface FailureVerdict {
-  /** True when the failure justifies cascading to NSE/Yahoo. */
-  isTrueFailure: boolean;
-  /** Compact reason string used for logs + envelope errorMessage. */
-  reason: string;
-}
-
-function classifyIndianFailure(inv: ProviderInvocation<unknown>): FailureVerdict {
-  if (inv.status === 'success' || inv.status === 'partial') {
-    return { isTrueFailure: false, reason: inv.status };
-  }
-  const code = inv.errorCode ?? 'UPSTREAM_ERROR';
-  if (NON_FAILURE_INDIAN_CODES.has(code)) {
-    return { isTrueFailure: false, reason: code };
-  }
-  return { isTrueFailure: true, reason: code };
 }
 
 /** Spec §5 logging — one line per resolved batch describing which
@@ -362,11 +338,6 @@ function snapshotsToDataRecord(
  *   MEDIUM : coverage ≥ 70% AND latency < 5000 ms AND freshness < 180 s
  *   LOW    : anything else (including the 50–70% partial-coverage band)
  *
- * The previous 95/80 thresholds made MEDIUM unreachable on the
- * IndianAPI dev plan whenever coverage drifted into the 60–80%
- * window — the most common steady-state during throttle bursts.
- * That tagged every response LOW even though the data was usable.
- *
  * `freshnessMs` should be the age of the data the upstream returned.
  * For per-call resolver hops we approximate it as the call latency
  * (the oldest a fresh fetch can be); cache hits pass the cached row's
@@ -460,7 +431,7 @@ function mergeResultFromCacheAndApi(
   inv: { status: ResolverStatus; latencyMs: number; failedSymbols: string[] },
   startedAt: string,
   startTs: number,
-  apiProvider: ResolverProvider = 'indianapi',
+  apiProvider: ResolverProvider = 'kite',
 ): ResolverResult {
   const responseReceivedAt = nowIso();
   const latencyMs = Date.now() - startTs;
@@ -504,9 +475,7 @@ function mergeResultFromCacheAndApi(
     failedSymbols: inv.failedSymbols,
     errorCode: null,
     errorMessage: null,
-    fallbackUsed: apiProvider !== 'indianapi' && apiProvider !== 'kite'
-      ? true
-      : false,
+    fallbackUsed: apiProvider !== 'kite',
     snapshots: snapshotsToMap(allRows),
     data,
   };
@@ -606,7 +575,7 @@ export async function resolveBatch(
       coverage_percent: 0,
       data_quality: 'LOW',
       error_code: 'LEGACY_ROLLBACK',
-      error_message: 'MARKET_DATA_PROVIDER=legacy — IndianAPI resolver disabled',
+      error_message: 'MARKET_DATA_PROVIDER=legacy — live resolver disabled',
     });
     const r = emptyResult({
       provider: 'none', status: 'degraded',
@@ -620,7 +589,7 @@ export async function resolveBatch(
 
   // ── Market-closed early gate (spec §1, FIRST PRIORITY) ───────
   // When the NSE cash session is closed:
-  //   • DO NOT call IndianAPI
+  //   • DO NOT call Kite
   //   • DO NOT call NSE direct
   //   • DO NOT call Yahoo
   // The resolver returns either a 100% cache hit (when the per-symbol
@@ -635,7 +604,7 @@ export async function resolveBatch(
   if (marketClosedGateActive && !isMarketOpen()) {
     // Spec §6 — explicit DB-snapshot trace tag. Operators grep on
     // `[PROVIDER] DB SNAPSHOT` to confirm the off-hours path took the
-    // no-API branch. We never call NSE / Yahoo / IndianAPI here.
+    // no-API branch. We never call NSE / Yahoo / Kite here.
     console.log('[PROVIDER] DB SNAPSHOT → no API call');
     const status = getMarketStatus();
     const { hits, misses } = await readCacheBatch(symbols);
@@ -695,7 +664,7 @@ export async function resolveBatch(
   }
 
   // Tracks whether the cascade (NSE direct → Yahoo) is allowed to
-  // run after the primary block returns. Spec §2: only TRUE IndianAPI
+  // run after the primary block returns. Spec §2: only TRUE primary
   // failures (timeout / network / 5xx / empty / invalid) trigger
   // cascade; 409, MARKET_CLOSED, BUDGET_*, ROUTE_REMOVED do not.
   let cascadeAllowed = true;
@@ -704,18 +673,13 @@ export async function resolveBatch(
   // attempted (cache-first 100% hit).
   let primaryFailureReason: string | null = null;
   // The non-true error code is preserved so a degraded-with-no-cache
-  // exit returns the original IndianAPI signal (e.g. HTTP_409) instead
+  // exit returns the original primary signal (e.g. HTTP_409) instead
   // of the generic DATA_DEGRADED. Lets callers distinguish "real
   // outage" from "primary explicitly refused".
   let suppressedErrorCode:    string | null = null;
   let suppressedErrorMessage: string | null = null;
-  // Phase 5: when Kite is the configured primary and fails, IndianAPI
-  // still runs as the next live vendor (same as MarketDataProvider).
   let kiteAttempted = false;
-  let indianAttempted = false;
   const selected = getMarketDataProvider();
-  const kitePrimary = isKitePrimary();
-  const indianPrimary = isIndianApiPrimary();
 
   logProviderEvent('request', {
     method: 'resolveBatch',
@@ -725,10 +689,10 @@ export async function resolveBatch(
     symbols: symbols.length,
   });
 
-  // ── 0. Cache-first (IndianAPI OR Kite primary) ────────────────
+  // ── 0. Cache-first ────────────────────────────────────────────
   // Cache-first returns when fully warm, OR pays for ONLY the misses
   // when partially warm. Bypassed when forceRefresh=true.
-  if (!opts.forceRefresh && (indianPrimary || kitePrimary)) {
+  if (!opts.forceRefresh) {
     const { hits, misses } = await readCacheBatch(symbols);
     if (misses.length === 0 && hits.length === symbols.length) {
       logProviderEvent('success', {
@@ -743,116 +707,69 @@ export async function resolveBatch(
       return r;
     }
     if (hits.length > 0) {
-      // Partial cache — fill ONLY the misses from the configured primary.
-      if (kitePrimary) {
-        kiteAttempted = true;
-        logProviderEvent('attempt', {
+      // Partial cache — fill ONLY the misses from Kite.
+      kiteAttempted = true;
+      logProviderEvent('attempt', {
+        provider: 'kite',
+        method: 'getBatchQuotes',
+        symbols: misses.length,
+        cache_hit: 'partial',
+      });
+      const kite = await tryKiteBatchQuotes(misses);
+      recordProviderCall('kite', { fallback: false, error: null });
+      recordProviderLatency({
+        provider:     'kite',
+        durationMs:   kite.latencyMs,
+        success:      kite.ok,
+        errorCode:    kite.errorCode,
+        symbolsCount: misses.length,
+      });
+      if (kite.ok) {
+        notePrimaryOutcome(true);
+        logProviderEvent('success', {
           provider: 'kite',
-          method: 'getBatchQuotes',
-          symbols: misses.length,
-          cache_hit: 'partial',
-        });
-        const kite = await tryKiteBatchQuotes(misses);
-        if (kite.ok) {
-          logProviderEvent('success', {
-            provider: 'kite',
-            selected,
-            fallback: 'none',
-            latency_ms: kite.latencyMs,
-            returned: kite.snapshots.length,
-          });
-          await writeCacheBatch(kite.snapshots);
-          const r = mergeResultFromCacheAndApi(
-            hits,
-            kite.snapshots,
-            symbols,
-            {
-              status: kite.missing.length === 0 ? 'success' : 'partial',
-              latencyMs: kite.latencyMs,
-              failedSymbols: kite.missing,
-            },
-            startedAt,
-            startTs,
-            'kite',
-          );
-          logResolverOutcome(symbols.length, r, null);
-          return r;
-        }
-        primaryFailureReason = kite.errorCode ?? 'KITE_ERROR';
-        suppressedErrorCode = kite.errorCode;
-        suppressedErrorMessage = kite.errorMessage;
-        logProviderEvent('fallback', {
-          from: 'kite',
-          to: 'indianapi',
-          reason: kite.errorCode,
+          selected,
+          fallback: 'none',
           latency_ms: kite.latencyMs,
-          recoverable: kite.recoverable,
+          returned: kite.snapshots.length,
         });
-        // Continue to IndianAPI miss-fill below.
+        await writeCacheBatch(kite.snapshots);
+        const r = mergeResultFromCacheAndApi(
+          hits,
+          kite.snapshots,
+          symbols,
+          {
+            status: kite.missing.length === 0 ? 'success' : 'partial',
+            latencyMs: kite.latencyMs,
+            failedSymbols: kite.missing,
+          },
+          startedAt,
+          startTs,
+          'kite',
+        );
+        logResolverOutcome(symbols.length, r, null);
+        return r;
       }
-
-      // IndianAPI miss-fill (default primary, or secondary after Kite miss).
-      if (indianPrimary || kitePrimary) {
-        indianAttempted = true;
-        logProviderEvent('attempt', {
-          provider: 'indianapi',
-          method: 'getNseBatchLivePrice',
-          symbols: misses.length,
-          cache_hit: 'partial',
-        });
-        console.log('[PROVIDER] IndianAPI CALL →', misses.length);
-        const inv = await getNseBatchLivePrice(misses, signal);
-        recordProviderCall('indianapi', { fallback: kitePrimary, error: null });
-        recordProviderLatency({
-          provider:     'indianapi',
-          durationMs:   inv.latencyMs,
-          success:      inv.status === 'success' || inv.status === 'partial',
-          errorCode:    inv.errorCode,
-          symbolsCount: misses.length,
-        });
-        if (inv.status === 'success' || inv.status === 'partial') {
-          noteIndianOutcome(true);
-          const fresh = inv.data?.snapshots ?? [];
-          await writeCacheBatch(fresh);
-          logProviderEvent('success', {
-            provider: 'indianapi',
-            selected,
-            fallback: kitePrimary ? 'kite→indianapi' : 'none',
-            latency_ms: inv.latencyMs,
-          });
-          const r = mergeResultFromCacheAndApi(hits, fresh, symbols, inv, startedAt, startTs, 'indianapi');
-          // When Kite was primary and Indian saved the miss-fill, this
-          // is still a fallback from the operator's POV.
-          if (kitePrimary) r.fallbackUsed = true;
-          logResolverOutcome(symbols.length, r, kitePrimary ? primaryFailureReason : null);
-          return r;
-        }
-        const verdict = classifyIndianFailure(inv);
-        primaryFailureReason   = verdict.reason;
-        suppressedErrorCode    = inv.errorCode ?? null;
-        suppressedErrorMessage = inv.errorMessage ?? null;
-        updateLastError(verdict.reason, 'indianapi');
-        if (verdict.isTrueFailure) {
-          noteIndianOutcome(false);
-          log.warn('IndianAPI miss-fill failed; fall through to fallback ladder', {
-            errorCode: inv.errorCode, errorMessage: inv.errorMessage,
-            reason: verdict.reason,
-          });
-          logProviderEvent('fail', { provider: 'indianapi', reason: verdict.reason });
-        } else {
-          cascadeAllowed = false;
-          log.info('IndianAPI miss-fill returned non-failure signal; cascade suppressed', {
-            errorCode: inv.errorCode, errorMessage: inv.errorMessage,
-            reason: verdict.reason,
-          });
-        }
-      }
+      notePrimaryOutcome(false);
+      primaryFailureReason = kite.errorCode ?? 'KITE_ERROR';
+      suppressedErrorCode = kite.errorCode;
+      suppressedErrorMessage = kite.errorMessage;
+      updateLastError(primaryFailureReason, 'kite');
+      logProviderEvent('fallback', {
+        from: 'kite',
+        to: 'cache|nse|yahoo',
+        reason: kite.errorCode,
+        latency_ms: kite.latencyMs,
+        recoverable: kite.recoverable,
+      });
+      logProviderEvent('fail', { provider: 'kite', reason: primaryFailureReason });
+      // Continue to secondary cache / NSE / Yahoo ladder below.
     }
-    // No cache hits at all — fall into the primary vendor blocks below.
+    // No cache hits at all — fall into the Kite primary block below.
   }
 
-  // ── 1a. Kite primary (Phase 9 default via MARKET_DATA_PROVIDER) ─
-  if (kitePrimary && cascadeAllowed && !kiteAttempted) {
+  // ── 1. Kite primary (always tried when not legacy/closed) ─────
+  if (cascadeAllowed && !kiteAttempted) {
     kiteAttempted = true;
     logProviderEvent('attempt', {
       provider: 'kite',
@@ -861,7 +778,16 @@ export async function resolveBatch(
       symbols: symbols.length,
     });
     const kite = await tryKiteBatchQuotes(symbols);
+    recordProviderCall('kite', { fallback: false, error: null });
+    recordProviderLatency({
+      provider:     'kite',
+      durationMs:   kite.latencyMs,
+      success:      kite.ok,
+      errorCode:    kite.errorCode,
+      symbolsCount: symbols.length,
+    });
     if (kite.ok) {
+      notePrimaryOutcome(true);
       const coverage = Math.round((kite.snapshots.length / symbols.length) * 100);
       const status: ResolverStatus =
         kite.missing.length === 0 && kite.snapshots.length === symbols.length
@@ -913,14 +839,16 @@ export async function resolveBatch(
       logResolverOutcome(symbols.length, r, null);
       return r;
     }
+    notePrimaryOutcome(false);
     primaryFailureReason = kite.errorCode ?? 'KITE_ERROR';
     suppressedErrorCode = kite.errorCode;
     suppressedErrorMessage = kite.errorMessage;
+    updateLastError(primaryFailureReason, 'kite');
     // Recoverable Kite errors (auth / rate-limit / unsupported) and
-    // empty batches all cascade to IndianAPI — matching MarketDataProvider.
+    // empty batches all cascade to cache → NSE → Yahoo.
     logProviderEvent('fallback', {
       from: 'kite',
-      to: 'indianapi|cache|nse|yahoo',
+      to: 'cache|nse|yahoo',
       reason: kite.errorCode,
       capability: 'batch_quotes',
       selected,
@@ -928,99 +856,7 @@ export async function resolveBatch(
       latency_ms: kite.latencyMs,
       recoverable: kite.recoverable,
     });
-  }
-
-  // ── 1b. IndianAPI primary (DEFAULT) or secondary after Kite ────
-  // Skipped when cache-first miss-fill above already classified a
-  // non-true IndianAPI failure — re-firing would waste a quota slot.
-  // When Kite was primary and failed, we still run IndianAPI even if
-  // primaryFailureReason is set (Kite's reason).
-  const shouldRunIndian =
-    cascadeAllowed
-    && !indianAttempted
-    && (
-      (indianPrimary && primaryFailureReason === null)
-      || (kitePrimary && kiteAttempted)
-    );
-  if (shouldRunIndian) {
-    indianAttempted = true;
-    // Spec §6 — provider trace tag for the full-batch primary path.
-    logProviderEvent('attempt', {
-      provider: 'indianapi',
-      method: 'getNseBatchLivePrice',
-      symbols: symbols.length,
-    });
-    console.log('[PROVIDER] IndianAPI CALL →', symbols.length);
-    const inv = await getNseBatchLivePrice(symbols, signal);
-    // Spec §7 — counter bumps on every attempt; last_error is set
-    // below when the call fails.
-    recordProviderCall('indianapi', { fallback: kitePrimary, error: null });
-    recordProviderLatency({
-      provider:     'indianapi',
-      durationMs:   inv.latencyMs,
-      success:      inv.status === 'success' || inv.status === 'partial',
-      errorCode:    inv.errorCode,
-      symbolsCount: symbols.length,
-    });
-    if (inv.status === 'success' || inv.status === 'partial') {
-      noteIndianOutcome(true);
-      const snaps = inv.data?.snapshots ?? [];
-      await writeCacheBatch(snaps);
-      const dq = classifyResolverQuality(
-        inv.coveragePercent,
-        inv.latencyMs,
-        inv.latencyMs,
-      );
-      logProviderEvent('success', {
-        provider: 'indianapi',
-        selected,
-        fallback: kitePrimary ? 'kite→indianapi' : 'none',
-        latency_ms: inv.latencyMs,
-      });
-      const r: ResolverResult = {
-        provider: 'indianapi',
-        status: inv.status,
-        dataQuality: dq,
-        requestStartedAt: inv.requestStartedAt,
-        responseReceivedAt: inv.responseReceivedAt,
-        latencyMs: inv.latencyMs,
-        symbolsRequested: inv.symbolsRequested,
-        symbolsReturned: inv.symbolsReturned,
-        coveragePercent: inv.coveragePercent,
-        staleSymbols: inv.staleSymbols,
-        failedSymbols: inv.failedSymbols,
-        errorCode: null,
-        errorMessage: null,
-        fallbackUsed: kitePrimary,
-        snapshots: snapshotsToMap(snaps),
-        data: snapshotsToDataRecord(snaps, 'indianapi'),
-      };
-      logResolverOutcome(symbols.length, r, kitePrimary ? primaryFailureReason : null);
-      return r;
-    }
-    const verdict = classifyIndianFailure(inv);
-    primaryFailureReason   = verdict.reason;
-    suppressedErrorCode    = inv.errorCode ?? null;
-    suppressedErrorMessage = inv.errorMessage ?? null;
-    // Spec §7 — last_error reflects the IndianAPI failure regardless of
-    // whether it cascades. updateLastError (not recordProviderCall) so
-    // the call counter (already bumped on attempt above) doesn't double.
-    updateLastError(verdict.reason, 'indianapi');
-    if (verdict.isTrueFailure) {
-      noteIndianOutcome(false);
-      log.warn('IndianAPI primary failed', {
-        errorCode: inv.errorCode, errorMessage: inv.errorMessage,
-        reason: verdict.reason,
-      });
-      logProviderEvent('fail', { provider: 'indianapi', reason: verdict.reason });
-    } else {
-      // 409 / internal engine block / removed-route — cache only.
-      cascadeAllowed = false;
-      log.info('IndianAPI primary returned non-failure signal; cascade suppressed', {
-        errorCode: inv.errorCode, errorMessage: inv.errorMessage,
-        reason: verdict.reason,
-      });
-    }
+    logProviderEvent('fail', { provider: 'kite', reason: primaryFailureReason });
   }
 
   // ── 2. Fresh cache hit ────────────────────────────────────────
@@ -1071,33 +907,33 @@ export async function resolveBatch(
 
   // ── 3. NSE direct rare fallback ───────────────────────────────
   // Hard gate: only attempt NSE direct after the configured number
-  // of consecutive IndianAPI failures (default 3, env override
+  // of consecutive primary failures (default 3, env override
   // NSE_DIRECT_FALLBACK_TRIGGER_FAILURES). One transient blip never
   // triggers the rare path. Spec §2: skipped entirely when the most
-  // recent IndianAPI outcome was a non-true failure (409, MARKET_CLOSED,
+  // recent primary outcome was a non-true failure (409, MARKET_CLOSED,
   // BUDGET_*, ROUTE_REMOVED) — those signals do not justify reaching
   // for the rare-fallback chain.
   const nseCfg = getNseDirectFallbackConfig();
   if (
     cascadeAllowed
     && nseCfg.enabled
-    && consecutiveIndianFailures >= nseCfg.triggerFailures
+    && consecutivePrimaryFailures >= nseCfg.triggerFailures
   ) {
     log.warn('NSE direct fallback engaged', {
-      consecutiveFailures: consecutiveIndianFailures,
+      consecutiveFailures: consecutivePrimaryFailures,
       triggerThreshold: nseCfg.triggerFailures,
       symbols: symbols.length,
     });
     // Spec §7 — explicit cascade-trigger trace. Fires only when the
     // primary classification produced a TRUE failure AND the rolling
     // failure counter has tripped the configured threshold (default 3).
-    console.log('[ERROR] IndianAPI failed → triggering NSE');
+    console.log('[ERROR] Kite failed → triggering NSE');
     // Spec §6 — provider trace tag for the NSE branch.
     console.log('[PROVIDER] NSE FALLBACK →', symbols.length);
     // Spec FALLBACK-CHAOS-2026-05 — canonical [FALLBACK_*] tag family.
     console.log('[FALLBACK_TRIGGERED]', {
-      from_provider:        'indianapi',
-      consecutive_failures: consecutiveIndianFailures,
+      from_provider:        'kite',
+      consecutive_failures: consecutivePrimaryFailures,
       trigger_threshold:    nseCfg.triggerFailures,
       symbols:              symbols.length,
       reason:               primaryFailureReason,
@@ -1106,7 +942,7 @@ export async function resolveBatch(
       to_provider: 'nse_direct',
       symbols:     symbols.length,
     });
-    recordFallbackTriggered('indianapi');
+    recordFallbackTriggered('kite');
     const nseStart = Date.now();
     const nse: NseDirectResult = await fetchNseDirectQuotes(symbols, signal);
     const nseDurationMs = Date.now() - nseStart;
@@ -1169,7 +1005,7 @@ export async function resolveBatch(
       });
       recordFallback({
         route:        'marketDataResolver',
-        fromProvider: 'indianapi',
+        fromProvider: 'kite',
         toProvider:   'nse',
         errorCode:    primaryFailureReason,
       });
@@ -1203,7 +1039,7 @@ export async function resolveBatch(
   }
 
   // ── 4. Yahoo emergency (gated) ──────────────────────────────── // @deprecated marker
-  // Same cascade gate as NSE direct — non-true IndianAPI signals do
+  // Same cascade gate as NSE direct — non-true primary signals do
   // not justify a Yahoo fallback either.
   if (cascadeAllowed && isYahooEmergencyFallbackEnabled()) { // @deprecated marker
     // Spec §6 — provider trace tag for the Yahoo emergency branch.
@@ -1259,7 +1095,7 @@ export async function resolveBatch(
       });
       recordFallback({
         route:        'marketDataResolver',
-        fromProvider: 'indianapi',
+        fromProvider: 'kite',
         toProvider:   'yahoo',
         errorCode:    primaryFailureReason,
       });
@@ -1273,7 +1109,9 @@ export async function resolveBatch(
   // from "explicit refusal" — only collapse to DATA_DEGRADED when an
   // actual cascade ran and still produced nothing.
   const finalErrorCode    = !cascadeAllowed && suppressedErrorCode    ? suppressedErrorCode    : 'DATA_DEGRADED';
-  const finalErrorMessage = !cascadeAllowed && suppressedErrorMessage ? suppressedErrorMessage : 'IndianAPI failed and no fallback returned data';
+  const finalErrorMessage = !cascadeAllowed && suppressedErrorMessage
+    ? suppressedErrorMessage
+    : 'Kite failed and no fallback returned data';
   const r = emptyResult({
     provider: 'none', status: 'failed',
     errorCode: finalErrorCode,
@@ -1317,72 +1155,30 @@ export async function resolveSingle(
     return { ...r, snapshot: null };
   }
 
-  if (isKitePrimary()) {
-    logProviderEvent('attempt', {
-      provider: 'kite',
-      method: 'getQuote',
-      symbol: sym,
-    });
-    try {
-      const snap = await Kite.getQuote(sym);
-      if (snap && Number.isFinite(snap.price) && snap.price > 0) {
-        await writeCacheBatch([snap]);
-        logProviderEvent('success', {
-          provider: 'kite',
-          selected: getMarketDataProvider(),
-          fallback: 'none',
-          symbol: sym,
-        });
-        const result: ResolverResult = {
-          provider: 'kite',
-          status: 'success',
-          dataQuality: 'HIGH',
-          requestStartedAt: startedAt,
-          responseReceivedAt: nowIso(),
-          latencyMs: Date.now() - startTs,
-          symbolsRequested: 1,
-          symbolsReturned: 1,
-          coveragePercent: 100,
-          staleSymbols: [],
-          failedSymbols: [],
-          errorCode: null,
-          errorMessage: null,
-          fallbackUsed: false,
-          snapshots: snapshotsToMap([snap]),
-          data: snapshotsToDataRecord([snap], 'kite'),
-        };
-        return { ...result, snapshot: snap };
-      }
-    } catch (err) {
-      logProviderEvent('fallback', {
-        from: 'kite',
-        to: 'indianapi|resolveBatch',
-        symbol: sym,
-        reason: err instanceof Error ? err.name : 'error',
-        recoverable: isRecoverableKiteError(err),
-      });
-      // Fall through to IndianAPI / resolveBatch cascade.
-    }
-  }
-
-  if (isIndianApiPrimary() || isKitePrimary()) {
-    const inv = await getStockDetails(sym, signal);
-    if (inv.status === 'success' && inv.data) {
-      noteIndianOutcome(true);
-      await writeCacheBatch([inv.data]);
+  // Always try Kite getQuote first (Phase 1 — no vendor stock-details path).
+  logProviderEvent('attempt', {
+    provider: 'kite',
+    method: 'getQuote',
+    symbol: sym,
+  });
+  try {
+    const snap = await Kite.getQuote(sym);
+    if (snap && Number.isFinite(snap.price) && snap.price > 0) {
+      await writeCacheBatch([snap]);
+      notePrimaryOutcome(true);
       logProviderEvent('success', {
-        provider: 'indianapi',
+        provider: 'kite',
         selected: getMarketDataProvider(),
-        fallback: isKitePrimary() ? 'kite→indianapi' : 'none',
+        fallback: 'none',
         symbol: sym,
       });
       const result: ResolverResult = {
-        provider: 'indianapi',
+        provider: 'kite',
         status: 'success',
-        dataQuality: classifyResolverQuality(100, inv.latencyMs, inv.latencyMs),
-        requestStartedAt: inv.requestStartedAt,
-        responseReceivedAt: inv.responseReceivedAt,
-        latencyMs: inv.latencyMs,
+        dataQuality: 'HIGH',
+        requestStartedAt: startedAt,
+        responseReceivedAt: nowIso(),
+        latencyMs: Date.now() - startTs,
         symbolsRequested: 1,
         symbolsReturned: 1,
         coveragePercent: 100,
@@ -1390,17 +1186,22 @@ export async function resolveSingle(
         failedSymbols: [],
         errorCode: null,
         errorMessage: null,
-        fallbackUsed: isKitePrimary(),
-        snapshots: snapshotsToMap([inv.data]),
-        data: snapshotsToDataRecord([inv.data], 'indianapi'),
+        fallbackUsed: false,
+        snapshots: snapshotsToMap([snap]),
+        data: snapshotsToDataRecord([snap], 'kite'),
       };
-      return { ...result, snapshot: inv.data };
+      return { ...result, snapshot: snap };
     }
-    // Spec §2: only TRUE failures bump the consecutive-failure counter
-    // that gates NSE direct. 409 / MARKET_CLOSED / BUDGET_* / ROUTE_REMOVED
-    // are explicit signals from IndianAPI itself — not outages.
-    const verdict = classifyIndianFailure(inv);
-    if (verdict.isTrueFailure) noteIndianOutcome(false);
+  } catch (err) {
+    notePrimaryOutcome(false);
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'resolveBatch',
+      symbol: sym,
+      reason: err instanceof Error ? err.name : 'error',
+      recoverable: isRecoverableKiteError(err),
+    });
+    // Fall through to resolveBatch cascade (cache → NSE → Yahoo).
   }
 
   const batch = await resolveBatch([sym], { signal });
@@ -1414,7 +1215,7 @@ export async function resolveSingle(
 //  new envelope; until then they get a byte-equivalent shape.
 // ════════════════════════════════════════════════════════════════
 
-export type Source  = 'kite' | 'yahoo' | 'indianapi' | 'cache' | 'none' | null; // @deprecated marker
+export type Source  = 'kite' | 'yahoo' | 'nse' | 'cache' | 'none' | null; // @deprecated marker
 export type Quality = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export interface ResolvedPrice {
@@ -1440,12 +1241,11 @@ function toResolvedPrice(
     };
   }
   const source: Source =
-    provider === 'indianapi' ? 'indianapi' :
     provider === 'kite'      ? 'kite' :
     provider === 'cache'     ? 'cache' :
     provider === 'snapshot'  ? 'cache' :
     provider === 'yahoo_emergency' ? 'yahoo' : // @deprecated marker
-    provider === 'nse_direct' ? 'indianapi' :
+    provider === 'nse_direct' ? 'nse' :
     'none';
   return {
     symbol,
@@ -1499,8 +1299,6 @@ export function summarizeQuality(resolved: ResolvedPrice[]): {
   return { high, medium, low, kiteRatio }; // @deprecated marker
 }
 
-export type { ProviderInvocation } from '../providers/indianApiProvider';
-
 // ── Spec SMART_FALLBACK §6 envelope helper ────────────────────────
 //
 // Compact `{ provider_used, fallback_used, market_state, symbols_processed }`
@@ -1509,7 +1307,6 @@ export type { ProviderInvocation } from '../providers/indianApiProvider';
 // to reach for `getMarketStatus()` separately.
 
 export type SmartFallbackProvider =
-  | 'indianapi'
   | 'kite'
   | 'nse'
   | 'yahoo'

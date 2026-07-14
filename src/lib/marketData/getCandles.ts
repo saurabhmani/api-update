@@ -1,15 +1,13 @@
 // ════════════════════════════════════════════════════════════════
 //  getCandles — daily-OHLC entry point for candle ingest (backfill).
 //
-//  Phase 6: Kite is the primary upstream; IndianAPI remains the
-//  fallback. Used ONLY by `candleIngest` — strategy evaluation
-//  reads from DB via `fetchDailyCandlesWithFallback` and never
-//  calls this function while a scan is in flight.
+//  Kite is the sole historical upstream. Used ONLY by `candleIngest` —
+//  strategy evaluation reads from DB via `fetchDailyCandlesWithFallback`
+//  and never calls this function while a scan is in flight.
 //
 //  Never throws. Failure returns `{ ok: false, reason }`.
 // ════════════════════════════════════════════════════════════════
 
-import { mapToIndianApiSymbol } from './symbolMapper';
 import {
   fetchUpstreamDailyCandles,
   getDbBarCount,
@@ -19,7 +17,6 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from './providers/nseHistoricalProvider';
-import { getIndianApiConfig } from './providers/indianApiEndpoints';
 import { isKiteHistoricalConfigured } from './providers/kiteHistoricalProvider';
 import type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
 
@@ -62,26 +59,25 @@ export async function getCandles(
   symbol: string,
   opts: GetCandlesOptions = {},
 ): Promise<CandleFetchResult> {
-  const sym = (await mapToIndianApiSymbol(symbol)).toUpperCase();
+  const sym = String(symbol ?? '').trim().toUpperCase();
 
   if (PERMANENT_SKIP.has(sym)) {
-    return { ok: false, source: 'indianapi', reason: 'skip:not_tradable' };
+    return { ok: false, source: 'kite', reason: 'skip:not_tradable' };
   }
   if (INAV_PSEUDO_RE.test(sym)) {
-    return { ok: false, source: 'indianapi', reason: 'skip:inav_pseudo_symbol' };
+    return { ok: false, source: 'kite', reason: 'skip:inav_pseudo_symbol' };
   }
 
   const negAt = failedAt.get(sym);
   if (negAt && Date.now() - negAt < NEGATIVE_TTL_MS) {
-    return { ok: false, source: 'indianapi', reason: 'neg_cache:provider_recently_failed' };
+    return { ok: false, source: 'kite', reason: 'neg_cache:provider_recently_failed' };
   }
 
-  const { apiKey } = getIndianApiConfig();
-  if (!apiKey && !isKiteHistoricalConfigured()) {
+  if (!isKiteHistoricalConfigured()) {
     return {
       ok: false,
-      source: 'indianapi',
-      reason: providerReason('API_KEY_MISSING', 'No Kite or IndianAPI credentials configured'),
+      source: 'kite',
+      reason: providerReason('KITE_NOT_CONFIGURED', 'KITE_API_KEY / KITE_ACCESS_TOKEN not set'),
     };
   }
 
@@ -97,17 +93,16 @@ export async function getCandles(
     }
   }
 
-  // 1) Kite → IndianAPI
+  // 1) Kite upstream
   const up = await fetchUpstreamDailyCandles(sym);
   if (up.ok && up.candles.length > 0) {
     failedAt.delete(sym);
-    const source: CandleSource = up.provider === 'kite' ? 'kite' : 'indianapi';
-    return { ok: true, candles: toOhlcBars(up.candles), source };
+    return { ok: true, candles: toOhlcBars(up.candles), source: 'kite' };
   }
 
-  const iaCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
+  const upCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
   console.warn(
-    `[getCandles] upstream failed symbol=${sym} code=${iaCode} — ` +
+    `[getCandles] upstream failed symbol=${sym} code=${upCode} — ` +
     `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
   );
 
@@ -130,7 +125,7 @@ export async function getCandles(
   failedAt.set(sym, Date.now());
   return {
     ok: false,
-    source: up.provider === 'kite' ? 'kite' : 'indianapi',
-    reason: providerReason(iaCode, up.errorMessage),
+    source: 'kite',
+    reason: providerReason(upCode, up.errorMessage),
   };
 }

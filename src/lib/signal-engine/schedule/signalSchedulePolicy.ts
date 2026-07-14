@@ -11,7 +11,7 @@ export const CONTROLLED_SIGNAL_CRONS = {
   mainMorningScan:   '45 9 * * 1-5',   // 09:45 — main morning DB-only scan
   middayRescore:     '30 12 * * 1-5',  // 12:30 — active signal rescore
   lateRescore:       '45 14 * * 1-5',   // 14:45 — late-day rescore / confirmation
-  eveningUpdate:     '0 16 * * 1-5',   // 16:00 — IndianAPI EOD candles
+  eveningUpdate:     '0 16 * * 1-5',   // 16:00 — removed vendor EOD candles
   eveningScan:       '30 16 * * 1-5',   // 16:30 — final EOD DB-only scan
 } as const;
 

@@ -4,7 +4,7 @@
 //  @deprecated  The function name is preserved so existing route
 //  handlers (api/ticker, api/rankings, api/market, api/market-data/*)
 //  keep compiling. The implementation now routes through the central
-//  marketDataResolver — IndianAPI primary, cache, NSE-direct,
+//  marketDataResolver — removed vendor primary, cache, NSE-direct,
 //  emergency Yahoo. New code must import from MarketDataResolver // @deprecated marker
 //  directly; this shim is scheduled for removal once every route is
 //  migrated.
@@ -30,7 +30,7 @@ export async function fetchYahooQuotesBatch( // @deprecated marker
 
   // Resolve through the central chain. `quiet: true` keeps the
   // resolver from emitting an extra cache-step health row when this
-  // legacy shim is the entry point — the IndianAPI primary call
+  // legacy shim is the entry point — the removed vendor primary call
   // already logs.
   const result = await resolveBatch(symbols, { quiet: true, signal });
   for (const [sym, snap] of result.snapshots) {

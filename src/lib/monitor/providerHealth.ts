@@ -1,18 +1,15 @@
 // ════════════════════════════════════════════════════════════════
-//  providerHealth — composite dual-provider ops snapshot (Phase 8)
+//  providerHealth — composite ops snapshot (Phase 1 / kite-primary)
 //
-//  Aggregates IndianAPI (quota / breaker / usage) + Kite (auth /
-//  rate-limit / availability) for health & usage routes without
-//  changing provider selection behaviour.
+//  Aggregates Kite (auth / rate-limit / availability) plus soft
+//  yahoo/nse placeholder blocks for health & usage routes.
+//  No vendor usage tracker, breaker, or queue probes.
 // ════════════════════════════════════════════════════════════════
 
-import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
-import { getApiUsage } from '@/providers/adapters/indianApiUsageTracker';
 import {
-  indianApiBreakerState,
-  indianApiQueueGauge,
-} from '@/providers/adapters/IndianAPIAdapter';
-import type { QuotaReport } from '@/lib/monitor/apiQuota';
+  getMarketDataProvider,
+  getPrimaryFallbackProvider,
+} from '@/lib/marketData/providerFlags';
 import { getKiteHealth, type KiteHealthSnapshot } from '@/lib/kite/health';
 import { getProviderReport } from '@/lib/marketData/providerReport';
 import { getMonitorSnapshot } from '@/lib/monitor/apiMonitor';
@@ -27,13 +24,16 @@ export type ProviderCapability =
   | 'corporate'
   | 'search';
 
-const INDIANAPI_CAPS: ProviderCapability[] = [
-  'quotes', 'batch_quotes', 'historical', 'movers', 'trending',
-  'news', 'corporate', 'search',
-];
-
 const KITE_CAPS: ProviderCapability[] = [
   'quotes', 'batch_quotes', 'historical', 'search',
+];
+
+const YAHOO_CAPS: ProviderCapability[] = [
+  'quotes', 'batch_quotes', 'historical', 'news', 'search',
+];
+
+const NSE_CAPS: ProviderCapability[] = [
+  'quotes', 'batch_quotes', 'historical',
 ];
 
 export interface ProviderMetricsBlock {
@@ -49,38 +49,36 @@ export interface ProviderMetricsBlock {
   last_error_code: string | null;
 }
 
+export interface SoftProviderPlaceholder {
+  status: 'placeholder';
+  capabilities: ProviderCapability[];
+  metrics: ProviderMetricsBlock;
+}
+
 export interface CompositeProviderHealth {
   current_provider: string;
   fallback_provider: string | null;
-  indianapi: {
-    usage: ReturnType<typeof getApiUsage>;
-    quota: QuotaReport | null;
-    breaker: ReturnType<typeof indianApiBreakerState> | null;
-    queue: ReturnType<typeof indianApiQueueGauge> | null;
-    capabilities: ProviderCapability[];
-    metrics: ProviderMetricsBlock;
-  };
   kite: KiteHealthSnapshot & {
     capabilities: ProviderCapability[];
     /** Explicit: Kite has no monthly plan quota in this app. */
     monthly_quota: null;
     metrics: ProviderMetricsBlock;
   };
+  yahoo: SoftProviderPlaceholder;
+  nse: SoftProviderPlaceholder;
   report: ReturnType<typeof getProviderReport>;
   monitor_providers: ReturnType<typeof getMonitorSnapshot>['providers'];
 }
 
-function safeProbe<T>(fn: () => T, fallback: T): T {
-  try { return fn(); } catch { return fallback; }
-}
-
-function indianMetrics(): ProviderMetricsBlock {
+function monitorMetrics(provider: string): ProviderMetricsBlock {
   const snap = getMonitorSnapshot();
-  const p = snap.providers.find((x) => x.provider === 'indianapi');
+  const p = snap.providers.find((x) => x.provider === provider);
   const report = getProviderReport();
+  const callKey = `${provider}_calls` as keyof typeof report;
+  const reportCalls = typeof report[callKey] === 'number' ? (report[callKey] as number) : 0;
   return {
-    provider: 'indianapi',
-    requests: p?.calls ?? report.indianapi_calls,
+    provider,
+    requests: p?.calls ?? reportCalls,
     successes: Math.max(0, (p?.calls ?? 0) - (p?.errors ?? 0)),
     failures: p?.errors ?? 0,
     avg_latency_ms: p?.avgLatencyMs ?? 0,
@@ -111,48 +109,25 @@ function kiteMetrics(k: KiteHealthSnapshot): ProviderMetricsBlock {
 export function getCompositeProviderHealth(): CompositeProviderHealth {
   const current = getMarketDataProvider();
   const kite = getKiteHealth();
-  const fallback =
-    current === 'kite' ? 'indianapi'
-      : current === 'indianapi' ? (kite.configured ? 'kite|cache|nse|yahoo' : 'cache|nse|yahoo')
-        : null;
-
-  const usage = safeProbe(() => getApiUsage(), null);
 
   return {
     current_provider: current,
-    fallback_provider: fallback,
-    indianapi: {
-      usage: usage ?? ({
-        date: '',
-        month: '',
-        daily: 0,
-        monthly: 0,
-        daily_limit: 0,
-        monthly_limit: 0,
-        daily_remaining: 0,
-        monthly_remaining: 0,
-        daily_percent: 0,
-        monthly_percent: 0,
-        daily_exceeded: false,
-        monthly_exceeded: false,
-        last_call_at: null,
-        per_run_active: false,
-        per_run_count: 0,
-        per_run_limit: 0,
-        per_run_remaining: 0,
-        per_run_exceeded: false,
-      } satisfies ReturnType<typeof getApiUsage>),
-      quota: null,
-      breaker: safeProbe(() => indianApiBreakerState(), null),
-      queue: safeProbe(() => indianApiQueueGauge(), null),
-      capabilities: INDIANAPI_CAPS,
-      metrics: indianMetrics(),
-    },
+    fallback_provider: getPrimaryFallbackProvider(current),
     kite: {
       ...kite,
       capabilities: KITE_CAPS,
       monthly_quota: null,
       metrics: kiteMetrics(kite),
+    },
+    yahoo: {
+      status: 'placeholder',
+      capabilities: YAHOO_CAPS,
+      metrics: monitorMetrics('yahoo'),
+    },
+    nse: {
+      status: 'placeholder',
+      capabilities: NSE_CAPS,
+      metrics: monitorMetrics('nse'),
     },
     report: getProviderReport(),
     monitor_providers: getMonitorSnapshot().providers,

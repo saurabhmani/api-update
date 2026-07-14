@@ -20,7 +20,7 @@ import {
   loadActiveUniverseSymbols,
   runCandleBackfillJob,
 } from '@/lib/marketData/candleBackfillJob';
-import { getIndianApiCandleRequestCount, resetCandleSourceCounters } from '@/lib/marketData/candleFallbackChain';
+import { getUpstreamCandleRequestCount, resetCandleSourceCounters } from '@/lib/marketData/candleFallbackChain';
 
 interface DepthRow {
   symbol: string;
@@ -48,7 +48,7 @@ interface ValidationReport {
   };
   micro_backfill: null | {
     summary: Awaited<ReturnType<typeof runCandleBackfillJob>>;
-    indianapi_requests: number;
+    upstream_candle_requests: number;
   };
   sql_checks: {
     usable_symbols_gte_80: number;
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
 
   if (microBackfill) {
     resetCandleSourceCounters();
-    const beforeRequests = getIndianApiCandleRequestCount();
+    const beforeRequests = getUpstreamCandleRequestCount();
 
     // Pass 1: should fetch thin symbols
     const pass1 = await runCandleBackfillJob({
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
         ...pass2,
         // annotate both passes in detail field via failures merge
       },
-      indianapi_requests: getIndianApiCandleRequestCount() - beforeRequests,
+      upstream_candle_requests: getUpstreamCandleRequestCount() - beforeRequests,
     };
 
     console.log('[MICRO BACKFILL] pass1', {
@@ -181,14 +181,14 @@ async function main(): Promise<void> {
       failed: pass1.failed,
       inserted: pass1.candlesInserted,
       updated: pass1.candlesUpdated,
-      indianapi: pass1.indianApiRequestsUsed,
+      legacy_vendor: pass1.upstreamVendor,
       failures: pass1.failures,
     });
     console.log('[MICRO BACKFILL] pass2 (should skip more)', {
       fetched: pass2.fetched,
       skipped: pass2.skippedSufficient,
       failed: pass2.failed,
-      indianapi: pass2.indianApiRequestsUsed,
+      legacy_vendor: pass2.upstreamVendor,
     });
   }
 
@@ -232,12 +232,12 @@ async function main(): Promise<void> {
           ? `Would skip ${skipCandidate.symbol} (bars=${skipCandidate.stats.barCount}, age=${skipCandidate.stats.ageDays}d)`
           : 'No skip candidate in first 200 symbols — run backfill or lower min bars',
       },
-      '4_indianapi_not_wasted_on_skip': {
+      '4_legacy_vendor_not_wasted_on_skip': {
         pass: microBackfill
           ? (microResult?.summary.skippedSufficient ?? 0) > 0 || microResult?.summary.fetched === 0
           : true,
         detail: microBackfill
-          ? `Pass2 skipped=${microResult?.summary.skippedSufficient} indianapi=${microResult?.summary.indianApiRequestsUsed}`
+          ? `Pass2 skipped=${microResult?.summary.skippedSufficient} legacy_vendor=${microResult?.summary.upstreamVendor}`
           : 'Run with --micro-backfill to verify',
       },
       '5_writes_to_candles_table': {

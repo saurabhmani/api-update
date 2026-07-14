@@ -192,7 +192,7 @@ export async function GET(req: NextRequest) {
     if (allSyms.length === 0) return NextResponse.json({ data: {}, count: 0 });
     if (allSyms.length > 500)  return NextResponse.json({ error: 'Max 500 symbols' }, { status: 400 });
 
-    // Use Yahoo's public chart API directly — bypasses IndianAPI/NSE
+    // Use Yahoo's public chart API directly — bypasses removed vendor/NSE
     // resolver so the market page gets LTP even when API quota is exhausted.
     const quotes = await fetchYahooPublicQuotesBatch(allSyms, {
       concurrency: 12,

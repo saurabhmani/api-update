@@ -35,7 +35,7 @@ export interface UseLivePricesResult {
   lastAt:    number | null;
   marketOpen:  boolean;
   marketLabel: string;
-  source:      'indianapi' | 'yahoo' | 'none' | null;
+  source:      'kite' | 'yahoo' | 'none' | null;
   mode:        LiveMode;
   /** WebSocket connection lifecycle for status badges. */
   streamStatus: ReturnType<typeof useMarketStream>['status'];
@@ -75,7 +75,7 @@ export function useLivePrices(): UseLivePricesResult {
 
   const [marketOpen,  setMarketOpen]  = useState(false);
   const [marketLabel, setMarketLabel] = useState('Loading…');
-  const [source, setSource] = useState<'indianapi' | 'yahoo' | 'none' | null>(null);
+  const [source, setSource] = useState<'kite' | 'yahoo' | 'none' | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const prices = useMemo(() => {
@@ -95,7 +95,7 @@ export function useLivePrices(): UseLivePricesResult {
         if (cancelled || !j) return;
         if (j.market && typeof j.market.isOpen === 'boolean') setMarketOpen(j.market.isOpen);
         if (j.market && typeof j.market.label === 'string') setMarketLabel(j.market.label);
-        if (j.source === 'indianapi' || j.source === 'yahoo' || j.source === 'none') {
+        if (j.source === 'kite' || j.source === 'yahoo' || j.source === 'none') {
           setSource(j.source);
         }
       } catch { /* retry next tick */ }

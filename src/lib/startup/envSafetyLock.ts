@@ -11,7 +11,7 @@
 //       three so they all need to be off in production.)
 //    • CANDLE_MAX_PER_CYCLE must be ≤ 100. Higher values defeat the
 //      per-cycle cap that keeps the candle scheduler under quota.
-//    • INDIANAPI_PER_RUN_LIMIT must be ≤ 500. Higher values let one
+//    • LEGACY_VENDOR_ENV must be ≤ 500. Higher values let one
 //      pipeline run blow through a daily 2500-call budget.
 //
 //  Outside production this is a no-op — dev / test environments need
@@ -61,12 +61,12 @@ export function checkProductionEnvSafety(): EnvSafetyViolation[] {
     });
   }
 
-  const perRunLimit = readNumeric('INDIANAPI_PER_RUN_LIMIT');
+  const perRunLimit = readNumeric('LEGACY_VENDOR_ENV');
   if (perRunLimit != null && perRunLimit > 1500) {
     violations.push({
-      envName: 'INDIANAPI_PER_RUN_LIMIT',
-      value:   process.env.INDIANAPI_PER_RUN_LIMIT,
-      rule:    'INDIANAPI_PER_RUN_LIMIT must be ≤ 1500 in production — one run could otherwise exhaust the daily budget',
+      envName: 'LEGACY_VENDOR_ENV',
+      value:   process.env.LEGACY_VENDOR_ENV,
+      rule:    'LEGACY_VENDOR_ENV must be ≤ 1500 in production — one run could otherwise exhaust the daily budget',
     });
   }
 

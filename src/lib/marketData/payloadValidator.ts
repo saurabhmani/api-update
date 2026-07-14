@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════
 //  Provider Payload Validator — Spec PROVIDER-NORMALIZE-2026-05.
 //
-//  Per-row validation gate that every provider adapter (IndianAPI,
+//  Per-row validation gate that every provider adapter (removed vendor,
 //  NSE direct, Yahoo, …) consults BEFORE returning a MarketSnapshot
 //  to its caller. Catches the cases the resolver-level data-quality
 //  gate cannot see:

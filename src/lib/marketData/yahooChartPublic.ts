@@ -1,6 +1,6 @@
 /**
  * Public Yahoo Finance chart API — no API key required.
- * Used as a verification + fallback source when IndianAPI / DB are stale.
+ * Used as a verification + fallback source when removed vendor / DB are stale.
  * NSE equities map to SYMBOL.NS tickers.
  */
 

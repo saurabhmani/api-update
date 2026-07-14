@@ -79,7 +79,7 @@ export async function storeValidationPipeline(
         validation.metrics.volumeDiffPct,
         validation.metrics.timestampSkewMs,
         validation.yahoo?.ltp ?? null,
-        validation.indianapi?.ltp ?? null,
+        validation.kite?.ltp ?? null,
         approval.authoritativeSource,
         approval.authoritativeLtp,
         JSON.stringify(validation.reasons),

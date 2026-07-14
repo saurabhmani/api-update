@@ -582,7 +582,7 @@ const ALL_TABLES: string[] = [
     INDEX idx_universe_rebuild_trigger (trigger_source, started_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-  // Override table for IndianAPI symbol mapping. Populate ONLY when
+  // Override table for removed vendor symbol mapping. Populate ONLY when
   // the upstream rejects a default-mapped symbol; see symbolMapper.ts.
   `CREATE TABLE IF NOT EXISTS q365_symbol_mapping_override (
     nse_symbol  VARCHAR(32) NOT NULL,
@@ -592,7 +592,7 @@ const ALL_TABLES: string[] = [
     PRIMARY KEY (nse_symbol)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
-  // ── MARKET-DATA PIPELINE (Step 6 of the IndianAPI cutover) ────
+  // ── MARKET-DATA PIPELINE (Step 6 of the removed vendor cutover) ────
   // Manual pipeline-run lock. One row per (run_type, run_date) — the
   // unique key enforces "manual frontend run allowed once per IST day".
   // Scheduled / system runs use distinct run_type values so the cron
@@ -617,7 +617,7 @@ const ALL_TABLES: string[] = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   // ── DATA FEED HEALTH (Step 7) ─────────────────────────────────
-  // Per-request observability. Every IndianAPI / cache / NSE-direct /
+  // Per-request observability. Every removed vendor / cache / NSE-direct /
   // emergency-Yahoo invocation writes one row here. Powers the
   // /api/data-feed/health endpoint and the dashboard freshness panel.
   `CREATE TABLE IF NOT EXISTS q365_data_feed_health (
@@ -658,7 +658,7 @@ const ALL_TABLES: string[] = [
 
   // Market-close snapshot — last-known per-symbol price written by the
   // 15:30 IST cron (bootInProc.ts) so off-hours resolver requests can
-  // serve a stable static answer without burning IndianAPI quota.
+  // serve a stable static answer without burning removed vendor quota.
   // PRIMARY KEY on symbol → upsert is a single row swap per close.
   `CREATE TABLE IF NOT EXISTS q365_market_close_snapshot (
     symbol           VARCHAR(40)  NOT NULL,
@@ -974,7 +974,7 @@ const ENSURE_COLUMNS: Array<{ table: string; column: string; definition: string 
   // (saveNewsEvents.ts:81). Older deployments created the table without it.
   { table: 'q365_news_events', column: 'updated_at', definition: 'DATETIME DEFAULT NULL' },
   // Manual pipeline run-lock: admin override columns added in the
-  // IndianAPI cutover. Older deployments need the column ALTER.
+  // removed vendor cutover. Older deployments need the column ALTER.
   { table: 'q365_pipeline_run_locks', column: 'force_override',  definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
   { table: 'q365_pipeline_run_locks', column: 'override_reason', definition: 'TEXT DEFAULT NULL' },
   // Strategy performance Priority-1 outcomes. This table had an

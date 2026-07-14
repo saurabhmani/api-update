@@ -1,6 +1,6 @@
-// @deprecated — Kite tick bus residue from the pre-IndianAPI era. The
+// @deprecated — Kite tick bus residue from the pre-removed vendor era. The
 // resolver does not consult this module. Eligible for deletion at the
-// end of the IndianAPI cutover soak window.
+// end of the removed vendor cutover soak window.
 // ════════════════════════════════════════════════════════════════
 //  tickBus — the single in-process pub/sub channel for market ticks
 //

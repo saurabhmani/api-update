@@ -23,8 +23,8 @@
 //
 //  API safety
 //  ──────────
-//  Daily budget cap: 2,500 IndianAPI calls/day (INDIANAPI_DAILY_LIMIT).
-//  Monthly budget cap: 70,000 IndianAPI calls/month.
+//  Daily budget cap: 2,500 removed vendor calls/day (LEGACY_VENDOR_ENV).
+//  Monthly budget cap: 70,000 removed vendor calls/month.
 //  Worst-case math @ open defaults:
 //    5min × 7h market = 84 cycles/day
 //    84 × 250 symbols/cycle = 21,000 calls if every symbol needs upstream
@@ -168,7 +168,7 @@ async function refreshSubsetCacheNow(maxPerCycle: number): Promise<void> {
 // ── Auto-throttle (budget guard) ────────────────────────────────
 //
 // Same band ladder as run-signal-engine's computeThrottledCap. Auto-
-// shrinks the per-cycle cap as the daily IndianAPI budget approaches
+// shrinks the per-cycle cap as the daily removed vendor budget approaches
 // the limit so a runaway scheduler can never exhaust the quota.
 async function getThrottledCap(baseCap: number): Promise<{
   cap: number;
@@ -177,21 +177,8 @@ async function getThrottledCap(baseCap: number): Promise<{
   daily: number;
   dailyLimit: number;
 }> {
-  try {
-    const { getApiUsage } = await import('@/providers/adapters/IndianAPIAdapter');
-    const u = getApiUsage();
-    const dailyLimit = u.daily_limit;
-    if (dailyLimit <= 0) {
-      return { cap: baseCap, band: 'normal', pct: 0, daily: u.daily, dailyLimit };
-    }
-    const pct = Math.round((u.daily / dailyLimit) * 1000) / 10;
-    if (pct >= 95) return { cap: Math.max(20, Math.floor(baseCap * 0.25)), band: 'critical', pct, daily: u.daily, dailyLimit };
-    if (pct >= 80) return { cap: Math.max(40, Math.floor(baseCap * 0.5)),  band: 'throttle', pct, daily: u.daily, dailyLimit };
-    if (pct >= 60) return { cap: Math.max(60, Math.floor(baseCap * 0.75)), band: 'warn',     pct, daily: u.daily, dailyLimit };
-    return { cap: baseCap, band: 'normal', pct, daily: u.daily, dailyLimit };
-  } catch {
-    return { cap: baseCap, band: 'normal', pct: 0, daily: 0, dailyLimit: 0 };
-  }
+  // Phase 3 — removed vendor quota throttle removed; Kite jobs run uncapped by this gate.
+  return { cap: baseCap, band: 'normal', pct: 0, daily: 0, dailyLimit: 0 };
 }
 
 // ── Effective coverage probe ────────────────────────────────────
@@ -265,7 +252,7 @@ async function runOnce(): Promise<void> {
   const market = getMarketStatus();
   // Production spec: "IF market CLOSED: BLOCK ALL external API calls".
   // Default-on hard block — even the cold-start catch-up does not fire
-  // off-hours, since IndianAPI's historical_data endpoint moves the
+  // off-hours, since removed vendor's historical_data endpoint moves the
   // daily counter the same as live calls. CANDLE_ALLOW_OFF_HOURS_REFRESH=1
   // unlocks the cold-start branch.
   if (!market.isOpen && market.state !== 'pre-open') {

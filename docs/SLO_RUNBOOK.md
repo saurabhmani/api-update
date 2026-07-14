@@ -49,7 +49,7 @@ services accumulate production traffic.
 |---|---|
 | Postgres primary availability | 99.9% |
 | MySQL availability (during dual-write) | 99.5% |
-| IndianAPI 2xx rate | > 99.0% |
+| removed vendor 2xx rate | > 99.0% |
 | Provider circuit-breaker open duration | < 0.5% of market hours |
 
 ---
@@ -89,7 +89,7 @@ removed from rotation.
 - **Stale-data rate** — `data_quality='stale'` count per 10-min bucket.
 - **Bus DLQ depth** — per-service DLQ size.
 - **Scheduler run duration + success rate** — from `ops.scheduler_runs`.
-- **IndianAPI rate-limit remaining** — adapter should log this in response headers (TODO: wire).
+- **removed vendor rate-limit remaining** — adapter should log this in response headers (TODO: wire).
 
 ---
 
@@ -120,9 +120,9 @@ removed from rotation.
 
 ### P4 — High `data_quality='stale'` rate
 
-Means Kite + IndianAPI + Yahoo all failed and we served from DB.
+Means Kite + removed vendor + Yahoo all failed and we served from DB.
 1. Check `ops.provider_health_logs` — which provider is failing?
-2. If IndianAPI specifically: check rate limits / API key / status page.
+2. If removed vendor specifically: check rate limits / API key / status page.
 3. If all three: the app has a network problem, not a provider problem.
 
 ---
@@ -145,7 +145,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 | `ENFORCE_PROVIDER=throw` | `warn` or `off` | Stops throwing on bypasses (bypasses still logged) |
 | `USE_POSTGRES=true` | `false` | Provider stops preferring PG; Yahoo takes the slot |
 | `MYSQL_DUAL_WRITE_TABLE` | unset | PG-only writes (MySQL reverts to its own existing writers) |
-| `ENABLE_KITE_ADAPTER=true` | `false` | Provider chain starts at IndianAPI — matches Phase-1 doc |
+| `ENABLE_KITE_ADAPTER=true` | `false` | Provider chain starts at removed vendor — matches Phase-1 doc |
 
 ### 5c. Postgres schema rollback
 
@@ -194,7 +194,7 @@ be green:
 |---|---|---|
 | On-call engineer | Any `down` status, any P1/P2 | 15 min |
 | Database lead | Dual-write mismatches, PG replication lag | 1 hour |
-| Vendor management (IndianAPI/Kite) | Quota exhaustion, auth failures | Business hours |
+| Vendor management (removed vendor/Kite) | Quota exhaustion, auth failures | Business hours |
 | Product / Trading desk | Trading-flow impact | Immediate, business hours |
 
 Update this table with real names and pager IDs before production.

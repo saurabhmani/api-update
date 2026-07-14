@@ -1,8 +1,8 @@
 // ════════════════════════════════════════════════════════════════
 //  KiteAdapter — Zerodha Kite Connect vendor adapter (Phase 3)
 //
-//  Conforms to the same data contract as IndianAPIAdapter so it can
-//  later replace IndianAPI inside MarketDataProvider without UI
+//  Conforms to the MarketDataProvider adapter data contract so it can
+//  later replace legacy vendor inside MarketDataProvider without UI
 //  changes. Returns canonical `@/types/market` shapes only.
 //
 //  NOT wired into MarketDataProvider / marketDataResolver yet.
@@ -69,7 +69,7 @@ import {
 
 const log = logger.child({ adapter: 'Kite' });
 
-/** Same envelope IndianAPIAdapter exposes for batched quotes. */
+/** Batch quote envelope for MarketDataProvider. */
 export interface BatchQuoteResult {
   snapshots: MarketSnapshot[];
   missing: string[];
@@ -119,7 +119,7 @@ function wrapResponse<T>(data: T): ProviderResponse<T> {
 
 /**
  * Full market quote for one symbol → MarketSnapshot.
- * Mirrors IndianAPIAdapter.getQuote so MarketDataProvider can swap later.
+ * Quote entry for MarketDataProvider.
  */
 export async function getQuote(
   symbol: string,
@@ -144,7 +144,7 @@ export async function getLiveSnapshot(
 
 /**
  * Batch quotes via Kite's native multi-instrument quote API
- * (unlike IndianAPI's emulated /stock fan-out).
+ * (unlike legacy vendor's emulated /stock fan-out).
  */
 export async function getBatchQuotes(
   symbols: string[],
@@ -344,9 +344,9 @@ async function fetchHistoricalWindow(
       token: ref.instrumentToken,
       error: err instanceof Error ? err.message : String(err),
     });
-    // Auth / rate-limit must surface so consumers can fall back to IndianAPI.
+    // Auth / rate-limit must surface so consumers can fall back to legacy vendor.
     if (isRecoverableHistoricalError(err)) throw err;
-    // Soft-fail ordinary upstream issues (empty series), matching IndianAPI.
+    // Soft-fail ordinary upstream issues (empty series), matching legacy vendor.
     return { symbol: sym, range, candles: [] };
   }
 }
@@ -409,13 +409,13 @@ export async function searchSymbols(
 // ── Unsupported features ───────────────────────────────────────────
 
 const NO_MOVERS =
-  'Kite Connect has no trending / gainers / losers endpoint — use rankings table or IndianAPI';
+  'Kite Connect has no trending / gainers / losers endpoint — use rankings table or legacy vendor';
 const NO_CORP =
-  'Kite Connect has no corporate / fundamentals endpoints — use IndianAPI or Yahoo fundamentals';
+  'Kite Connect has no corporate / fundamentals endpoints — use legacy vendor or Yahoo fundamentals';
 const NO_PEERS =
   'Kite Connect has no industry-peers endpoint';
 const NO_NEWS =
-  'Kite Connect has no news endpoints — use RSS / IndianAPI news';
+  'Kite Connect has no news endpoints — use RSS / legacy vendor news';
 
 export async function getMovers(_signal?: AbortSignal): Promise<MoversResult> {
   return unsupported('getMovers', NO_MOVERS);
@@ -489,7 +489,7 @@ export async function getMutualFunds(): Promise<never> {
 export async function get52WeekHighLow(): Promise<never> {
   return unsupported(
     'get52WeekHighLow',
-    'Use quote.ohlc + historical high/low, or IndianAPI fiftyTwoWeek endpoint',
+    'Use quote.ohlc + historical high/low, or legacy vendor fiftyTwoWeek endpoint',
   );
 }
 
@@ -531,7 +531,7 @@ export async function getIntraday(_symbols: string | string[]): Promise<never> {
 /**
  * Full provider-interface object. Envelope-wrapped for callers that
  * talk to IMarketDataProvider directly. MarketDataProvider itself still
- * uses the bare function exports (IndianAPI pattern) when wired later.
+ * uses the bare function exports (legacy vendor pattern) when wired later.
  */
 export const KiteAdapter: IMarketDataProvider = {
   async searchSymbols(query: string, _opts?: GetOptions) {

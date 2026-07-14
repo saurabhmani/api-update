@@ -8,12 +8,9 @@
 //  badge. It must not block, must not hit the network, and must not
 //  read the DB.
 //
-//    health = 'OK'        → IndianAPI is the configured primary AND
-//                           an INDIAN_API_KEY is present.
-//    health = 'DEGRADED'  → market closed (expected silence) OR Yahoo // @deprecated marker
-//                           emergency fallback is the only path left.
-//    health = 'FAIL'      → no provider at all (operator misconfigured
-//                           the env, or chose MARKET_DATA_PROVIDER=none).
+//    health = 'OK'        → Kite is configured and healthy
+//    health = 'DEGRADED'  → market closed OR Yahoo emergency fallback // @deprecated marker
+//    health = 'FAIL'      → no provider at all
 //
 //  The shape is preserved for backwards compatibility with the
 //  /api/market-data/health route.
@@ -30,7 +27,7 @@ import { getLiveFeedState } from './liveFeedState';
 import { getKiteHealth, isKiteConfigured } from '@/lib/kite/health';
 
 export type HealthState = 'OK' | 'DEGRADED' | 'FAIL';
-export type HealthSource = 'indianapi' | 'kite' | 'yahoo' | 'none'; // @deprecated marker yahoo
+export type HealthSource = 'kite' | 'yahoo' | 'none'; // @deprecated marker yahoo
 
 export interface MarketDataHealth {
   health: HealthState;
@@ -83,25 +80,6 @@ export interface MarketDataHealth {
   };
 }
 
-function isIndianApiKeyPresent(): boolean {
-  // Must mirror the env-var precedence used by `getIndianApiConfig`
-  // (indianApiEndpoints.ts:51-55) which accepts THREE names:
-  //   INDIANAPI_API_KEY   — the form ".env.example" / .env.local ships
-  //   INDIANAPI_KEY       — older internal convention
-  //   INDIAN_API_KEY      — original adapter env name
-  // Until 2026-05-01 this probe only checked the latter two, so a
-  // production install using the canonical INDIANAPI_API_KEY name
-  // tripped a false "INDIAN_API_KEY missing" → health='FAIL' alarm
-  // even though the adapter was making real calls successfully.
-  const k = (
-    process.env.INDIANAPI_API_KEY
-    ?? process.env.INDIANAPI_KEY
-    ?? process.env.INDIAN_API_KEY
-    ?? ''
-  ).trim();
-  return k.length > 0;
-}
-
 /**
  * Compute the coarse health summary. Pure in-memory read — no DB,
  * no network, no await. Safe to call from high-QPS endpoints.
@@ -109,7 +87,6 @@ function isIndianApiKeyPresent(): boolean {
 export function getMarketDataHealth(): MarketDataHealth {
   const mkt = getMarketStatus();
   const provider = getMarketDataProvider();
-  const indianKey = isIndianApiKeyPresent();
   const yahooEmergency = isYahooEmergencyFallbackEnabled(); // @deprecated marker
   const kiteHealth = getKiteHealth();
   const kiteConfigured = isKiteConfigured();
@@ -122,61 +99,41 @@ export function getMarketDataHealth(): MarketDataHealth {
   let source: HealthSource;
   let reason: string;
 
-  const liveProvider = feed.provider ?? 'indianapi';
+  const liveProvider = feed.provider ?? 'kite';
 
-  if (provider === 'kite') {
+  if (provider === 'kite' || provider === 'legacy') {
     if (!kiteConfigured) {
-      health = indianKey ? 'DEGRADED' : 'FAIL';
-      source = indianKey ? 'indianapi' : 'none';
-      reason = indianKey
-        ? 'MARKET_DATA_PROVIDER=kite but Kite credentials missing — expecting IndianAPI fallback'
-        : 'MARKET_DATA_PROVIDER=kite but KITE_API_KEY/KITE_ACCESS_TOKEN missing';
+      if (yahooEmergency) {
+        health = 'DEGRADED';
+        source = 'yahoo';
+        reason = 'KITE credentials missing — Yahoo emergency fallback active';
+      } else {
+        health = 'FAIL';
+        source = 'none';
+        reason = 'KITE_API_KEY/KITE_ACCESS_TOKEN missing';
+      }
     } else if (kiteHealth.auth_failed) {
       health = 'DEGRADED';
       source = 'kite';
-      reason = 'Kite authentication failed — live feed may use IndianAPI fallback';
+      reason = 'Kite authentication failed';
     } else if (kiteHealth.rate_limited) {
       health = 'DEGRADED';
       source = 'kite';
-      reason = 'Kite rate limit active — live feed may use IndianAPI fallback';
+      reason = 'Kite rate limit active';
     } else if (!mkt.isOpen) {
       health = 'DEGRADED';
       source = 'kite';
       reason = `Market closed (${mkt.label}) — Kite returns last close`;
-    } else {
-      health = 'OK';
-      source = 'kite';
-      reason = `Kite live feed configured (${liveFeed.quality})`;
-    }
-  } else if (provider === 'indianapi' && indianKey) {
-    if (!mkt.isOpen) {
-      health = 'DEGRADED';
-      source = 'indianapi';
-      reason = `Market closed (${mkt.label}) — IndianAPI returns last close`;
     } else if (liveFeed.quality === 'stale' || liveFeed.quality === 'disconnected') {
       health = 'DEGRADED';
-      source = liveProvider === 'yahoo' ? 'yahoo' : 'indianapi';
+      source = liveProvider === 'yahoo' ? 'yahoo' : 'kite';
       reason = `Live feed ${liveFeed.quality} (${liveProvider}) — last tick ${liveFeed.lastTickAgeMs ?? '?'}ms ago`;
-    } else if (liveProvider === 'yahoo' && liveFeed.ticksReceived === 0) {
-      health = 'DEGRADED';
-      source = 'yahoo';
-      reason = 'Yahoo live feed warming — no ticks yet';
     } else {
       health = 'OK';
-      source = liveProvider === 'yahoo' ? 'yahoo' : 'indianapi';
+      source = liveProvider === 'yahoo' ? 'yahoo' : 'kite';
       reason = liveProvider === 'yahoo'
         ? `Yahoo live feed active (${liveFeed.quality})`
-        : `IndianAPI live feed active (${liveFeed.quality})`;
-    }
-  } else if (provider === 'indianapi' && !indianKey) {
-    if (yahooEmergency) { // @deprecated marker
-      health = 'DEGRADED';
-      source = 'yahoo'; // @deprecated marker
-      reason = 'INDIAN_API_KEY missing — running on Yahoo emergency fallback'; // @deprecated marker
-    } else {
-      health = 'FAIL';
-      source = 'none';
-      reason = 'INDIAN_API_KEY missing and YAHOO_EMERGENCY_FALLBACK_ENABLED=false';
+        : `Kite live feed configured (${liveFeed.quality})`;
     }
   } else if (provider === 'yahoo') { // @deprecated marker
     health = mkt.isOpen ? 'OK' : 'DEGRADED';

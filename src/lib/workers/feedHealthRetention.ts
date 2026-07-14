@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Feed-health retention cron — Step 6.5 of the IndianAPI cutover.
+//  Feed-health retention cron — Step 6.5 of the removed vendor cutover.
 //
 //  Deletes q365_data_feed_health rows older than the configured
 //  retention window (default 30 days). Runs once a day; safe to

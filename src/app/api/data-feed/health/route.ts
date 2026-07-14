@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  GET /api/data-feed/health  — Step 7 of the IndianAPI cutover.
+//  GET /api/data-feed/health  — Step 7 of the removed vendor cutover.
 //
 //  Returns the dashboard's "Data Source / Last API Request / Last
 //  Success / Coverage / Freshness / Fallback Used" panel state.
@@ -45,7 +45,7 @@ function freshnessFromAgeMs(
     const tickAge = coarse.lastTickAgeMs;
     // Live WS feed is pushing — ring buffer may lag on cold boot.
     // Only treat recent ticks as "Fresh" during session hours; off-hours
-    // polls (Yahoo/IndianAPI background loops) must not flip the badge green.
+    // polls (Yahoo/removed vendor background loops) must not flip the badge green.
     if (opts.marketOpen) {
       if (tickAge != null && tickAge < 120_000) return 'Fresh';
       if (coarse.subscribedCount > 0 && coarse.tickRatePerSec > 0) return 'Fresh';
@@ -81,17 +81,17 @@ export async function GET(req: NextRequest): Promise<Response> {
   const coarse = getMarketDataHealth();
   const manual = await getManualRunStatus().catch(() => null);
 
-  // Determine the active provider label. The flag wins when present;
-  // when no requests have run yet (cold boot) we fall back to flags.
+  // Determine the active provider label. Configured primary wins on cold
+  // boot; last successful/attempted hop from the feed-health ring otherwise.
   const dataSource =
-    lastReq?.provider === 'indianapi' ? 'IndianAPI' :
-    lastReq?.provider === 'kite'      ? 'Kite' :
-    lastReq?.provider === 'cache'     ? 'Cache' :
+    lastReq?.provider === 'kite' ? 'Kite' :
+    lastReq?.provider === 'cache' ? 'Cache' :
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
-    lastReq?.provider === 'yahoo'     ? 'Yahoo (Emergency)' : // @deprecated marker
-    flags.marketDataProvider === 'indianapi' ? 'IndianAPI' :
+    lastReq?.provider === 'yahoo' || lastReq?.provider === 'yahoo_emergency' ? 'Yahoo' :
+    lastReq?.provider === 'snapshot' ? 'DB Snapshot' :
     flags.marketDataProvider === 'kite' ? 'Kite' :
-    String(flags.marketDataProvider);
+    flags.marketDataProvider === 'yahoo' ? 'Yahoo' :
+    String(flags.marketDataProvider ?? 'Kite');
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
@@ -119,10 +119,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     freshness = 'Market Closed';
   }
 
-  // Live WS poll loop (Yahoo + IndianAPI dual-source) is the operator-
+  // Live WS poll loop (Yahoo + removed vendor dual-source) is the operator-
   // visible feed. When it is ingesting ticks, do not mark the header
   // "Stale" just because the resolver ring buffer logged MEDIUM/LOW
-  // quality on the last IndianAPI batch.
+  // quality on the last removed vendor batch.
   const liveFeed = getLiveFeedState();
   if (coarse.market.isOpen
       && (liveFeed.quality === 'fresh' || liveFeed.quality === 'delayed')) {

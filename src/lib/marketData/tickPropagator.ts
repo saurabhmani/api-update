@@ -6,7 +6,7 @@
 //  /api/market/stream polled getTick(key) every 2s and never saw a
 //  payload — useLiveTick consumers (watchlist, MarketDetail) showed
 //  "Live" indicator but no actual prices. This module is the one
-//  writer of `tick:<key>` keys; every successful IndianAPI snapshot
+//  writer of `tick:<key>` keys; every successful removed vendor snapshot
 //  refresh fans through here so the SSE side has data to emit.
 //
 //  Failure-mode contract:
@@ -110,7 +110,7 @@ export async function propagateTick(snap: MarketSnapshot | null | undefined): Pr
     low:     Number.isFinite(snap.low) ? snap.low : null,
     close:   Number.isFinite(snap.prevClose) ? snap.prevClose : null,
     volume:  Number.isFinite(snap.volume) ? snap.volume : null,
-    source:  'indianapi',
+    source:  'kite',
     ts:      snap.timestamp && snap.timestamp > 0 ? snap.timestamp : now,
   };
   tickBus.emit(MARKET_TICK_EVENT, streamTick);

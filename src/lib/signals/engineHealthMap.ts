@@ -376,7 +376,7 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
       category:          'DATA',
       status:            'HEALTHY',
       severity:          severityFromStatus('HEALTHY'),
-      description:       'IndianAPI / Yahoo / Kite provider pipeline that feeds market data into the engine.',
+      description:       'removed vendor / Yahoo / Kite provider pipeline that feeds market data into the engine.',
       lastRunAt:         ctx.feed.lastApiRequestAt,
       lastSuccessAt:     ctx.feed.lastSuccessAt,
       lastFailureAt:     null,
@@ -465,7 +465,7 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
     status = 'WARNING';
     diag.primaryIssue = 'Operating on bootstrap-seeded data.';
     diag.warnings.push('Bootstrap mode — not a live broker feed.');
-    diag.recommendedActions.push('Restore live IndianAPI tick before relying on outcomes.');
+    diag.recommendedActions.push('Restore live removed vendor tick before relying on outcomes.');
   } else if (ctx.feed.isFallback) {
     status = 'DEGRADED';
     diag.primaryIssue = 'Provider running on fallback path.';
@@ -539,7 +539,7 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
     && ctx.marketStatus.isOpen
     && !ctx.feed.isFallback
   ) {
-    // Provider batch coverage from IndianAPI resolver — not scanner
+    // Provider batch coverage from removed vendor resolver — not scanner
     // persistence %. Informational only; daily EOD feeds often run
     // partial batches without implying the feed is broken.
     diag.findings.push(`Provider batch coverage ${ctx.feed.coveragePercent}% (target ≥ 50%).`);
@@ -550,7 +550,7 @@ export function buildDataFeedHealthNode(ctx: EngineHealthContext): EngineHealthN
     category:          'DATA',
     status,
     severity:          severityFromStatus(status),
-    description:       'IndianAPI / Yahoo / Kite provider pipeline that feeds market data into the engine.',
+    description:       'removed vendor / Yahoo / Kite provider pipeline that feeds market data into the engine.',
     lastRunAt:         ctx.feed.lastApiRequestAt,
     lastSuccessAt:     ctx.feed.lastSuccessAt,
     lastFailureAt:     null,
@@ -1890,7 +1890,7 @@ function lightweightInputToContext(input: LightweightHealthPreviewInput): Engine
       label:  input.marketOpen ? 'Market Open' : 'Market Closed',
     },
     feed: {
-      provider:           'indianapi',
+      provider:           'kite',
       lastSuccessAt:      new Date().toISOString(),
       lastApiRequestAt:   new Date().toISOString(),
       isBootstrap:        input.isBootstrap,

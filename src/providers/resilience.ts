@@ -142,7 +142,7 @@ export const breaker = new CircuitBreaker();
 // upstream consumed 6s wall-clock per call before the fallback chain
 // even saw the failure. The new defaults (5s timeout, 2 attempts =
 // 1 retry) hard-cap a single guarded call at ~10s wall-clock and
-// match the IndianAPI adapter's own retry semantics.
+// match the removed vendor adapter's own retry semantics.
 export async function guarded<T>(
   provider: string,
   fn: () => Promise<T>,

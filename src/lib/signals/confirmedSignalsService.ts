@@ -89,8 +89,8 @@ export async function enrichWithLiveLtp<
   const t0 = Date.now();
   const market = getMarketStatus();
 
-  // Step 9 of the IndianAPI cutover. Live enrichment goes through
-  // the central resolver — IndianAPI batch primary, cache hit, NSE
+  // Step 9 of the removed vendor cutover. Live enrichment goes through
+  // the central resolver — removed vendor batch primary, cache hit, NSE
   // direct rare fallback, Yahoo emergency only when explicitly enabled. // @deprecated marker
   // The resolver returns one envelope for the whole batch, so a 2-sec
   // batch call replaces the previous 25-wide per-symbol Yahoo fan-out. // @deprecated marker
@@ -111,14 +111,14 @@ export async function enrichWithLiveLtp<
   if (targets.length > 0) {
     const symbols = targets.map((t) => t.sym);
     // Always-on debug: shows the symbol set we're about to ask the
-    // resolver for. Operators grep on `[DEBUG] calling IndianAPI` to
+    // resolver for. Operators grep on `[DEBUG] calling removed vendor` to
     // confirm the live-enrichment path is firing.
     console.log(
-      `[DEBUG] calling IndianAPI for symbols: [${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? `, +${symbols.length - 10} more` : ''}]`,
+      `[DEBUG] calling removed vendor for symbols: [${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? `, +${symbols.length - 10} more` : ''}]`,
     );
     // Spec "FIX SLOW /api/signals" — hard wall-clock cap on the
     // resolver call. Without this, a 47-tracker enrichment fan-out
-    // through IndianAPI's emulated batch (cap=2, 45-60s per call)
+    // through removed vendor's emulated batch (cap=2, 45-60s per call)
     // blocks the entire /api/signals response for 15-25 minutes on
     // a slow upstream. The dev plan's per-IP throttle plus serialised
     // axios calls means the only safe upper bound is a wall-clock
@@ -154,21 +154,21 @@ export async function enrichWithLiveLtp<
       );
     } else {
       console.log(
-        `[DEBUG] IndianAPI response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
+        `[DEBUG] removed vendor response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
       );
       for (const { row, sym } of targets) {
         const snap = resolved.snapshots.get(sym);
         if (snap && Number.isFinite(snap.price) && snap.price > 0) {
           row.livePrice   = snap.price;
           row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
-          row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'indianapi'; // @deprecated marker
+          row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'kite'; // @deprecated marker
           row.liveTickTs  = snap.timestamp || Date.now();
         }
       }
     }
 
     // Fallback: symbols still missing after batch resolver (NIFTY500 lock,
-    // 429 rate-limit, timeout). Uses fetchQuote (IndianAPI direct → Yahoo → DB).
+    // 429 rate-limit, timeout). Uses fetchQuote (removed vendor direct → Yahoo → DB).
     const missing = targets.filter(({ row }) => row.livePrice == null || (row.livePrice ?? 0) <= 0);
     if (missing.length > 0) {
       const { fetchQuote } = await import('@/services/marketQuote');
@@ -181,7 +181,7 @@ export async function enrichWithLiveLtp<
             if (q?.lastPrice && q.lastPrice > 0) {
               row.livePrice   = q.lastPrice;
               row.livePChange = q.pChange;
-              row.liveSource  = market.isOpen ? 'indianapi' : 'yahoo';
+              row.liveSource  = market.isOpen ? 'kite' : 'yahoo';
               row.liveTickTs  = Date.now();
               return;
             }
@@ -214,7 +214,7 @@ export async function enrichWithLiveLtp<
     bySource[src] = (bySource[src] ?? 0) + 1;
     if (r.livePrice != null) totalLive++;
   }
-  const indianCount = bySource.indianapi ?? 0;
+  const indianCount = bySource.legacy_vendor ?? 0;
   const yahooCount  = bySource.yahoo     ?? 0; // @deprecated marker
   const noneCount   = bySource.none      ?? 0;
   const liveRatio = rows.length > 0
@@ -222,15 +222,15 @@ export async function enrichWithLiveLtp<
     : 0;
 
   let freshnessLabel: string;
-  if (indianCount > 0 && market.isOpen)        freshnessLabel = 'NEAR_LIVE (indianapi)';
-  else if (indianCount > 0)                    freshnessLabel = 'LAST_CLOSE (market closed — indianapi)';
+  if (indianCount > 0 && market.isOpen)        freshnessLabel = 'NEAR_LIVE (legacy_vendor)';
+  else if (indianCount > 0)                    freshnessLabel = 'LAST_CLOSE (market closed — legacy_vendor)';
   else if (yahooCount > 0)                     freshnessLabel = 'EMERGENCY_YAHOO (delayed)'; // @deprecated marker
   else if (noneCount === rows.length)          freshnessLabel = 'NO_DATA (provider chain failed)';
   else                                         freshnessLabel = 'PARTIAL';
 
-  // Always-on per spec ("FIX INDIANAPI NOT BEING CALLED" §3 + §9). The
+  // Always-on per spec ("FIX legacy_vendor NOT BEING CALLED" §3 + §9). The
   // VERBOSE_SIGNALS gate was hiding every live-enrichment hop, which
-  // made it impossible to confirm from console alone whether IndianAPI
+  // made it impossible to confirm from console alone whether removed vendor
   // was being called. The lines are 2 per request — cheap.
   console.log(
     `[DATA SOURCE] path=LIVE  channel=RESOLVER  rows=${rows.length}  ` +
@@ -332,7 +332,7 @@ export async function loadConfirmedSignalsBundle(
   // Spec "FIX SLOW /api/signals" — these two calls are independent
   // (different row sets) and each races a 5s wall-clock cap against
   // resolveBatch. Running them sequentially made the worst case 10s
-  // when IndianAPI was slow; firing them in parallel halves that.
+  // when removed vendor was slow; firing them in parallel halves that.
   // The synchronous gating below only reads `enriched` (the snapshot
   // result), so promoting `inProgressEnriched` up here is safe.
   //

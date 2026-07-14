@@ -129,7 +129,7 @@ server.listen(cfg.port, () => {
   log.info('market-ingestion listening', {
     port: cfg.port,
     yahooEnabled: cfg.yahooEnabled,
-    indianApiConfigured: !!cfg.indianApiKey,
+    kiteConfigured: !!cfg.kiteApiKey,
     authEnabled: !!cfg.serviceAuthToken,
   });
 });

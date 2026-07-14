@@ -2,7 +2,7 @@
 //  Kite instrument lookup — app symbol → tradingsymbol → token
 //
 //  Standalone from `symbolMapper` (intentionally — Phase 3 must not
-//  modify the IndianAPI symbol mapper). Uses Phase-2
+//  modify the removed vendor symbol mapper). Uses Phase-2
 //  `downloadInstruments` / `getInstrumentBySymbol` / `searchInstrument`.
 // ════════════════════════════════════════════════════════════════
 
@@ -34,7 +34,7 @@ const DEFAULT_EXCHANGE: KiteExchange = 'NSE';
 /**
  * Strip common vendor prefixes/suffixes so "NSE:RELIANCE", "RELIANCE.NS",
  * and "RELIANCE" all resolve to the same lookup key.
- * Does not call the shared IndianAPI symbolMapper.
+ * Does not call the shared removed vendor symbolMapper.
  */
 export function normalizeAppSymbol(raw: string): string {
   let s = String(raw ?? '').trim().toUpperCase();

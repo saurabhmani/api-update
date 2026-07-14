@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Candle Backfill Job — Kite → IndianAPI → `candles` warehouse
+//  Candle Backfill Job — Kite → `candles` warehouse
 //
 //  Backfills daily EOD bars for active NSE symbols from q365_universe.
 //  Writes ONLY to the `candles` table (instrument_key + eod + 1day).
@@ -13,20 +13,13 @@
 import { db } from '@/lib/db';
 import {
   fetchUpstreamDailyCandles,
-  getIndianApiCandleRequestCount,
+  getKiteCandleRequestCount,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
 import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
-import {
-  beginPerRunBudget,
-  endPerRunBudget,
-  getApiUsage,
-  INDIANAPI_PER_RUN_LIMIT,
-} from '@/providers/adapters/IndianAPIAdapter';
-import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
@@ -53,7 +46,7 @@ export const BACKFILL_UNIVERSE_LIMIT_DEFAULT = () =>
 export const BACKFILL_MAX_AGE_DAYS_DEFAULT = () =>
   envNum('CANDLE_BACKFILL_MAX_AGE_DAYS', 1, 30, 7);
 
-/** Pause between IndianAPI calls (ms). */
+/** Pause between upstream calls (ms). */
 export const BACKFILL_REQUEST_DELAY_MS_DEFAULT = () =>
   envNum('CANDLE_BACKFILL_REQUEST_DELAY_MS', 200, 10_000, 800);
 
@@ -85,7 +78,7 @@ export interface CandleBackfillJobOptions {
   minBars?: number;
   /** Latest bar must be newer than this many calendar days. Default 7. */
   maxAgeDays?: number;
-  /** Delay between IndianAPI requests (ms). Default 800. */
+  /** Delay between upstream requests (ms). Default 800. */
   requestDelayMs?: number;
   /** Log plan only — no provider or DB writes. */
   dryRun?: boolean;
@@ -117,11 +110,12 @@ export interface CandleBackfillJobSummary {
   skippedSufficient: number;
   fetched: number;
   failed: number;
-  /** Symbols not attempted because per-run IndianAPI budget was exhausted. */
+  /** Symbols not attempted because per-run upstream budget was exhausted. */
   deferredDueToBudget: number;
   candlesInserted: number;
   candlesUpdated: number;
-  indianApiRequestsUsed: number;
+  /** Kite historical requests used this run (field name kept for summary shape). */
+  upstreamVendor: number;
   failures: SymbolBackfillFailure[];
   durationMs: number;
   dryRun: boolean;
@@ -160,16 +154,11 @@ function isAbortReason(reason: string | undefined): 'budget' | 'auth' | 'upstrea
 }
 
 function isPerRunBudgetExhausted(): boolean {
-  const usage = getApiUsage();
-  return usage.per_run_active && usage.per_run_exceeded;
+  return false;
 }
 
 function perRunBudgetFailureReason(): string {
-  const usage = getApiUsage();
-  return (
-    `${PER_RUN_BUDGET_REASON} (${usage.per_run_count}/${usage.per_run_limit}) — ` +
-    `re-run with higher INDIANAPI_PER_RUN_LIMIT to continue`
-  );
+  return PER_RUN_BUDGET_REASON;
 }
 
 interface SymbolCandleStats {
@@ -601,11 +590,10 @@ export async function runCandleBackfillJob(
     symbols: options.symbols,
   });
 
-  const { apiKey } = getIndianApiConfig();
-  if (!apiKey && !isKiteHistoricalConfigured() && !dryRun) {
+  if (!isKiteHistoricalConfigured() && !dryRun) {
     throw new Error(
       'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
-      + 'and/or INDIANAPI_API_KEY before running backfill',
+      + 'before running backfill',
     );
   }
 
@@ -658,17 +646,7 @@ async function runCandleBackfillJobInner(ctx: {
     symbols: options.symbols,
   });
 
-  if (!dryRun) {
-    const usage = getApiUsage();
-    if (usage.daily_exceeded || usage.monthly_exceeded) {
-      throw new Error(
-        `[CANDLE BACKFILL] API budget exhausted — daily=${usage.daily}/${usage.daily_limit} ` +
-        `monthly=${usage.monthly}/${usage.monthly_limit}. Wait for IST midnight reset or raise limits.`,
-      );
-    }
-  }
 
-  beginPerRunBudget(perRunLimit);
 
   const symbolSource = resolveSymbolSource(options);
 
@@ -692,7 +670,7 @@ async function runCandleBackfillJobInner(ctx: {
     deferredDueToBudget: 0,
     candlesInserted: 0,
     candlesUpdated: 0,
-    indianApiRequestsUsed: 0,
+    upstreamVendor: 0,
     failures: [],
     durationMs: 0,
     dryRun,
@@ -705,7 +683,7 @@ async function runCandleBackfillJobInner(ctx: {
     `symbols_attempted=${symbolsAttempted} min_bars=${minBars} ` +
     `max_age_days=${maxAgeDays} delay_ms=${requestDelayMs} dry_run=${dryRun} ` +
     `resume=${options.resume ?? false} max_fetch=${maxFetch ?? 'none'} ` +
-    `per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
+    `per_run_limit=${perRunLimit}`,
   );
 
   // Plan-only full-universe dry-run: one SQL stats query, zero per-symbol DB walks.
@@ -721,7 +699,7 @@ async function runCandleBackfillJobInner(ctx: {
     console.log('[CANDLE BACKFILL] complete', {
       ...summary,
       failures: [],
-      per_run_budget: endPerRunBudget(),
+      per_run_budget: null,
       plan_note: 'dry_run full-universe plan via SQL (no per-symbol iteration)',
     });
     return summary;
@@ -765,7 +743,7 @@ async function runCandleBackfillJobInner(ctx: {
           console.warn(
             `[CANDLE BACKFILL] per-run budget exhausted — stopping early ` +
             `(${summary.deferredDueToBudget} symbols deferred; ` +
-            `set INDIANAPI_PER_RUN_LIMIT≥${symbols.length} and re-run)`,
+            `raise per-run limit ≥${symbols.length} and re-run)`,
           );
           break;
         }
@@ -774,7 +752,7 @@ async function runCandleBackfillJobInner(ctx: {
           // backfillOneSymbol already slept + retried once; skip burns no extra API quota.
           console.warn(
             `[CANDLE BACKFILL] ${symbol} auth rejected after retry — skipping ` +
-            `(verify INDIANAPI_API_KEY if failures cluster)`,
+            `(verify Kite credentials if failures cluster)`,
           );
         } else if (isUpstreamOutage(result.reason)) {
           consecutiveUpstreamFailures++;
@@ -803,7 +781,7 @@ async function runCandleBackfillJobInner(ctx: {
       console.log(
         `[CANDLE BACKFILL] progress ${processed}/${symbols.length} ` +
         `skipped=${summary.skippedSufficient} fetched=${summary.fetched} ` +
-        `failed=${summary.failed} indianapi_requests=${getIndianApiCandleRequestCount()}`,
+        `failed=${summary.failed} kite_requests=${getKiteCandleRequestCount()}`,
       );
     }
 
@@ -812,8 +790,8 @@ async function runCandleBackfillJobInner(ctx: {
     }
   }
 
-  const budget = endPerRunBudget();
-  summary.indianApiRequestsUsed = getIndianApiCandleRequestCount();
+  const budget = null;
+  summary.upstreamVendor = getKiteCandleRequestCount();
   summary.durationMs = Date.now() - t0;
 
   console.log('[CANDLE BACKFILL] complete', {

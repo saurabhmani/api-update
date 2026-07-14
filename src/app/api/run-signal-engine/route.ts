@@ -4,7 +4,7 @@
  * Phase 1 cutover adapter.
  *
  * Run modes (?mode=):
- *   scan (default)        — read market_data_daily only; zero IndianAPI during scan
+ *   scan (default)        — read market_data_daily only; zero removed vendor during scan
  *   backfill              — upstream candle refresh only; no strategy evaluation
  *   refresh-and-scan      — refresh stale symbols then DB-only scan
  *
@@ -77,12 +77,29 @@ import {
   forceClearInFlight    as forceClearScannerInFlight,
   PIPELINE_STALE_INFLIGHT_MS,
 } from '@/lib/scanner/scannerState';
-import {
-  getApiUsage,
-  beginPerRunBudget,
-  endPerRunBudget,
-  INDIANAPI_PER_RUN_LIMIT,
-} from '@/providers/adapters/IndianAPIAdapter';
+/** Phase 3 — removed vendor adapter removed; stubs keep call sites compiling. */
+function getApiUsage(): {
+  daily: number; monthly: number; daily_limit: number; monthly_limit: number;
+  daily_exceeded: boolean; monthly_exceeded: boolean;
+  per_run_active: boolean; per_run_exceeded: boolean;
+  per_run_count: number; per_run_limit: number;
+  daily_percent: number; monthly_percent: number;
+} {
+  return {
+    daily: 0, monthly: 0, daily_limit: 0, monthly_limit: 0,
+    daily_exceeded: false, monthly_exceeded: false,
+    per_run_active: false, per_run_exceeded: false,
+    per_run_count: 0, per_run_limit: 0,
+    daily_percent: 0, monthly_percent: 0,
+  };
+}
+function beginPerRunBudget(_n?: number): void { /* no-op */ }
+function endPerRunBudget(): {
+  count: number; limit: number; hit: boolean; durationMs: number;
+} {
+  return { count: 0, limit: 0, hit: false, durationMs: 0 };
+}
+const LEGACY_VENDOR_ENV = Number(process.env.SIGNAL_RUN_UNIVERSE_CAP) || 100;
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { getRunCount, incrementRunCount } from '@/lib/scanner/runCounter';
 import {
@@ -117,7 +134,7 @@ const RUN_UNIVERSE_CAP = (() => {
  * already been consumed today. Logged once per call so an operator
  * sees when throttling kicks in.
  *
- * Bands (vs INDIANAPI_DAILY_LIMIT):
+ * Bands (vs LEGACY_VENDOR_ENV):
  *   <60%   → full cap
  *   60–80% → 75% of cap (floor 60)
  *   80–95% → 50% of cap (floor 40)
@@ -174,11 +191,11 @@ function shouldRunSignalScan(mode: SignalEngineRunMode): boolean {
 
 function resolveDataSourceUsed(
   mode: SignalEngineRunMode,
-  indianApiRequests: number,
-): 'db' | 'db+indianapi' | 'indianapi' {
+  upstreamVendor: number,
+): 'db' | 'db+legacy_vendor' | 'kite' {
   if (mode === 'scan') return 'db';
-  if (mode === 'backfill') return indianApiRequests > 0 ? 'indianapi' : 'db';
-  return indianApiRequests > 0 ? 'db+indianapi' : 'db';
+  if (mode === 'backfill') return upstreamVendor > 0 ? 'kite' : 'db';
+  return upstreamVendor > 0 ? 'db+legacy_vendor' : 'db';
 }
 
 /**
@@ -399,7 +416,7 @@ function recordSuccessfulSignalEngineRun(opts: {
   rejectedProviderError: number;
   signalsGenerated: number;
   signalsSaved: number;
-  indianApiRequestsUsed: number;
+  upstreamVendor: number;
   dataSource: string;
   failedSymbolsSample: Array<{ symbol: string; reason: string }>;
 }): void {
@@ -416,7 +433,7 @@ function recordSuccessfulSignalEngineRun(opts: {
     rejectedProviderError: opts.rejectedProviderError,
     signalsGenerated: opts.signalsGenerated,
     signalsSaved: opts.signalsSaved,
-    indianApiRequestsUsed: opts.indianApiRequestsUsed,
+    upstreamVendor: opts.upstreamVendor,
     dataSource: opts.dataSource,
     lastError: null,
     failedSymbolsSample: opts.failedSymbolsSample,
@@ -506,7 +523,7 @@ function buildRunningEnvelope(opts: {
 }
 
 // Candle providers — scan modes read market_data_daily only. Upstream
-// ingest (IndianAPI) runs only in backfill / refresh-and-scan BEFORE
+// ingest (removed vendor) runs only in backfill / refresh-and-scan BEFORE
 // strategy evaluation, never during the per-symbol scan loop.
 void STALE_SKIP_AGE_MS;
 
@@ -648,7 +665,7 @@ async function runScanInner(
   //
   // Spec "OPTIMIZE API USAGE PER RUN" §3 — universe cap. The full
   // NIFTY 500 universe is 503 symbols; with `force: true` that's
-  // ~503 IndianAPI candle calls per run, blowing through a 2500/day
+  // ~503 removed vendor candle calls per run, blowing through a 2500/day
   // budget in five clicks. Cap to RUN_UNIVERSE_CAP (default 250)
   // with hash-rotation, so consecutive runs cover the other half.
   const fullUniverse  = DEFAULT_PHASE1_CONFIG.universe;
@@ -700,7 +717,7 @@ async function runScanInner(
     );
   }
 
-  // Spec "AUTO THROTTLE" — shrink the per-run cap as today's IndianAPI
+  // Spec "AUTO THROTTLE" — shrink the per-run cap as today's removed vendor
   // budget approaches the daily limit. Logs only when a band other than
   // 'normal' kicks in so steady-state runs stay quiet.
   const usageBeforeRun = getApiUsage();
@@ -735,7 +752,7 @@ async function runScanInner(
     `cap=${throttle.cap} band=${throttle.band} ` +
     `chunk_size_logged=${chunk.symbols.length} ` +
     `chunk_used=${fullUniverseScan ? 'no (full-scan mode)' : 'yes (legacy mode)'} ` +
-    `api_per_run_limit=${INDIANAPI_PER_RUN_LIMIT}`,
+    `api_per_run_limit=${LEGACY_VENDOR_ENV}`,
   );
   const runStartedAtIso = new Date(start).toISOString();
   beginSignalEngineRun({
@@ -787,14 +804,14 @@ async function runScanInner(
   console.log(
     `[RunSignalEngine] full-universe scan — full=${fullUniverse.length} ` +
     `eligible=${runUniverseSource.length} picked=${runUniverse.length} ` +
-    `api_per_run_cap=${INDIANAPI_PER_RUN_LIMIT} (band=${throttle.band}) ` +
+    `api_per_run_cap=${LEGACY_VENDOR_ENV} (band=${throttle.band}) ` +
     `run_count=${chunk.runCount} (rotation disabled — pinned full pass)`,
   );
 
   // Spec "API USAGE CONTROL" — reset the per-run candle-source counters
-  // here so debug_scan reflects ONLY this run's NSE / IndianAPI / failed
+  // here so debug_scan reflects ONLY this run's NSE / removed vendor / failed
   // tallies. beginPerRunBudget (in the route's lock claim) already
-  // handles IndianAPI's daily/monthly counter slice.
+  // handles removed vendor's daily/monthly counter slice.
   resetCandleSourceCounters();
   const candleStartedAt = Date.now();
   let refreshResult: RefreshCandlesResult | null = null;
@@ -808,7 +825,7 @@ async function runScanInner(
         `[RunSignalEngine] refresh done mode=${mode} ` +
         `refreshed=${refreshResult.refreshed}/${refreshResult.staleCount}  ` +
         `bars=${refreshResult.barsIngested}  failed=${refreshResult.failed.length}  ` +
-        `indianapi_requests=${refreshResult.indianApiRequests}  ` +
+        `upstream_candle_requests=${refreshResult.upstreamVendor}  ` +
         `before=${refreshResult.latestTsBefore} (${refreshResult.ageHoursBefore}h)  ` +
         `after=${refreshResult.latestTsAfter} (${refreshResult.ageHoursAfter}h)`,
       );
@@ -831,15 +848,15 @@ async function runScanInner(
   if (mode === 'backfill') {
     const usageAfterBackfill = getApiUsage();
     const sources = getCandleSourceCounters();
-    const indianApiRequests = Math.max(
-      sources.indianapi_requests,
-      refreshResult?.indianApiRequests ?? 0,
+    const upstreamVendor = Math.max(
+      sources.upstream_candle_requests,
+      refreshResult?.upstreamVendor ?? 0,
       usageAfterBackfill.daily - usageBeforeRun.daily,
     );
     const totalElapsedMs = Date.now() - start;
     console.log(
       `[PIPELINE END] status=success mode=backfill batch=${batchId} ` +
-      `elapsed_ms=${totalElapsedMs} indianapi_requests=${indianApiRequests}`,
+      `elapsed_ms=${totalElapsedMs} upstream_candle_requests=${upstreamVendor}`,
     );
     try {
       await markPipelineHeartbeat('api:run-signal-engine:backfill');
@@ -861,8 +878,8 @@ async function runScanInner(
       rejectedProviderError: refreshResult?.failed?.length ?? 0,
       signalsGenerated: 0,
       signalsSaved: 0,
-      indianApiRequestsUsed: indianApiRequests,
-      dataSource: resolveDataSourceUsed('backfill', indianApiRequests),
+      upstreamVendor: upstreamVendor,
+      dataSource: resolveDataSourceUsed('backfill', upstreamVendor),
       failedSymbolsSample: failedSample,
     });
     return {
@@ -876,8 +893,8 @@ async function runScanInner(
         rejected_insufficient_candles: 0,
         signals_generated: 0,
         signals_saved: 0,
-        data_source_used: resolveDataSourceUsed('backfill', indianApiRequests),
-        indianapi_requests_used: indianApiRequests,
+        data_source_used: resolveDataSourceUsed('backfill', upstreamVendor),
+        upstream_candle_requests_used: upstreamVendor,
       },
       backfill: refreshResult,
       duration_ms: totalElapsedMs,
@@ -1208,17 +1225,17 @@ async function runScanInner(
   // upstream round-trip increments it), not the chunk size — the chunk
   // is the upper bound, but the prefilter / cache-fresh skips can drop
   // it below. `remaining_from_cache` covers the symbols this run did
-  // NOT touch via IndianAPI; they're served by the existing fallback
+  // NOT touch via removed vendor; they're served by the existing fallback
   // chain (DB → Yahoo → NSE direct → cached snapshots).
   const usageAfterRun  = getApiUsage();
   const apiCallsUsed   = Math.max(
     0,
     usageAfterRun.daily - usageBeforeRun.daily,
   );
-  const indianApiRequests = Math.max(
-    sources.indianapi_requests,
+  const upstreamVendor = Math.max(
+    sources.upstream_candle_requests,
     apiCallsUsed,
-    refreshResult?.indianApiRequests ?? 0,
+    refreshResult?.upstreamVendor ?? 0,
   );
   const rejectedInsufficient = result.meta.rejectedInsufficientCandles;
   const rejectedProviderError = result.meta.rejectedProviderErrors;
@@ -1231,8 +1248,8 @@ async function runScanInner(
     rejected_provider_errors: rejectedProviderError,
     signals_generated: result.signals.length,
     signals_saved: result.meta.signalsSaved,
-    data_source_used: resolveDataSourceUsed(mode, indianApiRequests),
-    indianapi_requests_used: indianApiRequests,
+    data_source_used: resolveDataSourceUsed(mode, upstreamVendor),
+    upstream_candle_requests_used: upstreamVendor,
   };
   console.log('[RUN SUMMARY]', runSummary);
   recordSuccessfulSignalEngineRun({
@@ -1246,8 +1263,8 @@ async function runScanInner(
     rejectedProviderError,
     signalsGenerated: result.signals.length,
     signalsSaved: result.meta.signalsSaved,
-    indianApiRequestsUsed: indianApiRequests,
-    dataSource: resolveDataSourceUsed(mode, indianApiRequests),
+    upstreamVendor: upstreamVendor,
+    dataSource: resolveDataSourceUsed(mode, upstreamVendor),
     failedSymbolsSample: result.meta.failedSymbolsSample,
   });
   return {
@@ -1308,7 +1325,7 @@ async function runScanInner(
         scan_status:    'completed',
       };
     })(),
-    // Spec "API RESPONSE DEBUG" — hybrid NSE + IndianAPI counters
+    // Spec "API RESPONSE DEBUG" — hybrid NSE + removed vendor counters
     // surfaced on the response so dashboards / cron callers can see
     // the cost split for this run.
     debug_scan: {
@@ -1458,7 +1475,7 @@ export async function POST(req: NextRequest) {
   });
   // Spec "ALLOW MARKET CLOSED FETCH" — the prior `if (!marketStatus.isOpen) return 409`
   // block has been removed. The candle fallback chain (DB-fast →
-  // IndianAPI live → NSE → DB-thin → throw) serves the last
+  // removed vendor live → NSE → DB-thin → throw) serves the last
   // available bars whether the session is open or closed, so a
   // closed-market run produces signals against last-close data
   // instead of a hard refusal. Scheduled / overnight runs work
@@ -1598,8 +1615,8 @@ export async function POST(req: NextRequest) {
   console.log(`[ENGINE] run mode=${runMode}`);
   // ── API-usage budget gate ──────────────────────────────────────
   // Spec "OPTIMIZE API USAGE" §5 — refuse a manual run when today's
-  // IndianAPI budget is already used up. Scan mode is DB-only and
-  // never calls IndianAPI, so it is allowed even when the budget is
+  // removed vendor budget is already used up. Scan mode is DB-only and
+  // never calls removed vendor, so it is allowed even when the budget is
   // exhausted. Backfill and refresh-and-scan may call upstream.
   const usage = getApiUsage();
   if (
@@ -1620,8 +1637,8 @@ export async function POST(req: NextRequest) {
         bucket:       which,
         api_usage:    usage,
         message:      which === 'daily'
-          ? `IndianAPI daily budget exhausted (${usage.daily}/${usage.daily_limit}). New scans resume after midnight IST.`
-          : `IndianAPI monthly budget exhausted (${usage.monthly}/${usage.monthly_limit}). New scans resume next month or set INDIANAPI_MONTHLY_LIMIT on a paid plan.`,
+          ? `removed vendor daily budget exhausted (${usage.daily}/${usage.daily_limit}). New scans resume after midnight IST.`
+          : `removed vendor monthly budget exhausted (${usage.monthly}/${usage.monthly_limit}). New scans resume next month or set LEGACY_VENDOR_ENV on a paid plan.`,
         debug: {
           provider_used:  null,
           fallback_used:  false,
@@ -1784,11 +1801,11 @@ export async function POST(req: NextRequest) {
     inFlight = { batchId, startedAt: new Date(start).toISOString(), mode };
     setScannerInFlight(true);
     // Spec "Per-run API call limit" — open a fresh per-run window
-    // BEFORE any IndianAPI call lands so the counter starts at 0.
+    // BEFORE any removed vendor call lands so the counter starts at 0.
     // Paired with endPerRunBudget() in releaseLock; the lock pair
     // is the single source of truth for "a pipeline run is active".
     beginPerRunBudget();
-    console.log(`[API RUN] start limit=${INDIANAPI_PER_RUN_LIMIT} batch=${batchId}`);
+    console.log(`[API RUN] start limit=${LEGACY_VENDOR_ENV} batch=${batchId}`);
     console.log(
       `[ENGINE_LOCK_ACQUIRED] batch=${batchId} ` +
       `started_at=${new Date(start).toISOString()} ` +

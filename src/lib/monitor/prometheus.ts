@@ -327,41 +327,41 @@ export function renderPrometheusMetrics(ctx: PromContext): string {
   // ── Provider breaker / queue ───────────────────────────────────
   if (ctx.breaker) {
     e.metric(`${NAMESPACE}_provider_breaker_open`,
-      '1 when the IndianAPI breaker is open or half-open.',
+      '1 when the removed vendor breaker is open or half-open.',
       'gauge',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.breaker.open ? 1 : 0 }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.breaker.open ? 1 : 0 }],
     );
     e.metric(`${NAMESPACE}_provider_auth_failed`,
-      '1 when the IndianAPI auth-failed latch is set.',
+      '1 when the removed vendor auth-failed latch is set.',
       'gauge',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.breaker.auth_failed ? 1 : 0 }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.breaker.auth_failed ? 1 : 0 }],
     );
     e.metric(`${NAMESPACE}_provider_breaker_remaining_ms`,
-      'Milliseconds remaining on the IndianAPI breaker cooldown (0 when closed).',
+      'Milliseconds remaining on the removed vendor breaker cooldown (0 when closed).',
       'gauge',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.breaker.remainingMs }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.breaker.remainingMs }],
     );
   }
   if (ctx.queue) {
     e.metric(`${NAMESPACE}_provider_queue_depth`,
       'In-flight rate-limiter queue depth.',
       'gauge',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.queue.depth }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.queue.depth }],
     );
     e.metric(`${NAMESPACE}_provider_queue_peak_depth`,
       'High-water-mark queue depth since process start.',
       'gauge',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.queue.peak_depth }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.queue.peak_depth }],
     );
     e.metric(`${NAMESPACE}_provider_queue_throttle_wait_ms_total`,
       'Cumulative ms callers spent blocked behind the rate-limiter gap.',
       'counter',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.queue.throttle_wait_total_ms }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.queue.throttle_wait_total_ms }],
     );
     e.metric(`${NAMESPACE}_provider_queue_served_total`,
       'Calls served through the rate limiter since process start.',
       'counter',
-      [{ labels: { ...baseLabels, provider: 'indianapi' }, value: ctx.queue.served_total }],
+      [{ labels: { ...baseLabels, provider: 'kite' }, value: ctx.queue.served_total }],
     );
   }
 

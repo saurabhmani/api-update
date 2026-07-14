@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════════════
 //  kite/health — process-local Kite availability tracker (Phase 8)
 //
-//  Mirrors the *shape* of IndianAPI breaker probes for ops dashboards
+//  Mirrors the *shape* of removed vendor breaker probes for ops dashboards
 //  without inventing monthly quotas. Kite Connect has soft rate limits
-//  and token auth — NOT an IndianAPI-style 2.5k/day / 70k/month plan.
+//  and token auth — NOT an removed vendor-style 2.5k/day / 70k/month plan.
 //
 //  Instrumented from `KiteClient.call()` so every service-layer hop
 //  is observed without touching MarketDataProvider / resolver.

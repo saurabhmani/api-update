@@ -118,11 +118,12 @@ function LiveCell({
   // K = green = Kite WebSocket (sub-second). // @deprecated marker
   // R = blue  = Kite REST quote (one-shot, ~1s). // @deprecated marker
   const sourceMap: Record<string, [string, string, string, string]> = {
-    kite:      ['#10B981', '#fff', 'K', 'Kite • Live'], // @deprecated marker
-    kite_ws:   ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'], // @deprecated marker
-    kite_rest: ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'], // @deprecated marker
-    indianapi: ['#059669', '#fff', 'IA', 'IndianAPI • Live'],
+    kite:      ['#10B981', '#fff', 'K', 'Kite • Live'],
+    kite_ws:   ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'],
+    kite_rest: ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'],
     yahoo:     ['#7C3AED', '#fff', 'Y', 'Yahoo • Delayed'],
+    cache:     ['#64748B', '#fff', 'C', 'Cache'],
+    nse_direct:['#F59E0B', '#fff', 'N', 'NSE Direct'],
   };
   const srcCfg = source ? sourceMap[source] : null;
 
@@ -1463,7 +1464,7 @@ export default function SignalsPage() {
     const entry        = typeof sig.entry_price === 'number' ? sig.entry_price : null;
     const trustedLiveSources = new Set([
       'kite_ws', 'kite_rest', 'kite', // @deprecated marker
-      'indianapi', 'yahoo',
+      'kite', 'yahoo',
     ]);
     const serverPriceAcceptable =
       serverLive != null &&
@@ -1484,7 +1485,7 @@ export default function SignalsPage() {
         ...sig,
         livePrice:   serverLive,
         livePChange,
-        liveSource:  serverSource ?? 'indianapi',
+        liveSource:  serverSource ?? 'kite',
         liveTickTs:  (sig as any).liveTickTs ?? null,
       };
     }

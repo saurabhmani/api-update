@@ -32,7 +32,7 @@ vi.mock('@/lib/marketData/candleDailyUpdateJob', () => ({
 vi.mock('@/lib/marketData/candleFallbackChain', () => ({
   fetchDailyCandlesWithFallback: vi.fn(),
   resetCandleSourceCounters: vi.fn(),
-  getIndianApiCandleRequestCount: vi.fn(() => 0),
+  getUpstreamCandleRequestCount: vi.fn(() => 0),
 }));
 vi.mock('@/lib/marketData/eod/eodIngestionPipeline', () => ({
   runDailyEodIngestion: vi.fn(),
@@ -148,7 +148,7 @@ const baseHealthCtx = (meta: ManipulationRiskMeta): EngineHealthContext => ({
   generatedAt: new Date().toISOString(),
   marketStatus: { isOpen: true, label: 'Market Open', state: 'open' },
   feed: {
-    provider: 'indianapi',
+    provider: 'kite',
     lastSuccessAt: new Date().toISOString(),
     lastApiRequestAt: new Date().toISOString(),
     isBootstrap: false,

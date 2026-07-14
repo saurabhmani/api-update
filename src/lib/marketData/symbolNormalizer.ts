@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Symbol Normalizer — Step 3.5 of the IndianAPI cutover.
+//  Symbol Normalizer — Step 3.5 of the removed vendor cutover.
 //
 //  Canonical form everyone uses internally:
 //    { exchange: 'NSE' | 'BSE', symbol: 'RELIANCE', bseCode?: '500325' }
@@ -12,7 +12,7 @@
 //      symbolNormalize.ts (`.NS` / `.BO`). That file is preserved for
 //      backward compat with the legacy resolver chain. This module is
 //      the new canonical path used by marketDataResolver and the
-//      IndianAPI provider going forward.
+//      removed vendor provider going forward.
 //    • Resolver responses are keyed by `${exchange}:${symbol}` so that
 //      'NSE:RELIANCE' and 'BSE:RELIANCE' (both legitimate) never collide.
 // ════════════════════════════════════════════════════════════════
@@ -80,17 +80,17 @@ export function fromAny(
     return { exchange: 'BSE', symbol: cleaned, bseCode: cleaned };
   }
   // Default-NSE policy: anything that looks like a ticker gets the
-  // NSE label unless the hint says BSE explicitly. The IndianAPI
+  // NSE label unless the hint says BSE explicitly. The removed vendor
   // single-symbol endpoint accepts the bare symbol name (no exchange
-  // prefix), so this default is benign for IndianAPI calls; it only
+  // prefix), so this default is benign for removed vendor calls; it only
   // matters for the canonicalKey + the NSE/BSE batch routing.
   const exchange: Exchange = hint ?? 'NSE';
   return { exchange, symbol: cleaned };
 }
 
-/** IndianAPI accepts the bare uppercase ticker. The exchange is
+/** removed vendor accepts the bare uppercase ticker. The exchange is
  *  expressed by which endpoint you hit (`/nse/...` vs `/bse/...`). */
-export function toIndianApi(c: CanonicalSymbol): string {
+export function tolegacy_vendor(c: CanonicalSymbol): string {
   return c.symbol;
 }
 

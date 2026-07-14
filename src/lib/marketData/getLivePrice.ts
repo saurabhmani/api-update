@@ -1,5 +1,5 @@
-// @deprecated — Pre-IndianAPI live-price chain. Hot paths now go
-// through MarketDataResolver / IndianAPI provider; this module is
+// @deprecated — Pre-removed vendor live-price chain. Hot paths now go
+// through MarketDataResolver / removed vendor provider; this module is
 // kept for the legacy compat shim and is eligible for deletion
 // once every importer has been migrated.
 // ════════════════════════════════════════════════════════════════
@@ -107,7 +107,7 @@ export function isKiteActive(symbol: string): boolean { // @deprecated marker
  *      projected under the legacy shape). Only queried when the in-memory
  *      cache has nothing — typical on a fresh process start during closed
  *      hours.
- *   3. MarketDataProvider chain (IndianAPI → cache → Yahoo → DB). Only // @deprecated marker
+ *   3. MarketDataProvider chain (removed vendor → cache → Yahoo → DB). Only // @deprecated marker
  *      consulted when market is OPEN and layers 1–2 missed. Off-hours
  *      the function returns source='none' instead of falling through to
  *      Yahoo — per spec, Yahoo must never be the answer after close. // @deprecated marker

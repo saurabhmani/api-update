@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Data Quality Safety Gate — Step 10 of the IndianAPI cutover.
+//  Data Quality Safety Gate — Step 10 of the removed vendor cutover.
 //
 //  Before creating or promoting confirmed signals, every writer must
 //  consult this gate. It collapses the resolver envelope + provider
@@ -7,7 +7,7 @@
 //  re-implement the policy.
 //
 //  Rules (relaxed per spec "RELAX DATA QUALITY" §3):
-//    • provider must be IndianAPI or an approved fallback
+//    • provider must be removed vendor or an approved fallback
 //    • coveragePercent >= configured minimum (default 50%, was 60%
 //      before the relaxation; the dev plan's throttle commonly
 //      delivers 60–80% so a stricter gate left the dashboard empty
@@ -51,7 +51,7 @@ export interface SafetyGateConfig {
   approvedProviders:     ResolverProvider[];
 }
 
-const APPROVED_DEFAULT: ResolverProvider[] = ['indianapi', 'cache', 'nse_direct'];
+const APPROVED_DEFAULT: ResolverProvider[] = ['kite', 'cache', 'nse_direct'];
 
 function envInt(name: string, fallback: number, min = 0): number {
   const raw = Number(process.env[name]);

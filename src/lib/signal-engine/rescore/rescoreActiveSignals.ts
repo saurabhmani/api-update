@@ -110,7 +110,7 @@ async function runOnce(): Promise<RescoreResult> {
 
   // ── Batch live LTP resolution ──────────────────────────────
   // resolvePrices (marketDataResolver) applies the canonical ladder:
-  // market-closed gate → IndianAPI → cache → NSE direct (rare) →
+  // market-closed gate → removed vendor → cache → NSE direct (rare) →
   // Yahoo emergency (flagged) → DATA_DEGRADED. Source is logged per
   // symbol for operator visibility.
   const fetchStarted = Date.now();

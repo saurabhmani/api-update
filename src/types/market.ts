@@ -6,33 +6,27 @@
 //  ProviderResponse<T> before exposing to engines / API routes.
 // ════════════════════════════════════════════════════════════════
 
-// Architecture freeze (Priority 0):
-//   IndianAPI  = PRIMARY live feed
+// Architecture freeze:
+//   Kite       = PRIMARY live / historical market data
 //   Cache      = secondary (fresh cache layer)
 //   Yahoo      = fallback ONLY // @deprecated marker
 //   PostgreSQL = ONLY runtime DB (last-resort stale tier)
-//   Kite       = broker/execution ONLY, NOT market-data truth // @deprecated marker
-//
-// The 'kite' enum value is retained so the execution module can keep // @deprecated marker
-// tagging its internal records, but MarketDataProvider no longer
-// returns source='kite' for any market-data read path. // @deprecated marker
 export type ProviderSource =
-  | 'indian'   // IndianAPI — PRIMARY
   | 'cache'    // in-memory snapshot within TTL
   | 'yahoo'    // Yahoo Finance fallback (15m delayed) // @deprecated marker
   | 'db'       // PostgreSQL last-known — flagged stale
-  | 'kite';    // RESERVED for broker/execution tagging; never emitted by MarketDataProvider // @deprecated marker
+  | 'kite';    // PRIMARY live / historical
 
 export type DataQuality =
   | 'live'              // (deprecated market-data quality — retained for back-compat with broker-side tagging)
-  | 'near-live'         // source=indian — REST, seconds-old
+  | 'near-live'         // source=kite — REST, seconds-old
   | 'cached-fresh'      // source=cache, within TTL
   | 'fallback-delayed'  // source=yahoo (~15 min delayed) // @deprecated marker
   | 'stale';            // source=db (signal-critical callers MUST reject)
 
 /** High-level role of the tier that served this response. */
 export type ProviderSourceType =
-  | 'primary'    // IndianAPI — PRIMARY source of truth
+  | 'primary'    // Kite — PRIMARY source of truth
   | 'cache'      // hot cache between primary and fallback
   | 'fallback'   // Yahoo — delayed, used only when primary is unavailable // @deprecated marker
   | 'stale';     // persisted last-known value (PostgreSQL)
@@ -160,7 +154,7 @@ export interface ProviderResponse<T> {
   trail?: Array<{ source: ProviderSource; ok: boolean; error?: string; ms?: number }>;
 
   // ── Canonical Phase-1 DoD fields (required by the architecture freeze).
-  /** Human-readable vendor/tier name. E.g. 'IndianAPI', 'Cache', 'Yahoo Finance', 'PostgreSQL'. */ // @deprecated marker
+  /** Human-readable vendor/tier name. E.g. 'removed vendor', 'Cache', 'Yahoo Finance', 'PostgreSQL'. */ // @deprecated marker
   provider_name: string;
   /** Role of the tier that served this response. */
   source_type: ProviderSourceType;
@@ -169,7 +163,7 @@ export interface ProviderResponse<T> {
   vendor_timestamp: number;
   /** `fetched_at - vendor_timestamp`, clamped to >= 0. Lets callers apply freshness budgets. */
   freshness_ms: number;
-  /** `null` when the primary (IndianAPI) served the request directly. Otherwise a
+  /** `null` when the primary (removed vendor) served the request directly. Otherwise a
    *  short human-readable summary of why the chain had to walk past the primary. */
   fallback_reason: string | null;
 }

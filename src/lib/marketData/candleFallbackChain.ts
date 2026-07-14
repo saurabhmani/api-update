@@ -1,18 +1,16 @@
 // ════════════════════════════════════════════════════════════════
-//  Candle Fallback Chain — DB → Kite → IndianAPI → NSE (opt-in)
+//  Candle Fallback Chain — DB → Kite → NSE (opt-in)
 //
-//  Provider priority for daily OHLCV (Phase 6):
+//  Provider priority for daily OHLCV:
 //    1. DB cache (market_data_daily) — always first; during an active
 //       pipeline scan (`isInFlight()`), evaluation reads are DB-only
 //       so strategy evaluation never burns vendor quota.
 //    2. Kite (`KiteAdapter.getHistorical` via kiteHistoricalProvider)
-//       — primary upstream for backfill / incremental refresh.
-//    3. IndianAPI (`getHistorical`) — fallback when Kite fails
-//       (auth / rate-limit / empty / not configured).
-//    4. NSE direct historical — fallback ONLY when
+//       — sole upstream for backfill / incremental refresh.
+//    3. NSE direct historical — fallback ONLY when
 //       NSE_HISTORICAL_FETCH_ENABLED=true.
-//    5. DB thin — return whatever rows exist.
-//    6. Throw `CANDLE_NO_DATA`.
+//    4. DB thin — return whatever rows exist.
+//    5. Throw `CANDLE_NO_DATA`.
 //
 //  `refreshDailyCandles` → `getCandles` uses the upstream ingest path.
 //  Phase 3/4 `fetchDailyCandlesWithFallback` uses DB-only while a scan
@@ -21,7 +19,6 @@
 
 import { db } from '@/lib/db';
 import type { Candle } from '@/lib/signal-engine';
-import { getHistorical as getIndianApiHistorical } from '@/lib/marketData/providers/indianApiProvider';
 import {
   getHistorical as getKiteHistorical,
   isKiteHistoricalConfigured,
@@ -31,7 +28,6 @@ import {
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
 import type { HistoricalRange } from '@/types/market';
-import { getIndianApiConfig } from '@/lib/marketData/providers/indianApiEndpoints';
 import { isInFlight } from '@/lib/scanner/scannerState';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
 import { resolveMarketCandles } from '@/lib/marketData/resolveMarketCandles';
@@ -60,7 +56,6 @@ let _apiUsed = 0;
 let _kiteUsed = 0;
 let _dbUsed  = 0;
 let _failed  = 0;
-let _indianApiRequestCount = 0;
 let _kiteRequestCount = 0;
 
 export function resetCandleSourceCounters(): void {
@@ -69,7 +64,6 @@ export function resetCandleSourceCounters(): void {
   _kiteUsed = 0;
   _dbUsed  = 0;
   _failed  = 0;
-  _indianApiRequestCount = 0;
   _kiteRequestCount = 0;
 }
 
@@ -79,7 +73,8 @@ export function getCandleSourceCounters(): {
   kite_used: number;
   db_used: number;
   failed: number;
-  indianapi_requests: number;
+  /** @deprecated Always 0 — upstream is Kite-only. Kept for summary shape. */
+  upstream_candle_requests: number;
   kite_requests: number;
 } {
   return {
@@ -88,13 +83,14 @@ export function getCandleSourceCounters(): {
     kite_used: _kiteUsed,
     db_used: _dbUsed,
     failed: _failed,
-    indianapi_requests: _indianApiRequestCount,
+    upstream_candle_requests: 0,
     kite_requests: _kiteRequestCount,
   };
 }
 
-export function getIndianApiCandleRequestCount(): number {
-  return _indianApiRequestCount;
+/** @deprecated Always 0 — use getKiteCandleRequestCount. Kept for call-site compat. */
+export function getUpstreamCandleRequestCount(): number {
+  return 0;
 }
 
 export function getKiteCandleRequestCount(): number {
@@ -103,9 +99,9 @@ export function getKiteCandleRequestCount(): number {
 
 // ── Public types ───────────────────────────────────────────────────
 
-export type CandleSource = 'db' | 'kite' | 'indianapi' | 'nse' | 'db-thin';
+export type CandleSource = 'db' | 'kite' | 'nse' | 'db-thin';
 
-export type IndianApiCandleErrorCode =
+export type UpstreamCandleErrorCode =
   | 'API_KEY_MISSING'
   | 'API_KEY_INVALID'
   | 'RATE_LIMITED'
@@ -136,15 +132,15 @@ export interface DailyCandleFetchOptions {
   evaluationRead?: boolean;
 }
 
-export interface IndianApiCandleFetchResult {
+export interface UpstreamCandleFetchResult {
   ok: boolean;
   candles: Candle[];
-  errorCode: IndianApiCandleErrorCode | string | null;
+  errorCode: UpstreamCandleErrorCode | string | null;
   errorMessage: string | null;
   rawBarCount: number;
   validBarCount: number;
   /** Which upstream filled this result (jobs/tests). */
-  provider?: 'kite' | 'indianapi' | null;
+  provider?: 'kite' | null;
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────
@@ -183,14 +179,6 @@ export async function getDbBarCount(symbol: string): Promise<number> {
   }
 }
 
-function logIndianApiCandleRequest(symbol: string, endpoint: string): void {
-  _indianApiRequestCount += 1;
-  console.log(
-    `[INDIANAPI REQUEST] endpoint=${endpoint} symbol=${symbol} ` +
-    `request_count=${_indianApiRequestCount}`,
-  );
-}
-
 function logKiteCandleRequest(symbol: string, endpoint: string): void {
   _kiteRequestCount += 1;
   console.log(
@@ -202,7 +190,7 @@ function logKiteCandleRequest(symbol: string, endpoint: string): void {
 function mapProviderErrorCode(
   errorCode: string | null | undefined,
   status?: number,
-): IndianApiCandleErrorCode | string {
+): UpstreamCandleErrorCode | string {
   const code = (errorCode ?? '').toUpperCase();
   if (code === 'API_KEY_MISSING' || code.includes('NOT_CONFIGURED') || code === 'KITE_NOT_CONFIGURED') {
     return code === 'KITE_NOT_CONFIGURED' ? 'KITE_NOT_CONFIGURED' : 'API_KEY_MISSING';
@@ -270,12 +258,12 @@ function normalizeHistoricalCandles(
 
 /**
  * Fetch daily bars from KiteAdapter (via kiteHistoricalProvider).
- * Never throws — maps failures into IndianApiCandleFetchResult codes.
+ * Never throws — maps failures into UpstreamCandleFetchResult codes.
  */
 export async function fetchKiteDailyCandles(
   symbol: string,
   range: HistoricalRange = '1y',
-): Promise<IndianApiCandleFetchResult> {
+): Promise<UpstreamCandleFetchResult> {
   const sym = symbol.toUpperCase();
   const endpoint = `kite.historical:${range}`;
 
@@ -366,148 +354,14 @@ export async function fetchKiteDailyCandles(
 }
 
 /**
- * Fetch daily bars from IndianAPI for ingest/backfill. Never used from
- * strategy evaluation — callers must gate on `isInFlight()` / `dbOnly`.
- */
-export async function fetchIndianApiDailyCandles(
-  symbol: string,
-  range: HistoricalRange = '1y',
-): Promise<IndianApiCandleFetchResult> {
-  const sym = symbol.toUpperCase();
-  const endpoint = `historical_data:${range}`;
-
-  const { apiKey } = getIndianApiConfig();
-  if (!apiKey) {
-    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} reason=API_KEY_MISSING`);
-    return {
-      ok: false,
-      candles: [],
-      errorCode: 'API_KEY_MISSING',
-      errorMessage: 'INDIANAPI_API_KEY (or INDIANAPI_KEY / INDIAN_API_KEY) is not set',
-      rawBarCount: 0,
-      validBarCount: 0,
-      provider: 'indianapi',
-    };
-  }
-
-  logIndianApiCandleRequest(sym, endpoint);
-
-  try {
-    const inv = await getIndianApiHistorical(sym, range);
-    const mappedCode = mapProviderErrorCode(inv.errorCode ?? undefined);
-
-    if (inv.status !== 'success' && inv.status !== 'partial') {
-      const msg = inv.errorMessage ?? `provider status=${inv.status}`;
-      console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=${mappedCode} reason="${msg}"`);
-      return {
-        ok: false,
-        candles: [],
-        errorCode: mappedCode,
-        errorMessage: msg,
-        rawBarCount: 0,
-        validBarCount: 0,
-        provider: 'indianapi',
-      };
-    }
-
-    const series = inv.data;
-    const raw = series?.candles ?? [];
-    if (raw.length === 0) {
-      console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=EMPTY_RESPONSE`);
-      return {
-        ok: false,
-        candles: [],
-        errorCode: 'EMPTY_RESPONSE',
-        errorMessage: 'IndianAPI returned zero candles',
-        rawBarCount: 0,
-        validBarCount: 0,
-        provider: 'indianapi',
-      };
-    }
-
-    const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(raw);
-    if (validBarCount === 0) {
-      console.warn(
-        `[INDIANAPI FETCH FAIL] symbol=${sym} code=MALFORMED_RESPONSE ` +
-        `raw_bars=${rawBarCount}`,
-      );
-      return {
-        ok: false,
-        candles: [],
-        errorCode: 'MALFORMED_RESPONSE',
-        errorMessage: `All ${rawBarCount} upstream bars failed validation`,
-        rawBarCount,
-        validBarCount: 0,
-        provider: 'indianapi',
-      };
-    }
-
-    _apiUsed++;
-    console.log(
-      `[INDIANAPI FETCH OK] symbol=${sym} bars=${validBarCount} ` +
-      `raw_bars=${rawBarCount}`,
-    );
-    return {
-      ok: true,
-      candles,
-      errorCode: null,
-      errorMessage: null,
-      rawBarCount,
-      validBarCount,
-      provider: 'indianapi',
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=UPSTREAM_ERROR reason="${msg}"`);
-    return {
-      ok: false,
-      candles: [],
-      errorCode: 'UPSTREAM_ERROR',
-      errorMessage: msg,
-      rawBarCount: 0,
-      validBarCount: 0,
-      provider: 'indianapi',
-    };
-  }
-}
-
-/**
- * Phase 6 upstream: Kite → IndianAPI.
- * Preserves the IndianApiCandleFetchResult contract for jobs/scripts.
+ * Upstream daily bars: Kite only. Preserves UpstreamCandleFetchResult
+ * for jobs/scripts. On miss, returns the Kite error (no secondary vendor).
  */
 export async function fetchUpstreamDailyCandles(
   symbol: string,
   range: HistoricalRange = '1y',
-): Promise<IndianApiCandleFetchResult> {
-  const kite = await fetchKiteDailyCandles(symbol, range);
-  if (kite.ok && kite.candles.length > 0) {
-    return kite;
-  }
-
-  console.warn(
-    `[CANDLE UPSTREAM] Kite miss symbol=${symbol.toUpperCase()} ` +
-    `code=${kite.errorCode ?? 'unknown'} — trying IndianAPI`,
-  );
-
-  const ia = await fetchIndianApiDailyCandles(symbol, range);
-  if (ia.ok && ia.candles.length > 0) {
-    return ia;
-  }
-
-  // Prefer the more specific Kite failure when IndianAPI also failed
-  // with a config miss and Kite was attempted (auth/rate-limit tests).
-  if (
-    kite.errorCode
-    && kite.errorCode !== 'KITE_NOT_CONFIGURED'
-    && (ia.errorCode === 'API_KEY_MISSING' || !ia.errorCode)
-  ) {
-    return kite;
-  }
-  return {
-    ...ia,
-    errorCode: ia.errorCode ?? kite.errorCode,
-    errorMessage: ia.errorMessage ?? kite.errorMessage,
-  };
+): Promise<UpstreamCandleFetchResult> {
+  return fetchKiteDailyCandles(symbol, range);
 }
 
 // ── DB upsert ──────────────────────────────────────────────────────
@@ -547,7 +401,7 @@ function shouldUseDbOnly(opts: DailyCandleFetchOptions): boolean {
 
 /**
  * Fetch daily OHLCV for strategy evaluation. While a scan is running,
- * returns DB cache only — never calls IndianAPI or NSE.
+ * returns DB cache only — never calls upstream or NSE.
  */
 export async function fetchDailyCandlesWithFallback(
   symbol: string,
@@ -620,22 +474,21 @@ export async function fetchDailyCandlesWithFallback(
   if (dbRows.length < min) {
     console.warn(
       `[CANDLE ERROR] insufficient data symbol=${sym} db_bars=${dbRows.length} ` +
-      `min=${min} — trying Kite → IndianAPI`,
+      `min=${min} — trying Kite`,
     );
   }
 
-  // 2) Kite → IndianAPI upstream for backfill
+  // 2) Kite upstream for backfill
   const up = await fetchUpstreamDailyCandles(sym);
   if (up.ok && up.candles.length > 0) {
     await upsertToDb(sym, up.candles);
-    const src: CandleSource = up.provider === 'kite' ? 'kite' : 'indianapi';
     console.log(
-      `[CANDLE FALLBACK SOURCE] ${src} symbol=${sym} bars=${up.candles.length} ` +
+      `[CANDLE FALLBACK SOURCE] kite symbol=${sym} bars=${up.candles.length} ` +
       `latency_ms=${Date.now() - t0}`,
     );
     return {
       candles: up.candles,
-      source: src,
+      source: 'kite',
       hitUpstream: true,
       latencyMs: Date.now() - t0,
     };

@@ -20,7 +20,9 @@
 import { NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { getMarketStatus, isMarketOpen } from '@/lib/marketData/marketHours';
-import { snapshot as budgetSnapshot } from '@/lib/marketData/apiBudgetGuard';
+async function budgetSnapshot(): Promise<{ dayTotal: number; monthTotal: number; level: string }> {
+  return { dayTotal: 0, monthTotal: 0, level: 'normal' };
+}
 import { CONFIG } from '@/lib/marketData/schedulerConfig';
 import { loadClosedMarketSignals } from '@/lib/signals/closedMarketSignals';
 import { loadConfirmedSignalsBundle } from '@/lib/signals/confirmedSignalsService';
@@ -29,7 +31,7 @@ import {
   getNseDirectFallbackConfig,
   isNseDirectFallbackEnabled,
 }                                     from '@/lib/marketData/providerFlags';
-import { getConsecutiveIndianApiFailures } from '@/lib/marketData/resolver/marketDataResolver';
+import { getConsecutivePrimaryFailures } from '@/lib/marketData/resolver/marketDataResolver';
 import { getNseDirectStatus }         from '@/lib/marketData/providers/nseDirectProvider';
 import { db }                         from '@/lib/db';
 import { ensureUniverseReady }        from '@/lib/startup/ensureUniverseReady';
@@ -167,7 +169,7 @@ export async function GET(): Promise<Response> {
   const nseDirectStatus  = await getNseDirectStatus();
   const nseDirectArmed =
        nseDirectCfg.enabled
-    && getConsecutiveIndianApiFailures() >= nseDirectCfg.triggerFailures;
+    && getConsecutivePrimaryFailures() >= nseDirectCfg.triggerFailures;
   let nseSignalsTotalActive: number | null = null;
   try {
     const { rows } = await db.query<{ c: number }>(
@@ -257,7 +259,7 @@ export async function GET(): Promise<Response> {
         trigger_after_failures:     nseDirectCfg.triggerFailures,
         max_symbols_per_day:        nseDirectCfg.maxSymbolsPerDay,
         min_delay_ms:               nseDirectCfg.minDelayMs,
-        consecutive_indianapi_fail: getConsecutiveIndianApiFailures(),
+        consecutive_primary_fail: getConsecutivePrimaryFailures(),
         would_engage_now:           nseDirectArmed,
         // Safety state from the NSE-direct provider itself —
         // tripped/backoff/daily-cap visibility for the operator.
@@ -271,7 +273,7 @@ export async function GET(): Promise<Response> {
         daily_used:                 nseDirectStatus.dailyCount,
         daily_cap:                  nseDirectStatus.dailyCap,
         cache_ttl_seconds:          nseDirectStatus.cacheTtlSeconds,
-        provider_priority:          ['indianapi', 'nse_direct'],
+        provider_priority:          ['kite', 'nse_direct'],
         yahoo_disabled:             true,
       },
     },

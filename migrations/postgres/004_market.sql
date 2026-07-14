@@ -8,7 +8,7 @@
 --    • candles            → monthly partitions by ts.
 --
 --  MarketDataProvider.registerDbRepo() uses snapshots_current as
---  the "last known" fallback when IndianAPI + Yahoo both fail.
+--  the "last known" fallback when removed vendor + Yahoo both fail.
 -- ════════════════════════════════════════════════════════════════
 
 BEGIN;

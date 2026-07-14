@@ -9,8 +9,7 @@
 export interface ServiceConfig {
   port: number;
   serviceAuthToken: string | null;   // null = auth disabled (dev only)
-  indianApiKey: string | null;
-  indianApiBaseUrl: string;
+  kiteApiKey: string | null;
   yahooEnabled: boolean;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   nodeEnv: 'development' | 'production' | 'test';
@@ -31,10 +30,7 @@ export function loadConfig(): ServiceConfig {
   return {
     port,
     serviceAuthToken,
-    indianApiKey: process.env.INDIAN_API_KEY?.trim() || process.env.INDIANAPI_KEY?.trim() || null,
-    indianApiBaseUrl: process.env.INDIAN_API_BASE_URL?.trim() ||
-                      process.env.INDIANAPI_BASE_URL?.trim() ||
-                      'https://stock.indianapi.in',
+    kiteApiKey: process.env.KITE_API_KEY?.trim() || null,
     yahooEnabled: (process.env.YAHOO_ENABLED ?? 'true').toLowerCase() !== 'false',
     logLevel: (process.env.LOG_LEVEL as ServiceConfig['logLevel']) ?? 'info',
     nodeEnv,

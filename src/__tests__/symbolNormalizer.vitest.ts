@@ -4,7 +4,7 @@ import {
   fromAny,
   fromManyToCanonical,
   isValidCanonical,
-  toIndianApi,
+  tolegacy_vendor,
   toNse,
   toYahoo,
 } from '@/lib/marketData/symbolNormalizer';
@@ -45,8 +45,8 @@ describe('symbolNormalizer.fromAny', () => {
 });
 
 describe('symbolNormalizer adapters', () => {
-  it('toIndianApi returns the bare ticker', () => {
-    expect(toIndianApi(fromAny('reliance'))).toBe('RELIANCE');
+  it('tolegacy_vendor returns the bare ticker', () => {
+    expect(tolegacy_vendor(fromAny('reliance'))).toBe('RELIANCE');
   });
 
   it('toNse returns the bare ticker', () => {
@@ -63,7 +63,7 @@ describe('symbolNormalizer round-trip', () => {
   it('NSE round-trips cleanly across all providers', () => {
     const c = fromAny('reliance.ns');
     expect(canonicalKey(c)).toBe('NSE:RELIANCE');
-    expect(toIndianApi(c)).toBe('RELIANCE');
+    expect(tolegacy_vendor(c)).toBe('RELIANCE');
     expect(toNse(c)).toBe('RELIANCE');
     expect(toYahoo(c)).toBe('RELIANCE.NS');
   });

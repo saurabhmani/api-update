@@ -60,8 +60,8 @@ const VIOLATIONS: Array<{ pattern: RegExp; reason: string }> = [
     reason: 'yahoo-finance2 library is not allowed — use MarketDataProvider.',
   },
   {
-    pattern: /axios\.(get|post)\s*\(\s*['"`]https:\/\/stock\.indianapi\.in/,
-    reason: 'Direct IndianAPI call — must go through IndianAPIAdapter via MarketDataProvider.',
+    pattern: /axios\.(get|post)\s*\(\s*['"`]https:\/\/stock\.legacy_vendor\.in/,
+    reason: 'Direct vendor adapter call — must go through MarketDataProvider.',
   },
 ];
 

@@ -2,12 +2,10 @@
 
 import { evaluateAlerts, summariseAlerts, type Alert } from '@/lib/monitor/alertRules';
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
-import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { getLiveFeedState } from '@/lib/marketData/liveFeedState';
 import { isInFlight, getInFlightElapsedMs } from '@/lib/scanner/scannerState';
-import { getQuotaReport } from '@/lib/monitor/apiQuota';
 import { publishAlert } from '@/services/alertService';
 import { db } from '@/lib/db';
 import { deliverAlert } from './alertDelivery';
@@ -60,11 +58,7 @@ export async function evaluateProductionAlerts(): Promise<{
     market_open: market.isOpen,
   });
 
-  let breaker: { open: boolean; state: string; auth_failed: boolean } | null = null;
-  try {
-    const b = indianApiBreakerState();
-    breaker = { open: b.open, state: b.state, auth_failed: b.auth_failed };
-  } catch { /* optional */ }
+  const breaker: { open: boolean; state: string; auth_failed: boolean } | null = null;
 
   // PRODUCTION-READINESS 2026-07 — signals-pipeline probes for the
   // four minimum alerts (no confirmed signals, stale live feed,
@@ -88,15 +82,7 @@ export async function evaluateProductionAlerts(): Promise<{
     scanner = { in_flight: isInFlight(), elapsed_ms: getInFlightElapsedMs() };
   } catch { /* optional */ }
 
-  let quota: { daily_percent: number; monthly_percent: number; state: string } | null = null;
-  try {
-    const report = await getQuotaReport();
-    quota = {
-      daily_percent:   report.daily.percent,
-      monthly_percent: report.monthly.percent,
-      state:           report.state,
-    };
-  } catch { /* optional */ }
+  const quota: { daily_percent: number; monthly_percent: number; state: string } | null = null;
 
   const alerts = evaluateAlerts({
     snapshot,

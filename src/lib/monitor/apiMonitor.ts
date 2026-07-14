@@ -2,7 +2,7 @@
 //  apiMonitor — in-process API health + workflow telemetry store.
 //
 //  Records every HTTP request the Next.js layer serves and every
-//  upstream provider hop (IndianAPI / NSE / Yahoo / snapshot / DB)
+//  upstream provider hop (removed vendor / NSE / Yahoo / snapshot / DB)
 //  the resolver layer makes. Exposes rollups for:
 //
 //    • per-day call counters (IST calendar day)
@@ -22,8 +22,6 @@
 //  in-memory cost is bounded — every collection has an explicit cap.
 // ════════════════════════════════════════════════════════════════
 
-import { recordIndianApiQuota } from './apiQuota';
-
 export const SLOW_REQUEST_MS = Number(process.env.API_MONITOR_SLOW_MS) || 500;
 export const HIGH_ERROR_RATE = Number(process.env.API_MONITOR_ERROR_RATE) || 0.05;
 const SLOW_BUFFER_MAX  = 50;
@@ -32,7 +30,7 @@ const FALLBACK_BUFFER_MAX = 25;
 const RECENT_REQUESTS_WINDOW_MS = 60_000;
 const RECENT_REQUESTS_BUCKET_MS = 1_000;
 
-export type MonitorProvider = 'indianapi' | 'kite' | 'nse' | 'yahoo' | 'snapshot' | 'cache' | 'db';
+export type MonitorProvider = 'kite' | 'kite' | 'nse' | 'yahoo' | 'snapshot' | 'cache' | 'db';
 
 // ── Public input shape ─────────────────────────────────────────────
 
@@ -238,7 +236,7 @@ export function recordApiCall(input: RecordApiCallInput): void {
 }
 
 /**
- * Record a single provider hop (IndianAPI batch, NSE direct call,
+ * Record a single provider hop (removed vendor batch, NSE direct call,
  * Yahoo emergency, snapshot read, DB query). The resolver still owns
  * the user-facing `recordProviderCall` in marketData/providerReport
  * for cumulative call counts; this entry adds latency + error stats.
@@ -261,14 +259,6 @@ export function recordProviderLatency(input: RecordProviderInput): void {
   ps.lastCallAt = new Date().toISOString();
   providerStats.set(input.provider, ps);
 
-  // Spec QUOTA_TRACKING — every IndianAPI hop counts against the
-  // 2,500/day · 70k–90k/month IST-aligned quota. Fire-and-forget;
-  // a Redis hiccup must never break the monitor.
-  // Phase 8: Kite hops must NEVER credit IndianAPI monthly quotas —
-  // Kite availability lives in `@/lib/kite/health` (KiteClient.call).
-  if (input.provider === 'indianapi') {
-    void recordIndianApiQuota(1).catch(() => { /* non-fatal */ });
-  }
 }
 
 /**

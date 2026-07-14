@@ -1,4 +1,4 @@
-// Parallel Yahoo + IndianAPI fetch, validate, approve, confirm.
+// Parallel Yahoo + Kite fetch, validate, approve, confirm.
 
 import { logger } from '@/lib/logger';
 import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
@@ -29,7 +29,7 @@ const log = logger.child({ component: 'dataSourceManager' });
 
 const BATCH_SIZE = Math.max(
   1,
-  Number(process.env.INDIANAPI_EMULATED_BATCH_MAX) || 50,
+  Number(process.env.KITE_EMULATED_BATCH_MAX) || 50,
 );
 
 function resolverRowToTick(sym: string, row: {
@@ -61,7 +61,7 @@ function resolverRowToTick(sym: string, row: {
     low: row.low,
     prevClose,
     timestamp: Number.isFinite(ts) ? ts : receivedAt,
-  }, 'indianapi', receivedAt, latencyMs);
+  }, 'kite', receivedAt, latencyMs);
 }
 
 async function fetchYahooSource(symbols: string[]): Promise<Map<string, SourceFetchResult>> {
@@ -101,7 +101,7 @@ async function fetchYahooSource(symbols: string[]): Promise<Map<string, SourceFe
   return out;
 }
 
-async function fetchIndianApiSource(symbols: string[]): Promise<Map<string, SourceFetchResult>> {
+async function fetchlegacy_vendorSource(symbols: string[]): Promise<Map<string, SourceFetchResult>> {
   const out = new Map<string, SourceFetchResult>();
   for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
     const batch = symbols.slice(i, i + BATCH_SIZE);
@@ -113,26 +113,26 @@ async function fetchIndianApiSource(symbols: string[]): Promise<Map<string, Sour
         const up = sym.toUpperCase();
         const row = result.data[`NSE:${up}`];
         if (!row || !Number.isFinite(row.ltp) || row.ltp <= 0) {
-          recordSourceFetch('indianapi', false, latencyMs, null, 'no_quote');
-          out.set(up, { source: 'indianapi', ok: false, tick: null, error: 'no_quote', latencyMs });
+          recordSourceFetch('kite', false, latencyMs, null, 'no_quote');
+          out.set(up, { source: 'kite', ok: false, tick: null, error: 'no_quote', latencyMs });
           continue;
         }
         const tick = resolverRowToTick(up, row, Date.now(), latencyMs);
         if (!tick) {
-          recordSourceFetch('indianapi', false, latencyMs, null, 'normalize_failed');
-          out.set(up, { source: 'indianapi', ok: false, tick: null, error: 'normalize_failed', latencyMs });
+          recordSourceFetch('kite', false, latencyMs, null, 'normalize_failed');
+          out.set(up, { source: 'kite', ok: false, tick: null, error: 'normalize_failed', latencyMs });
           continue;
         }
-        recordSourceFetch('indianapi', true, latencyMs, tick.ltp, null);
-        out.set(up, { source: 'indianapi', ok: true, tick, error: null, latencyMs });
+        recordSourceFetch('kite', true, latencyMs, tick.ltp, null);
+        out.set(up, { source: 'kite', ok: true, tick, error: null, latencyMs });
         void storeRawTick(tick);
       }
     } catch (err) {
       const latencyMs = Date.now() - t0;
       const msg = err instanceof Error ? err.message : String(err);
       for (const sym of batch) {
-        recordSourceFetch('indianapi', false, latencyMs, null, msg);
-        out.set(sym.toUpperCase(), { source: 'indianapi', ok: false, tick: null, error: msg, latencyMs });
+        recordSourceFetch('kite', false, latencyMs, null, msg);
+        out.set(sym.toUpperCase(), { source: 'kite', ok: false, tick: null, error: msg, latencyMs });
       }
     }
   }
@@ -146,26 +146,26 @@ function pickPublishTick(
   if (approval.authoritativeSource && approval.authoritativeLtp != null) {
     const base = approval.authoritativeSource === 'yahoo'
       ? validation.yahoo
-      : validation.indianapi;
+      : validation.kite;
     if (base) {
       return { ...base, ltp: approval.authoritativeLtp };
     }
   }
-  if (validation.yahoo && validation.indianapi) {
-    const mid = (validation.yahoo.ltp + validation.indianapi.ltp) / 2;
-    return { ...validation.indianapi, ltp: mid };
+  if (validation.yahoo && validation.kite) {
+    const mid = (validation.yahoo.ltp + validation.kite.ltp) / 2;
+    return { ...validation.kite, ltp: mid };
   }
-  return validation.yahoo ?? validation.indianapi ?? null;
+  return validation.yahoo ?? validation.kite ?? null;
 }
 
 export function processDualSourceSymbol(
   symbol: string,
   yahoo: NormalizedFeedTick | null,
-  indian: NormalizedFeedTick | null,
+  kiteTick: NormalizedFeedTick | null,
   now = Date.now(),
 ): DualSourceBatchResult {
   const config = getDualSourceConfig();
-  const validation = validateCrossSourceFeeds(symbol, yahoo, indian, config, now);
+  const validation = validateCrossSourceFeeds(symbol, yahoo, kiteTick, config, now);
   const approval = evaluateApprovalGateway(validation, config, now);
   const confirmation = runConfirmationEngine(validation, approval, {}, now);
   const publishTick = approval.allowed || approval.authoritativeLtp != null
@@ -196,14 +196,14 @@ export async function ingestDualSourceBatch(symbols: string[]): Promise<DualSour
 
   const [yahooMap, indianMap] = await Promise.all([
     fetchYahooSource(clean),
-    fetchIndianApiSource(clean),
+    fetchlegacy_vendorSource(clean),
   ]);
 
   const results: DualSourceBatchResult[] = [];
   for (const sym of clean) {
     const yahoo = yahooMap.get(sym)?.tick ?? null;
-    const indian = indianMap.get(sym)?.tick ?? null;
-    results.push(processDualSourceSymbol(sym, yahoo, indian));
+    const kiteTick = indianMap.get(sym)?.tick ?? null;
+    results.push(processDualSourceSymbol(sym, yahoo, kiteTick));
   }
 
   log.debug('dual-source batch', {

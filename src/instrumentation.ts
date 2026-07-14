@@ -47,7 +47,8 @@ export async function register() {
     MYSQL_HOST: !!process.env.MYSQL_HOST,
     SESSION_SECRET: !!process.env.SESSION_SECRET,
     REDIS_HOST: !!process.env.REDIS_HOST,
-    INDIAN_API_KEY: !!(process.env.INDIAN_API_KEY ?? process.env.INDIANAPI_KEY),
+    KITE_API_KEY: !!process.env.KITE_API_KEY,
+    KITE_ACCESS_TOKEN: !!process.env.KITE_ACCESS_TOKEN,
   });
 
   // PROD-PARITY 2026-05 — single-line stamp of every knob that materially
@@ -65,9 +66,7 @@ export async function register() {
     CACHE_TTL_LIVE_PRICE_MS:      process.env.CACHE_TTL_LIVE_PRICE_MS ?? '(unset)',
     SIGNALS_FREEZE_TTL_MS:        process.env.SIGNALS_FREEZE_TTL_MS ?? '(unset)',
     SIGNALS_LIVE_MARKET_TTL_MS:   process.env.SIGNALS_LIVE_MARKET_TTL_MS ?? '(unset)',
-    INDIANAPI_BLOCK_OUTSIDE_MARKET: process.env.INDIANAPI_BLOCK_OUTSIDE_MARKET ?? '(unset)',
-    INDIANAPI_MIN_CALL_GAP_MS:    process.env.INDIANAPI_MIN_CALL_GAP_MS ?? '(unset)',
-    INDIANAPI_EMULATED_BATCH_MAX: process.env.INDIANAPI_EMULATED_BATCH_MAX ?? '(unset)',
+    MARKET_DATA_PROVIDER:         process.env.MARKET_DATA_PROVIDER ?? '(unset)',
     NSE_DIRECT_FALLBACK_TRIGGER_FAILURES: process.env.NSE_DIRECT_FALLBACK_TRIGGER_FAILURES ?? '(unset)',
     DATA_FRESHNESS_SLA_MS:        process.env.DATA_FRESHNESS_SLA_MS ?? '(unset)',
     SIGNAL_STICKY_VISIBILITY_MIN: process.env.SIGNAL_STICKY_VISIBILITY_MIN ?? '(unset)',
@@ -75,7 +74,7 @@ export async function register() {
     FORCE_MARKET_OPEN:            process.env.FORCE_MARKET_OPEN ?? '(unset)',
   });
 
-  // Resolved provider flags. Booleans only — confirm Kite/IndianAPI selection.
+  // Resolved provider flags. Booleans only — confirm kite selection.
   try {
     const { getProviderFlagsSummary } = await import('@/lib/marketData/providerFlags');
     log.info('Market-data provider flags', getProviderFlagsSummary());
@@ -85,19 +84,18 @@ export async function register() {
 
   // SAFE_NSE_MODE confirmation. Loud, single-line log so operators
   // can grep for `SAFE_NSE_MODE_ENABLED` and confirm the contract is
-  // active: configured primary (Kite default) → IndianAPI fallback →
-  // NSE direct rare fallthrough; Yahoo emergency-only.
+  // active: configured primary (Kite default) → yahoo/nse/db cascade.
   // Also emits the current one-time-bootstrap flag state so a fresh
   // deploy can see whether a `POST /api/signals/bootstrap` call is
   // still pending.
   try {
     const { isBootstrapDone } = await import('@/lib/marketData/oneTimeNseBootstrap');
-    const { getMarketDataProvider, isIndianApiPrimary } = await import('@/lib/marketData/providerFlags');
+    const { getMarketDataProvider, getPrimaryFallbackProvider } = await import('@/lib/marketData/providerFlags');
     const flagSet = await isBootstrapDone();
+    const marketDataProvider = getMarketDataProvider();
     log.info('SAFE_NSE_MODE_ENABLED', {
-      marketDataProvider: getMarketDataProvider(),
-      indianApiPrimary:   isIndianApiPrimary(),
-      yahooDisabled:      true,
+      marketDataProvider,
+      primaryFallbackProvider: getPrimaryFallbackProvider(marketDataProvider),
       nseDirectFallback:  true,
       bootstrapFlagSet:   flagSet,
     });
@@ -132,7 +130,7 @@ export async function register() {
   // ── Production env safety lock ──────────────────────────────
   // Hard guardrail for production deployments — refuses to boot when
   // FORCE_MARKET_OPEN / MOCK_MARKET_OPEN / BYPASS_MARKET_HOURS is
-  // truthy, CANDLE_MAX_PER_CYCLE > 100, or INDIANAPI_PER_RUN_LIMIT > 500.
+  // truthy, or CANDLE_MAX_PER_CYCLE > 100.
   // No-op outside production. Throws are intentional — a misconfigured
   // .env in prod must not silently start a server that burns quota.
   const { enforceProductionEnvSafety } = await import('@/lib/startup/envSafetyLock');
@@ -195,8 +193,8 @@ export async function register() {
   // ── MarketDataProvider DB repo registration ─────────────────
   // Wires the snapshot repo (stale-last-resort DB fallback) into the
   // MarketDataProvider. Without this, every request that falls through
-  // IndianAPI → cache → Yahoo also fails at the DB step with
-  // "db repo not registered" — drowns the log and loses the fallback.
+  // the primary → cache → yahoo/nse cascade also fails at the DB step
+  // with "db repo not registered" — drowns the log and loses the fallback.
   await withBudget('Provider DB repo register', 3_000, async () => {
     const { registerOnMarketDataProvider } = await import(
       '@/providers/repos/snapshotRepo'
@@ -207,7 +205,7 @@ export async function register() {
   });
 
   // ── Live market WebSocket feed ──────────────────────────────
-  // IndianAPI polling loop + WS fan-out on STREAM_WS_PORT.
+  // Live polling loop + WS fan-out on STREAM_WS_PORT.
   // Disabled when STREAM_WS_DISABLED=true (signal-only dev mode).
   await withBudget('Live market feed start', 5_000, async () => {
     const wsDisabled = (process.env.STREAM_WS_DISABLED ?? '').toLowerCase() === 'true';
@@ -232,10 +230,9 @@ export async function register() {
     return true;
   });
 
-  // Kite ticker + dynamic subscription sync were removed with the
-  // Kite integration. Live ticks now flow IndianAPI → liveMarketFeed
-  // → tickBus → streamServer → browser WebSocket clients.
-  log.info('Live market mode: IndianAPI feed + WS stream enabled (unless STREAM_WS_DISABLED)');
+  // Live ticks flow primary cascade → liveMarketFeed → tickBus →
+  // streamServer → browser WebSocket clients.
+  log.info('Live market mode: kite/yahoo feed + WS stream enabled (unless STREAM_WS_DISABLED)');
 
   // ── DB-driven tradeable universe ────────────────────────────
   // The engine reads its scan list from q365_universe(is_active=1).

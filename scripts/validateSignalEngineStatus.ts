@@ -123,7 +123,7 @@ function runModuleSimulation(): Record<string, CriterionResult> {
     rejectedProviderError: 0,
     signalsGenerated: 8,
     signalsSaved: 6,
-    indianApiRequestsUsed: 0,
+    upstreamVendor: 0,
     dataSource: 'db',
     lastError: null,
     failedSymbolsSample: [],
@@ -168,8 +168,8 @@ function runModuleSimulation(): Record<string, CriterionResult> {
   };
 
   const c5: CriterionResult = {
-    pass: isNum(idleStatus.indianApiRequestsUsed),
-    detail: `indianApiRequestsUsed=${idleStatus.indianApiRequestsUsed} dataSource=${idleStatus.dataSource}`,
+    pass: isNum(idleStatus.upstreamVendor),
+    detail: `upstreamVendor=${idleStatus.upstreamVendor} dataSource=${idleStatus.dataSource}`,
   };
 
   const diskOk = existsSync(DISK_PATH) && last?.jobId === jobId;
@@ -179,7 +179,7 @@ function runModuleSimulation(): Record<string, CriterionResult> {
     '2_last_completed_run_after_finish': c2,
     '3_scanned_total_not_null_after_completion': c3,
     '4_insufficient_candle_rejection_visible': c4,
-    '5_indianapi_request_count_visible': c5,
+    '5_legacy_vendor_request_count_visible': c5,
     '6_disk_persistence': {
       pass: diskOk,
       detail: `disk_file=${DISK_PATH} exists=${existsSync(DISK_PATH)} jobId=${last?.jobId ?? 'null'}`,
@@ -225,7 +225,7 @@ async function runLiveHttpReadTest(base: string, cookie: string): Promise<Record
   const total = st.totalSymbols;
   const scanned = st.scannedSymbols;
   const insufficient = st.rejectedInsufficientCandles;
-  const indianApi = st.indianApiRequestsUsed;
+  const upstreamVendor = st.upstreamVendor;
 
   return {
     http_1_idle_last_completed_run: {
@@ -240,9 +240,9 @@ async function runLiveHttpReadTest(base: string, cookie: string): Promise<Record
       pass: isNum(insufficient),
       detail: `rejectedInsufficientCandles=${insufficient}`,
     },
-    http_4_indianapi_visible: {
-      pass: isNum(indianApi),
-      detail: `indianApiRequestsUsed=${indianApi}`,
+    http_4_legacy_vendor_visible: {
+      pass: isNum(upstreamVendor),
+      detail: `upstreamVendor=${upstreamVendor}`,
     },
   };
 }
@@ -355,7 +355,7 @@ async function runLiveHttpTest(): Promise<Record<string, CriterionResult>> {
       live_2_last_completed: { pass: false, detail: 'Timed out before job completed' },
       live_3_scanned_total: { pass: false, detail: 'Timed out' },
       live_4_insufficient: { pass: false, detail: 'Timed out' },
-      live_5_indianapi: { pass: false, detail: 'Timed out' },
+      live_5_legacy_vendor: { pass: false, detail: 'Timed out' },
     };
   }
 
@@ -363,7 +363,7 @@ async function runLiveHttpTest(): Promise<Record<string, CriterionResult>> {
   const total = finalStatus.totalSymbols;
   const scanned = finalStatus.scannedSymbols;
   const insufficient = finalStatus.rejectedInsufficientCandles;
-  const indianApi = finalStatus.indianApiRequestsUsed;
+  const upstreamVendor = finalStatus.upstreamVendor;
 
   return {
     ...httpRead,
@@ -385,9 +385,9 @@ async function runLiveHttpTest(): Promise<Record<string, CriterionResult>> {
       detail: `rejectedInsufficientCandles=${insufficient}` +
         (stats ? ` (db estimate=${stats.rejectedInsufficient})` : ''),
     },
-    live_5_indianapi_visible: {
-      pass: isNum(indianApi),
-      detail: `indianApiRequestsUsed=${indianApi} mode=${finalStatus.mode}`,
+    live_5_legacy_vendor_visible: {
+      pass: isNum(upstreamVendor),
+      detail: `upstreamVendor=${upstreamVendor} mode=${finalStatus.mode}`,
     },
   };
 }

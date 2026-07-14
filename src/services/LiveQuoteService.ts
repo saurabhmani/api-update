@@ -70,7 +70,7 @@ export async function persistSnapshot(
 ): Promise<void> {
   if (resp.source === 'db' || resp.data_quality === 'stale') return;
   // Spec PROVIDER-NORMALIZE-2026-05 — defence-in-depth. The adapter
-  // validators already gate IndianAPI / NSE outputs, but persistSnapshot
+  // validators already gate removed vendor / NSE outputs, but persistSnapshot
   // is also called from older paths (batchScheduler.wrapBatchResponse,
   // route-side enrichers) that may not have been re-routed through the
   // adapter validators. Re-validate at the persistence boundary so a

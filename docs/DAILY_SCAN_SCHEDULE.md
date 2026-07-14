@@ -2,7 +2,7 @@
 
 Controlled weekday jobs when `DAILY_SCAN_SCHEDULE_ENABLED=true` (default). Registered by `startDailyScanSchedule()` from the worker process (`npm run scheduler`).
 
-**IndianAPI budget policy:** [PROVIDER_REQUEST_POLICY.md](./PROVIDER_REQUEST_POLICY.md)
+**removed vendor budget policy:** [PROVIDER_REQUEST_POLICY.md](./PROVIDER_REQUEST_POLICY.md)
 
 ## Schedule
 
@@ -13,7 +13,7 @@ Controlled weekday jobs when `DAILY_SCAN_SCHEDULE_ENABLED=true` (default). Regis
 | **Main morning scan** | 09:45 | `45 9 * * 1-5` | `scan` | DB-only Phase 4 (main morning) |
 | **Midday rescore** | 12:30 | `30 12 * * 1-5` | `rescore` | Active signals only |
 | **Late rescore** | 14:45 | `45 14 * * 1-5` | `rescore` | Active signal rescore / late confirmation |
-| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | IndianAPI EOD |
+| **Evening Update** | 16:00 | `0 16 * * 1-5` | `incremental-update` | removed vendor EOD |
 | **Evening Scan** | 16:30 | `30 16 * * 1-5` | `scan` | DB-only Phase 4 (final EOD) |
 | **Manipulation Scan** | 18:30 | `30 18 * * 1-5` | `scan-only` | `candles` warehouse |
 
@@ -52,7 +52,7 @@ UNIVERSE_ALLOW_BAND=false
          │
 14:45  Late rescore          (active signals only)
          │
-16:00  Evening Update        ──► candles warehouse refreshed (IndianAPI)
+16:00  Evening Update        ──► candles warehouse refreshed (removed vendor)
          │
 16:30  Evening Scan          (DB-only Phase 4 on fresh EOD)
          │
@@ -62,7 +62,7 @@ UNIVERSE_ALLOW_BAND=false
                              └─ scan only; no duplicate ingestion
 ```
 
-The manipulation job **depends** on the 16:00 Evening Update completing first. The 18:30 slot is deliberately 2h after EOD refresh to allow the IndianAPI fetch to finish. If Evening Update overruns, manipulation still runs against the latest warehouse state (warning-only if candles are stale).
+The manipulation job **depends** on the 16:00 Evening Update completing first. The 18:30 slot is deliberately 2h after EOD refresh to allow the removed vendor fetch to finish. If Evening Update overruns, manipulation still runs against the latest warehouse state (warning-only if candles are stale).
 
 At schedule startup, `isManipulationScheduledAfterEodUpdate()` validates that configured cron expressions keep manipulation after 16:00 EOD update.
 
@@ -111,8 +111,8 @@ Every signal job emits greppable `[DAILY_JOB]` lines at start and complete:
 
 | Field | Scan jobs | Rescore jobs | Evening update |
 |-------|-----------|--------------|----------------|
-| `scanned_symbols` | Symbols with sufficient candles | Active signals rescored | Symbols fetched from IndianAPI |
-| `requests_used` | Always 0 (DB-only) | Always 0 | IndianAPI request count |
+| `scanned_symbols` | Symbols with sufficient candles | Active signals rescored | Symbols fetched from removed vendor |
+| `requests_used` | Always 0 (DB-only) | Always 0 | removed vendor request count |
 | `signals_generated` | Phase 4 signal count | Rescore updates | 0 |
 | `failed_symbols` | Insufficient-candle skips | Rescore fetch failures | Provider fetch failures |
 

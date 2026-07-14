@@ -7,7 +7,7 @@
 //    09:45  Main morning scan   — DB-only Phase 4 full universe
 //    12:30  Midday rescore      — active signal rescore only
 //    14:45  Late rescore        — active signal rescore / light confirmation
-//    16:00  Evening update      — IndianAPI incremental EOD candle fetch
+//    16:00  Evening update      — removed vendor incremental EOD candle fetch
 //    16:30  Evening scan        — DB-only Phase 4 post-EOD signals
 //    18:30  Manipulation scan   — runDailyScan({ skipIngestion: true })
 //
@@ -28,7 +28,7 @@ import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
 import {
   fetchDailyCandlesWithFallback,
   resetCandleSourceCounters,
-  getIndianApiCandleRequestCount,
+  getUpstreamCandleRequestCount,
 } from '@/lib/marketData/candleFallbackChain';
 import {
   generatePhase4Signals,
@@ -102,7 +102,7 @@ export function isManipulationScheduledAfterEodUpdate(
 }
 
 export type DailyJobMode = 'scan' | 'incremental-update' | 'readiness' | 'rescore';
-export type DailyJobDataSource = 'db' | 'indianapi';
+export type DailyJobDataSource = 'db' | 'kite';
 
 export interface DailyJobLogEntry {
   job_name: string;
@@ -285,7 +285,7 @@ async function runDbScanJob(opts: {
 
   const insufficient = result.meta.rejectedInsufficientCandles;
   const scannedSymbols = Math.max(0, result.meta.scanned - insufficient);
-  const requestsUsed = getIndianApiCandleRequestCount();
+  const requestsUsed = getUpstreamCandleRequestCount();
   const failedSymbols = insufficient;
 
   try {
@@ -324,7 +324,7 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
   logDailyJobStart({
     job_name: jobName,
     mode: 'incremental-update',
-    data_source: 'indianapi',
+    data_source: 'kite',
     start_time: startTime,
   });
 
@@ -332,13 +332,13 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
     maxFetch: DAILY_UPDATE_MAX_REQUESTS(),
   });
 
-  // Self-heal: when IndianAPI produced ZERO bars (typically a 429
+  // Self-heal: when removed vendor produced ZERO bars (typically a 429
   // rate-limit day), fall back to the free NSE bhavcopy pipeline so
   // the warehouse still advances and the 16:30 evening scan has
   // today's candles. Idempotent upsert — safe to run alongside a
-  // later IndianAPI retry.
+  // later removed vendor retry.
   if (!summary.dryRun && summary.fetched === 0 && summary.failed > 0) {
-    log.warn('evening update: IndianAPI returned zero bars — falling back to NSE bhavcopy', {
+    log.warn('evening update: removed vendor returned zero bars — falling back to NSE bhavcopy', {
       failed: summary.failed,
       sample: summary.failures.slice(0, 3).map((f) => f.reason),
     });
@@ -355,7 +355,7 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
         summary.fetched = inserted;
         summary.failures.push({
           symbol: '(bhavcopy-fallback)',
-          reason: `indianapi_failed_bhavcopy_recovered_${inserted}_bars`,
+          reason: `legacy_vendor_failed_bhavcopy_recovered_${inserted}_bars`,
         });
       }
     } catch (err) {
@@ -374,7 +374,7 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
   const entry: DailyScanJobResult = {
     job_name: jobName,
     mode: 'incremental-update',
-    data_source: 'indianapi',
+    data_source: 'kite',
     start_time: startTime,
     end_time: new Date(endMs).toISOString(),
     duration_ms: endMs - startMs,
@@ -409,7 +409,7 @@ function guardJob<T extends DailyScanJobResult>(
       const failed: DailyScanJobResult = {
         job_name: jobName,
         mode: jobName === 'evening-update' ? 'incremental-update' : 'scan',
-        data_source: jobName === 'evening-update' ? 'indianapi' : 'db',
+        data_source: jobName === 'evening-update' ? 'kite' : 'db',
         start_time: new Date(endMs).toISOString(),
         end_time: new Date(endMs).toISOString(),
         duration_ms: 0,
@@ -481,7 +481,7 @@ export function runMorningScanJob(): Promise<DailyScanJobResult> {
   return runFirstMorningScanJob();
 }
 
-/** Evening Update — 16:00 IST, incremental IndianAPI EOD candle fetch. */
+/** Evening Update — 16:00 IST, incremental removed vendor EOD candle fetch. */
 export function runEveningUpdateJob(): Promise<DailyScanJobResult> {
   return guardJob('evening-update', executeEveningUpdateJob);
 }

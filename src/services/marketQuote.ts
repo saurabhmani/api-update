@@ -10,12 +10,11 @@
  *
  * Helpers without a live upstream (FII/DII flows, market breadth,
  * sector regime) return empty data — callers degrade gracefully.
- * Gainers/losers are served from IndianAPI /trending via getMovers(),
- * with a rankings-table fallback when movers are unavailable.
+ * Gainers/losers are served from rankings via getMovers(), with a
+ * rankings-table fallback when movers are unavailable.
  */
 import { cacheGet, cacheSet }   from '@/lib/redis';
 import { resolvePrice }         from '@/lib/marketData/resolver/marketDataResolver';
-import { getStockDetails }      from '@/lib/marketData/providers/indianApiProvider';
 import { fetchYahooPublicQuote, fetchYahoo52WeekRange } from '@/lib/marketData/yahooChartPublic';
 import { fetchYahooFundamentals } from '@/lib/marketData/yahooFundamentals';
 import { isMarketOpen, getMarketStatus } from '@/lib/marketData/marketHours';
@@ -24,7 +23,6 @@ import { corporateIntelCacheKey, cache as memCache } from '@/lib/cache';
 import { fetchFromYahooCached } from '@/lib/marketData/priceCache'; // @deprecated marker
 import { StaleDataError }       from '@/types/market';
 import type { MoversBucket }    from '@/types/market';
-import type { MarketSnapshot }  from '@/types/market';
 import { db }                   from '@/lib/db';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -144,38 +142,6 @@ async function fetchYahooMeta(symbol: string): Promise<Partial<Quote> | null> { 
     fiftyTwoWeekHigh:  0,
     fiftyTwoWeekLow:   0,
   };
-}
-
-function snapshotToQuote(sym: string, snap: MarketSnapshot): Quote {
-  const ltp = snap.ltp || snap.price;
-  const prevClose = snap.prevClose || ltp;
-  const change = snap.change ?? (ltp - prevClose);
-  const pChange = snap.changePercent ?? (prevClose > 0 ? (change / prevClose) * 100 : 0);
-  return {
-    symbol:            sym,
-    lastPrice:         ltp,
-    change,
-    pChange,
-    open:              snap.open  || ltp,
-    dayHigh:           snap.high  || ltp,
-    dayLow:            snap.low   || ltp,
-    previousClose:     prevClose,
-    totalTradedVolume: snap.volume || 0,
-    totalTradedValue:  0,
-    fiftyTwoWeekHigh:  0,
-    fiftyTwoWeekLow:   0,
-  };
-}
-
-/** Direct IndianAPI call — bypasses NIFTY500 resolver lock for detail-page quotes. */
-async function fetchIndianApiQuote(sym: string): Promise<Quote | null> {
-  try {
-    const inv = await getStockDetails(sym);
-    if (inv.status !== 'success' || !inv.data?.price) return null;
-    return snapshotToQuote(sym, inv.data);
-  } catch {
-    return null;
-  }
 }
 
 function istToday(): string {
@@ -422,25 +388,13 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
     if (cached?.lastPrice) return cached;
   }
 
-  // 1) Resolver path (IndianAPI for NIFTY500 universe members)
+  // 1) Resolver path (Kite → Yahoo)
   const resolved = await resolvePrice(sym);
 
-  // 2) Direct IndianAPI (bypasses NIFTY500 lock — needed for NSE1000 symbols)
-  let liveQuote: Quote | null = null;
-  if (marketOpen || !resolved.price) {
-    liveQuote = await fetchIndianApiQuote(sym);
-  }
-
-  // 3) Yahoo public chart (verification-grade fallback, ~15 min delayed)
-  const yahooMeta = (!liveQuote?.lastPrice && (!resolved.price || marketOpen))
+  // 2) Yahoo public chart (~15 min delayed) when resolver is cold or market open
+  const yahooMeta = (!resolved.price || marketOpen)
     ? await fetchYahooMeta(sym)
     : null;
-
-  if (liveQuote?.lastPrice) {
-    const enriched = await enrichQuoteWith52Week(liveQuote, sym);
-    await cacheSet(cacheKey, enriched, marketOpen ? 15 : 120).catch(() => {});
-    return enriched;
-  }
 
   if (resolved.price != null && resolved.price > 0) {
     const quote: Quote = {
@@ -470,6 +424,22 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
       } else if (!quote.pChange && dbQuote.pChange) {
         quote.pChange = dbQuote.pChange;
         quote.change  = dbQuote.change;
+      }
+    }
+    // Prefer Yahoo day OHLC when resolver only returned a sparse LTP.
+    if (yahooMeta?.lastPrice) {
+      quote.open              = quote.open || yahooMeta.open || quote.open;
+      quote.dayHigh           = Math.max(quote.dayHigh || 0, yahooMeta.dayHigh || 0) || quote.dayHigh;
+      quote.dayLow            = Math.min(
+        quote.dayLow > 0 ? quote.dayLow : Number.POSITIVE_INFINITY,
+        yahooMeta.dayLow || Number.POSITIVE_INFINITY,
+      );
+      if (!Number.isFinite(quote.dayLow)) quote.dayLow = yahooMeta.dayLow || quote.lastPrice;
+      quote.previousClose     = quote.previousClose || yahooMeta.previousClose || quote.previousClose;
+      quote.totalTradedVolume = quote.totalTradedVolume || yahooMeta.totalTradedVolume || 0;
+      if (quote.previousClose > 0 && !quote.change) {
+        quote.change  = quote.lastPrice - quote.previousClose;
+        quote.pChange = (quote.change / quote.previousClose) * 100;
       }
     }
     const enriched = await enrichQuoteWith52Week(quote, sym);
@@ -619,7 +589,7 @@ export async function fetchInstrumentMeta(
       intelLoaded = true;
     }
   } catch {
-    // IndianAPI 429 / breaker — serve last cached fundamentals if available.
+    // Upstream / breaker — serve last cached fundamentals if available.
     try {
       const stale = await memCache.get<{
         companyName?: string; sector?: string; industry?: string;

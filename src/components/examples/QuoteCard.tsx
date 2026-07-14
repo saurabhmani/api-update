@@ -3,7 +3,7 @@
 //  QuoteCard — reference frontend integration
 //
 //  Rules this component demonstrates:
-//    • UI NEVER calls IndianAPI or Yahoo directly.
+//    • UI NEVER calls removed vendor or Yahoo directly.
 //    • UI NEVER imports MarketDataProvider (server-only code).
 //    • UI ONLY fetches /api/market/quote?symbol=... and reads the
 //      envelope { data, source, data_quality, fetched_at }.

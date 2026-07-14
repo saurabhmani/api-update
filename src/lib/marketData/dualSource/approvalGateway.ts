@@ -23,14 +23,14 @@ export function evaluateApprovalGateway(
   let authoritativeSource: FeedSourceId | null = null;
   let authoritativeLtp: number | null = null;
 
-  if (validation.yahoo && validation.indianapi) {
+  if (validation.yahoo && validation.kite) {
     if (validation.status === 'confirmed') {
-      authoritativeLtp = (validation.yahoo.ltp + validation.indianapi.ltp) / 2;
-      authoritativeSource = config.authoritativeOnConflict ?? 'indianapi';
+      authoritativeLtp = (validation.yahoo.ltp + validation.kite.ltp) / 2;
+      authoritativeSource = config.authoritativeOnConflict ?? 'kite';
     } else if (config.authoritativeOnConflict) {
       const pick = config.authoritativeOnConflict === 'yahoo'
         ? validation.yahoo
-        : validation.indianapi;
+        : validation.kite;
       authoritativeSource = pick.source;
       authoritativeLtp = pick.ltp;
       reasons.push(`authoritative_override_${pick.source}`);
@@ -38,9 +38,9 @@ export function evaluateApprovalGateway(
   } else if (validation.yahoo) {
     authoritativeSource = 'yahoo';
     authoritativeLtp = validation.yahoo.ltp;
-  } else if (validation.indianapi) {
-    authoritativeSource = 'indianapi';
-    authoritativeLtp = validation.indianapi.ltp;
+  } else if (validation.kite) {
+    authoritativeSource = 'kite';
+    authoritativeLtp = validation.kite.ltp;
   }
 
   let status: ApprovalStatus;

@@ -1,32 +1,25 @@
-// ════════════════════════════════════════════════════════════════
-//  GET /api/debug/quota
-//
-//  Spec QUOTA_TRACKING — returns the current IndianAPI usage report
-//  in the canonical shape:
-//
-//    {
-//      daily:   { used, limit, remaining, percent },
-//      monthly: { used, safe_limit, hard_limit, remaining_safe,
-//                 remaining_hard, percent, percent_safe },
-//      state:   "SAFE" | "WARNING" | "CRITICAL" | "BLOCKED",
-//      limit_near, reduce_polling, block_non_essential, block_all,
-//      resets:  { daily_at, monthly_at }
-//    }
-//
-//  Counters are IST-aligned (00:00 IST daily reset, 1st of IST month
-//  monthly reset) and Redis-backed (with in-process fallback). Read-
-//  only; never calls upstream.
-// ════════════════════════════════════════════════════════════════
-
+// GET /api/debug/quota — removed vendor quota removed (Phase 3 decommission).
 import { NextResponse } from 'next/server';
-import { getQuotaReport } from '@/lib/monitor/apiQuota';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(): Promise<Response> {
-  const report = await getQuotaReport();
-  return NextResponse.json(report, {
+  return NextResponse.json({
+    daily:   { used: 0, limit: 0, remaining: 0, percent: 0 },
+    monthly: {
+      used: 0, safe_limit: 0, hard_limit: 0,
+      remaining_safe: 0, remaining_hard: 0, percent: 0, percent_safe: 0,
+    },
+    state: 'SAFE',
+    limit_near: false,
+    reduce_polling: false,
+    block_non_essential: false,
+    block_all: false,
+    resets: { daily_at: null, monthly_at: null },
+    decommissioned: true,
+    note: 'removed vendor quota tracking removed; Kite has no shared monthly quota ledger.',
+  }, {
     status:  200,
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });

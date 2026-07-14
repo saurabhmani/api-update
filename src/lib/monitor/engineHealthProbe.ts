@@ -2,7 +2,6 @@ import { db } from '@/lib/db';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealth';
-import { indianApiBreakerState } from '@/providers/adapters/IndianAPIAdapter';
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthStatus } from '@/types/dashboard';
 import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
@@ -57,7 +56,6 @@ async function isCandleFeedFrozen(marketOpen: boolean): Promise<boolean> {
 export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult> {
   const market = getMarketStatus();
   const snapshot = getInstitutionalHealthSnapshot();
-  const breaker = safeProbe(() => indianApiBreakerState(), null);
   const kite = safeProbe(() => getKiteHealth(), null);
   const current = safeProbe(() => getMarketDataProvider(), 'kite');
 
@@ -67,7 +65,6 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
 
   const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
     || snapshot.providers.every((p) => !p.fallback_triggered);
-  const breakerOpen = breaker?.open === true;
   const kitePrimaryBroken =
     current === 'kite'
     && kite?.configured === true
@@ -85,13 +82,6 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
       status:     'DEGRADED',
       marketOpen: market.isOpen,
       message:    'Candle feed frozen',
-    };
-  }
-  if (breakerOpen && !fallbackHealthy) {
-    return {
-      status:     'DEGRADED',
-      marketOpen: market.isOpen,
-      message:    'IndianAPI unavailable — circuit breaker open',
     };
   }
   if (kitePrimaryBroken) {

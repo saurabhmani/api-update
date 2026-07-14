@@ -1,5 +1,5 @@
 /**
- * Provider request audit log — IndianAPI (and future providers).
+ * Provider request audit log — removed vendor (and future providers).
  * Safe to re-run (CREATE TABLE IF NOT EXISTS).
  */
 import { db } from '../db';
@@ -7,7 +7,7 @@ import { db } from '../db';
 const DDL_PROVIDER_REQUEST_LOGS = `
   CREATE TABLE IF NOT EXISTS provider_request_logs (
     id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-    provider       VARCHAR(32)   NOT NULL DEFAULT 'indianapi',
+    provider       VARCHAR(32)   NOT NULL DEFAULT 'kite',
     endpoint       VARCHAR(128)  NOT NULL,
     symbol         VARCHAR(64)   DEFAULT NULL,
     request_type   VARCHAR(64)   DEFAULT NULL,

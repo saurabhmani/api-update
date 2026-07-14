@@ -1,10 +1,10 @@
 # Production Readiness — Status After Max-Safe Batch
 
-> **Phase 9:** Default market-data provider is **Kite**; IndianAPI remains the automatic fallback and unsupported-feature path. Historical freeze text below may still say IndianAPI-primary.
+> **Phase 9:** Default market-data provider is **Kite**; removed vendor remains the automatic fallback and unsupported-feature path. Historical freeze text below may still say removed vendor-primary.
 
 **Architecture freeze (Priority 0):**
-Kite primary → IndianAPI fallback → Cache → Yahoo emergency → DB stale tier.
-IndianAPI is retained (not removed). PostgreSQL / MySQL warehouse remains the stale tier.
+Kite primary → removed vendor fallback → Cache → Yahoo emergency → DB stale tier.
+removed vendor is retained (not removed). PostgreSQL / MySQL warehouse remains the stale tier.
 
 **Overall: ~45% → ~75%.** The last 25% is ops + deployments that
 cannot be done from a terminal. Honest breakdown below.
@@ -17,7 +17,7 @@ cannot be done from a terminal. Honest breakdown below.
 # Phase 1 final gaps
 NEW   src/providers/interfaces.ts                    ← IMarketDataProvider + friends
 EDIT  src/types/market.ts                            ← +Fundamentals type
-EDIT  src/providers/adapters/IndianAPIAdapter.ts     ← getFundamentals (merges 3 endpoints)
+EDIT  src/providers/adapters/vendorAdapter.ts     ← getFundamentals (merges 3 endpoints)
 EDIT  src/providers/MarketDataProvider.ts            ← getFundamentals method
 NEW   src/__tests__/marketDataProvider.vitest.ts     ← 7 tests covering fallback + stale + cache
 

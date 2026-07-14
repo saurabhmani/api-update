@@ -14,8 +14,6 @@
 //
 //  Rules:
 //    feed_frozen                 — critical
-//    breaker_open                — critical when not paired with
-//                                  recent fallback success
 //    invalid_payload_spike       — warning when rate exceeds floor
 //    no_full_scan                — warning at 30 min, critical at 90 min
 //    elite_zero_output_anomaly   — critical when approved_ratio is
@@ -24,6 +22,7 @@
 //                                  covered < 90% of universe
 //    approval_ratio_collapse     — critical when approved_ratio
 //                                  drops far below historical norm
+//    kite_*                      — auth / rate-limit / unavailable
 //
 //  Pure module — no I/O. Caller wires the snapshot.
 // ════════════════════════════════════════════════════════════════
@@ -50,6 +49,7 @@ export interface AlertEvaluationInput {
     feed_frozen:        boolean;
     market_open:        boolean;
   } | null;
+  /** @deprecated Unused — retained for call-site compile compatibility. */
   breaker?: {
     open:        boolean;
     state:       string;
@@ -74,13 +74,13 @@ export interface AlertEvaluationInput {
     in_flight:  boolean;
     elapsed_ms: number | null;
   } | null;
-  /** IndianAPI quota report (getQuotaReport) — percents are 0..1. */
+  /** @deprecated Unused — monthly vendor quotas are not alerted. */
   quota?: {
     daily_percent:   number;
     monthly_percent: number;
     state:           string;
   } | null;
-  /** Phase 8 — Kite availability (no monthly quota). */
+  /** Kite availability (no monthly quota). */
   kite?: {
     configured: boolean;
     available: boolean;
@@ -102,7 +102,6 @@ interface RuleConfig {
   elite_zero_output_min_sample:  number;
   no_confirmed_signals_minutes:  number;
   stuck_in_flight_minutes:       number;
-  quota_warning_pct:             number;
 }
 
 function envNum(name: string, fb: number, lo: number, hi: number): number {
@@ -121,7 +120,6 @@ function getRuleConfig(): RuleConfig {
     elite_zero_output_min_sample:  envNum('ALERT_ELITE_ZERO_MIN_SAMPLE',     100, 10, 100_000),
     no_confirmed_signals_minutes:  envNum('ALERT_NO_CONFIRMED_SIGNALS_MIN',  30, 5,  1440),
     stuck_in_flight_minutes:       envNum('ALERT_STUCK_INFLIGHT_MIN',        5,  1,  120),
-    quota_warning_pct:             envNum('ALERT_QUOTA_WARNING_PCT',         90, 50, 100),
   };
 }
 
@@ -146,29 +144,6 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
         candle_age_seconds: input.candle.candle_age_seconds,
         market_open:        input.candle.market_open,
         freshness_quality:  input.candle.freshness_quality,
-      },
-      triggered_at: now,
-    });
-  }
-
-  // ── breaker_open ─────────────────────────────────────────────
-  if (input.breaker?.open) {
-    // Demote to warning when a fallback provider has been serving
-    // data successfully — the cascade is doing its job.
-    const fallbackHealthy = input.snapshot.providers.some((p) => p.fallback_success > 0);
-    alerts.push({
-      id:        'breaker_open',
-      severity:  fallbackHealthy ? 'warning' : 'critical',
-      title:     fallbackHealthy
-        ? 'IndianAPI breaker open — running on fallback provider'
-        : 'IndianAPI breaker open AND no fallback success',
-      detail:    `Breaker state = ${input.breaker.state}. ` + (fallbackHealthy
-        ? 'NSE direct is currently serving data — investigate IndianAPI but no immediate user impact.'
-        : 'No fallback provider has served data successfully; the engine is starved of live snapshots.'),
-      context: {
-        breaker_state:    input.breaker.state,
-        auth_failed:      input.breaker.auth_failed,
-        fallback_healthy: fallbackHealthy,
       },
       triggered_at: now,
     });
@@ -336,7 +311,7 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
       id:        'live_feed_stale',
       severity:  'critical',
       title:     `Live feed ${lf.quality} during market hours`,
-      detail:    `Last tick was ${lf.tick_age_ms != null ? Math.round(lf.tick_age_ms / 1000) + 's' : 'never'} ago and approvals are ${lf.approvals_blocked ? 'BLOCKED' : 'still allowed'}. Probe with scripts/probeLiveWs.ts; check STREAM_WS_DISABLED and the IndianAPI breaker.`,
+      detail:    `Last tick was ${lf.tick_age_ms != null ? Math.round(lf.tick_age_ms / 1000) + 's' : 'never'} ago and approvals are ${lf.approvals_blocked ? 'BLOCKED' : 'still allowed'}. Probe with scripts/probeLiveWs.ts; check STREAM_WS_DISABLED and the live feed provider.`,
       context: {
         quality:           lf.quality,
         tick_age_ms:       lf.tick_age_ms,
@@ -367,33 +342,6 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
     });
   }
 
-  // ── api_quota_near_limit ─────────────────────────────────────
-  // Alert 4: IndianAPI quota above the warning band. Critical once a
-  // window is exhausted (requests are being refused outright).
-  const q = input.quota;
-  if (q) {
-    const worstPct = Math.max(q.daily_percent, q.monthly_percent) * 100;
-    if (worstPct >= cfg.quota_warning_pct) {
-      const exhausted = worstPct >= 100;
-      alerts.push({
-        id:        'api_quota_near_limit',
-        severity:  exhausted ? 'critical' : 'warning',
-        title:     exhausted
-          ? 'IndianAPI unavailable — monthly/daily quota exhausted'
-          : `IndianAPI quota at ${Math.round(worstPct)}% of limit`,
-        detail:    `Daily ${Math.round(q.daily_percent * 100)}%, monthly ${Math.round(q.monthly_percent * 100)}% (state=${q.state}). Reduce polling / universe caps, or wait for the IST reset. Audit with npx tsx scripts/productionAudit.ts.`,
-        context: {
-          daily_percent:   q.daily_percent,
-          monthly_percent: q.monthly_percent,
-          state:           q.state,
-          warning_pct:     cfg.quota_warning_pct,
-          provider:        'indianapi',
-        },
-        triggered_at: now,
-      });
-    }
-  }
-
   // ── kite_authentication_failed / kite_rate_limit ─────────────
   const kite = input.kite;
   if (kite?.configured) {
@@ -404,7 +352,7 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
         title:    'Kite authentication failed',
         detail:   `Kite access token / session is invalid`
           + (kite.last_error_code ? ` (${kite.last_error_code})` : '')
-          + `. Cascade to IndianAPI if configured; refresh KITE_ACCESS_TOKEN.`,
+          + `. Cascade to yahoo/nse/db if configured; refresh KITE_ACCESS_TOKEN.`,
         context: {
           provider: 'kite',
           auth_failed: true,
@@ -421,7 +369,7 @@ export function evaluateAlerts(input: AlertEvaluationInput): Alert[] {
         title:    'Kite rate limit exceeded',
         detail:   `Kite soft rate-limit is active (`
           + `${kite.rate_limit_events} events since boot). `
-          + `Scheduler should continue via IndianAPI fallback — do not invent monthly quotas.`,
+          + `Scheduler should continue via yahoo/nse/db fallback — do not invent monthly quotas.`,
         context: {
           provider: 'kite',
           rate_limited: true,

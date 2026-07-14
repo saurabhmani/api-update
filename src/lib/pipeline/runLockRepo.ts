@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════
-//  Pipeline Run Lock — Step 6 of the IndianAPI cutover.
+//  Pipeline Run Lock — Step 6 of the removed vendor cutover.
 //
 //  Manual /api/run-signal-engine is allowed once per IST calendar
 //  day. Scheduled / system runs (cron, in-proc scheduler) use

@@ -18,56 +18,56 @@ vi.mock('@/lib/db', () => ({
 }));
 
 import {
-  mapToIndianApiSymbol,
-  mapManyToIndianApiSymbol,
+  mapToCanonicalSymbol,
+  mapManyToCanonicalSymbol,
   _resetSymbolMapperCacheForTests,
 } from '@/lib/marketData/symbolMapper';
 
 afterEach(() => { _resetSymbolMapperCacheForTests(); });
 
-describe('symbolMapper.mapToIndianApiSymbol', () => {
+describe('symbolMapper.mapToCanonicalSymbol', () => {
   it('trims and uppercases a clean ticker', async () => {
-    expect(await mapToIndianApiSymbol(' reliance ')).toBe('RELIANCE');
+    expect(await mapToCanonicalSymbol(' reliance ')).toBe('RELIANCE');
   });
 
   it('strips Yahoo suffixes (.NS / .BO / .BSE)', async () => {
-    expect(await mapToIndianApiSymbol('RELIANCE.NS')).toBe('RELIANCE');
-    expect(await mapToIndianApiSymbol('reliance.bo')).toBe('RELIANCE');
-    expect(await mapToIndianApiSymbol('RELIANCE.BSE')).toBe('RELIANCE');
+    expect(await mapToCanonicalSymbol('RELIANCE.NS')).toBe('RELIANCE');
+    expect(await mapToCanonicalSymbol('reliance.bo')).toBe('RELIANCE');
+    expect(await mapToCanonicalSymbol('RELIANCE.BSE')).toBe('RELIANCE');
   });
 
   it('preserves dashes and ampersands (default mapping passes through)', async () => {
-    expect(await mapToIndianApiSymbol('BAJAJ-AUTO')).toBe('BAJAJ-AUTO');
-    expect(await mapToIndianApiSymbol('M&M')).toBe('M&M');
-    expect(await mapToIndianApiSymbol('L&TFH')).toBe('L&TFH');
+    expect(await mapToCanonicalSymbol('BAJAJ-AUTO')).toBe('BAJAJ-AUTO');
+    expect(await mapToCanonicalSymbol('M&M')).toBe('M&M');
+    expect(await mapToCanonicalSymbol('L&TFH')).toBe('L&TFH');
   });
 
   it('honours an override-table row', async () => {
-    expect(await mapToIndianApiSymbol('overridden')).toBe('OVERRIDDEN_API');
+    expect(await mapToCanonicalSymbol('overridden')).toBe('OVERRIDDEN_API');
   });
 
   it('falls through to default when override missing and dictionary empty', async () => {
-    expect(await mapToIndianApiSymbol('TCS')).toBe('TCS');
+    expect(await mapToCanonicalSymbol('TCS')).toBe('TCS');
   });
 
   it('returns empty string for empty/junk input', async () => {
-    expect(await mapToIndianApiSymbol('')).toBe('');
-    expect(await mapToIndianApiSymbol('   ')).toBe('');
+    expect(await mapToCanonicalSymbol('')).toBe('');
+    expect(await mapToCanonicalSymbol('   ')).toBe('');
   });
 
   it('strips a stray BOM', async () => {
-    expect(await mapToIndianApiSymbol('﻿RELIANCE')).toBe('RELIANCE');
+    expect(await mapToCanonicalSymbol('﻿RELIANCE')).toBe('RELIANCE');
   });
 });
 
-describe('symbolMapper.mapManyToIndianApiSymbol', () => {
+describe('symbolMapper.mapManyToCanonicalSymbol', () => {
   it('preserves input order', async () => {
-    expect(await mapManyToIndianApiSymbol(['TCS', 'RELIANCE.NS', 'M&M']))
+    expect(await mapManyToCanonicalSymbol(['TCS', 'RELIANCE.NS', 'M&M']))
       .toEqual(['TCS', 'RELIANCE', 'M&M']);
   });
 
   it('honours overrides in batch form', async () => {
-    expect(await mapManyToIndianApiSymbol(['overridden', 'TCS']))
+    expect(await mapManyToCanonicalSymbol(['overridden', 'TCS']))
       .toEqual(['OVERRIDDEN_API', 'TCS']);
   });
 });

@@ -51,7 +51,7 @@ export function computeConfidenceScore(input: ConfidenceInput, now = Date.now())
   breakdown.sourceAgreement = sourceAgreement;
 
   const yFresh = freshnessScore(validation.yahoo, now, slaMs);
-  const iFresh = freshnessScore(validation.indianapi, now, slaMs);
+  const iFresh = freshnessScore(validation.kite, now, slaMs);
   const syncScore = validation.metrics.timestampSkewMs != null
     ? Math.max(0, 100 - Math.min(100, validation.metrics.timestampSkewMs / (slaMs / 100)))
     : 50;

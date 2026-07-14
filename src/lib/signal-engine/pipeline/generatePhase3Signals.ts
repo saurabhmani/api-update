@@ -445,7 +445,7 @@ export async function generatePhase3Signals(
   // For a 503-symbol DB-warm universe this drops Phase 3 from
   // ~5s to <500ms; on a cold-start with upstream fallback the
   // win is >10×.
-  // Recalibrated 2026-05: 16 → 4. The IndianAPI adapter's rate
+  // Recalibrated 2026-05: 16 → 4. The removed vendor adapter's rate
   // limiter serialises every call to ≤1 in flight regardless of
   // caller concurrency, so a higher worker count just lengthens the
   // queue waiting on the limiter. With 16 workers, when the first
