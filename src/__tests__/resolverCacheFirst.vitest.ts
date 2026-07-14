@@ -54,10 +54,17 @@ vi.mock('@/lib/cache', async () => {
   };
 });
 
+// Avoid depending on MySQL/CSV universe hydration in unit tests.
+vi.mock('@/lib/marketData/nifty500Universe', () => ({
+  isInNifty500: () => true,
+}));
+
 import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
 import { quoteCacheKey } from '@/lib/cache';
 
 beforeEach(() => {
+  process.env.INDIANAPI_PRIMARY = 'true';
+  process.env.MARKET_DATA_PROVIDER = 'indianapi';
   memCache.clear();
   getNseBatchLivePrice.mockReset();
 });

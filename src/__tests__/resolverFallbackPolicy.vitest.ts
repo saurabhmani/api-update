@@ -63,11 +63,19 @@ vi.mock('@/lib/marketData/marketHours', async () => {
   };
 });
 
+// Avoid depending on MySQL/CSV universe hydration in unit tests.
+// Reject obvious probe symbols; accept common Nifty names used elsewhere.
+vi.mock('@/lib/marketData/nifty500Universe', () => ({
+  isInNifty500: (sym: string) => !String(sym).toUpperCase().includes('NOTASTOCK'),
+}));
+
 import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
 import { quoteCacheKey } from '@/lib/cache';
 
 beforeEach(() => {
   process.env.INDIANAPI_PRIMARY = 'true';
+  process.env.MARKET_DATA_PROVIDER = 'indianapi';
+  delete process.env.NIFTY500_LOCK; // lock on for §6/§9 tests
   // Default: market open. Tests that need closed-state flip explicitly.
   marketOpen.value = true;
   memCache.clear();
