@@ -87,8 +87,10 @@ import * as Yahoo from './adapters/YahooAdapter'; // @deprecated marker
 import { isMarketOpen } from '@/lib/marketData/marketHours';
 import {
   getMarketDataProvider,
+  getPrimaryFallbackProvider,
   isKitePrimary,
   mayUseYahoo,
+  type ProviderCapabilityTag,
 } from '@/lib/marketData/providerFlags'; // @deprecated marker
 import { propagateTick } from '@/lib/marketData/tickPropagator';
 
@@ -298,9 +300,10 @@ async function tryStep<T>(
 
 // ── getLiveSnapshot / getQuote ────────────────────────────────────── // @deprecated marker
 //
-// Provider selection (Phase 4):
-//   MARKET_DATA_PROVIDER=indianapi (DEFAULT) → IndianAPI first
-//   MARKET_DATA_PROVIDER=kite                 → Kite first, then cascade
+// Provider selection (Phase 9):
+//   MARKET_DATA_PROVIDER unset / kite (DEFAULT) → Kite first
+//   MARKET_DATA_PROVIDER=indianapi             → IndianAPI first
+//   INDIANAPI_PRIMARY=true                     → IndianAPI (override)
 //
 // Fallback chain after the configured primary fails:
 //   Cache → (IndianAPI if Kite was primary) → Yahoo → PostgreSQL
@@ -321,16 +324,24 @@ export async function getLiveSnapshot(
   const selected = getMarketDataProvider();
   const kitePrimary = selected === 'kite';
   const startedAt = Date.now();
+  const capability: ProviderCapabilityTag = 'quotes';
 
   logProviderEvent('request', {
     method: 'getLiveSnapshot',
     selected,
+    fallback_provider: getPrimaryFallbackProvider(selected),
+    capability,
     symbol: sym,
   });
 
-  // ── 1a. Kite primary (opt-in only) ─────────────────────────────
+  // ── 1a. Kite primary (Phase 9 default) ─────────────────────────
   if (kitePrimary) {
-    logProviderEvent('attempt', { provider: 'kite', method: 'getQuote', symbol: sym });
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getQuote',
+      capability,
+      symbol: sym,
+    });
     const kiteHit = await tryStep('kite', trail, () =>
       withProviderFrame(() =>
         guarded('kite', () => Kite.getQuote(sym), { timeoutMs: 5000, attempts: 2 }),
@@ -340,7 +351,8 @@ export async function getLiveSnapshot(
       logProviderEvent('success', {
         provider: 'kite',
         selected,
-        fallback: 'none',
+        fallback_provider: 'none',
+        capability,
         latency_ms: Date.now() - startedAt,
         symbol: sym,
       });
@@ -355,6 +367,8 @@ export async function getLiveSnapshot(
     logProviderEvent('fallback', {
       from: 'kite',
       to: 'cache|indianapi|yahoo|db',
+      reason: 'kite_miss_or_error',
+      capability,
       symbol: sym,
       latency_ms: Date.now() - startedAt,
     });
@@ -367,7 +381,8 @@ export async function getLiveSnapshot(
         logProviderEvent('success', {
           provider: 'cache',
           selected,
-          fallback: 'kite→cache',
+          fallback_provider: 'kite→cache',
+          capability,
           latency_ms: Date.now() - startedAt,
           symbol: sym,
         });
@@ -376,8 +391,13 @@ export async function getLiveSnapshot(
     }
   }
 
-  // ── 1b. IndianAPI (DEFAULT primary, or secondary after Kite miss) ─
-  logProviderEvent('attempt', { provider: 'indianapi', method: 'getQuote', symbol: sym });
+  // ── 1b. IndianAPI (primary when forced, else first fallback) ───
+  logProviderEvent('attempt', {
+    provider: 'indianapi',
+    method: 'getQuote',
+    capability,
+    symbol: sym,
+  });
   const primary = await tryStep('indian', trail, () =>
     withProviderFrame(() =>
       guarded('indian', () => IndianAPI.getQuote(sym), { timeoutMs: 5000, attempts: 2 }), // @deprecated marker
@@ -387,7 +407,8 @@ export async function getLiveSnapshot(
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability,
       latency_ms: Date.now() - startedAt,
       symbol: sym,
     });
@@ -498,7 +519,14 @@ export async function getHistorical(
   const kitePrimary = selected === 'kite';
   const startedAt = Date.now();
 
-  logProviderEvent('request', { method: 'getHistorical', selected, symbol: sym, range });
+  logProviderEvent('request', {
+    method: 'getHistorical',
+    selected,
+    fallback_provider: getPrimaryFallbackProvider(selected),
+    capability: 'historical',
+    symbol: sym,
+    range,
+  });
 
   if (!opts.forceRefresh) {
     const cached = await cache.get<HistoricalSeries>(key);
@@ -509,7 +537,12 @@ export async function getHistorical(
   }
 
   if (kitePrimary) {
-    logProviderEvent('attempt', { provider: 'kite', method: 'getHistorical', symbol: sym });
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getHistorical',
+      capability: 'historical',
+      symbol: sym,
+    });
     const kiteHit = await tryStep('kite', trail, () =>
       withProviderFrame(() => guarded('kite', () => Kite.getHistorical(sym, range))),
     );
@@ -517,7 +550,8 @@ export async function getHistorical(
       logProviderEvent('success', {
         provider: 'kite',
         selected,
-        fallback: 'none',
+        fallback_provider: 'none',
+        capability: 'historical',
         latency_ms: Date.now() - startedAt,
         symbol: sym,
       });
@@ -525,7 +559,16 @@ export async function getHistorical(
       void spend('hist', 1);
       return rejectIfStale(wrap(kiteHit, 'kite', 'near-live', trail), !!opts.signalCritical);
     }
-    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', symbol: sym });
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'indianapi',
+      reason: 'kite_miss_or_error',
+      capability: 'historical',
+      selected,
+      fallback_provider: 'indianapi',
+      symbol: sym,
+      latency_ms: Date.now() - startedAt,
+    });
   }
 
   const primary = await tryStep('indian', trail, () =>
@@ -535,7 +578,8 @@ export async function getHistorical(
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability: 'historical',
       latency_ms: Date.now() - startedAt,
       symbol: sym,
     });
@@ -572,18 +616,36 @@ export async function searchSymbols(query: string): Promise<ProviderResponse<Sym
   const trail: AttemptLog[] = [];
   const selected = getMarketDataProvider();
   const kitePrimary = selected === 'kite';
-  logProviderEvent('request', { method: 'searchSymbols', selected, query: query.slice(0, 40) });
+  logProviderEvent('request', {
+    method: 'searchSymbols',
+    selected,
+    fallback_provider: getPrimaryFallbackProvider(selected),
+    capability: 'search',
+    query: query.slice(0, 40),
+  });
 
   if (kitePrimary) {
     const kiteHit = await tryStep('kite', trail, () =>
       withProviderFrame(() => guarded('kite', () => Kite.searchSymbol(query))),
     );
     if (kiteHit && kiteHit.length > 0) {
-      logProviderEvent('success', { provider: 'kite', selected, fallback: 'none' });
+      logProviderEvent('success', {
+        provider: 'kite',
+        selected,
+        fallback_provider: 'none',
+        capability: 'search',
+      });
       void spend('search', 1);
       return wrap(kiteHit, 'kite', 'near-live', trail);
     }
-    logProviderEvent('fallback', { from: 'kite', to: 'indianapi' });
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'indianapi',
+      reason: 'kite_miss_or_error',
+      capability: 'search',
+      selected,
+      fallback_provider: 'indianapi',
+    });
   }
 
   const primary = await tryStep('indian', trail, () =>
@@ -593,7 +655,8 @@ export async function searchSymbols(query: string): Promise<ProviderResponse<Sym
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability: 'search',
     });
     void spend('search', 1);
     return wrap(primary, 'indian', 'near-live', trail);
@@ -633,11 +696,22 @@ export async function getMovers(opts: GetOptions = {}): Promise<ProviderResponse
 
   // Kite has no movers — attempt records UnsupportedFeatureError then cascade to IndianAPI.
   if (kitePrimary) {
-    logProviderEvent('attempt', { provider: 'kite', method: 'getMovers' });
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getMovers',
+      capability: 'movers',
+    });
     await tryStep('kite', trail, () =>
       withProviderFrame(() => guarded('kite', () => Kite.getMovers())),
     );
-    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'indianapi',
+      reason: 'unsupported_capability',
+      capability: 'movers',
+      selected,
+      fallback_provider: 'indianapi',
+    });
   }
 
   const primary = await tryStep('indian', trail, () =>
@@ -647,7 +721,8 @@ export async function getMovers(opts: GetOptions = {}): Promise<ProviderResponse
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability: 'movers',
     });
     await cache.set(key, primary, MOVERS_TTL_S);
     await redisCacheSet(key, primary, MOVERS_TTL_S);
@@ -689,11 +764,24 @@ export async function getCorporateIntel(
   }
 
   if (kitePrimary) {
-    logProviderEvent('attempt', { provider: 'kite', method: 'getCorporateIntel', symbol: sym });
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getCorporateIntel',
+      capability: 'corporate',
+      symbol: sym,
+    });
     await tryStep('kite', trail, () =>
       withProviderFrame(() => guarded('kite', () => Kite.getCorporateIntel(sym))),
     );
-    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'indianapi',
+      reason: 'unsupported_capability',
+      capability: 'corporate',
+      selected,
+      fallback_provider: 'indianapi',
+      symbol: sym,
+    });
   }
 
   const primary = await tryStep('indian', trail, () =>
@@ -703,7 +791,8 @@ export async function getCorporateIntel(
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability: 'corporate',
       symbol: sym,
     });
     await cache.set(key, primary);
@@ -742,11 +831,24 @@ export async function getFundamentals(
   const kitePrimary = selected === 'kite';
 
   if (kitePrimary) {
-    logProviderEvent('attempt', { provider: 'kite', method: 'getFundamentals', symbol: sym });
+    logProviderEvent('attempt', {
+      provider: 'kite',
+      method: 'getFundamentals',
+      capability: 'fundamentals',
+      symbol: sym,
+    });
     await tryStep('kite', trail, () =>
       withProviderFrame(() => guarded('kite', () => Kite.getFundamentals(sym))),
     );
-    logProviderEvent('fallback', { from: 'kite', to: 'indianapi', reason: 'unsupported_or_fail' });
+    logProviderEvent('fallback', {
+      from: 'kite',
+      to: 'indianapi',
+      reason: 'unsupported_capability',
+      capability: 'fundamentals',
+      selected,
+      fallback_provider: 'indianapi',
+      symbol: sym,
+    });
   }
 
   const primary = await tryStep('indian', trail, () =>
@@ -756,7 +858,8 @@ export async function getFundamentals(
     logProviderEvent('success', {
       provider: 'indianapi',
       selected,
-      fallback: kitePrimary ? 'kite→indianapi' : 'none',
+      fallback_provider: kitePrimary ? 'kite→indianapi' : 'none',
+      capability: 'fundamentals',
       symbol: sym,
     });
     // getFundamentals fans out to 3 upstream endpoints — account all 3.
@@ -900,6 +1003,9 @@ export async function getBatchLiveSnapshots(
           from: 'kite',
           to: 'indianapi',
           reason: 'empty_batch',
+          capability: 'batch_quotes',
+          selected: 'kite',
+          fallback_provider: 'indianapi',
         });
       }
     } catch (err) {
@@ -907,6 +1013,9 @@ export async function getBatchLiveSnapshots(
         from: 'kite',
         to: 'indianapi',
         reason: err instanceof Error ? err.message.slice(0, 120) : 'error',
+        capability: 'batch_quotes',
+        selected: 'kite',
+        fallback_provider: 'indianapi',
       });
     }
   }

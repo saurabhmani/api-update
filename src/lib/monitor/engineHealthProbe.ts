@@ -59,7 +59,7 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
   const snapshot = getInstitutionalHealthSnapshot();
   const breaker = safeProbe(() => indianApiBreakerState(), null);
   const kite = safeProbe(() => getKiteHealth(), null);
-  const current = safeProbe(() => getMarketDataProvider(), 'indianapi');
+  const current = safeProbe(() => getMarketDataProvider(), 'kite');
 
   const [candleFrozen] = await Promise.all([
     isCandleFeedFrozen(market.isOpen),

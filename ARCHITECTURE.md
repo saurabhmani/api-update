@@ -384,20 +384,26 @@ Cron expressions overridable via `READINESS_CHECK_CRON`, `FIRST_MORNING_SCAN_CRO
 `src/lib/marketData/resolver/marketDataResolver.ts`:
 
 1. **NIFTY500 lock** — reject symbols outside universe (`NIFTY500_LOCK !== '0'`)
-2. **Market-closed gate** — no IndianAPI/NSE/Yahoo; cache or `MARKET_CLOSED` (`MARKET_CLOSED_RESOLVER_GATE`)
+2. **Market-closed gate** — no Kite/IndianAPI/NSE/Yahoo; cache or `MARKET_CLOSED` (`MARKET_CLOSED_RESOLVER_GATE`)
 3. **Cache-first** — per-symbol quote cache
-4. **IndianAPI** — `getBatchQuotes` / emulated `/stock` fan-out (`IndianAPIAdapter.ts`)
-5. **NSE direct** — rare fallback (`nseDirectProvider.ts`), caps via `NSE_DIRECT_FALLBACK_*`
-6. **Yahoo emergency** — only if `YAHOO_EMERGENCY_FALLBACK_ENABLED=true` (`mayUseYahoo()`)
+4. **Configured primary** — **Kite** by default (`MARKET_DATA_PROVIDER` unset or `kite`); IndianAPI when `MARKET_DATA_PROVIDER=indianapi` or `INDIANAPI_PRIMARY=true`
+5. **IndianAPI** — first automatic fallback when Kite misses / auth / rate-limit / unsupported
+6. **NSE direct** — rare fallback (`nseDirectProvider.ts`), caps via `NSE_DIRECT_FALLBACK_*`
+7. **Yahoo emergency** — only if `YAHOO_EMERGENCY_FALLBACK_ENABLED=true` (`mayUseYahoo()`)
+8. **Database / snapshot** — last-resort stale tier
 
 ### Provider flags (`providerFlags.ts`)
 
-- `INDIANAPI_PRIMARY=true` wins over `MARKET_DATA_PROVIDER`
+- **Default primary:** `kite` when `MARKET_DATA_PROVIDER` is unset (Phase 9)
+- `INDIANAPI_PRIMARY=true` wins over `MARKET_DATA_PROVIDER` (immediate recovery)
+- Explicit `MARKET_DATA_PROVIDER=indianapi` keeps existing installs on IndianAPI
 - `LIVE_FEED_PROVIDER` — `yahoo` (default), `indianapi`, or `auto` for WS poll loop
-- `FORCE_NSE_MODE=1` — skip IndianAPI primary
+- `FORCE_NSE_MODE=1` — skip configured primary / IndianAPI toward NSE direct
 - `MARKET_DATA_PROVIDER=legacy` — resolver short-circuit (rollback kill-switch)
 
 ### IndianAPI
+
+Retained permanently as **fallback + unsupported features** (movers, trending, news, corporate, mutual funds, forecasts). Do not remove adapters, quota system, or env vars.
 
 | Concern | Files |
 |---|---|
@@ -411,8 +417,8 @@ Cron expressions overridable via `READINESS_CHECK_CRON`, `FIRST_MORNING_SCAN_CRO
 
 ### Yahoo / Kite
 
+- **Kite Connect:** Default live + historical primary via `KiteAdapter` / `MarketDataProvider` (Phase 9). Requires `KITE_API_KEY` + `KITE_ACCESS_TOKEN`.
 - **Yahoo:** Emergency fallback path + `fetchYahooPublicQuote` in enrich fallback; `YahooAdapter.ts` largely stubbed for primary paths (`@deprecated` markers).
-- **Kite:** Removed from live market-data path; broker modules may remain.
 
 ### Evening candles
 
@@ -563,19 +569,21 @@ No `.env.example` in repo. Production loads `.env` + non-overriding `.env.produc
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `INDIANAPI_BASE_URL` | `https://dev.indianapi.in` in code; prod often `https://stock.indianapi.in` | API host |
-| `INDIANAPI_PRIMARY` | — | Forces IndianAPI as primary |
-| `INDIANAPI_ENABLED` | true | Provider selection |
+| `MARKET_DATA_PROVIDER` | `kite` (when unset) | Primary provider: `kite` \| `indianapi` \| `yahoo` \| `none` \| `legacy` |
+| `INDIANAPI_PRIMARY` | — | When `true`, forces IndianAPI as primary (wins over `MARKET_DATA_PROVIDER`) |
+| `INDIANAPI_BASE_URL` | `https://dev.indianapi.in` in code; prod often `https://stock.indianapi.in` | IndianAPI host (fallback + unsupported features) |
+| `INDIANAPI_ENABLED` | true | Soft enable for IndianAPI adapter path |
 | `INDIANAPI_TIMEOUT_MS` | 8000 (max 10000) | Per-request timeout |
 | `INDIANAPI_EMULATED_BATCH_MAX` | 25 | Batch fan-out cap |
-| `INDIANAPI_DAILY_SOFT_LIMIT` / `INDIANAPI_MONTHLY_LIMIT` | — | Budget caps |
+| `INDIANAPI_DAILY_SOFT_LIMIT` / `INDIANAPI_MONTHLY_LIMIT` | — | Budget caps (IndianAPI only — not applied to Kite) |
 | `INDIANAPI_PER_RUN_LIMIT` | — | Per pipeline run cap |
 | `INDIANAPI_429_BACKOFF_MS` | — | 429 circuit breaker cooldown |
+| `KITE_API_KEY` / `KITE_ACCESS_TOKEN` | — | Required for Kite primary |
 | `SIGNALS_ENRICH_TIMEOUT_MS` | 5000 | `/api/signals` enrich wall clock |
 | `NSE_DIRECT_FALLBACK_*` | — | NSE direct caps and delays |
 | `YAHOO_EMERGENCY_FALLBACK_ENABLED` | false | Yahoo in resolver |
 | `LIVE_FEED_PROVIDER` | yahoo | WS poll upstream: yahoo / indianapi / auto |
-| `FORCE_NSE_MODE` | false | Skip IndianAPI |
+| `FORCE_NSE_MODE` | false | Skip configured primary toward NSE |
 
 ### Scheduler & signals
 

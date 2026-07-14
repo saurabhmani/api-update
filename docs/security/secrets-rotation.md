@@ -78,7 +78,7 @@ pm2 restart all
 1. Clone the repository.
 2. `cp .env.example .env.local`
 3. Set `MYSQL_*` to a local MySQL instance with the `quantorus365` schema (`npm run db:migrate-all`).
-4. Set `INDIANAPI_API_KEY` (required for live market data) or use `MARKET_DATA_PROVIDER=legacy` only for offline DB-only scans.
+4. Set `KITE_API_KEY` + `KITE_ACCESS_TOKEN` for the default Kite primary, and keep `INDIANAPI_API_KEY` configured for automatic fallback + unsupported features. Set `INDIANAPI_PRIMARY=true` for immediate IndianAPI recovery, or `MARKET_DATA_PROVIDER=legacy` only for offline DB-only scans.
 5. Generate fresh `SESSION_SECRET` and `ENCRYPTION_KEY` (see above).
 6. `npm install && npm run dev`
 

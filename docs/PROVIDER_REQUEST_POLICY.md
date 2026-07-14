@@ -1,6 +1,8 @@
-# IndianAPI Request Policy
+# Provider Request Policy
 
-Operational budget for historical candle ingestion and signal scans. Enforced in code via `src/lib/marketData/providerRequestPolicy.ts` and quota guards in `providerRequestLog.ts`.
+Operational budget guidance for market-data ingestion. **Phase 9:** live quotes / historical candles default to **Kite**; IndianAPI remains the automatic fallback and the exclusive path for unsupported capabilities (movers, news, corporate, etc.). IndianAPI monthly/daily quotas still apply only to IndianAPI hops — do not invent Kite monthly quotas.
+
+Operational budget for IndianAPI historical candle ingestion and signal scans (when IndianAPI is invoked). Enforced in code via `src/lib/marketData/providerRequestPolicy.ts` and quota guards in `providerRequestLog.ts`.
 
 ## Initial backfill (run once)
 

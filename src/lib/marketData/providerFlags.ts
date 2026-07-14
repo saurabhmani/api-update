@@ -7,16 +7,21 @@
 //  This avoids string-compare cost on every hot-path lookup and gives
 //  test code a single place to monkey-patch when needed.
 //
-//  Hard contract (Phase 4 — dual-run ready):
+//  Hard contract (Phase 9 — Kite default, IndianAPI safety net):
 //    • MARKET_DATA_PROVIDER = 'indianapi' | 'yahoo' | 'kite' | 'none' | 'legacy'
-//      Production DEFAULT is 'indianapi'. Set 'kite' only for soak tests.
+//      Production DEFAULT is 'kite' when the env var is unset.
 //    • INDIANAPI_PRIMARY=true still forces 'indianapi' (wins over
-//      MARKET_DATA_PROVIDER) so existing .env.local stays safe.
+//      MARKET_DATA_PROVIDER) for immediate recovery.
+//    • Explicit MARKET_DATA_PROVIDER=indianapi keeps existing installs
+//      on IndianAPI without code changes.
+//    • IndianAPI remains installed for automatic fallback + unsupported
+//      capabilities (movers / trending / news / corporate / funds).
 //    • YAHOO_EMERGENCY_FALLBACK_ENABLED = true ONLY when an operator
 //      has consciously decided to allow 15-min-delayed Yahoo prices // @deprecated marker
 //      to back-stop a complete live-feed outage. Default false.
 //    • KITE_ENABLED — optional soft gate for non-MDP paths. Selecting
-//      MARKET_DATA_PROVIDER=kite is enough for MarketDataProvider.
+//      MARKET_DATA_PROVIDER=kite (or relying on the Phase 9 default)
+//      is enough for MarketDataProvider.
 //    • NSE_DIRECT_FALLBACK_ENABLED — gates the rare per-symbol NSE
 //      direct fetch documented in Step 5. Default true (capped by
 //      NSE_DIRECT_FALLBACK_MAX_SYMBOLS_PER_DAY).
@@ -52,15 +57,14 @@ function asInt(raw: string | undefined, fallback: number, min = 0): number {
  * Primary provider. The resolver and every consumer must consult
  * this — not raw env — so a future flip is centralised.
  *
- * Resolution precedence:
- *   1. INDIANAPI_PRIMARY=true            → 'indianapi'
- *   2. MARKET_DATA_PROVIDER=<name>       → that name
- *   3. INDIANAPI_ENABLED=true (default)  → 'indianapi'
- *   4. fallback                          → 'indianapi'
+ * Resolution precedence (Phase 9):
+ *   1. INDIANAPI_PRIMARY=true            → 'indianapi' (recovery override)
+ *   2. MARKET_DATA_PROVIDER=<name>       → that name (explicit pin)
+ *   3. unset / unrecognized              → 'kite'     (fresh-install default)
  *
- * INDIANAPI_PRIMARY is the spec's preferred flag name; it wins when
- * present so the documented .env.example stays authoritative even if
- * a stale MARKET_DATA_PROVIDER is also set.
+ * INDIANAPI_PRIMARY wins over MARKET_DATA_PROVIDER so operators can
+ * force IndianAPI immediately without editing the provider pin.
+ * Existing installs that set MARKET_DATA_PROVIDER=indianapi are unchanged.
  */
 export function getMarketDataProvider(): MarketDataProviderName {
   const primary = (process.env.INDIANAPI_PRIMARY ?? '').trim().toLowerCase();
@@ -71,11 +75,60 @@ export function getMarketDataProvider(): MarketDataProviderName {
   if (raw === 'indianapi' || raw === 'yahoo' || raw === 'kite' || raw === 'none' || raw === 'legacy') { // @deprecated marker
     return raw;
   }
-  const enabled = (process.env.INDIANAPI_ENABLED ?? 'true').trim().toLowerCase();
-  if (enabled === 'true' || enabled === '1' || enabled === 'yes' || enabled === 'on') {
-    return 'indianapi';
+  // Phase 9 default: Kite primary. IndianAPI stays as first fallback.
+  return 'kite';
+}
+
+/**
+ * Human-readable first-fallback label for production observation logs.
+ * Does not change routing — mirrors MarketDataProvider / resolver order.
+ */
+export function getPrimaryFallbackProvider(
+  selected: MarketDataProviderName = getMarketDataProvider(),
+): string {
+  switch (selected) {
+    case 'kite':
+      return 'indianapi';
+    case 'indianapi':
+      return 'cache|nse|yahoo|db';
+    case 'yahoo': // @deprecated marker
+      return 'db';
+    case 'legacy':
+      return 'legacy_path';
+    case 'none':
+      return 'none';
+    default:
+      return 'indianapi';
   }
-  return 'indianapi';
+}
+
+/** Supported MDP capability tags used in `[PROVIDER]` observation logs. */
+export type ProviderCapabilityTag =
+  | 'quotes'
+  | 'batch_quotes'
+  | 'historical'
+  | 'movers'
+  | 'trending'
+  | 'news'
+  | 'corporate'
+  | 'fundamentals'
+  | 'search'
+  | 'mutual_funds'
+  | 'forecasts';
+
+/**
+ * Capabilities Kite can serve as primary. Everything else stays on
+ * IndianAPI (attempt → UnsupportedFeatureError → IndianAPI cascade).
+ */
+export const KITE_SUPPORTED_CAPABILITIES: readonly ProviderCapabilityTag[] = [
+  'quotes',
+  'batch_quotes',
+  'historical',
+  'search',
+] as const;
+
+export function isKiteSupportedCapability(cap: ProviderCapabilityTag): boolean {
+  return (KITE_SUPPORTED_CAPABILITIES as readonly string[]).includes(cap);
 }
 
 /** Yahoo emergency fallback.
@@ -170,9 +223,9 @@ export function getLiveFeedProvider(): LiveFeedProvider {
 
 /**
  * Returns true when MarketDataProvider may invoke KiteAdapter as the
- * primary vendor. Phase 4: `MARKET_DATA_PROVIDER=kite` is sufficient
- * (and requires `INDIANAPI_PRIMARY` unset/false so selection resolves
- * to kite). `KITE_ENABLED=true` alone does not flip the primary.
+ * primary vendor. Phase 9: Kite is the default when
+ * MARKET_DATA_PROVIDER is unset; `INDIANAPI_PRIMARY=true` forces
+ * IndianAPI. `KITE_ENABLED=true` alone does not flip the primary.
  */
 export function mayUseKite(): boolean {
   return isKitePrimary();
@@ -236,9 +289,11 @@ export function getDualSourceConfig(): import('@/lib/marketData/dualSource/types
 export function getProviderFlagsSummary(): Record<string, unknown> {
   const nse = getNseDirectFallbackConfig();
   const dual = getDualSourceConfig();
+  const selected = getMarketDataProvider();
   return {
-    marketDataProvider:               getMarketDataProvider(),
-    kitePrimary:                      isKitePrimary(),
+    marketDataProvider:               selected,
+    kitePrimary:                      selected === 'kite',
+    primaryFallbackProvider:          getPrimaryFallbackProvider(selected),
     liveFeedProvider:                 getLiveFeedProvider(),
     dualSourceEnabled:                dual.enabled,
     yahooEmergencyFallbackEnabled:    isYahooEmergencyFallbackEnabled(), // @deprecated marker

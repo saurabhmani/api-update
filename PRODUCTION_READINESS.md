@@ -1,8 +1,10 @@
 # Production Readiness — Status After Max-Safe Batch
 
+> **Phase 9:** Default market-data provider is **Kite**; IndianAPI remains the automatic fallback and unsupported-feature path. Historical freeze text below may still say IndianAPI-primary.
+
 **Architecture freeze (Priority 0):**
-IndianAPI primary → Cache → Yahoo fallback → PostgreSQL stale tier.
-PostgreSQL is the only runtime database. Kite is broker/execution only.
+Kite primary → IndianAPI fallback → Cache → Yahoo emergency → DB stale tier.
+IndianAPI is retained (not removed). PostgreSQL / MySQL warehouse remains the stale tier.
 
 **Overall: ~45% → ~75%.** The last 25% is ops + deployments that
 cannot be done from a terminal. Honest breakdown below.

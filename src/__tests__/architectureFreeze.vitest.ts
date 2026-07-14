@@ -106,17 +106,17 @@ describe('architecture freeze — no direct vendor adapter imports', () => {
   });
 });
 
-describe('architecture freeze — Kite dual-run (Phase 4)', () => {
+describe('architecture freeze — Kite dual-run (Phase 4+)', () => {
   it('MarketDataProvider may import KiteAdapter for config-gated dual-run', () => {
     const providerSrc = readFileSync(
       join(PROVIDER_DIR, 'MarketDataProvider.ts'),
       'utf8',
     );
-    // Phase 4: KiteAdapter is registered but selected only when
-    // MARKET_DATA_PROVIDER=kite (IndianAPI remains the default primary).
+    // Phase 9: Kite is the default primary; IndianAPI remains the
+    // first fallback and must stay importable.
     expect(providerSrc).toMatch(/from ['"]\.\/adapters\/KiteAdapter['"]/);
     expect(providerSrc).toMatch(/import \* as Kite/);
-    // Default path must still reference IndianAPI.
+    // Fallback path must still reference IndianAPI.
     expect(providerSrc).toMatch(/import \* as IndianAPI/);
   });
 });

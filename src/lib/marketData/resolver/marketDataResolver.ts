@@ -2,14 +2,14 @@
 //  MarketDataResolver — the SINGLE entry point every consumer uses
 //  for live prices and batch snapshots.
 //
-//  Resolver order (Phase 5 — aligned with MarketDataProvider):
+//  Resolver order (Phase 9 — Kite default, IndianAPI first fallback):
 //    0. Market-closed gate — when NSE is closed, NO upstream call
 //       runs (Kite, IndianAPI, NSE direct, Yahoo are all skipped).
 //       Returns cache hits if any, else `provider='snapshot'` +
 //       `errorCode='MARKET_CLOSED'`.
 //    1. Configured primary via providerFlags:
-//         MARKET_DATA_PROVIDER=indianapi (DEFAULT) → IndianAPI
-//         MARKET_DATA_PROVIDER=kite                 → Kite, then IndianAPI
+//         MARKET_DATA_PROVIDER unset / kite (DEFAULT) → Kite, then IndianAPI
+//         MARKET_DATA_PROVIDER=indianapi             → IndianAPI
 //       (INDIANAPI_PRIMARY=true still forces IndianAPI — same as MDP.)
 //    2. Fresh cache hit
 //    3. NSE direct rare fallback (only on TRUE primary failures)
@@ -50,6 +50,7 @@ import {
   isIndianApiPrimary,
   isKitePrimary,
   getMarketDataProvider,
+  getPrimaryFallbackProvider,
   isLegacyRollbackActive,
   getNseDirectFallbackConfig,
 } from '../providerFlags';
@@ -243,8 +244,10 @@ function logResolverOutcome(
   log.info('RESOLVER_OUTCOME', {
     provider_used:       result.provider,
     selected:            getMarketDataProvider(),
+    fallback_provider:   getPrimaryFallbackProvider(),
     fallback_triggered:  result.fallbackUsed,
     failure_reason:      failureReason,
+    capability:          'batch_quotes',
     status:              result.status,
     data_quality:        result.dataQuality,
     symbols_requested:   symbolsAsked,
@@ -717,6 +720,8 @@ export async function resolveBatch(
   logProviderEvent('request', {
     method: 'resolveBatch',
     selected,
+    fallback_provider: getPrimaryFallbackProvider(selected),
+    capability: 'batch_quotes',
     symbols: symbols.length,
   });
 
@@ -846,12 +851,13 @@ export async function resolveBatch(
     // No cache hits at all — fall into the primary vendor blocks below.
   }
 
-  // ── 1a. Kite primary (opt-in via MARKET_DATA_PROVIDER=kite) ────
+  // ── 1a. Kite primary (Phase 9 default via MARKET_DATA_PROVIDER) ─
   if (kitePrimary && cascadeAllowed && !kiteAttempted) {
     kiteAttempted = true;
     logProviderEvent('attempt', {
       provider: 'kite',
       method: 'getBatchQuotes',
+      capability: 'batch_quotes',
       symbols: symbols.length,
     });
     const kite = await tryKiteBatchQuotes(symbols);
@@ -865,7 +871,8 @@ export async function resolveBatch(
       logProviderEvent('success', {
         provider: 'kite',
         selected,
-        fallback: 'none',
+        fallback_provider: 'none',
+        capability: 'batch_quotes',
         latency_ms: kite.latencyMs,
         coverage_pct: coverage,
       });
@@ -915,6 +922,9 @@ export async function resolveBatch(
       from: 'kite',
       to: 'indianapi|cache|nse|yahoo',
       reason: kite.errorCode,
+      capability: 'batch_quotes',
+      selected,
+      fallback_provider: getPrimaryFallbackProvider(selected),
       latency_ms: kite.latencyMs,
       recoverable: kite.recoverable,
     });

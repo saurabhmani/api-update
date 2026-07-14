@@ -1,9 +1,10 @@
 # Quantorus365 — FINAL STATUS
 
+> **Phase 9 update:** Default market-data primary is **Kite** (`MARKET_DATA_PROVIDER` unset → `kite`). IndianAPI remains fully installed as the automatic first fallback and for unsupported features. `INDIANAPI_PRIMARY=true` still forces IndianAPI. Sections below retain historical freeze language from earlier phases.
+
 **Architecture frozen (Priority 0).** Target state (authoritative):
-IndianAPI primary → Cache → Yahoo fallback → PostgreSQL stale tier.
-PostgreSQL is the only runtime database. Kite is broker/execution
-only, never market-data truth.
+Kite primary → IndianAPI fallback → Cache / Yahoo emergency → DB stale tier.
+IndianAPI adapters, quotas, and env vars are retained (not deleted).
 
 **Code-complete score: ~92%.** The last ~8% is execution against
 production infra and data — it cannot be written, only performed.
