@@ -110,11 +110,11 @@ describe('scheduler runBatchTier', () => {
     expect(report.details.batchMissing).toBe(0);
   });
 
-  it('persists every indian-source snapshot', async () => {
+  it('persists every live-source snapshot (indian or kite)', async () => {
     vi.mocked(MarketDataProvider.getBatchLiveSnapshots).mockResolvedValue({
       entries: [
         entry('AAA', 'indian', 'near-live'),
-        entry('BBB', 'indian', 'near-live'),
+        entry('BBB', 'kite', 'near-live'),
         entry('CCC', 'cache',  'cached-fresh'),   // already cached — not persisted
       ],
       batchCallsMade: 1,
@@ -123,7 +123,7 @@ describe('scheduler runBatchTier', () => {
 
     await runSchedulerPassOnce();
 
-    // Only the two 'indian' entries should be persisted; 'cache' skipped.
+    // Live upstream sources persist; cache-sourced rows are skipped.
     expect(LiveQuoteService.persistSnapshot).toHaveBeenCalledTimes(2);
   });
 

@@ -1,13 +1,44 @@
 // ════════════════════════════════════════════════════════════════
-//  Scheduler behavior + budget enforcement tests (skeleton)
+//  Scheduler behavior + budget enforcement tests
 //
-//  Drop under src/__tests__/ — uses vitest per existing repo setup.
-//  These are the acceptance-criteria tests named in REFACTOR_PLAN.md.
+//  Phase 7: live quote sync goes through MarketDataProvider only.
+//  IndianAPIAdapter mocks remain for breaker metadata / legacy
+//  batch path exercised via real MDP when not fully mocked.
 // ════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Note: import order matters — we mock before importing SUTs.
+const {
+  getBatchLiveSnapshots,
+  getLiveSnapshot,
+  getTrendingSymbols,
+  getPriceShockers,
+  getNseMostActive,
+} = vi.hoisted(() => ({
+  getBatchLiveSnapshots: vi.fn(),
+  getLiveSnapshot: vi.fn(),
+  getTrendingSymbols: vi.fn(),
+  getPriceShockers: vi.fn(),
+  getNseMostActive: vi.fn(),
+}));
+
+vi.mock('@/providers/MarketDataProvider', () => ({
+  default: {
+    getBatchLiveSnapshots,
+    getLiveSnapshot,
+    getTrendingSymbols,
+    getPriceShockers,
+    getNseMostActive,
+    getMarketNews: vi.fn(),
+    getCompanyNews: vi.fn(),
+    getHistorical: vi.fn(),
+  },
+  getBatchLiveSnapshots,
+  getLiveSnapshot,
+  getTrendingSymbols,
+  getPriceShockers,
+  getNseMostActive,
+}));
 
 vi.mock('@/providers/adapters/IndianAPIAdapter', () => ({
   getQuote:           vi.fn(),
@@ -23,10 +54,19 @@ vi.mock('@/providers/adapters/IndianAPIAdapter', () => ({
   getFundamentals:    vi.fn(),
   getIndustryPeers:   vi.fn(),
   searchSymbol:       vi.fn(),
+  indianApiBreakerState: () => ({
+    open: false, state: 'closed', remainingMs: 0,
+    auth_failed: false, auth_failed_for_ms: 0,
+  }),
 }));
 
 vi.mock('@/services/LiveQuoteService', () => ({
   persistSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('@/lib/marketData/nifty500Universe', () => ({
+  isNifty500Initialized: () => true,
+  initNifty500UniverseFromDb: vi.fn(),
 }));
 
 import * as IndianAPI from '@/providers/adapters/IndianAPIAdapter';
@@ -39,34 +79,44 @@ import {
 import { setCooldown, clearCooldown } from '@/lib/marketData/cooldownStore';
 import { cacheSet } from '@/lib/redis';
 
+function snap(symbol: string, price = 100) {
+  return {
+    symbol, price, ltp: price, change: 4, changePercent: 4.0,
+    volume: 1_000_000, open: 96, high: 101, low: 95, prevClose: 96, timestamp: Date.now(),
+  };
+}
+
 describe('batchScheduler — Tier A (batch)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetInternalStateForTests();
+    process.env.INDIANAPI_PRIMARY = 'true';
     configureTiers({
       tier1: ['RELIANCE', 'TCS'],
       tier2: ['INFY'],
       tier3: [],
     });
+    getTrendingSymbols.mockResolvedValue({ data: [] });
+    getPriceShockers.mockResolvedValue({ data: [] });
+    getNseMostActive.mockResolvedValue({ data: [] });
   });
 
-  it('calls getBatchQuotes ONCE for the whole universe — never per-symbol', async () => {
-    (IndianAPI.getBatchQuotes as any).mockResolvedValue({
-      snapshots: [
-        { symbol: 'RELIANCE', price: 2500, ltp: 2500, change: 10, changePercent: 0.4, volume: 1e6, open: 2490, high: 2505, low: 2485, prevClose: 2490, timestamp: Date.now() },
-        { symbol: 'TCS',      price: 3500, ltp: 3500, change: 20, changePercent: 0.6, volume: 5e5, open: 3480, high: 3510, low: 3470, prevClose: 3480, timestamp: Date.now() },
-        { symbol: 'INFY',     price: 1500, ltp: 1500, change: -5, changePercent: -0.3, volume: 8e5, open: 1505, high: 1510, low: 1495, prevClose: 1505, timestamp: Date.now() },
+  it('calls getBatchLiveSnapshots ONCE for the whole universe — never per-symbol getQuote', async () => {
+    getBatchLiveSnapshots.mockResolvedValue({
+      entries: [
+        { symbol: 'RELIANCE', snapshot: snap('RELIANCE', 2500), source: 'indian', data_quality: 'near-live' },
+        { symbol: 'TCS', snapshot: snap('TCS', 3500), source: 'indian', data_quality: 'near-live' },
+        { symbol: 'INFY', snapshot: snap('INFY', 1500), source: 'indian', data_quality: 'near-live' },
       ],
-      missing: [],
+      batchCallsMade: 1,
+      missingAfterBatch: [],
     });
-    (IndianAPI.getTrendingSymbols as any).mockResolvedValue([]);
-    (IndianAPI.getPriceShockers as any).mockResolvedValue([]);
-    (IndianAPI.getNseMostActive as any).mockResolvedValue([]);
 
     const report = await runBatchTier();
 
     expect(report.ok).toBe(true);
-    expect(IndianAPI.getBatchQuotes).toHaveBeenCalledTimes(1);
+    expect(getBatchLiveSnapshots).toHaveBeenCalledTimes(1);
+    expect(getLiveSnapshot).not.toHaveBeenCalled();
     expect(IndianAPI.getQuote).not.toHaveBeenCalled();
     expect(report.details.batchReceived).toBe(3);
   });
@@ -76,16 +126,25 @@ describe('triggerEngine — cooldown + budget enforcement', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     _resetInternalStateForTests();
+    process.env.INDIANAPI_PRIMARY = 'true';
     configureTiers({ tier1: ['FOO', 'BAR', 'BAZ'], tier2: [], tier3: [] });
 
-    // Pre-populate cache with snapshots showing 4% moves — should trigger.
     for (const sym of ['FOO', 'BAR', 'BAZ']) {
-      await cacheSet(`quote:${sym}`, {
-        symbol: sym, price: 100, ltp: 100, change: 4, changePercent: 4.0,
-        volume: 1_000_000, open: 96, high: 101, low: 95, prevClose: 96, timestamp: Date.now(),
-      }, 60);
+      await cacheSet(`quote:${sym}`, snap(sym), 60);
       await cacheSet(`corp:${sym}`, { volumeAvg20d: 100_000 }, 60);
     }
+
+    getLiveSnapshot.mockImplementation(async (sym: string) => ({
+      data: snap(sym),
+      source: 'indian',
+      data_quality: 'near-live',
+      fetched_at: Date.now(),
+      provider_name: 'IndianAPI',
+      source_type: 'primary',
+      vendor_timestamp: Date.now(),
+      freshness_ms: 0,
+      fallback_reason: null,
+    }));
   });
 
   afterEach(async () => {
@@ -94,29 +153,22 @@ describe('triggerEngine — cooldown + budget enforcement', () => {
 
   it('does not deep-fetch a symbol that is in cooldown', async () => {
     await setCooldown('FOO', 'deep');
-    (IndianAPI.getQuote as any).mockResolvedValue({
-      symbol: 'BAR', price: 100, ltp: 100, change: 4, changePercent: 4,
-      volume: 1e6, open: 96, high: 101, low: 95, prevClose: 96, timestamp: Date.now(),
-    });
 
     const report = await runTriggerTier();
 
-    const fetchedSymbols = (IndianAPI.getQuote as any).mock.calls.map((c: any) => c[0]);
+    const fetchedSymbols = getLiveSnapshot.mock.calls.map((c: unknown[]) => c[0]);
     expect(fetchedSymbols).not.toContain('FOO');
     expect(report.ok).toBe(true);
+    expect(IndianAPI.getQuote).not.toHaveBeenCalled();
   });
 
   it('budget snapshot reflects spending after a trigger run', async () => {
-    (IndianAPI.getQuote as any).mockResolvedValue({
-      symbol: 'FOO', price: 100, ltp: 100, change: 4, changePercent: 4,
-      volume: 1e6, open: 96, high: 101, low: 95, prevClose: 96, timestamp: Date.now(),
-    });
-
     const before = await budgetSnapshot();
     await runTriggerTier();
     const after = await budgetSnapshot();
 
     expect(after.monthTotal).toBeGreaterThanOrEqual(before.monthTotal);
     expect(after.byType.deep).toBeGreaterThanOrEqual(before.byType.deep);
+    expect(getLiveSnapshot).toHaveBeenCalled();
   });
 });

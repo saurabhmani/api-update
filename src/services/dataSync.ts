@@ -244,7 +244,7 @@ async function seedRankingsFromUniverse(
 
   return {
     inserted,
-    message: `Rankings updated: ${inserted} symbols from q365_universe (IndianAPI batch, max ${maxSymbols}).`,
+    message: `Rankings updated: ${inserted} symbols from q365_universe (live batch, max ${maxSymbols}).`,
   };
 }
 

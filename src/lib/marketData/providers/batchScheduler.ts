@@ -12,6 +12,11 @@
 //  APIs except runTriggerTier(), and that one is gated by:
 //    (a) trigger score, (b) cooldown store, (c) budget guard.
 //
+//  Phase 7: ALL live quote / historical sync goes through
+//  MarketDataProvider (which follows MARKET_DATA_PROVIDER). Movers /
+//  trending / news stay on IndianAPI via MDP wrappers. Never import
+//  KiteAdapter here.
+//
 //  Contract preservation: per-symbol cache keys (quote:<SYMBOL>) are
 //  populated by the batch phase, so existing consumers reading through
 //  MarketDataProvider.getLiveSnapshot() see fresh data as cache hits.
@@ -20,19 +25,18 @@
 import { logger } from '@/lib/logger';
 import MarketDataProvider from '@/providers/MarketDataProvider';
 import * as IndianAPI from '@/providers/adapters/IndianAPIAdapter';
-import { mapToIndianApiSymbol } from '@/lib/marketData/symbolMapper';
 import { persistSnapshot } from '@/services/LiveQuoteService';
 import { cacheSet as redisCacheSet, cacheGet as redisCacheGet } from '@/lib/redis';
-import { withProviderFrame } from '@/lib/marketData/enforcer';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
-import { guarded } from '@/providers/resilience';
 import {
   isNifty500Initialized,
   initNifty500UniverseFromDb,
 } from '@/lib/marketData/nifty500Universe';
+import {
+  getMarketDataProvider,
+} from '@/lib/marketData/providerFlags';
 
 import {
-  CONFIG,
   getBatchUniverse,
   tierOf,
 } from '../schedulerConfig';
@@ -50,26 +54,45 @@ import {
   maxDeepForLevel,
 } from '../apiBudgetGuard';
 
-import type { MarketSnapshot, MoversBucket, MoversResult, ProviderResponse } from '@/types/market';
+import type { MarketSnapshot, MoversBucket, MoversResult, ProviderResponse, ProviderSource } from '@/types/market';
 
 const log = logger.child({ component: 'batchScheduler' });
 
+/** Live upstream sources that may persist into DB / Redis quote cache. */
+const LIVE_QUOTE_SOURCES: ReadonlySet<ProviderSource> = new Set(['indian', 'kite']);
+
+function logSchedulerProvider(
+  event: string,
+  meta: Record<string, unknown>,
+): void {
+  const parts = Object.entries(meta)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${String(v)}`);
+  console.log(`[PROVIDER] ${event}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
+
 // Construct a canonical ProviderResponse envelope for a snapshot we
-// just pulled from the IndianAPI batch endpoint. The persistence layer
-// requires every field in the envelope; supplying them explicitly here
-// keeps signals/monitoring honest about where batch-sourced rows came
-// from without leaking adapter internals.
-function wrapBatchResponse(snap: MarketSnapshot): ProviderResponse<MarketSnapshot> {
+// just pulled via MarketDataProvider batch. Prefer the real envelope
+// from getLiveSnapshot when available; this helper is for batch-tier
+// rows that only expose { snapshot, source }.
+function wrapBatchResponse(
+  snap: MarketSnapshot,
+  source: ProviderSource = 'indian',
+): ProviderResponse<MarketSnapshot> {
   const fetched_at = Date.now();
   const vendor_timestamp = typeof snap.timestamp === 'number' && snap.timestamp > 0
     ? snap.timestamp
     : fetched_at;
+  const provider_name =
+    source === 'kite' ? 'Kite Connect'
+      : source === 'cache' ? 'Cache'
+        : 'IndianAPI';
   return {
     data: snap,
-    source: 'indian',
+    source,
     data_quality: 'near-live',
     fetched_at,
-    provider_name: 'IndianAPI',
+    provider_name,
     source_type: 'primary',
     vendor_timestamp,
     freshness_ms: Math.max(0, fetched_at - vendor_timestamp),
@@ -135,6 +158,7 @@ async function runTier<T>(
   fn: () => Promise<T>,
 ): Promise<TierReport<T>> {
   const startedAt = Date.now();
+  const selected = getMarketDataProvider();
   // Canonical pipeline-progress tag (start). Operators grep
   // [PIPELINE_PROGRESS] across every long-running stage to see what's
   // currently in flight regardless of which phase emitted it.
@@ -142,6 +166,11 @@ async function runTier<T>(
     stage:      `scheduler.${tier}`,
     event:      'start',
     started_at: new Date(startedAt).toISOString(),
+    selected,
+  });
+  logSchedulerProvider('request', {
+    method: `scheduler.${tier}`,
+    selected,
   });
   try {
     // Spec STEP 2 — universe init guard. Tiers fan out through the
@@ -151,7 +180,17 @@ async function runTier<T>(
     // first symbol is touched. Idempotent — single-property check
     // after hydration.
     if (!isNifty500Initialized()) {
-      await initNifty500UniverseFromDb();
+      try {
+        await initNifty500UniverseFromDb();
+      } catch (err) {
+        // Best-effort: universe hydrate must not crash scheduled sync
+        // (dev without MySQL, cold boot races). Resolver lock still
+        // protects per-symbol isInNifty500 calls downstream.
+        log.warn('nifty500 universe init skipped for scheduler tier', {
+          tier,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     const details = await fn();
     const report: TierReport<T> = {
@@ -172,8 +211,14 @@ async function runTier<T>(
       event:      'complete',
       elapsed_ms: report.elapsedMs,
       ok:         true,
+      selected,
     });
-    log.info(`${tier} tier complete`, { elapsedMs: report.elapsedMs });
+    logSchedulerProvider('success', {
+      method: `scheduler.${tier}`,
+      selected,
+      latency_ms: report.elapsedMs,
+    });
+    log.info(`${tier} tier complete`, { elapsedMs: report.elapsedMs, selected });
     return report;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -192,8 +237,15 @@ async function runTier<T>(
       elapsed_ms: report.elapsedMs,
       ok:         false,
       error:      message,
+      selected,
     });
-    log.error(`${tier} tier failed`, { error: message });
+    logSchedulerProvider('fail', {
+      method: `scheduler.${tier}`,
+      selected,
+      latency_ms: report.elapsedMs,
+      reason: message.slice(0, 120),
+    });
+    log.error(`${tier} tier failed`, { error: message, selected });
     return report;
   }
 }
@@ -215,23 +267,30 @@ interface BatchTierDetails {
 
 export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
   return runTier('batch', async () => {
+    const selected = getMarketDataProvider();
     const universe = getBatchUniverse();
+    const t0 = Date.now();
 
     // 1. Batch quotes — ONE (or a handful, chunked) request for the
     //    whole Tier1+Tier2 universe. Fans out to per-symbol cache,
-    //    so downstream consumers are unaffected.
+    //    so downstream consumers are unaffected. MDP follows
+    //    MARKET_DATA_PROVIDER (kite | indianapi) + fallback chain.
+    logSchedulerProvider('attempt', {
+      method: 'scheduler.batch.getBatchLiveSnapshots',
+      selected,
+      symbols: universe.length,
+    });
     const batch = await MarketDataProvider.getBatchLiveSnapshots(universe);
 
-    // 2. Persist fresh snapshots in parallel with a bounded concurrency.
-    //    This mirrors the old scheduler's behavior so DB-writing
-    //    consumers (market.snapshots_current etc.) stay populated.
+    // 2. Persist fresh LIVE snapshots (kite or indianapi). Cache/db
+    //    rows are already warm for reads — do not re-persist them.
     let persistErrors = 0;
     const persistables = batch.entries.filter(
-      e => e.snapshot !== null && e.source === 'indian',
+      (e) => e.snapshot !== null && LIVE_QUOTE_SOURCES.has(e.source),
     );
     await boundedAll(persistables, 4, async (e) => {
       try {
-        await persistSnapshot(wrapBatchResponse(e.snapshot!));
+        await persistSnapshot(wrapBatchResponse(e.snapshot!, e.source));
       } catch (err) {
         persistErrors += 1;
         log.warn('batch tier persist failed', {
@@ -241,23 +300,23 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
       }
     });
 
-    // 3. Market-wide cheap endpoints. Each is one API call and
-    //    independently cached. Run in parallel since each has its
-    //    own budget check inside MarketDataProvider.
+    // 3. Market-wide cheap endpoints (movers / trending — IndianAPI
+    //    only via MDP; Kite unsupported → MDP falls back).
     const [trending, shockers, mostActive] = await Promise.all([
       MarketDataProvider.getTrendingSymbols().catch(() => ({ data: [] as string[] })),
       MarketDataProvider.getPriceShockers().catch(() => ({ data: [] as string[] })),
       MarketDataProvider.getNseMostActive().catch(() => ({ data: [] as MoversBucket[] })),
     ]);
 
-    const batchReceived = batch.entries.filter(e => e.source === 'indian').length;
+    const batchReceived = batch.entries.filter(
+      (e) => e.snapshot !== null && LIVE_QUOTE_SOURCES.has(e.source),
+    ).length;
     const coveragePct   = universe.length > 0
       ? Math.round((batchReceived / universe.length) * 1000) / 10
       : 0;
-    // Spec OPERATIONAL OBSERVABILITY (2026-05) — canonical scan-coverage
-    // tag. coverage_pct = received / requested. A wide gap means the
-    // upstream returned partial data (rate-limit, breaker open, plan
-    // limits) and downstream consumers are seeing stale cache entries.
+    const latencyMs = Date.now() - t0;
+    const fallbackTriggered = selected === 'kite' && batch.entries.some((e) => e.source === 'indian');
+
     console.log('[SCAN_COVERAGE]', {
       stage:           'scheduler.batch',
       universe:        universe.length,
@@ -266,21 +325,31 @@ export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
       missing:         batch.missingAfterBatch.length,
       coverage_pct:    coveragePct,
       persist_errors:  persistErrors,
+      selected,
+      fallback_triggered: fallbackTriggered,
+      latency_ms:      latencyMs,
     });
-    // Provider freshness/breaker snapshot — pulled at the end of the
-    // tier so it reflects the state AFTER any breaker-trip during this
-    // run. Routes through [PROVIDER_HEALTH] so SRE dashboards can
-    // count breaker events independently of tier success.
+    logSchedulerProvider('success', {
+      method: 'scheduler.batch',
+      selected,
+      fallback: fallbackTriggered ? 'kite→indianapi' : 'none',
+      latency_ms: latencyMs,
+      records: batchReceived,
+      failures: persistErrors + batch.missingAfterBatch.length,
+    });
+    // Provider freshness/breaker snapshot — IndianAPI breaker is still
+    // the ops canary for movers/news; quote primary may be Kite.
     try {
       const breaker = IndianAPI.indianApiBreakerState();
       console.log('[PROVIDER_HEALTH]', {
-        provider:           'IndianAPI',
-        breaker_open:       breaker.open,
-        breaker_state:      breaker.state,
+        provider:             selected === 'kite' ? 'Kite|IndianAPI' : 'IndianAPI',
+        selected,
+        breaker_open:         breaker.open,
+        breaker_state:        breaker.state,
         breaker_remaining_ms: breaker.remainingMs,
-        auth_failed:        breaker.auth_failed,
-        auth_failed_for_ms: breaker.auth_failed_for_ms,
-        batch_coverage_pct: coveragePct,
+        auth_failed:          breaker.auth_failed,
+        auth_failed_for_ms:   breaker.auth_failed_for_ms,
+        batch_coverage_pct:   coveragePct,
       });
     } catch { /* breaker probe is best-effort */ }
     return {
@@ -312,6 +381,7 @@ interface TriggerTierDetails {
 
 export async function runTriggerTier(): Promise<TierReport<TriggerTierDetails>> {
   return runTier('trigger', async () => {
+    const selected = getMarketDataProvider();
     const budget = await budgetSnapshot();
     const max = maxDeepForLevel(budget.level);
     if (max === 0) {
@@ -341,9 +411,13 @@ export async function runTriggerTier(): Promise<TierReport<TriggerTierDetails>> 
     }, { maxSymbols: max });
 
     // Deep-fetch loop — bounded concurrency, budget-checked per symbol.
+    // Phase 7: always MarketDataProvider.getLiveSnapshot (forceRefresh)
+    // so MARKET_DATA_PROVIDER=kite is honored; auth/rate-limit/unsupported
+    // fall through MDP's existing provider chain.
     let deepFetched = 0;
     let skippedBudget = 0;
     let skippedCooldown = 0;
+    let deepFailures = 0;
 
     await boundedAll(candidates, 2, async (c) => {
       // Double-check cooldown in case a parallel task set it.
@@ -357,17 +431,24 @@ export async function runTriggerTier(): Promise<TierReport<TriggerTierDetails>> 
         return;
       }
       await spend('deep', 1);
+      const t0 = Date.now();
       try {
-        // Use the single-symbol path directly — NOT getLiveSnapshot,
-        // because we explicitly want to bypass the cache tier here
-        // and get a fresh snapshot for the triggered signal.
-        const snap = await withProviderFrame(() =>
-          guarded('indian', async () => IndianAPI.getQuote(await mapToIndianApiSymbol(c.symbol)), { timeoutMs: 2500, attempts: 2 }), // @deprecated marker
-        );
-        // Write to per-symbol cache so downstream reads are hot.
+        logSchedulerProvider('attempt', {
+          method: 'scheduler.trigger.getLiveSnapshot',
+          selected,
+          symbol: c.symbol,
+        });
+        const resp = await MarketDataProvider.getLiveSnapshot(c.symbol, {
+          forceRefresh: true,
+        });
+        const snap = resp.data;
+        if (!snap || !Number.isFinite(snap.price) || snap.price <= 0) {
+          throw new Error(`empty snapshot source=${resp.source}`);
+        }
+        // Same Redis key + 120s TTL as pre-Phase-7 trigger writes.
         await redisCacheSet(`quote:${c.symbol}`, snap, 120);
         try {
-          await persistSnapshot(wrapBatchResponse(snap));
+          await persistSnapshot(resp);
         } catch (persistErr) {
           log.warn('trigger persist failed', {
             symbol: c.symbol,
@@ -378,7 +459,23 @@ export async function runTriggerTier(): Promise<TierReport<TriggerTierDetails>> 
           triggeredBy: c.reasons.join(','),
         });
         deepFetched += 1;
+        logSchedulerProvider('success', {
+          method: 'scheduler.trigger.getLiveSnapshot',
+          selected,
+          provider: resp.source,
+          fallback: resp.fallback_reason ? 'yes' : 'none',
+          latency_ms: Date.now() - t0,
+          symbol: c.symbol,
+        });
       } catch (err) {
+        deepFailures += 1;
+        logSchedulerProvider('fail', {
+          method: 'scheduler.trigger.getLiveSnapshot',
+          selected,
+          symbol: c.symbol,
+          latency_ms: Date.now() - t0,
+          reason: err instanceof Error ? err.message.slice(0, 120) : String(err),
+        });
         log.warn('trigger deep fetch failed', {
           symbol: c.symbol,
           error: err instanceof Error ? err.message : String(err),
@@ -400,6 +497,15 @@ export async function runTriggerTier(): Promise<TierReport<TriggerTierDetails>> 
     await redisCacheSet(LAST_TRIGGER_PICKS_KEY, {
       at: Date.now(), level: budget.level, picks,
     }, LAST_RUN_TTL_S);
+
+    logSchedulerProvider('success', {
+      method: 'scheduler.trigger',
+      selected,
+      records: deepFetched,
+      failures: deepFailures,
+      skipped_cooldown: skippedCooldown,
+      skipped_budget: skippedBudget,
+    });
 
     return {
       scored: candidates.length,
@@ -434,7 +540,7 @@ export async function runIntelTier(): Promise<TierReport<IntelTierDetails>> {
       };
     }
 
-    // 1. Market-wide news — one call.
+    // 1. Market-wide news — one call (IndianAPI via MDP; not on Kite).
     let marketNewsOk = false;
     try {
       const n = await MarketDataProvider.getMarketNews();
@@ -447,6 +553,7 @@ export async function runIntelTier(): Promise<TierReport<IntelTierDetails>> {
 
     // 2. Company news — only for triggered symbols in the last cycle.
     //    Cap at 3 per run so news doesn't balloon the budget.
+    //    Remains IndianAPI-backed via MarketDataProvider.
     let companyNewsFetched = 0;
     const picksRec = await redisCacheGet<{ picks: Array<{ symbol: string }> }>(LAST_TRIGGER_PICKS_KEY);
     const candidates = (picksRec?.picks ?? []).map(p => p.symbol);
@@ -591,6 +698,7 @@ interface HeartbeatTierDetails {
 
 export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetails>> {
   return runTier('heartbeat', async () => {
+    const selected = getMarketDataProvider();
     const universe = getBatchUniverse();
     if (universe.length === 0) {
       return { cacheHits: 0, cacheMisses: 0, upstreamCallsMade: 0 };
@@ -608,20 +716,31 @@ export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetail
     // Refresh ONLY the cold cells, and ONLY while the market is open.
     // Off-hours prices are frozen at last close (served by the
     // market-close snapshot tier), so an upstream top-up would spend
-    // IndianAPI quota on values that cannot change — and that steady
+    // vendor quota on values that cannot change — and that steady
     // 24x7 drain is what starved the 16:00 IST EOD candle cron with
     // 429s. getBatchLiveSnapshots is itself cache-first +
-    // budget-guarded for the market-open path.
+    // budget-guarded for the market-open path and follows
+    // MARKET_DATA_PROVIDER via MarketDataProvider.
     let upstreamCallsMade = 0;
     if (cacheMisses > 0 && isMarketOpen()) {
+      logSchedulerProvider('attempt', {
+        method: 'scheduler.heartbeat.getBatchLiveSnapshots',
+        selected,
+        symbols: universe.length,
+        cache_hit: 'partial',
+      });
       const r = await MarketDataProvider.getBatchLiveSnapshots(universe);
       upstreamCallsMade = r.batchCallsMade;
       console.log(`[DATA] heartbeat refreshed misses=${cacheMisses} upstream=${upstreamCallsMade}`);
+      logSchedulerProvider('success', {
+        method: 'scheduler.heartbeat',
+        selected,
+        latency_ms: 0,
+        records: r.entries.filter((e) => e.snapshot != null).length,
+        upstream_calls: upstreamCallsMade,
+      });
     }
 
-    // Canonical scan-coverage roll-up so the heartbeat dashboard can
-    // see in one grep how warm the universe cache is between full
-    // batch tiers (which run every 10 min).
     const coveragePct = universe.length > 0
       ? Math.round((cacheHits / universe.length) * 1000) / 10
       : 0;
@@ -632,6 +751,7 @@ export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetail
       cache_misses: cacheMisses,
       coverage_pct: coveragePct,
       upstream_calls_made: upstreamCallsMade,
+      selected,
     });
     recordHeartbeatTick({
       universe:     universe.length,
@@ -641,7 +761,8 @@ export async function runHeartbeatTier(): Promise<TierReport<HeartbeatTierDetail
     try {
       const breaker = IndianAPI.indianApiBreakerState();
       console.log('[PROVIDER_HEALTH]', {
-        provider:             'IndianAPI',
+        provider:             selected === 'kite' ? 'Kite|IndianAPI' : 'IndianAPI',
+        selected,
         stage:                'scheduler.heartbeat',
         breaker_open:         breaker.open,
         breaker_state:        breaker.state,
