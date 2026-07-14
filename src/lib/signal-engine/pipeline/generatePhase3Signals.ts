@@ -17,9 +17,15 @@ import { DEFAULT_PHASE1_CONFIG, getStrategyRelaxConfig } from '../constants/sign
 import { DEFAULT_PHASE3_CONFIG, getSector } from '../constants/phase3.constants';
 import { createPipelineTracer, setAmbientTracer } from '../tracing/pipelineTracer';
 import { detectEnhancedRegime } from '../regime/detectMarketRegime';
-import { buildSignalFeatures } from '../features/buildSignalFeatures';
+import { buildSignalFeaturesDetailed } from '../features/buildSignalFeatures';
 import { buildEnhancedFeatures } from '../features/buildEnhancedFeatures';
 import { runAllStrategies, resetSellDebugAgg, flushSellDebugAgg } from '../strategy-engine/runStrategies';
+import { evaluateDataQualityDecision } from '../lineage/dataQualityDecision';
+import { buildCorporateActionFields } from '../lineage/corporateActionGuard';
+import { buildCanonicalInputSnapshot } from '../lineage/canonicalInputSnapshot';
+import { getSignalEngineConfig } from '../config/signalEnginePhase2Config';
+import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
+import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 import { computeRelativeStrength, defaultRelativeStrength } from '../context/relativeStrength';
 import { calculatePositionSize } from '../position-sizing/positionSizer';
@@ -727,7 +733,25 @@ export async function generatePhase3Signals(
       }
       stageReached.not_stale++;
 
-      let features = buildSignalFeatures(candles, regime.label, p1Config.minAvgVolume, p1Config.minPrice);
+      // Phase 1 — load versioned config once per scan (already outside loop
+      // if we hoist; here we reuse module cache via getSignalEngineConfig).
+      const scanConfig = getSignalEngineConfig();
+      const asOfDay = new Date().toISOString().slice(0, 10);
+      const built = buildSignalFeaturesDetailed(
+        candles,
+        regime.label,
+        p1Config.minAvgVolume,
+        p1Config.minPrice,
+        {
+          nowMs: Date.now(),
+          integrity: {
+            minWarmupBars: p1Config.minCandleCount,
+            rejectIncompleteCurrent: true,
+            asOfDay,
+          },
+        },
+      );
+      let features = built.features;
       const featureCheck = validateFeatures(features);
       // Spec "LOG FEATURE GENERATION" — emit per-symbol AFTER
       // indicators are computed regardless of whether they validated.
@@ -747,14 +771,19 @@ export async function generatePhase3Signals(
           volume_vs_20d: features.volume.volumeVs20dAvg,
           valid:  featureCheck.valid,
           reason: featureCheck.reason ?? null,
+          integrity_valid: built.integrityValid,
+          integrity_issues: built.integrityIssues.map((i) => i.code),
         });
       }
-      if (!featureCheck.valid) {
+      if (!featureCheck.valid || !built.integrityValid) {
         rejectionHistogram.rejectedByDataQuality++;
-        rejectionLog.push({ symbol, reason: featureCheck.reason! });
+        const reason = !built.integrityValid
+          ? (built.integrityIssues[0]?.message ?? 'integrity_failed')
+          : featureCheck.reason!;
+        rejectionLog.push({ symbol, reason });
         logPhase3({
           symbol, confidence: null, final_score: null, risk_reward: null,
-          decision: 'skipped', rejected_reason: `features_invalid: ${featureCheck.reason}`,
+          decision: 'skipped', rejected_reason: `features_invalid: ${reason}`,
         });
         continue;
       }
@@ -767,8 +796,48 @@ export async function generatePhase3Signals(
         enhanced: buildEnhancedFeatures(features, rs),
       };
 
+      // Phase 1.2 / 1.5 — data-quality gate before strategy evaluation
+      const lastTs = built.candlesUsed[built.candlesUsed.length - 1]?.ts;
+      const lastMs = lastTs ? new Date(lastTs).getTime() : Date.now();
+      const marketOpen = getMarketStatus().isOpen;
+      const freshReport = classifyCandleFreshness({
+        latest_candle_ms: lastMs,
+        now_ms: Date.now(),
+        market_open: marketOpen,
+        candle_source: 'daily',
+      });
+      const freshnessLabel = (freshReport.freshness_quality ?? 'unknown') as
+        import('../lineage/canonicalInputSnapshot').FreshnessStatusLabel;
+      const dqDecision = evaluateDataQualityDecision(
+        {
+          issues: built.integrityIssues,
+          freshnessStatus: freshnessLabel,
+          incompleteCurrent: built.integrityIssues.some((i) => i.code === 'INCOMPLETE_CURRENT_CANDLE'),
+          provider: 'kite',
+        },
+        { recordCounters: true },
+      );
+      if (dqDecision.rejectBeforeStrategies) {
+        rejectionHistogram.rejectedByDataQuality++;
+        rejectionLog.push({
+          symbol,
+          reason: `data_quality_critical: ${dqDecision.rejection_reasons[0] ?? 'critical'}`,
+        });
+        logPhase3({
+          symbol, confidence: null, final_score: null, risk_reward: null,
+          decision: 'skipped',
+          rejected_reason: `data_quality_critical: ${dqDecision.rejection_reasons.join('; ')}`,
+        });
+        continue;
+      }
+
+      const corporateAction = buildCorporateActionFields(built.integrityIssues);
+
       // ── Step 3: Strategy evaluation ─────────────────────────
-      const { candidates, rejections } = runAllStrategies(features, rs);
+      const { candidates, rejections } = runAllStrategies(features, rs, {
+        corporateAction,
+        dataQuality: dqDecision,
+      });
       for (const r of rejections) rejectionLog.push({ symbol, reason: `[${r.strategy}] ${r.reason}` });
       // Spec "LOG STRATEGY MATCH" — show which strategies (if any)
       // matched this symbol. If matchedStrategies is empty across
@@ -1440,6 +1509,14 @@ export async function generatePhase3Signals(
           ...execution.reasons,
           rejectionDecision.rejectionMessage ?? 'Technical rejection',
         ];
+      } else if (!dqDecision.actionable && execution.approvalDecision === 'approved') {
+        // Phase 1.5 moderate DQ — never publish as actionable
+        execution.approvalDecision = 'deferred';
+        execution.status = 'deferred_due_to_portfolio';
+        execution.reasons = [
+          ...execution.reasons,
+          `data_quality_non_actionable: ${dqDecision.severity}`,
+        ];
       } else if (executionStatus !== 'EXECUTABLE' && executionBlockReason) {
         execution.approvalDecision = 'deferred';
         execution.status = 'deferred_due_to_portfolio';
@@ -1517,8 +1594,34 @@ export async function generatePhase3Signals(
           ...sizing.warnings,
           ...portfolioFit.penalties,
           ...(executionBlockReason ? [`Execution: ${executionBlockReason}`] : []),
+          ...dqDecision.warnings,
+          ...(!dqDecision.actionable
+            ? [`data_quality_non_actionable: severity=${dqDecision.severity}`]
+            : []),
         ],
         generatedAt: now,
+        inputSnapshot: buildCanonicalInputSnapshot({
+          symbol,
+          exchange: 'NSE',
+          candles: built.candlesUsed,
+          features,
+          integrityIssues: built.integrityIssues,
+          freshnessStatus: freshnessLabel,
+          dataQuality: dqDecision,
+          corporateAction,
+          provider: {
+            provider_identity: 'zerodha_kite',
+            session_identity: process.env.KITE_ACCESS_TOKEN
+              ? `token:${String(process.env.KITE_ACCESS_TOKEN).slice(0, 6)}…`
+              : null,
+            resolution_path: 'kite→yahoo|nse|db',
+            candle_source: 'market_data_daily',
+            data_timestamp_iso: lastTs ? new Date(lastMs).toISOString() : null,
+          },
+          benchmarkCandles,
+          config: scanConfig,
+          lastCompletedCandleTs: lastTs ?? null,
+        }),
       });
 
       // Spec "ADD FULL REJECTION LOGGING" — per-symbol decision

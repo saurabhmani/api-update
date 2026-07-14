@@ -432,6 +432,9 @@ export interface QuantSignal {
   confidenceBreakdown: ConfidenceBreakdown;
   riskBreakdown: RiskBreakdown;
 
+  /** Phase 1 — optional lineage snapshot for audit / replay. */
+  inputSnapshot?: import('../lineage/canonicalInputSnapshot').CanonicalInputSnapshot;
+
   status: SignalStatus;
   rank?: number;
   signalRank?: number;

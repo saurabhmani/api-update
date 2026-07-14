@@ -283,6 +283,11 @@ export interface Phase4SignalEnvelope {
   // Lifecycle
   lifecycleStatus: string;
 
+  /** Carried from Phase 3 for persistence / lineage (Phase 1). */
+  features?: import('../types/signalEngine.types').SignalFeatures;
+  confidenceBreakdown?: import('../types/signalEngine.types').ConfidenceBreakdown;
+  inputSnapshot?: import('../lineage/canonicalInputSnapshot').CanonicalInputSnapshot;
+
   // ── Enriched news score breakdown (Phase 5) ──────────────────
   /** Full 7-dimension score card from news scoring engine (all 0-1). */
   scoreCard?: NewsScoreCardSummary;

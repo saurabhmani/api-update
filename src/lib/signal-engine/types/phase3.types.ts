@@ -221,6 +221,8 @@ export interface ExecutableSignal {
   features?: import('../types/signalEngine.types').SignalFeatures;
   confidenceBreakdown?: import('../types/signalEngine.types').ConfidenceBreakdown;
   standaloneRisk?: import('../types/signalEngine.types').RiskBreakdown;
+  /** Phase 1 lineage — optional on ExecutableSignal; forwarded to save path. */
+  inputSnapshot?: import('../lineage/canonicalInputSnapshot').CanonicalInputSnapshot;
 
   // ── Phase-4 scoring (calculateFinalScore + 6-band classification) ─
   // Populated by runPhase4Scoring() in scoring/phase4FactorAdapter.ts

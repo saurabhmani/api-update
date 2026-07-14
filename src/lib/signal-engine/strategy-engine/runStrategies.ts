@@ -44,6 +44,15 @@ import { STRATEGY_REGISTRY } from '../strategies/strategyRegistry';
 import {
   recordStrategyEvaluation,
 } from '../observability/strategyScanHistogram';
+import {
+  isStructureStrategyBlocked,
+  corporateActionBlockReason,
+} from '../lineage/corporateActionGuard';
+import type { CorporateActionSnapshotFields } from '../lineage/canonicalInputSnapshot';
+import {
+  applyDataQualityConfidenceModifier,
+  type DataQualityDecision,
+} from '../lineage/dataQualityDecision';
 
 interface StrategyEntry {
   name: StrategyName;
@@ -124,8 +133,19 @@ function evaluateOne(
   relativeStrength: RelativeStrengthFeatures,
   candidates: StrategyCandidate[],
   rejections: { strategy: StrategyName; reason: string }[],
-  opts: { softPassed: boolean } = { softPassed: false },
+  opts: {
+    softPassed: boolean;
+    corporateAction?: CorporateActionSnapshotFields | null;
+    dataQuality?: DataQualityDecision | null;
+  } = { softPassed: false },
 ): void {
+  if (opts.corporateAction && isStructureStrategyBlocked(name, opts.corporateAction)) {
+    const reason = corporateActionBlockReason(name);
+    rejections.push({ strategy: name, reason });
+    recordStrategyEvaluation(name, 'rejected', reason);
+    return;
+  }
+
   const result = evaluate(features);
   if (!result.matched) {
     rejections.push({ strategy: name, reason: result.rejectionReason || 'Not matched' });
@@ -139,6 +159,16 @@ function evaluateOne(
       ...confidence,
       finalScore: Math.max(0, confidence.finalScore - REGIME_RELAX_PENALTY),
     };
+  }
+  // Phase 1.5 — single canonical DQ confidence influence
+  if (opts.dataQuality) {
+    const adjusted = applyDataQualityConfidenceModifier(
+      confidence.finalScore,
+      opts.dataQuality,
+    );
+    if (adjusted !== confidence.finalScore) {
+      confidence = { ...confidence, finalScore: adjusted };
+    }
   }
   const isShort = BEARISH_STRATEGIES.has(name);
   const rawPlan = buildTradePlanForStrategy(features, name);
@@ -198,15 +228,26 @@ function evaluateOne(
   });
 }
 
+export interface StrategyRunOptions {
+  corporateAction?: CorporateActionSnapshotFields | null;
+  dataQuality?: DataQualityDecision | null;
+}
+
 export function runAllStrategies(
   features: SignalFeatures,
   relativeStrength: RelativeStrengthFeatures,
+  runOpts: StrategyRunOptions = {},
 ): StrategyResult {
   const candidates: StrategyCandidate[] = [];
   const rejections: { strategy: StrategyName; reason: string }[] = [];
+  const evalOpts = {
+    softPassed: false,
+    corporateAction: runOpts.corporateAction ?? null,
+    dataQuality: runOpts.dataQuality ?? null,
+  };
 
   for (const { name, evaluate } of STRATEGIES) {
-    evaluateOne(name, evaluate, features, relativeStrength, candidates, rejections);
+    evaluateOne(name, evaluate, features, relativeStrength, candidates, rejections, evalOpts);
   }
 
   // ── Regime-relaxed retry (opt-in via SIGNAL_RELAX_MODE) ──────────
@@ -235,7 +276,11 @@ export function runAllStrategies(
       evaluateOne(
         name, evaluate, relaxedFeatures, relativeStrength,
         candidates, relaxRejections,
-        { softPassed: true },
+        {
+          softPassed: true,
+          corporateAction: runOpts.corporateAction ?? null,
+          dataQuality: runOpts.dataQuality ?? null,
+        },
       );
       if (candidates.find((c) => c.strategy === name)) softPasses++;
     }

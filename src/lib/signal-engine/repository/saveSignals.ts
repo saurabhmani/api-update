@@ -685,11 +685,50 @@ async function saveOneSignal(s: QuantSignal, provenance: EngineProvenance): Prom
     ? JSON.stringify(s.features, (_key, value) =>
         typeof value === 'number' && !isFinite(value) ? null : value)
     : null;
+  const inputSnap = (s as { inputSnapshot?: unknown }).inputSnapshot;
+  const inputSnapshotJson = inputSnap
+    ? JSON.stringify(inputSnap, (_key, value) =>
+        typeof value === 'number' && !isFinite(value) ? null : value)
+    : null;
   if (featuresJson) {
+    const providerLineage =
+      (inputSnap as { provider?: { resolution_path?: string; provider_identity?: string } } | undefined)
+        ?.provider?.resolution_path
+      ?? (inputSnap as { provider?: { provider_identity?: string } } | undefined)
+        ?.provider?.provider_identity
+      ?? null;
+    const dqStatus =
+      (inputSnap as { data_quality?: { severity?: string } } | undefined)?.data_quality?.severity
+      ?? null;
+    const dataTs =
+      (inputSnap as { provider?: { data_timestamp_iso?: string | null } } | undefined)
+        ?.provider?.data_timestamp_iso
+      ?? null;
     await db.query(
-      `INSERT INTO q365_signal_feature_snapshots (signal_id, features_json) VALUES (?, ?)`,
-      [signalId, featuresJson],
-    );
+      `INSERT INTO q365_signal_feature_snapshots
+         (signal_id, features_json, input_snapshot_json, provider_lineage, data_quality_status, data_timestamp)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         features_json = VALUES(features_json),
+         input_snapshot_json = VALUES(input_snapshot_json),
+         provider_lineage = VALUES(provider_lineage),
+         data_quality_status = VALUES(data_quality_status),
+         data_timestamp = VALUES(data_timestamp)`,
+      [
+        signalId,
+        featuresJson,
+        inputSnapshotJson,
+        providerLineage,
+        dqStatus,
+        dataTs ? toMysqlDateTime(dataTs) : null,
+      ],
+    ).catch(async () => {
+      // Older schema without lineage columns — fall back to features only.
+      await db.query(
+        `INSERT INTO q365_signal_feature_snapshots (signal_id, features_json) VALUES (?, ?)`,
+        [signalId, featuresJson],
+      );
+    });
   }
 
   // 4. Seed lifecycle history with the canonical 'generated' state.

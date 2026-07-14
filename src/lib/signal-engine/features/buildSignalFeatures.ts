@@ -3,7 +3,11 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { Candle, SignalFeatures, MarketRegimeLabel } from '../types/signalEngine.types';
-import { validateCandleSeriesIntegrity } from '@/lib/marketData/integrity/marketDataIntegrity';
+import {
+  validateCandleSeriesIntegrity,
+  type CandleIntegrityOptions,
+  type IntegrityIssue,
+} from '@/lib/marketData/integrity/marketDataIntegrity';
 import { buildTrendFeatures } from './buildTrendFeatures';
 import { buildMomentumFeatures } from './buildMomentumFeatures';
 import { buildVolumeFeatures } from './buildVolumeFeatures';
@@ -16,26 +20,53 @@ import { MIN_AVG_VOLUME, MIN_PRICE } from '../constants/signalEngine.constants';
 import type { AssetDefinition } from '@/lib/platform/types';
 import { buildCanonicalSignalFeatures } from '@/lib/platform/featureAdapters/featureAdapterRouter';
 
-export function buildSignalFeatures(
+export interface BuildSignalFeaturesOptions {
+  /** Deterministic clock for integrity (required for replay). */
+  nowMs?: number;
+  integrity?: CandleIntegrityOptions;
+  relativeStrength?: RelativeStrengthFeatures;
+  asset?: AssetDefinition;
+}
+
+export interface BuildSignalFeaturesResult {
+  features: SignalFeatures;
+  integrityIssues: IntegrityIssue[];
+  integrityValid: boolean;
+  candlesUsed: Candle[];
+}
+
+/**
+ * Canonical feature builder. Pass `nowMs` / integrity options for
+ * deterministic replay — do not rely on wall-clock inside callers.
+ */
+export function buildSignalFeaturesDetailed(
   candles: Candle[],
   marketRegime: MarketRegimeLabel,
   minAvgVolume = MIN_AVG_VOLUME,
   minPrice = MIN_PRICE,
-  relativeStrength?: RelativeStrengthFeatures,
-  asset?: AssetDefinition,
-): SignalFeatures {
-  if (asset && asset.assetClass !== 'equity') {
-    return buildCanonicalSignalFeatures({
-      asset,
+  options: BuildSignalFeaturesOptions = {},
+): BuildSignalFeaturesResult {
+  if (options.asset && options.asset.assetClass !== 'equity') {
+    const features = buildCanonicalSignalFeatures({
+      asset: options.asset,
       candles,
       marketRegime,
       minAvgVolume,
       minPrice,
-      relativeStrength,
+      relativeStrength: options.relativeStrength,
     });
+    return {
+      features,
+      integrityIssues: [],
+      integrityValid: true,
+      candlesUsed: candles,
+    };
   }
 
-  const integrity = validateCandleSeriesIntegrity(candles);
+  const integrity = validateCandleSeriesIntegrity(candles, {
+    ...options.integrity,
+    nowMs: options.nowMs ?? options.integrity?.nowMs,
+  });
   const series = integrity.candles.length > 0 ? integrity.candles : candles;
 
   const trend = buildTrendFeatures(series);
@@ -58,8 +89,33 @@ export function buildSignalFeatures(
     },
   };
 
-  return {
+  const features: SignalFeatures = {
     ...base,
-    enhanced: buildEnhancedFeatures(base, relativeStrength),
+    enhanced: buildEnhancedFeatures(base, options.relativeStrength),
   };
+
+  return {
+    features,
+    integrityIssues: integrity.issues,
+    integrityValid: integrity.valid,
+    candlesUsed: series,
+  };
+}
+
+/** Backward-compatible wrapper — behaviour unchanged for default callers. */
+export function buildSignalFeatures(
+  candles: Candle[],
+  marketRegime: MarketRegimeLabel,
+  minAvgVolume = MIN_AVG_VOLUME,
+  minPrice = MIN_PRICE,
+  relativeStrength?: RelativeStrengthFeatures,
+  asset?: AssetDefinition,
+): SignalFeatures {
+  return buildSignalFeaturesDetailed(
+    candles,
+    marketRegime,
+    minAvgVolume,
+    minPrice,
+    { relativeStrength, asset },
+  ).features;
 }

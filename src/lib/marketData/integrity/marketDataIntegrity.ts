@@ -13,10 +13,17 @@ export type IntegrityIssueCode =
   | 'FUTURE_TIMESTAMP'
   | 'NEGATIVE_PRICE'
   | 'ZERO_VOLUME'
+  | 'NEGATIVE_VOLUME'
   | 'INVALID_OHLC'
   | 'NON_MONOTONIC_TIMESTAMPS'
   | 'SPLIT_ANOMALY'
-  | 'TIMEZONE_AMBIGUOUS';
+  | 'TIMEZONE_AMBIGUOUS'
+  | 'MISSING_SESSIONS'
+  | 'INCOMPLETE_CURRENT_CANDLE'
+  | 'STALE_BENCHMARK'
+  | 'STALE_SECTOR'
+  | 'PROVIDER_DISAGREEMENT'
+  | 'INSUFFICIENT_WARMUP';
 
 export interface IntegrityIssue {
   code:    IntegrityIssueCode;
@@ -42,14 +49,31 @@ export interface CandleIntegrityOptions {
   detectSplitAnomalies?: boolean;
   /** |close/prevClose - 1| above this triggers SPLIT_ANOMALY (default: 0.35). */
   splitJumpThreshold?: number;
+  /** Allowed calendar-day gap between bars before MISSING_SESSIONS (default: 5). */
+  maxSessionGapDays?: number;
+  /** Minimum bars required for warmup (default: 80). */
+  minWarmupBars?: number;
+  /** When true, treat last bar as incomplete if its calendar day === asOfDay. */
+  rejectIncompleteCurrent?: boolean;
+  /** ISO date YYYY-MM-DD of "today" for incomplete-current check. */
+  asOfDay?: string | null;
+  /** When set with providerDisagreementPct, flag PROVIDER_DISAGREEMENT. */
+  providerDisagreementPct?: number | null;
+  providerDisagreementTolerancePct?: number;
 }
 
 const DEFAULT_OPTS: Required<CandleIntegrityOptions> = {
-  nowMs:                Date.now(),
-  maxFutureDriftMs:     24 * 60 * 60 * 1000,
-  rejectZeroVolume:     false,
-  detectSplitAnomalies: true,
-  splitJumpThreshold:   0.35,
+  nowMs:                           Date.now(),
+  maxFutureDriftMs:                24 * 60 * 60 * 1000,
+  rejectZeroVolume:                false,
+  detectSplitAnomalies:            true,
+  splitJumpThreshold:              0.35,
+  maxSessionGapDays:               5,
+  minWarmupBars:                   0,
+  rejectIncompleteCurrent:         false,
+  asOfDay:                         null,
+  providerDisagreementPct:         null,
+  providerDisagreementTolerancePct: 2,
 };
 
 function parseTsMs(ts: string): number | null {
@@ -78,7 +102,11 @@ export function validateCandleSeriesIntegrity(
   input: Candle[] | null | undefined,
   opts: CandleIntegrityOptions = {},
 ): CandleSeriesIntegrityResult {
-  const o = { ...DEFAULT_OPTS, ...opts };
+  const o: Required<CandleIntegrityOptions> = {
+    ...DEFAULT_OPTS,
+    ...opts,
+    nowMs: opts.nowMs ?? Date.now(),
+  };
   const issues: IntegrityIssue[] = [];
 
   if (!input || input.length === 0) {
@@ -124,6 +152,9 @@ export function validateCandleSeriesIntegrity(
     if (c.open <= 0 || c.high <= 0 || c.low <= 0 || c.close <= 0) {
       issues.push({ code: 'NEGATIVE_PRICE', index: i, message: `Non-positive OHLC at ${c.ts}` });
     }
+    if (c.volume < 0) {
+      issues.push({ code: 'NEGATIVE_VOLUME', index: i, message: `Negative volume at ${c.ts}` });
+    }
     if (!isValidOhlc(c)) {
       issues.push({ code: 'INVALID_OHLC', index: i, message: `Invalid OHLC relationship at ${c.ts}` });
     }
@@ -146,7 +177,51 @@ export function validateCandleSeriesIntegrity(
           });
         }
       }
+      // Missing sessions: calendar gap beyond tolerance (weekends excluded loosely via day delta)
+      const prevTs = parseTsMs(prev.ts);
+      if (prevTs != null && tsMs != null) {
+        const gapDays = (tsMs - prevTs) / (24 * 60 * 60 * 1000);
+        if (gapDays > o.maxSessionGapDays) {
+          issues.push({
+            code: 'MISSING_SESSIONS',
+            index: i,
+            message: `Gap of ${gapDays.toFixed(1)} calendar days before ${c.ts} (tolerance ${o.maxSessionGapDays}d)`,
+          });
+        }
+      }
     }
+  }
+
+  if (candles.length < o.minWarmupBars) {
+    issues.push({
+      code: 'INSUFFICIENT_WARMUP',
+      message: `Candle count ${candles.length} < minWarmupBars ${o.minWarmupBars}`,
+    });
+  }
+
+  if (o.rejectIncompleteCurrent && o.asOfDay && candles.length > 0) {
+    const last = candles[candles.length - 1];
+    const day = String(last.ts).slice(0, 10);
+    if (day === o.asOfDay) {
+      issues.push({
+        code: 'INCOMPLETE_CURRENT_CANDLE',
+        index: candles.length - 1,
+        message: `Last candle ${day} matches as-of day — treat as incomplete`,
+      });
+    }
+  }
+
+  if (
+    o.providerDisagreementPct != null &&
+    Number.isFinite(o.providerDisagreementPct) &&
+    Math.abs(o.providerDisagreementPct) > o.providerDisagreementTolerancePct
+  ) {
+    issues.push({
+      code: 'PROVIDER_DISAGREEMENT',
+      message:
+        `Provider price disagreement ${o.providerDisagreementPct.toFixed(2)}% ` +
+        `exceeds tolerance ${o.providerDisagreementTolerancePct}%`,
+    });
   }
 
   const fatal = issues.some((x) =>
@@ -154,6 +229,10 @@ export function validateCandleSeriesIntegrity(
     x.code === 'FUTURE_TIMESTAMP' ||
     x.code === 'INVALID_OHLC' ||
     x.code === 'NEGATIVE_PRICE' ||
+    x.code === 'NEGATIVE_VOLUME' ||
+    x.code === 'INCOMPLETE_CURRENT_CANDLE' ||
+    x.code === 'INSUFFICIENT_WARMUP' ||
+    x.code === 'PROVIDER_DISAGREEMENT' ||
     (x.code === 'ZERO_VOLUME' && o.rejectZeroVolume),
   );
 

@@ -24,6 +24,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { InstitutionalHealthSnapshot } from './institutionalHealth';
+import { getDataQualityRejectionCounts } from '@/lib/signal-engine/lineage/dqCounters';
 
 interface PromContext {
   /** Snapshot from getInstitutionalHealthSnapshot(). */
@@ -418,6 +419,22 @@ export function renderPrometheusMetrics(ctx: PromContext): string {
       'gauge',
       [{ labels: kiteLabels, value: ctx.kite.avg_latency_ms }],
     );
+  }
+
+  // Phase 1 — data-quality rejection counters by reason × provider
+  {
+    const dqRows = getDataQualityRejectionCounts();
+    if (dqRows.length > 0) {
+      e.metric(
+        `${NAMESPACE}_data_quality_rejections_total`,
+        'Data-quality rejection counts by reason and provider (Phase 1).',
+        'counter',
+        dqRows.map((row) => ({
+          labels: { reason: row.reason, provider: row.provider },
+          value: row.count,
+        })),
+      );
+    }
   }
 
   // Newline-terminated body per Prometheus exposition format spec.

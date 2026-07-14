@@ -543,6 +543,10 @@ export async function generatePhase4Signals(
 
       lifecycleStatus: sig.lifecycle.state,
 
+      features: sig.features,
+      confidenceBreakdown: sig.confidenceBreakdown,
+      inputSnapshot: sig.inputSnapshot,
+
       // Enriched news score breakdown — preserve full scoreCard and impactBreakdown
       scoreCard: news.scoreCard,
       impactBreakdown: news.impactBreakdown,
@@ -643,9 +647,10 @@ export async function generatePhase4Signals(
       rewardRiskApprox: sig.tradePlan.rrTarget1,
       reasons: sig.reasons,
       warnings: sig.warnings,
-      features: undefined,
+      features: sig.features,
+      inputSnapshot: sig.inputSnapshot,
       relativeStrength: undefined,
-      confidenceBreakdown: undefined,
+      confidenceBreakdown: sig.confidenceBreakdown,
       riskBreakdown: undefined,
       status: sig.signalQualityStatus
         ? qualityToRowStatus(sig.signalQualityStatus)

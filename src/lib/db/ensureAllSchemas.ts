@@ -998,6 +998,11 @@ const ENSURE_COLUMNS: Array<{ table: string; column: string; definition: string 
   { table: 'q365_signal_outcomes', column: 'holding_period_bars', definition: 'INT DEFAULT NULL' },
   { table: 'q365_signal_outcomes', column: 'approval_status',    definition: 'VARCHAR(20) DEFAULT NULL' },
   { table: 'q365_signal_outcomes', column: 'created_at',         definition: 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' },
+  // Phase 1 — canonical input snapshot lineage (alongside features_json)
+  { table: 'q365_signal_feature_snapshots', column: 'input_snapshot_json', definition: 'JSON DEFAULT NULL' },
+  { table: 'q365_signal_feature_snapshots', column: 'provider_lineage', definition: 'VARCHAR(120) DEFAULT NULL' },
+  { table: 'q365_signal_feature_snapshots', column: 'data_quality_status', definition: 'VARCHAR(40) DEFAULT NULL' },
+  { table: 'q365_signal_feature_snapshots', column: 'data_timestamp', definition: 'DATETIME DEFAULT NULL' },
 ];
 
 /** Add a column only if it's missing. Mirrors migrateSignalEngine.ts:287. */
