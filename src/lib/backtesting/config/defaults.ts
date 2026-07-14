@@ -29,4 +29,7 @@ export const DEFAULT_BACKTEST_CONFIG: BacktestRunConfig = {
   strategies: null,
   signalExpiryBars: 5,
   fillModel: 'conservative',
+  universeMembershipMode: 'current_list_biased',
+  universeBiasLabel:
+    'Point-in-time membership unavailable — using configured universe as current-list proxy (survivorship bias labelled)',
 };

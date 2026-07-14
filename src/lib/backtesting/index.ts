@@ -9,8 +9,55 @@ export { persistFullRun } from './runner/runOrchestrator';
 export type { OrchestratedResult } from './runner/runOrchestrator';
 export { runBatchBacktests, generateParameterSweep } from './runner/runBatchBacktests';
 export type { BatchConfig, BatchResult } from './runner/runBatchBacktests';
-export { runWalkForward, generateWalkForwardFolds } from './runner/runWalkForward';
-export type { WalkForwardConfig, WalkForwardResult } from './runner/runWalkForward';
+export { runWalkForward, generateWalkForwardFolds, WALK_FORWARD_MODEL_VERSION } from './runner/runWalkForward';
+export type { WalkForwardConfig, WalkForwardResult, WalkForwardHeadlineMetrics, WalkForwardFold } from './runner/runWalkForward';
+
+// ── Phase 7 institutional validation ───────────────────────
+export {
+  PRODUCTION_PARITY_MODULES,
+  getProductionParityChecklist,
+  assertProductionParityModulesLoaded,
+  buildParityFingerprint,
+  PARITY_CONTRACT_VERSION,
+} from './parity/productionParity';
+export {
+  assertCandlesAsOf,
+  assertNewsPrecedsSignal,
+  assertFibAnchorsNoLookAhead,
+  auditUniverseMembership,
+  buildLeakageAudit,
+  forbidOosOptimisation,
+  LEAKAGE_GUARD_VERSION,
+} from './bias/leakageGuards';
+export type { LeakageAudit, LeakageFinding } from './bias/leakageGuards';
+export {
+  calibrateFromInSample,
+  applyFrozenCalibration,
+  IN_SAMPLE_CALIBRATION_VERSION,
+} from './calibration/inSampleCalibration';
+export {
+  runRobustnessSuite,
+  robustnessReportTemplate,
+  stressSlippage,
+  stressEntryDelay,
+  stressMissingData,
+  stressParameterPerturbation,
+  ROBUSTNESS_SUITE_VERSION,
+} from './robustness/robustnessSuite';
+export type { RobustnessReport } from './robustness/robustnessSuite';
+export {
+  compareBaselinesAndAblations,
+  buildAblationConfigs,
+  synthesizeRandomEntryControl,
+  BASELINE_COMPARE_VERSION,
+} from './robustness/baselineComparison';
+export type { BaselineCompareReport } from './robustness/baselineComparison';
+export {
+  evaluateStrategyVersionApproval,
+  DEFAULT_APPROVAL_THRESHOLDS,
+  STRATEGY_APPROVAL_VERSION,
+} from './approval/strategyVersionApproval';
+export type { StrategyVersionApprovalReport, StrategyVersionApprovalInput } from './approval/strategyVersionApproval';
 
 // ── Dexter AI Integration ──────────────────────────────────
 export { buildDexterOutput } from './api/dexterOutput';
@@ -113,4 +160,5 @@ export type {
   BacktestRunRequest, BacktestRunResponse,
   BacktestDetailResponse, BacktestTradesResponse,
   BacktestAnalyticsResponse, BacktestCalibrationResponse,
+  FrozenCalibrationArtifact, BacktestReproducibilityMeta,
 } from './types';

@@ -98,6 +98,7 @@
     "test:mtf": "vitest run src/__tests__/phase4MultiTimeframe.vitest.ts",
     "test:fibonacci-2": "vitest run src/__tests__/phase5FibonacciPullback.vitest.ts",
     "test:phase6": "vitest run src/__tests__/phase6StrategyRobustness.vitest.ts",
+    "test:phase7": "vitest run src/__tests__/phase7InstitutionalBacktesting.vitest.ts",
     "test:rejection-engine": "vitest run src/__tests__/rejectionEngine.vitest.ts",
     "benchmark:signal-quality": "tsx scripts/benchmarkSignalQuality.ts",
     "test:outcome-intelligence": "vitest run src/__tests__/outcomeIntelligence.vitest.ts",

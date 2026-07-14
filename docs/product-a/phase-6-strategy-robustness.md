@@ -40,4 +40,4 @@ npm run test:phase6
 npx tsc --noEmit
 ```
 
-**Do not start Phase 7 until signed off.**
+**Do not start Phase 7 until signed off.** (Phase 7 complete — see `phase-7-institutional-backtesting.md`.)

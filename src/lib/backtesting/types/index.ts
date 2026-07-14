@@ -80,6 +80,47 @@ export interface BacktestRunConfig {
   createdBy?: string;
   tags?: string[];
   userId?: number;                // owner — for SaaS multi-tenant scoping
+
+  // ── Phase 7 — institutional reproducibility / bias labels ──
+  /**
+   * How the universe was constructed.
+   * `current_list_biased` = today's membership applied historically (must be labelled).
+   * `asof_historical` / `point_in_time_proxy` = membership as-of signal date.
+   */
+  universeMembershipMode?: 'asof_historical' | 'point_in_time_proxy' | 'current_list_biased';
+  /** Human-readable bias label when using a biased universe. */
+  universeBiasLabel?: string | null;
+  /** Frozen in-sample calibration applied to OOS (walk-forward). */
+  frozenCalibration?: FrozenCalibrationArtifact | null;
+  /** Code / config / data version fingerprints for reproducibility. */
+  reproducibility?: BacktestReproducibilityMeta | null;
+}
+
+/** Phase 7 — frozen parameters from in-sample calibration. Never re-fit on OOS. */
+export interface FrozenCalibrationArtifact {
+  modelVersion: string;
+  foldIndex: number;
+  calibratedAt: string;
+  /** IS window that produced this freeze. */
+  inSampleStart: string;
+  inSampleEnd: string;
+  sampleSize: number;
+  /** Absolute adjustments applied to OOS filters (bounded). */
+  minConfidence: number;
+  minRewardRisk: number;
+  slippageBps: number;
+  /** Empirical hit-rate prior / shrink notes. */
+  notes: string[];
+  /** Hash of calibrated payload for audit. */
+  artifactHash: string;
+}
+
+export interface BacktestReproducibilityMeta {
+  codeVersion: string;
+  configVersion: string;
+  dataVersion: string;
+  signalEngineVersion: string;
+  walkForwardModelVersion?: string;
 }
 
 // ════════════════════════════════════════════════════════════════
