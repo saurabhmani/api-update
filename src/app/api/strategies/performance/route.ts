@@ -41,6 +41,10 @@ import {
   type StrategyPerformanceReport,
   type PerformanceOutcomeRow,
 } from '@/lib/strategies/strategyPerformance';
+import {
+  buildStrategyTransparencyBlock,
+  type StrategyTransparencyBlock,
+} from '@/lib/signals/strategyTransparency';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -51,6 +55,8 @@ interface PerformanceApiEnvelope extends StrategyPerformanceReport {
    *  the `include` query param requests one of those facets. */
   detail?: Record<string, StrategyDetailBlock>;
   selectedStrategy?: StrategyPerformance | null;
+  /** Phase 9 — per-strategy transparency blocks (CI, source labels, health). */
+  transparency?: Record<string, StrategyTransparencyBlock>;
   /** Audit hint — exposes how many rows each priority source
    *  contributed. Operators can read this to spot stale snapshots
    *  or backtest contamination. */
@@ -280,19 +286,41 @@ export async function GET(req: NextRequest) {
     ? report.strategies.find((s) => s.strategyId === strategyId) ?? null
     : undefined;
 
+  // Phase 9 — transparent metrics with source labels + Wilson CI
+  const transparency: Record<string, StrategyTransparencyBlock> = {};
+  for (const s of report.strategies) {
+    const regimeAvail = Boolean(detail[s.strategyId]?.regimePerformance?.length);
+    transparency[s.strategyId] = buildStrategyTransparencyBlock({
+      strategyVersion: null,
+      resolvedSampleCount: s.evaluatedSignals,
+      winRate: s.winRate,
+      entryTriggerRate: null,
+      expectancyR: s.expectancy,
+      profitFactor: s.profitFactor,
+      maxDrawdownPct: s.maxDrawdownPct,
+      avgMfe: s.maxFavorableExcursionAvg,
+      avgMae: s.maxAdverseExcursionAvg,
+      regimePerformanceAvailable: regimeAvail,
+      lastCalibrationDate: report.generatedAt,
+      healthLabel: s.healthLabel,
+      performanceSource: s.performanceSource,
+    });
+  }
+
   const envelope: PerformanceApiEnvelope = {
     ...report,
     minimumRequiredSignals: MIN_FOR_RANK,
+    transparency,
     sourceStatus: {
       directOutcomeRows:    direct.length,
       observedSnapshotRows: observed.length,
       backtestTradeRows:    backtests.length,
       strategySnapshots:    snapshotsByStrategy.size,
       priorityChain: [
-        'q365_signal_outcomes',
-        'q365_strategy_performance_snapshots',
-        'q365_confirmed_signal_snapshots',
-        'backtest_trades (completed runs only)',
+        'q365_signal_outcomes (live observed)',
+        'q365_strategy_performance_snapshots (live observed)',
+        'q365_confirmed_signal_snapshots (live observed)',
+        'backtest_trades (backtested — labelled separately)',
       ],
     },
     overall: buildOverallMetrics(outcomes),

@@ -100,6 +100,26 @@ interface DetailBlock {
   statusBreakdown?: StatusBucket[];
 }
 
+interface StrategyTransparencyBlock {
+  transparencyVersion: string;
+  strategyVersion: string | null;
+  resolvedSampleCount: number;
+  oosWinRate: number;
+  oosWinRateCi: { lower: number; upper: number };
+  entryTriggerRate: number | null;
+  expectancyR: number;
+  profitFactor: number;
+  maximumDrawdownPct: number;
+  averageMfe: number;
+  averageMae: number;
+  regimePerformanceAvailable: boolean;
+  lastCalibrationDate: string | null;
+  currentHealthState: string;
+  performanceSource: PerformanceSource;
+  performanceSourceLabel: string;
+  sourcesClearlyLabelled: true;
+}
+
 interface PerformancePayload {
   generatedAt: string;
   timeWindow: Window;
@@ -121,6 +141,7 @@ interface PerformancePayload {
   };
   detail?: Record<string, DetailBlock>;
   selectedStrategy?: StrategyPerformance | null;
+  transparency?: Record<string, StrategyTransparencyBlock>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -478,6 +499,7 @@ export default function StrategyPerformancePage() {
             <DetailContent
               perf={selectedStrategy}
               detail={selectedDetail ?? null}
+              transparency={data?.transparency?.[selected] ?? null}
             />
           </Card>
         )}
@@ -541,9 +563,48 @@ function EmptyLeaderboard({ window }: { window: Window }) {
   );
 }
 
-function DetailContent({ perf, detail }: { perf: StrategyPerformance; detail: DetailBlock | null }) {
+function DetailContent({
+  perf,
+  detail,
+  transparency,
+}: {
+  perf: StrategyPerformance;
+  detail: DetailBlock | null;
+  transparency: StrategyTransparencyBlock | null;
+}) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {transparency && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+          gap: 10,
+          padding: 12,
+          background: '#F8FAFC',
+          borderRadius: 8,
+          border: '1px solid #E2E8F0',
+        }}>
+          <Metric label="Source" value={transparency.performanceSourceLabel} />
+          <Metric label="Sample (resolved)" value={String(transparency.resolvedSampleCount)} />
+          <Metric
+            label="OOS win rate (95% CI)"
+            value={`${transparency.oosWinRate.toFixed(1)}% [${transparency.oosWinRateCi.lower.toFixed(1)}–${transparency.oosWinRateCi.upper.toFixed(1)}]`}
+          />
+          <Metric label="Expectancy (R)" value={transparency.expectancyR.toFixed(2)} />
+          <Metric label="Profit factor" value={transparency.profitFactor.toFixed(2)} />
+          <Metric label="Max drawdown" value={`${transparency.maximumDrawdownPct.toFixed(1)}%`} />
+          <Metric label="Avg MFE" value={transparency.averageMfe.toFixed(2)} />
+          <Metric label="Avg MAE" value={transparency.averageMae.toFixed(2)} />
+          <Metric label="Health" value={transparency.currentHealthState} />
+          <Metric label="Last calibration" value={transparency.lastCalibrationDate?.slice(0, 10) ?? '—'} />
+          <Metric label="Strategy version" value={transparency.strategyVersion ?? '—'} />
+          <Metric
+            label="Entry-trigger rate"
+            value={transparency.entryTriggerRate != null ? `${(transparency.entryTriggerRate * 100).toFixed(1)}%` : '—'}
+          />
+        </div>
+      )}
+
       {/* Summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10 }}>
         <Metric label="Total" value={String(perf.totalSignals)} />
@@ -556,6 +617,12 @@ function DetailContent({ perf, detail }: { perf: StrategyPerformance; detail: De
 
       <div style={{ padding: '10px 14px', background: '#F8FAFC', borderLeft: '3px solid #1D4ED8', borderRadius: 6, fontSize: 12, color: '#334155', lineHeight: 1.5 }}>
         <strong>Health:</strong> {perf.healthExplanation}
+        {transparency && (
+          <div style={{ marginTop: 6, color: '#64748B' }}>
+            Results labelled as <strong>{transparency.performanceSourceLabel}</strong>
+            {' '}— backtested, paper, and live-observed are never mixed without labels.
+          </div>
+        )}
       </div>
 
       {/* Status breakdown */}

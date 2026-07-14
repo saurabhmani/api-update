@@ -127,6 +127,8 @@ export interface SignalRow {
   institutionalBlockers?:            string[] | null;
   institutionalWarnings?:            string[] | null;
   decisionTrace?:                    Array<{ layer: string; reason: string; severity: string; meta?: unknown }> | null;
+  /** Phase 9 — canonical Product A card attached by responseAssembly. */
+  product_a?:                        import('@/lib/signals/productASignalContract').ProductASignalCard | null;
 }
 
 // ── LKG envelope (subset of API response) ────────────────────────

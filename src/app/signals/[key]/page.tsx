@@ -1,14 +1,25 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Badge, Loading, Empty } from '@/components/ui';
 import { fmt } from '@/lib/utils';
 import { Zap, ChevronDown, ChevronUp } from 'lucide-react';
+import { ProductASignalCard } from '@/components/signals/ProductASignalCard';
+import { buildProductASignalCard } from '@/lib/signals/productASignalContract';
 import '@/styles/components/_intelligence.scss';
 
 function SignalChip({ dir }: { dir: string }) {
   return <span className={`signal-chip signal-chip--${dir}`}>{dir}</span>;
+}
+
+async function postManualAction(body: Record<string, unknown>) {
+  const res = await fetch('/api/signals/manual-actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json().catch(() => ({}));
 }
 
 export default function SignalDetailPage() {
@@ -16,6 +27,7 @@ export default function SignalDetailPage() {
   const symbol             = decodeURIComponent(key).toUpperCase();
   const [signal, setSignal] = useState<any>(null);
   const [loading, setLoad]  = useState(true);
+  const [showLegacy, setShowLegacy] = useState(false);
 
   useEffect(() => {
     fetch(`/api/signals?action=instrument&symbol=${encodeURIComponent(symbol)}`)
@@ -24,13 +36,77 @@ export default function SignalDetailPage() {
       .finally(() => setLoad(false));
   }, [symbol]);
 
+  const productCard = useMemo(() => {
+    if (!signal) return null;
+    if (signal.product_a) return signal.product_a;
+    return buildProductASignalCard({
+      id: signal.id,
+      symbol: signal.tradingsymbol ?? signal.symbol ?? symbol,
+      direction: signal.direction,
+      strategy: signal.strategy ?? signal.signal_type,
+      confidence_score: signal.confidence_score ?? signal.confidence,
+      final_score: signal.final_score,
+      institutional_score: signal.institutional_score,
+      maturity_score: signal.maturity_score,
+      entry_price: signal.entry_price,
+      stop_loss: signal.stop_loss,
+      target1: signal.target1,
+      target2: signal.target2,
+      target3: signal.target3,
+      risk_reward: signal.risk_reward,
+      livePrice: signal.livePrice ?? signal.ltp,
+      status: signal.status,
+      signal_status: signal.signal_status,
+      classification: signal.classification,
+      execution_allowed: signal.execution_allowed,
+      live_invalidated: signal.live_invalidated,
+      invalidation_reason: signal.invalidation_reason,
+      rejection_reason: signal.rejection_reason ?? signal.demotionReason,
+      generated_at: signal.generated_at,
+      confirmed_at: signal.confirmed_at,
+      valid_until: signal.valid_until,
+      regime: signal.regime ?? signal.market_regime,
+      sector: signal.sector,
+      explanation: signal.explanation,
+      audit_snapshot_id: signal.id,
+      is_elite: String(signal.classification ?? '').includes('INSTITUTIONAL')
+        || String(signal.classification ?? '') === 'HIGH_CONVICTION',
+    });
+  }, [signal, symbol]);
+
+  const onAddToWatchlist = useCallback(async (sym: string) => {
+    await postManualAction({ action: 'add_to_watchlist', symbol: sym });
+  }, []);
+
+  const onCreateAlert = useCallback(async (payload: {
+    symbol: string;
+    kind: 'entry_valid' | 'expire_or_invalidate';
+    targetPrice?: number | null;
+  }) => {
+    await postManualAction({
+      action: payload.kind === 'entry_valid' ? 'alert_entry_valid' : 'alert_expire_or_invalidate',
+      symbol: payload.symbol,
+      target_price: payload.targetPrice,
+    });
+  }, []);
+
+  const onJournal = useCallback(async (payload: { symbol: string; signalId: number | null; note: string }) => {
+    if (!payload.note.trim()) return;
+    await postManualAction({
+      action: 'manual_trade_journal',
+      symbol: payload.symbol,
+      signalId: payload.signalId,
+      note: payload.note,
+    });
+  }, []);
+
   return (
     <AppShell title={`Signal: ${symbol}`}>
       <div className="page">
         <div className="page__header">
           <div>
             <h1>{symbol}</h1>
-            <p>Live signal analysis</p>
+            <p>Product A — manual signal experience</p>
           </div>
         </div>
 
@@ -38,8 +114,29 @@ export default function SignalDetailPage() {
           <Empty icon={Zap} title="Signal unavailable" description="Could not fetch data for this symbol. Check the symbol or try again." />
         ) : (
           <div style={{ display: 'grid', gap: 20 }}>
+            {productCard && (
+              <ProductASignalCard
+                card={productCard}
+                onAddToWatchlist={onAddToWatchlist}
+                onCreateAlert={onCreateAlert}
+                onJournal={onJournal}
+              />
+            )}
 
-            {/* Hero */}
+            <button
+              type="button"
+              onClick={() => setShowLegacy((v) => !v)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                background: 'transparent', border: 'none', color: '#64748B',
+                fontSize: 12, cursor: 'pointer', padding: 0, width: 'fit-content',
+              }}
+            >
+              {showLegacy ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {showLegacy ? 'Hide legacy detail' : 'Show legacy detail'}
+            </button>
+
+            {showLegacy && (
             <Card>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
                 <div>
@@ -58,7 +155,6 @@ export default function SignalDetailPage() {
                 </div>
               </div>
 
-              {/* Confidence bar */}
               <div style={{ marginBottom: 20 }}>
                 <div className="confidence-bar__track" style={{ height: 10 }}>
                   <div
@@ -68,7 +164,6 @@ export default function SignalDetailPage() {
                 </div>
               </div>
 
-              {/* Levels */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
                 {[
                   { label: 'Entry', value: signal.entry_price, color: '#1E3A5F' },
@@ -78,110 +173,12 @@ export default function SignalDetailPage() {
                 ].map(({ label, value, color }) => (
                   <div key={label} style={{ background: '#F8FAFC', borderRadius: 10, padding: '14px 16px', textAlign: 'center', border: '1px solid #E2E8F0' }}>
                     <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600, marginBottom: 6 }}>{label}</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color }}>{fmt.currency(value)}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color }}>{fmt.number(value)}</div>
                   </div>
                 ))}
               </div>
-
-              {signal.risk_reward && (
-                <div style={{ marginTop: 14, fontSize: 13, color: '#64748B', textAlign: 'center' }}>
-                  Risk / Reward Ratio: <strong style={{ color: '#0F172A' }}>1:{signal.risk_reward}</strong>
-                </div>
-              )}
             </Card>
-
-            {/* Institutional decision panel — only renders when the
-                final-decision gate adjusted the row (Phase 3 + 5 + 6).
-                Demotion-only, so when shown it always communicates a
-                stricter status than the raw classification. */}
-            {signal.decisionChanged === true && (
-              <Card title="Institutional decision">
-                <div style={{ display: 'grid', gap: 10, fontSize: 13, color: '#334155' }}>
-                  <div>
-                    <strong style={{ color: '#0F172A' }}>Decision adjusted by institutional risk gate.</strong>
-                    {signal.demotionReason ? (
-                      <div style={{ marginTop: 4, color: '#64748B' }}>{signal.demotionReason}</div>
-                    ) : null}
-                  </div>
-                  <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>Raw status</div>
-                      <div style={{ fontWeight: 700, color: '#475569' }}>{signal.rawApprovalStatus ?? '—'}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>Effective status</div>
-                      <div style={{ fontWeight: 700, color: '#92400E' }}>{signal.effectiveApprovalStatus ?? '—'}</div>
-                    </div>
-                  </div>
-                  {Array.isArray(signal.institutionalBlockers) && signal.institutionalBlockers.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600, marginBottom: 4 }}>Blockers</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {signal.institutionalBlockers.map((b: string, i: number) => (
-                          <li key={i} style={{ color: '#475569' }}>{b}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {Array.isArray(signal.institutionalWarnings) && signal.institutionalWarnings.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600, marginBottom: 4 }}>Warnings</div>
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
-                        {signal.institutionalWarnings.map((w: string, i: number) => (
-                          <li key={i} style={{ color: '#64748B' }}>{w}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {Array.isArray(signal.decisionTrace) && signal.decisionTrace.length > 0 && (
-                    <details style={{ marginTop: 4 }}>
-                      <summary style={{ cursor: 'pointer', fontSize: 12, color: '#64748B' }}>Decision trace ({signal.decisionTrace.length})</summary>
-                      <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: '#475569' }}>
-                        {signal.decisionTrace.map((t: any, i: number) => (
-                          <li key={i}>
-                            <span style={{ color: '#94A3B8', fontWeight: 600 }}>{t.layer}</span>
-                            {' — '}
-                            <span>{t.reason}</span>
-                            {t.severity ? <span style={{ marginLeft: 6, color: t.severity === 'blocker' ? '#DC2626' : t.severity === 'warning' ? '#D97706' : '#94A3B8', fontSize: 11 }}>({t.severity})</span> : null}
-                          </li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-                </div>
-              </Card>
             )}
-
-            {/* Reasons */}
-            <Card title="Why this signal?">
-              {signal.reasons?.length ? signal.reasons.map((r: any, i: number) => {
-                const label = r.label ?? r.text ?? r.message ?? 'Reason';
-                const desc = r.description ?? (r.label && r.text ? r.text : '');
-                const rawScore = typeof r.score === 'number' ? r.score : typeof r.contribution === 'number' ? r.contribution : null;
-                const scoreDisplay = rawScore != null && Number.isFinite(rawScore)
-                  ? `${rawScore > 0 ? '+' : ''}${(rawScore * 100).toFixed(0)}`
-                  : null;
-                return (
-                <div key={r.key ?? r.factor_key ?? r.rank ?? i} className="reason-item">
-                  <div className={`reason-item__dot reason-item__dot--${(rawScore ?? 0) > 0 ? 'positive' : (rawScore ?? 0) < 0 ? 'negative' : 'neutral'}`} />
-                  <div style={{ flex: 1 }}>
-                    <div className="reason-item__label">{label}</div>
-                    {desc ? <div className="reason-item__desc">{desc}</div> : null}
-                  </div>
-                  {scoreDisplay ? (
-                    <div style={{ fontSize: 11, fontWeight: 700, color: (rawScore ?? 0) > 0 ? '#16A34A' : (rawScore ?? 0) < 0 ? '#DC2626' : '#94A3B8' }}>
-                      {scoreDisplay}
-                    </div>
-                  ) : null}
-                </div>
-              ); }) : <p style={{ color: '#94A3B8', fontSize: 14 }}>No detailed reasons available.</p>}
-            </Card>
-
-            {/* Disclaimer */}
-            <div style={{ background: '#FEF9E7', border: '1px solid #FDE68A', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: '#92400E' }}>
-              ⚠️ Signals are generated by rule-based algorithms using public market data. They are for informational purposes only and do not constitute financial advice. Always do your own research and manage risk carefully.
-            </div>
-
           </div>
         )}
       </div>

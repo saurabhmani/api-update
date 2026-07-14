@@ -306,23 +306,19 @@ export function buildEmptyStateMessage(
   highPotentialCount = 0,
 ): string | null {
   if (p.approved.length > 0) return null;
-  if (highPotentialCount > 0) {
-    return `No fully confirmed signals. Showing ${highPotentialCount} strongest conditional opportunit${highPotentialCount === 1 ? 'y' : 'ies'}.`;
+  // Phase 9 — scarcity is acceptable; never suggest filling the page.
+  const watch =
+    p.developing.length + p.scannerCandidates.length + p.watchlist.length + highPotentialCount;
+  if (watch > 0) {
+    return (
+      `No elite setup currently meets Quantorus quality standards. ` +
+      `${watch} opportunit${watch === 1 ? 'y' : 'ies'} remain on the watchlist awaiting confirmation.`
+    );
   }
-  const parts: string[] = [];
-  if (p.developing.length > 0) {
-    parts.push(`${p.developing.length} setup${p.developing.length === 1 ? '' : 's'} awaiting confirmation`);
-  }
-  if (p.scannerCandidates.length > 0) {
-    parts.push(`${p.scannerCandidates.length} emerging opportunit${p.scannerCandidates.length === 1 ? 'y' : 'ies'}`);
-  }
-  if (p.watchlist.length > 0) {
-    parts.push(`${p.watchlist.length} on watchlist`);
-  }
-  if (parts.length === 0) {
-    return 'No execution-ready signals — engine has not produced any candidates this cycle.';
-  }
-  return `No execution-ready signals. See ${parts.join(', ')} in the side tabs.`;
+  return (
+    'No elite setup currently meets Quantorus quality standards. ' +
+    'Scarcity is intentional — Quantorus will not fill this page with synthetic or relaxed signals.'
+  );
 }
 
 // ════════════════════════════════════════════════════════════════

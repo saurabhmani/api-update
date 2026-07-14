@@ -48,4 +48,4 @@ npm run test:drift-detection
 npm run test:promotion-pipeline
 ```
 
-**Do not start Phase 9 until signed off.**
+**Phase 9 status:** Implemented — see `docs/product-a/phase-9-manual-signal-experience.md`.

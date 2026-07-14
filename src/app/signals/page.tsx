@@ -42,6 +42,8 @@ import {
   RiskRewardCell,
   ExplanationSummary,
 } from '@/components/signals/Phase12SignalRow';
+import { ProductASignalCard } from '@/components/signals/ProductASignalCard';
+import { buildProductASignalCard } from '@/lib/signals/productASignalContract';
 // EmergingOpportunitiesSection import removed (UI-SIMPLIFY §1 — single-table dashboard).
 // SignalExplanation only referenced by the moved SignalRow interface;
 // no longer imported here.
@@ -3166,10 +3168,12 @@ export default function SignalsPage() {
               // rows at all) so the user knows whether the engine ran.
               const eliteFilteredOut = signalRows.length > 0 && validRows.length === 0;
               let title    = eliteFilteredOut
-                ? 'No institutional-grade setups available.'
+                ? 'No elite setup currently meets Quantorus quality standards.'
                 : 'No signals in database';
               let subtitle = eliteFilteredOut
-                ? `Quality > quantity. ${signalRows.length} row${signalRows.length === 1 ? '' : 's'} reached the response but none cleared the elite institutional floors (confidence ≥ 75, institutional_score ≥ 80, RR ≥ 2.0, stress ≥ 75, freshness fresh, live VALID, classification ∈ {INSTITUTIONAL_HIGH_CONVICTION, HIGH_CONVICTION}).`
+                ? ((counters?.watchlistTotal ?? 0) + (counters?.highPotentialTotal ?? 0) > 0
+                    ? `${(counters?.watchlistTotal ?? 0) + (counters?.highPotentialTotal ?? 0)} opportunities remain on the watchlist awaiting confirmation.`
+                    : 'Scarcity is intentional — Quantorus will not fill this page with synthetic or relaxed signals.')
                 : 'Click "Run Pipeline" to generate fresh signals';
               // Market-closed mode wins over the stored-signal heuristics
               // below — without this, the page reports "Stored signals are
@@ -3184,8 +3188,8 @@ export default function SignalsPage() {
                 // candidate references are intentionally NOT mentioned
                 // here per ELITE-2026-05 (no fallback candidates
                 // visible).
-                title    = 'No institutional-grade setups available.';
-                subtitle = 'Market is closed. The next pre-open scan will refresh the elite tier.';
+                title    = 'No elite setup currently meets Quantorus quality standards.';
+                subtitle = 'Market is closed. The next pre-open scan will refresh when setups meet quality standards.';
                 if (marketClosed.market_data.length > 0) {
                   subtitle += ` Last-close prices for ${marketClosed.market_data.length} symbols are shown above.`;
                 }
@@ -3725,11 +3729,64 @@ export default function SignalsPage() {
                     {ddOpen && ddRow && (
                       <tr key={`${rowKey}-dd`} style={{ background: '#F8FAFC' }}>
                         <td colSpan={28} style={{ padding: '10px 12px' }}>
-                          <DueDiligencePanel
-                            dueDiligence={ddRow}
-                            performanceReview={perfRow}
-                            manipulationRisk={(s as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
-                          />
+                          <div style={{ display: 'grid', gap: 12 }}>
+                            {(() => {
+                              const pa = (s as SignalRow).product_a
+                                ?? buildProductASignalCard({
+                                  id: s.id,
+                                  symbol: s.tradingsymbol ?? s.symbol,
+                                  direction: s.direction,
+                                  strategy: (s as { strategy?: string }).strategy
+                                    ?? (s as { strategyId?: string }).strategyId
+                                    ?? (s as { signal_type?: string }).signal_type,
+                                  confidence_score: s.confidence_score ?? s.confidence,
+                                  final_score: s.final_score,
+                                  institutional_score: (s as { institutional_score?: number }).institutional_score,
+                                  maturity_score: s.maturity_score,
+                                  entry_price: s.entry_price,
+                                  stop_loss: s.stop_loss,
+                                  target1: s.target1,
+                                  target2: s.target2,
+                                  target3: (s as { target3?: number }).target3,
+                                  risk_reward: s.risk_reward,
+                                  livePrice: s.livePrice ?? s.ltp,
+                                  status: s.status,
+                                  signal_status: s.signal_status,
+                                  classification: s.classification,
+                                  execution_allowed: activeTab === 'APPROVED',
+                                  live_invalidated: s.live_invalidated,
+                                  invalidation_reason: (s as { invalidation_reason?: string }).invalidation_reason,
+                                  rejection_reason: s.demotionReason ?? s.rejection_reasons?.[0],
+                                  generated_at: s.generated_at,
+                                  valid_until: s.valid_until,
+                                  regime: s.regime,
+                                  explanation: s.explanation as unknown as Record<string, unknown> | null,
+                                  is_elite: activeTab === 'APPROVED',
+                                  audit_snapshot_id: s.id,
+                                });
+                              return (
+                                <ProductASignalCard
+                                  card={
+                                    activeTab !== 'APPROVED' && pa.executionAllowed
+                                      ? {
+                                          ...pa,
+                                          signalState: 'watchlist',
+                                          executionAllowed: false,
+                                          whyNotTrade: pa.whyNotTrade.length
+                                            ? pa.whyNotTrade
+                                            : [{ code: 'watchlist', message: 'Setup is on the watchlist awaiting confirmation.' }],
+                                        }
+                                      : pa
+                                  }
+                                />
+                              );
+                            })()}
+                            <DueDiligencePanel
+                              dueDiligence={ddRow}
+                              performanceReview={perfRow}
+                              manipulationRisk={(s as { manipulationRisk?: WireManipulationRisk | null }).manipulationRisk}
+                            />
+                          </div>
                         </td>
                       </tr>
                     )}

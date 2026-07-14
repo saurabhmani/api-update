@@ -222,9 +222,11 @@ function composeNextWatchItems(i: SignalExplanationInput): string[] {
 function composeOperatorActions(i: SignalExplanationInput): string[] {
   const actions: string[] = [];
   if (i.action === 'APPROVED') {
-    actions.push('Review entry zone and place order with the trade plan stop-loss.');
+    actions.push('Review entry zone and execute manually with your broker using the trade plan stop-loss.');
+    actions.push('Copy the trade plan — Product A does not place broker orders.');
   } else if (i.action === 'WATCHLIST') {
-    actions.push('Monitor for confirmation — do not pre-emptively enter.');
+    actions.push('Monitor for confirmation — do not enter early.');
+    actions.push('Add to watchlist and set an entry-valid alert.');
   } else if (i.action === 'REJECTED') {
     actions.push('No action recommended — the signal did not clear approval gates.');
   } else {

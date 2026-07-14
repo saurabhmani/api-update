@@ -101,6 +101,14 @@ import {
   buildManipulationRiskMeta,
   type ManipulationRiskMeta,
 } from '@/lib/signals/manipulationRiskFetch';
+import {
+  buildProductASignalCard,
+  type ProductASignalCard,
+} from '@/lib/signals/productASignalContract';
+import {
+  buildProductAScarcityMessage,
+  enrichEmptyStateMessage,
+} from '@/lib/signals/productAScarcity';
 
 const log = logger.child({ component: 'responseAssembly' });
 
@@ -450,6 +458,17 @@ export interface SignalsResponsePayload {
   manipulationGateImpact?: ManipulationGateImpact;
   /** Stable scanner metadata for health probes — present every cycle. */
   manipulationRiskMeta:    ManipulationRiskMeta;
+
+  // ── PHASE_9 Product A Manual Signal Experience ──
+  /** Canonical Product A card contract version on this payload. */
+  product_a_contract_version?: string;
+  /** Scarcity-aware empty-state copy when elite/actionable counts are zero. */
+  empty_state_message?: string | null;
+  product_a_scarcity?: {
+    title: string;
+    subtitle: string;
+    scarcityOk: boolean;
+  } | null;
 }
 
 export interface ClosestToApprovalRow {
@@ -1380,6 +1399,60 @@ export async function buildSignalsResponsePayload(
                       + enrichedRejectedDisplay.length,
   });
 
+  // ── Phase 9 — attach canonical Product A cards (same numbers everywhere)
+  const attachProductA = <T extends Record<string, unknown>>(
+    rows: T[],
+    opts: { isElite?: boolean; forceWatchlist?: boolean },
+  ): Array<T & { product_a: ProductASignalCard }> =>
+    rows.map((r) => {
+      const status = String(r.status ?? '').toUpperCase();
+      const liveInvalid = r.live_invalidated === true || !!r.invalidation_reason;
+      const card = buildProductASignalCard({
+        ...(r as Parameters<typeof buildProductASignalCard>[0]),
+        is_elite: opts.isElite === true && !liveInvalid && status !== 'EXPIRED',
+        missing_approval_factors: Array.isArray(r.missingApprovalFactors)
+          ? (r.missingApprovalFactors as string[])
+          : undefined,
+      });
+      // Never ship expired/invalidated as actionable in Product A contract
+      if (opts.forceWatchlist && card.executionAllowed) {
+        return {
+          ...r,
+          product_a: {
+            ...card,
+            signalState: 'watchlist' as const,
+            executionAllowed: false,
+            whyNotTrade: card.whyNotTrade.length
+              ? card.whyNotTrade
+              : [{ code: 'watchlist', message: 'Setup is on the watchlist awaiting confirmation.' }],
+          },
+        };
+      }
+      return { ...r, product_a: card };
+    });
+
+  enrichedApproved = attachProductA(enrichedApproved as any[], { isElite: true }) as typeof enrichedApproved;
+  enrichedHighPotential = attachProductA(enrichedHighPotential as any[], { forceWatchlist: true }) as typeof enrichedHighPotential;
+  enrichedWatchlist = attachProductA(enrichedWatchlist as any[], { forceWatchlist: true }) as typeof enrichedWatchlist;
+  enrichedDeveloping = attachProductA(enrichedDeveloping as any[], { forceWatchlist: true }) as typeof enrichedDeveloping;
+  enrichedScannerCandidates = attachProductA(enrichedScannerCandidates as any[], { forceWatchlist: true }) as typeof enrichedScannerCandidates;
+  enrichedRiskRestricted = attachProductA(enrichedRiskRestricted as any[], { forceWatchlist: true }) as typeof enrichedRiskRestricted;
+
+  const watchlistCountForScarcity =
+    enrichedWatchlist.length + enrichedDeveloping.length + enrichedScannerCandidates.length;
+  const scarcity = buildProductAScarcityMessage({
+    eliteCount: enrichedApproved.length,
+    actionableCount: enrichedApproved.length,
+    watchlistCount: watchlistCountForScarcity,
+    highPotentialCount: enrichedHighPotential.length,
+  });
+  const emptyStateMessage = enrichEmptyStateMessage(null, {
+    eliteCount: enrichedApproved.length,
+    actionableCount: enrichedApproved.length,
+    watchlistCount: watchlistCountForScarcity,
+    highPotentialCount: enrichedHighPotential.length,
+  });
+
   return {
     response_generated_at:  new Date().toISOString(),
     request_id:             requestId,
@@ -1475,6 +1548,11 @@ export async function buildSignalsResponsePayload(
 
     // ── PHASE_5_HEALTH_OBSERVABILITY_2026-05 ──
     healthPreview,
+
+    // ── PHASE_9 Product A Manual Signal Experience ──
+    product_a_contract_version: '9.0.0',
+    empty_state_message:        emptyStateMessage,
+    product_a_scarcity:         scarcity,
 
     // ── PHASE_B_MANIPULATION_INTEGRATION — gate-impact telemetry ──
     manipulationGateImpact: manipulationRiskMap ? (() => {
