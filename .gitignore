@@ -38,7 +38,7 @@ stockUpdate.txt
 # misc
 coverage/
 dist/
-reports/
+/reports/
 backups/
 releases/
 
