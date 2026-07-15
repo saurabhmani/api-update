@@ -2,7 +2,7 @@
 
 **Project:** Quantorus365  
 **Version from `package.json`:** 2.1.0  
-**Last analyzed:** 2026-07-10  
+**Last analyzed:** 2026-07-15  
 **Scope:** Current implementation in source code, `package.json`, `server.js`, `ecosystem.config.js`, workers, and migrations. Generated/vendor directories (`.next/`, `node_modules/`) are excluded from architectural conclusions.
 
 > **Source of truth:** This document describes what the code does today. Where older docs (`docs/signal-engine-flow.md`, `docs/database-inventory.md`, proposal SQL files) disagree with implementation, the code wins. Planned or deprecated features are called out explicitly.
@@ -105,7 +105,7 @@ sequenceDiagram
 | Manipulation one-shot | Daily 18:30 IST (UTC cron) | `manipulationScannerCli.ts` |
 | Learning one-shot | Daily 20:30 IST (UTC cron) | `learningScheduler.ts` |
 
-**Note:** Legacy in-process Kite ticker WS was removed. Live ticks use `LIVE_FEED_PROVIDER` (default Yahoo public chart poll) + in-process `tickBus` fan-out; quote primary remains Kite → removed vendor via MarketDataProvider / resolver.
+**Note:** The Kite Connect WebSocket streaming ticker integration (`KiteTickerImpl`) has been restored. Live ticks use `LIVE_FEED_PROVIDER` (which resolves to `'kite'` when Kite is primary and enabled, otherwise falling back to `'yahoo'` polling). Active symbol subscriptions are dynamically updated via `syncPollLoop()` on the ticker, and live tick updates are broadcasted to the system via the `tickBus` fan-out.
 
 **Dev:** `npm run dev` → `next dev`. In-process scheduler optional via `Q365_INPROC_SCHEDULER=1` (`bootInProc.ts`).
 
@@ -415,9 +415,11 @@ Retained permanently as **fallback + unsupported features** (movers, trending, n
 
 **Verify script:** `npx tsx scripts/verifylegacy_vendorEndpoints.ts`
 
-### Yahoo / Kite
+### Yahoo / Kite / WebSocket Ticker
 
 - **Kite Connect:** Default live + historical primary via `KiteAdapter` / `MarketDataProvider` (Phase 9). Requires `KITE_API_KEY` + `KITE_ACCESS_TOKEN`.
+- **Kite WebSocket Ticker (`KiteTickerImpl`):** Restored streaming integration using `kiteconnect`. When `LIVE_FEED_PROVIDER` resolves to `'kite'` (active when Kite is primary and enabled), `liveMarketFeed.ts` starts the ticker, listens to streaming `'ticks'`, maps them to `MarketSnapshot`, publishes them to the client stream, and propagates them. Symbol subscriptions are dynamically synchronized via `syncPollLoop()`.
+- **Hybrid Streaming/Polling Failover:** During active streaming, `pollOnce()` bypasses external HTTP requests if the WebSocket state is `'open'`. If the connection is down or closed, it automatically falls back to polling legacy vendor batches.
 - **Yahoo:** Emergency fallback path + `fetchYahooPublicQuote` in enrich fallback; `YahooAdapter.ts` largely stubbed for primary paths (`@deprecated` markers).
 
 ### Evening candles
@@ -653,7 +655,6 @@ These are **not** completed features — do not treat as production-ready:
 | Sector performance in daily report | `getSectorPerformance()` returns empty — Phase 4B backlog (`historicalMarketData.ts`) |
 | Signals page chip vs full report status | Chip uses stricter `movePercent` rule; can show INSUFFICIENT while full report is PARTIAL/COMPLETE |
 | Yahoo primary paths | Stubbed/deprecated; emergency flag off by default |
-| Kite live feed | Removed |
 | OAuth social login | UI buttons only |
 | Payment gateway | Billing is internal wallet logic |
 | `npm run test:release-gate` | Referenced in docs, not in `package.json` |

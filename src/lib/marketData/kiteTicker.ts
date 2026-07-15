@@ -1,26 +1,15 @@
 // ════════════════════════════════════════════════════════════════
-//  kiteTicker — NEUTRALIZED STUB // @deprecated marker
-//  @deprecated — WebSocket ticker is gone; every state read returns
-//  'closed', every tick lookup returns null.
-//
-//  The Kite integration has been removed from this system (signal- // @deprecated marker
-//  only analytics mode). This module previously owned the Kite // @deprecated marker
-//  WebSocket singleton; it now exposes the same public surface so
-//  ~37 call sites across the repo continue to compile, but every
-//  operation reports "not live" and every tick lookup returns null.
-//
-//  Consumers that previously branched on `ticker.getStatus().state`
-//  take the not-live path unconditionally, which matches the new
-//  data pipeline (Yahoo-primary). Execution-critical callers that // @deprecated marker
-//  used getLiveTick() now throw WsDownError on every call — they
-//  should never be invoked in signal-only mode.
-//
-//  Safe to delete this file outright once every importer has been
-//  migrated off these exports. The stub is the transitional step
-//  that keeps tsc green during the migration.
+//  kiteTicker — Kite Connect WebSocket integration
 // ════════════════════════════════════════════════════════════════
 
 import { EventEmitter } from 'events';
+import { KiteTicker as KiteConnectTicker } from 'kiteconnect';
+import { getKiteClient } from '../kite/client';
+import { getInstrumentBySymbol, downloadInstruments } from '../kite/instruments';
+import { logger } from '@/lib/logger';
+import { recordKiteCall } from '../kite/health';
+
+const log = logger.child({ component: 'kite.ticker' });
 
 export type TickMode = 'ltp' | 'quote' | 'full';
 
@@ -37,11 +26,12 @@ export interface Tick {
   change?: number;
   pChange?: number;
   ts: number;
-  source?: 'kite' | 'yahoo'; // @deprecated marker
+  source?: 'kite' | 'yahoo';
 }
 
-export function isFresh(_tick: Tick | null | undefined, _maxAgeMs = 3_000): boolean {
-  return false;
+export function isFresh(tick: Tick | null | undefined, maxAgeMs = 3_000): boolean {
+  if (!tick) return false;
+  return Date.now() - tick.ts <= maxAgeMs;
 }
 
 export class StaleTickError extends Error {
@@ -63,19 +53,11 @@ export class WsDownError extends Error {
   }
 }
 
-export function getLiveTick(_symbol: string): Tick {
-  throw new WsDownError('kite_removed'); // @deprecated marker
-}
-
-export function tryGetLiveTick(_symbol: string): Tick | null {
-  return null;
-}
-
-interface KiteTickerStatus { // @deprecated marker
+interface KiteTickerStatus {
   state:             'idle' | 'connecting' | 'open' | 'closed';
   loginRequired:     boolean;
   subscribedCount:   number;
-  subscribed:        number;         // alias consumers use
+  subscribed:        number;
   ticksCached:       number;
   tickRatePerSec:    number;
   lastTickAt:        number | null;
@@ -86,66 +68,268 @@ interface KiteTickerStatus { // @deprecated marker
   bridgeErrorCount:  number;
 }
 
-class KiteTickerStub extends EventEmitter { // @deprecated marker
+class KiteTickerImpl extends EventEmitter {
   readonly ticks = new Map<number, Tick>();
+  private tokenToSymbol = new Map<number, string>();
+  private symbolToToken = new Map<string, number>();
 
-  getStatus(): KiteTickerStatus { // @deprecated marker
+  private ticker: any | null = null;
+  private state: 'idle' | 'connecting' | 'open' | 'closed' = 'idle';
+  private loginRequired = false;
+  private lastTickAt: number | null = null;
+  private lastConnectedAt: number | null = null;
+  private lastError: string | null = null;
+  private reconnectAttempts = 0;
+  private packetsReceived = 0;
+  private bridgeErrorCount = 0;
+
+  private activeSubscriptions = new Set<string>();
+
+  getStatus(): KiteTickerStatus {
     return {
-      state:             'closed',
-      loginRequired:     true,
-      subscribedCount:   0,
-      subscribed:        0,
-      ticksCached:       0,
+      state:             this.state,
+      loginRequired:     this.loginRequired,
+      subscribedCount:   this.activeSubscriptions.size,
+      subscribed:        this.activeSubscriptions.size,
+      ticksCached:       this.ticks.size,
       tickRatePerSec:    0,
-      lastTickAt:        null,
-      lastConnectedAt:   null,
-      lastError:         null,
-      reconnectAttempts: 0,
-      packetsReceived:   0,
-      bridgeErrorCount:  0,
+      lastTickAt:        this.lastTickAt,
+      lastConnectedAt:   this.lastConnectedAt,
+      lastError:         this.lastError,
+      reconnectAttempts: this.reconnectAttempts,
+      packetsReceived:   this.packetsReceived,
+      bridgeErrorCount:  this.bridgeErrorCount,
     };
   }
 
-  async connect(): Promise<void> { return; }
-  async disconnect(): Promise<void> { return; }
-  async subscribe(_symbols: string[], _mode: TickMode = 'quote'): Promise<void> { return; }
-  async unsubscribe(_symbols: string[]): Promise<void> { return; }
+  async connect(): Promise<void> {
+    if (this.state === 'open' || this.state === 'connecting') return;
+    this.state = 'connecting';
+    const client = getKiteClient();
+    const config = client.getConfig();
 
-  // Method-name aliases used across the codebase — all no-ops.
+    if (!config.apiKey || !config.accessToken) {
+      this.state = 'closed';
+      this.loginRequired = true;
+      log.warn('Cannot connect KiteTicker: Missing apiKey or accessToken');
+      return;
+    }
+
+    this.ticker = new KiteConnectTicker({
+      api_key: config.apiKey,
+      access_token: config.accessToken,
+    });
+
+    this.ticker.on('connect', () => {
+      this.state = 'open';
+      this.lastConnectedAt = Date.now();
+      this.loginRequired = false;
+      log.info('Kite WebSocket connected');
+      if (this.activeSubscriptions.size > 0) {
+        this.resubscribeActive().catch(err => log.error('Failed to resubscribe', { error: err }));
+      }
+    });
+
+    this.ticker.on('ticks', (wireTicks: any[]) => {
+      this.packetsReceived += 1;
+      this.lastTickAt = Date.now();
+      
+      const parsedTicks: Tick[] = [];
+      for (const t of wireTicks) {
+        if (!t.instrument_token) continue;
+        const sym = this.tokenToSymbol.get(t.instrument_token);
+        
+        let pChange = t.change;
+        let change = t.ohlc?.close ? t.last_price - t.ohlc.close : 0;
+        
+        if (typeof t.change === 'number' && t.ohlc?.close && change !== 0) {
+           pChange = t.change;
+           change = (pChange / 100) * t.ohlc.close;
+        }
+
+        const tick: Tick = {
+          token: t.instrument_token,
+          symbol: sym,
+          lastPrice: t.last_price,
+          volume: t.volume_traded,
+          avgPrice: t.average_traded_price,
+          open: t.ohlc?.open,
+          high: t.ohlc?.high,
+          low: t.ohlc?.low,
+          close: t.ohlc?.close,
+          change: change,
+          pChange: pChange,
+          ts: Date.now(),
+          source: 'kite',
+        };
+        this.ticks.set(t.instrument_token, tick);
+        parsedTicks.push(tick);
+      }
+      this.emit('ticks', parsedTicks);
+    });
+
+    this.ticker.on('disconnect', () => {
+      this.state = 'closed';
+      log.warn('Kite WebSocket disconnected');
+    });
+
+    this.ticker.on('error', (err: any) => {
+      this.lastError = err?.message || String(err);
+      this.bridgeErrorCount += 1;
+      log.error('Kite WebSocket error', { error: err });
+    });
+
+    this.ticker.on('reconnecting', (attempt: number) => {
+      this.reconnectAttempts = attempt;
+      this.state = 'connecting';
+      log.warn(`Kite WebSocket reconnecting (attempt ${attempt})`);
+    });
+
+    this.ticker.on('noreconnect', () => {
+      this.state = 'closed';
+      log.error('Kite WebSocket max reconnects reached');
+    });
+
+    this.ticker.connect();
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.ticker) {
+      this.ticker.disconnect();
+      this.state = 'closed';
+    }
+  }
+
+  private async resolveSymbols(symbols: string[]): Promise<{ tokens: number[], unknown: string[] }> {
+    const tokens: number[] = [];
+    const unknown: string[] = [];
+
+    await downloadInstruments();
+
+    for (const sym of symbols) {
+      if (this.symbolToToken.has(sym)) {
+        tokens.push(this.symbolToToken.get(sym)!);
+        continue;
+      }
+      const inst = await getInstrumentBySymbol(sym);
+      if (inst && inst.instrument_token) {
+        const token = Number(inst.instrument_token);
+        this.symbolToToken.set(sym, token);
+        this.tokenToSymbol.set(token, sym);
+        tokens.push(token);
+      } else {
+        unknown.push(sym);
+      }
+    }
+    return { tokens, unknown };
+  }
+
+  private async resubscribeActive() {
+    if (!this.ticker || this.state !== 'open') return;
+    const { tokens } = await this.resolveSymbols(Array.from(this.activeSubscriptions));
+    if (tokens.length > 0) {
+      this.ticker.subscribe(tokens);
+      this.ticker.setMode(this.ticker.modeFull, tokens);
+    }
+  }
+
+  async subscribe(symbols: string[], mode: TickMode = 'quote'): Promise<void> {
+    await this.subscribeSymbols(symbols, mode);
+  }
+
+  async unsubscribe(symbols: string[]): Promise<void> {
+    await this.unsubscribeSymbols(symbols);
+  }
+
   async subscribeSymbols(
     symbols: string[],
-    _mode: TickMode = 'quote',
+    mode: TickMode = 'quote',
   ): Promise<{ resolved: string[]; unknown: string[] }> {
-    // Nothing can resolve without the instrument master; treat every
-    // symbol as unknown so callers see they were not subscribed.
-    return { resolved: [], unknown: symbols ?? [] };
+    for (const sym of symbols) {
+      this.activeSubscriptions.add(sym);
+    }
+
+    const { tokens, unknown } = await this.resolveSymbols(symbols);
+    const resolved = symbols.filter(s => !unknown.includes(s));
+
+    if (this.ticker && this.state === 'open' && tokens.length > 0) {
+      this.ticker.subscribe(tokens);
+      let kiteMode = this.ticker.modeQuote;
+      if (mode === 'ltp') kiteMode = this.ticker.modeLTP;
+      else if (mode === 'full') kiteMode = this.ticker.modeFull;
+      
+      this.ticker.setMode(kiteMode, tokens);
+    }
+
+    return { resolved, unknown };
   }
+
   async unsubscribeSymbols(
     symbols: string[],
   ): Promise<{ resolved: string[]; unknown: string[] }> {
-    return { resolved: [], unknown: symbols ?? [] };
-  }
-  async listSubscribedSymbols(): Promise<string[]> { return []; }
-  getAllTicks(): Tick[] { return []; }
-  clearLoginRequired(): void { /* no-op */ }
+    for (const sym of symbols) {
+      this.activeSubscriptions.delete(sym);
+    }
 
-  getTickBySymbolSync(_symbol: string): Tick | null { return null; }
-  async getTickBySymbol(_symbol: string): Promise<Tick | null> { return null; }
-  async getSubscribedSymbols(): Promise<string[]> { return []; }
+    const { tokens, unknown } = await this.resolveSymbols(symbols);
+    const resolved = symbols.filter(s => !unknown.includes(s));
+
+    if (this.ticker && this.state === 'open' && tokens.length > 0) {
+      this.ticker.unsubscribe(tokens);
+    }
+
+    return { resolved, unknown };
+  }
+
+  async listSubscribedSymbols(): Promise<string[]> {
+    return Array.from(this.activeSubscriptions);
+  }
+
+  getAllTicks(): Tick[] {
+    return Array.from(this.ticks.values());
+  }
+
+  clearLoginRequired(): void {
+    this.loginRequired = false;
+  }
+
+  getTickBySymbolSync(symbol: string): Tick | null {
+    const token = this.symbolToToken.get(symbol);
+    if (!token) return null;
+    return this.ticks.get(token) || null;
+  }
+
+  async getTickBySymbol(symbol: string): Promise<Tick | null> {
+    return this.getTickBySymbolSync(symbol);
+  }
+
+  async getSubscribedSymbols(): Promise<string[]> {
+    return this.listSubscribedSymbols();
+  }
 }
 
-const GLOBAL_KEY = '__q365_kite_ticker_stub__'; // @deprecated marker
+const GLOBAL_KEY = '__q365_kite_ticker_impl__';
 
-function getSingleton(): KiteTickerStub { // @deprecated marker
-  const g = globalThis as unknown as Record<string, KiteTickerStub | undefined>; // @deprecated marker
+function getSingleton(): KiteTickerImpl {
+  const g = globalThis as unknown as Record<string, KiteTickerImpl | undefined>;
   if (!g[GLOBAL_KEY]) {
-    g[GLOBAL_KEY] = new KiteTickerStub(); // @deprecated marker
+    g[GLOBAL_KEY] = new KiteTickerImpl();
   }
   return g[GLOBAL_KEY]!;
 }
 
-export function getTicker(): KiteTickerStub { // @deprecated marker
+export function getTicker(): KiteTickerImpl {
   return getSingleton();
 }
 
-export type { KiteTickerStub as KiteTicker }; // @deprecated marker
+export function getLiveTick(symbol: string): Tick {
+  const t = getTicker().getTickBySymbolSync(symbol);
+  if (!t) throw new NoTickError(symbol);
+  return t;
+}
+
+export function tryGetLiveTick(symbol: string): Tick | null {
+  return getTicker().getTickBySymbolSync(symbol);
+}
+
+export type { KiteTickerImpl as KiteTicker };

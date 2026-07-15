@@ -14,6 +14,7 @@ import { normalizedToMarketSnapshot } from '@/lib/marketData/dualSource/feedNorm
 import { fetchYahooPublicQuotesBatch, type YahooPublicQuote } from '@/lib/marketData/yahooChartPublic';
 import { propagateTick } from '@/lib/marketData/tickPropagator';
 import { tickBus } from '@/lib/marketData/tickBus';
+import { getTicker, type Tick as KiteTick } from '@/lib/marketData/kiteTicker';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
 import { getBaselineSymbols } from '@/lib/marketData/liveFeedBaseline';
 import {
@@ -68,6 +69,7 @@ interface LiveMarketFeedGlobal {
   cyclesRun: number;
   lastError: string | null;
   subscribedCount: number;
+  lastActiveSymbols: Set<string>;
 }
 
 function createFeedGlobal(): LiveMarketFeedGlobal {
@@ -83,6 +85,7 @@ function createFeedGlobal(): LiveMarketFeedGlobal {
     cyclesRun: 0,
     lastError: null,
     subscribedCount: 0,
+    lastActiveSymbols: new Set(),
   };
 }
 
@@ -272,7 +275,12 @@ async function pollOnce(): Promise<void> {
     } else if (provider === 'yahoo') {
       published = await pollYahooBatch(symbols);
     } else if (provider === 'kite') {
-      published = await polllegacy_vendorBatch(symbols);
+      const ticker = getTicker();
+      if (ticker.getStatus().state !== 'open') {
+        published = await polllegacy_vendorBatch(symbols);
+      } else {
+        published = symbols.length; // WS is active, ticks are streaming
+      }
     } else {
       published = await polllegacy_vendorBatch(symbols);
       if (published === 0) published = await pollYahooBatch(symbols);
@@ -333,6 +341,22 @@ function stopPollLoop(): void {
 function syncPollLoop(): void {
   const store = feed();
   const symbols = activeSymbols();
+  
+  if (getLiveFeedProvider() === 'kite') {
+    const nextSet = new Set(symbols);
+    const toUnsubscribe: string[] = [];
+    for (const sym of store.lastActiveSymbols) {
+      if (!nextSet.has(sym)) toUnsubscribe.push(sym);
+    }
+    if (toUnsubscribe.length > 0) {
+      getTicker().unsubscribeSymbols(toUnsubscribe).catch(() => {});
+    }
+    if (symbols.length > 0) {
+      getTicker().subscribeSymbols(symbols, 'full').catch(() => {});
+    }
+    store.lastActiveSymbols = nextSet;
+  }
+
   if (symbols.length === 0) {
     stopPollLoop();
     return;
@@ -370,6 +394,34 @@ export function setWsSymbolUnion(symbolsRaw: string[]): void {
 
 export function startLiveMarketFeed(): void {
   syncPollLoop();
+  
+  if (getLiveFeedProvider() === 'kite') {
+    const ticker = getTicker();
+    ticker.connect().catch(err => log.error('Failed to connect kite ticker', { error: err }));
+    
+    ticker.on('ticks', (ticks: KiteTick[]) => {
+      for (const t of ticks) {
+        if (!t.symbol) continue;
+        const snap: MarketSnapshot = {
+          symbol: t.symbol,
+          price: t.lastPrice,
+          ltp: t.lastPrice,
+          change: t.change ?? 0,
+          changePercent: t.pChange ?? 0,
+          volume: t.volume ?? 0,
+          open: t.open ?? t.lastPrice,
+          high: t.high ?? t.lastPrice,
+          low: t.low ?? t.lastPrice,
+          prevClose: t.close ?? t.lastPrice,
+          timestamp: t.ts,
+        };
+        const streamTick = snapshotToStreamTick(snap, 'kite-ws');
+        publishTick(streamTick);
+        void propagateTick(snap);
+      }
+    });
+  }
+
   if (isMarketOpen()) {
     void import('@/lib/marketData/liveFeedBaseline').then((m) => m.refreshLiveFeedBaseline());
   }
@@ -382,8 +434,12 @@ export function startLiveMarketFeed(): void {
 export function stopLiveMarketFeed(): void {
   const store = feed();
   stopPollLoop();
+  if (getLiveFeedProvider() === 'kite') {
+    getTicker().disconnect().catch(() => {});
+  }
   store.demandExpiry.clear();
   store.wsSymbols.clear();
+  store.lastActiveSymbols.clear();
   store.subscribedCount = 0;
 }
 

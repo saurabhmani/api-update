@@ -124,11 +124,11 @@ export function mayUseYahoo(): boolean {
   return isYahooEmergencyFallbackEnabled();
 }
 
-export type LiveFeedProvider = 'yahoo';
+export type LiveFeedProvider = 'yahoo' | 'kite';
 
-/** Live WS poll upstream — yahoo only after decommission. */
+/** Live WS poll upstream. */
 export function getLiveFeedProvider(): LiveFeedProvider {
-  return 'yahoo';
+  return isKitePrimary() && isKiteEnabled() ? 'kite' : 'yahoo';
 }
 
 export function mayUseKite(): boolean {

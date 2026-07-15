@@ -444,8 +444,8 @@ export async function GET(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      'Content-Type':     'text/event-stream; charset=utf-8',
-      'Cache-Control':    'no-cache, no-store, no-transform',
+      'Content-Type':     'text/event-stream',
+      'Cache-Control':    'no-cache, no-transform',
       'Connection':       'keep-alive',
       // Tells nginx reverse-proxies not to buffer the response —
       // without this, events accumulate in the proxy until the

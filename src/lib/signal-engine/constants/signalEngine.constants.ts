@@ -77,8 +77,8 @@ function envBand(name: string, fallback: number): number {
   return Math.max(0, Math.min(100, Math.floor(raw)));
 }
 export const CONFIDENCE_HIGH_CONVICTION = envBand('CONFIDENCE_BAND_HIGH_CONVICTION', 85);
-export const CONFIDENCE_ACTIONABLE      = envBand('CONFIDENCE_BAND_ACTIONABLE',      60);
-export const CONFIDENCE_WATCHLIST       = envBand('CONFIDENCE_BAND_WATCHLIST',       55);
+export const CONFIDENCE_ACTIONABLE = envBand('CONFIDENCE_BAND_ACTIONABLE', 60);
+export const CONFIDENCE_WATCHLIST = envBand('CONFIDENCE_BAND_WATCHLIST', 55);
 
 // ── Risk Bands ───────────────────────────────────────────────
 export const RISK_LOW = 30;
@@ -119,7 +119,7 @@ export const RISK_ELEVATED = 75;
 //  see the trade-off being made.
 // ════════════════════════════════════════════════════════════════
 export interface StrategyRelaxConfig {
-  staleCandleMaxDays:  number;
+  staleCandleMaxDays: number;
   /** Soft-stale window in HOURS. When a candle's newest bar is older
    *  than this but still within `staleCandleMaxDays`, the row is NOT
    *  rejected — instead, the per-symbol confidence score is reduced
@@ -128,20 +128,20 @@ export interface StrategyRelaxConfig {
    *  behavior — staleness is binary up to maxDays). Per spec
    *  "FIX ZERO SIGNAL ISSUE" §2: degrade-don't-reject for partial
    *  candle freshness. */
-  staleCandleSoftHours:    number | null;
+  staleCandleSoftHours: number | null;
   /** Confidence-score reduction (in points) when soft-stale or
    *  high-vol soft-pass fires. 10–15 per spec; default 12. */
-  staleCandlePenaltyPct:   number;
+  staleCandlePenaltyPct: number;
   highVolConfidencePenalty: number;
-  minConfidence:       number;
-  minRR:               number;
-  maxRiskScore:        number;
-  allowHighVolRegime:  boolean;
+  minConfidence: number;
+  minRR: number;
+  maxRiskScore: number;
+  allowHighVolRegime: boolean;
   /** True when SIGNAL_RELAX_MODE is on OR any individual override is
    *  active. Used by the boot log to flag degraded behavior. */
-  active:              boolean;
+  active: boolean;
   /** True when SIGNAL_RELAX_MODE specifically is on. */
-  relaxModeFlag:       boolean;
+  relaxModeFlag: boolean;
 }
 
 function envBool(name: string): boolean | null {
@@ -186,32 +186,32 @@ export function getStrategyRelaxConfig(): StrategyRelaxConfig {
   //                              instead of hard-reject. Bearish regime
   //                              still blocks bullish entries; the high-
   //                              vol case is now a calibrated pass.
-  let staleCandleMaxDays  = 3;
+  let staleCandleMaxDays = 3;
   let staleCandleSoftHours: number | null = 12;       // 12h–3d soft-stale window
   let staleCandlePenaltyPct = 12;
   let highVolConfidencePenalty = 12;
-  let minConfidence       = 55;
-  let minRR               = 1.3;
-  let maxRiskScore        = 70;
-  let allowHighVolRegime  = true;
+  let minConfidence = 55;
+  let minRR = 1.3;
+  let maxRiskScore = 70;
+  let allowHighVolRegime = true;
 
   // RELAXED defaults (when SIGNAL_RELAX_MODE=true). Each value moves
   // ONE notch off strict — we don't go to "anything goes" because
   // that produces noise, not signals.
   if (relaxMode) {
-    staleCandleMaxDays   = 7;     // accept up to a week of staleness
+    staleCandleMaxDays = 7;     // accept up to a week of staleness
     staleCandleSoftHours = 12;    // 12h–7d range = soft, with penalty
-    minConfidence        = 30;    // Spec "FIX ZERO SIGNALS" — lowered
-                                   // 50→30 so weak-but-present setups
-                                   // surface in the empty-pool fallback
-                                   // path. 30 is below institutional
-                                   // calibration; pair only with
-                                   // SIGNAL_RELAX_MODE for testing /
-                                   // bootstrap scenarios.
-    minRR                = 1.2;   // matches the Phase 3 internal floor
-    maxRiskScore         = 80;    // allow higher-risk setups through
-    allowHighVolRegime   = true;  // soft-warn instead of hard-reject
-                                   // bullish strategies in vol regimes
+    minConfidence = 30;    // Spec "FIX ZERO SIGNALS" — lowered
+    // 50→30 so weak-but-present setups
+    // surface in the empty-pool fallback
+    // path. 30 is below institutional
+    // calibration; pair only with
+    // SIGNAL_RELAX_MODE for testing /
+    // bootstrap scenarios.
+    minRR = 1.2;   // matches the Phase 3 internal floor
+    maxRiskScore = 80;    // allow higher-risk setups through
+    allowHighVolRegime = true;  // soft-warn instead of hard-reject
+    // bullish strategies in vol regimes
   }
 
   // Individual overrides win over the meta-flag, in case the operator
@@ -224,10 +224,10 @@ export function getStrategyRelaxConfig(): StrategyRelaxConfig {
     staleCandleSoftHours = softHoursOverride > 0 ? softHoursOverride : null;
   }
   staleCandlePenaltyPct = envNum('SIGNAL_ENGINE_STALE_CANDLE_PENALTY', 0, 50) ?? staleCandlePenaltyPct;
-  highVolConfidencePenalty = envNum('SIGNAL_ENGINE_HIGH_VOL_PENALTY',  0, 50) ?? highVolConfidencePenalty;
-  minConfidence      = envNum('SIGNAL_ENGINE_MIN_CONFIDENCE',       0, 100) ?? minConfidence;
-  minRR              = envNum('SIGNAL_ENGINE_MIN_RR',             0.5, 5.0) ?? minRR;
-  maxRiskScore       = envNum('SIGNAL_ENGINE_MAX_RISK_SCORE',       0, 100) ?? maxRiskScore;
+  highVolConfidencePenalty = envNum('SIGNAL_ENGINE_HIGH_VOL_PENALTY', 0, 50) ?? highVolConfidencePenalty;
+  minConfidence = envNum('SIGNAL_ENGINE_MIN_CONFIDENCE', 0, 100) ?? minConfidence;
+  minRR = envNum('SIGNAL_ENGINE_MIN_RR', 0.5, 5.0) ?? minRR;
+  maxRiskScore = envNum('SIGNAL_ENGINE_MAX_RISK_SCORE', 0, 100) ?? maxRiskScore;
   const overrideHighVol = envBool('SIGNAL_ENGINE_ALLOW_HIGH_VOL_REGIME');
   if (overrideHighVol !== null) allowHighVolRegime = overrideHighVol;
 
@@ -238,9 +238,9 @@ export function getStrategyRelaxConfig(): StrategyRelaxConfig {
     relaxMode ||
     staleCandleMaxDays !== 3 ||
     staleCandleSoftHours !== 12 ||
-    minConfidence      !== 55 ||
-    minRR              !== 1.3 ||
-    maxRiskScore       !== 70 ||
+    minConfidence !== 55 ||
+    minRR !== 1.3 ||
+    maxRiskScore !== 70 ||
     allowHighVolRegime !== true;
 
   return {
