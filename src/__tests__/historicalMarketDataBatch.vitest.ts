@@ -20,12 +20,12 @@ describe('getHistoricalCandlesBatch', () => {
     vi.mocked(db.query).mockResolvedValue({
       rows: [
         {
-          symbol_key: 'RELIANCE',
+          instrument_key: 'NSE_EQ|RELIANCE',
           ts: '2026-07-01',
           open: 100, high: 105, low: 99, close: 104, volume: 1000,
         },
         {
-          symbol_key: 'TCS',
+          instrument_key: 'NSE_EQ|TCS',
           ts: '2026-07-01',
           open: 200, high: 205, low: 198, close: 203, volume: 500,
         },
@@ -40,6 +40,10 @@ describe('getHistoricalCandlesBatch', () => {
     );
 
     expect(db.query).toHaveBeenCalledTimes(1);
+    const sql = String(vi.mocked(db.query).mock.calls[0]?.[0] ?? '');
+    expect(sql).toContain('instrument_key IN');
+    expect(sql).not.toContain('SUBSTRING_INDEX');
+    expect(sql).not.toContain('DATE(ts)');
     expect(result.get('RELIANCE')?.available).toBe(true);
     expect(result.get('RELIANCE')?.candles).toHaveLength(1);
     expect(result.get('TCS')?.available).toBe(true);
@@ -49,7 +53,7 @@ describe('getHistoricalCandlesBatch', () => {
   it('getHistoricalCandles delegates to batch for a single symbol', async () => {
     vi.mocked(db.query).mockResolvedValue({
       rows: [{
-        symbol_key: 'HDFCBANK',
+        instrument_key: 'NSE_EQ|HDFCBANK',
         ts: '2026-07-01',
         open: 1, high: 2, low: 1, close: 2, volume: 10,
       }],

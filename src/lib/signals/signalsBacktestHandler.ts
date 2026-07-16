@@ -88,6 +88,13 @@ export interface RunSignalsBacktestOptions {
   customEnd?:   string | null;
   signalsPayload: unknown;
   perf?:        ApiPerfTracker;
+  /** Reuse movers already fetched by daily-report (skip duplicate SQL). */
+  marketMovers?: import('@/lib/signals/historicalMarketData').MarketMover[];
+  /** Override symbol cap (preview defaults to 40 for short windows). */
+  symbolCap?: number;
+  /** Soft deadline — skip movers if budget nearly exhausted (candles already loaded). */
+  deadlineMs?: number;
+  startedAt?: number;
 }
 
 /** Execute backtest from an existing /api/signals payload (no HTTP). */
@@ -100,6 +107,8 @@ export async function runSignalsBacktestFromPayload(
   let { startDate, endDate } = resolveBacktestWindow(window, customStart, customEnd);
   const warnings: string[] = [];
   const generatedAt = new Date().toISOString();
+  const startedAt = opts.startedAt ?? Date.now();
+  const deadlineMs = opts.deadlineMs ?? 7_500;
 
   if (!payload) {
     return {
@@ -142,7 +151,10 @@ export async function runSignalsBacktestFromPayload(
   let interval: HistoricalInterval = intervalForBacktestWindow(window);
   let usedEodFallback = false;
 
-  const symbolCap = Math.min(allSymbols.size, 200);
+  // Preview windows stay small — 40 symbols is enough for dashboard/engine-health.
+  const defaultCap = (window === '1D' || window === 'INTRADAY' || window === '7D') ? 40 : 200;
+  const maxCap = opts.symbolCap ?? defaultCap;
+  const symbolCap = Math.min(allSymbols.size, maxCap);
   const symbolList = Array.from(allSymbols).map((s) => s.toUpperCase()).slice(0, symbolCap);
   if (symbolCap < allSymbols.size) {
     warnings.push(`Symbol pool capped to ${symbolCap} for the historical query — extend cap when scaling.`);
@@ -207,10 +219,23 @@ export async function runSignalsBacktestFromPayload(
     warnings.push(`Historical candle data available for ${symbolsWithCandles}/${symbolList.length} symbols.`);
   }
 
-  const moversResult = perf
-    ? await perf.time('market_movers', () => getMarketMovers(endDate))
-    : await getMarketMovers(endDate);
-  if (!moversResult.available) warnings.push(...moversResult.warnings);
+  let movers = opts.marketMovers;
+  const remainingMs = deadlineMs - (Date.now() - startedAt);
+  if (movers == null) {
+    if (remainingMs < 800) {
+      warnings.push('Market movers skipped — response budget nearly exhausted.');
+      movers = [];
+      perf?.mark('market_movers_skipped_budget', { remainingMs });
+    } else {
+      const moversResult = perf
+        ? await perf.time('market_movers', () => getMarketMovers(endDate))
+        : await getMarketMovers(endDate);
+      if (!moversResult.available) warnings.push(...moversResult.warnings);
+      movers = moversResult.movers;
+    }
+  } else {
+    perf?.mark('market_movers_reused', { count: movers.length });
+  }
 
   const input: RunBacktestInput = {
     window,
@@ -218,7 +243,7 @@ export async function runSignalsBacktestFromPayload(
     endDate,
     signals: { approved, highPotential, watchlist, rejected },
     candleSeriesBySymbol,
-    marketMovers: moversResult.movers,
+    marketMovers: movers,
     warnings,
   };
 

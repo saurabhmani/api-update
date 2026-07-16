@@ -10,21 +10,26 @@
 //  Performance (2026-07):
 //    - Batch candle SQL (getHistoricalCandlesBatch) replaces per-symbol
 //      sequential queries — was the dominant latency source in prod.
-//    - Parallel upstream fetches where safe.
+//    - Shared short-TTL signals payload cache + 4s nested budget so
+//      parent 8s callers (dashboard / engine-health) do not abort.
+//    - Sargable candle predicates + preview symbol cap.
 //    - Structured [API_PERF] logging via apiPerf.ts.
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse }    from 'next/server';
 import { requireSession }               from '@/lib/session';
-import { internalFetch }                  from '@/lib/api/internalFetch';
 import { createApiPerfTracker }           from '@/lib/api/apiPerf';
 import {
   parseBacktestWindow,
   runSignalsBacktestFromPayload,
 }                                       from '@/lib/signals/signalsBacktestHandler';
+import { fetchEngineSignalsPayload }    from '@/lib/signals/engineSignalsPayload';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
+
+/** Stay under parent 8s abort (engine-health); dashboard uses 5s for 1D. */
+const RESPONSE_BUDGET_MS = 7_500;
 
 const isoDate = (s?: string | null): string | null => {
   if (!s) return null;
@@ -33,9 +38,11 @@ const isoDate = (s?: string | null): string | null => {
 
 export async function GET(req: NextRequest) {
   const perf = createApiPerfTracker('/api/signals/backtest');
+  const startedAt = Date.now();
 
   try {
     await requireSession();
+    perf.mark('session');
 
     const url    = new URL(req.url);
     const window = parseBacktestWindow(url.searchParams.get('window'));
@@ -43,12 +50,11 @@ export async function GET(req: NextRequest) {
     const customEnd   = isoDate(url.searchParams.get('endDate'));
 
     const cookieHeader = req.headers.get('cookie') ?? '';
-    const signalsFetch = await perf.time('internalFetch.signals', () =>
-      internalFetch<any>(
-        req,
-        `/api/signals?action=all&limit=20&request_id=backtest-${Date.now()}`,
-        { cookieHeader, timeoutMs: 12_000 },
-      ),
+    const signalsFetch = await fetchEngineSignalsPayload(
+      req,
+      cookieHeader,
+      perf,
+      'backtest',
     );
 
     const warnings: string[] = [];
@@ -61,7 +67,9 @@ export async function GET(req: NextRequest) {
     );
 
     if (!payload) {
-      perf.finish({ ok: true, partial: true });
+      const totalMs = Date.now() - startedAt;
+      perf.setMeta('under8s', totalMs < 8_000);
+      perf.finish({ ok: true, partial: true, totalMs });
       return NextResponse.json(
         {
           ok:           true,
@@ -80,11 +88,16 @@ export async function GET(req: NextRequest) {
       customEnd,
       signalsPayload: payload,
       perf,
+      startedAt,
+      deadlineMs: RESPONSE_BUDGET_MS,
+      symbolCap: (window === '30D' || window === '90D' || window === 'CUSTOM') ? 80 : 40,
     });
 
     perf.setMeta('symbolsQueried', result.meta?.symbolsQueried ?? 0);
     perf.setMeta('symbolsWithCandles', result.meta?.symbolsWithCandles ?? 0);
-    perf.finish({ ok: true, window });
+    const totalMs = Date.now() - startedAt;
+    perf.setMeta('under8s', totalMs < 8_000);
+    perf.finish({ ok: true, window, totalMs });
 
     return NextResponse.json(
       {
@@ -98,7 +111,7 @@ export async function GET(req: NextRequest) {
       { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
     );
   } catch (err) {
-    perf.finish({ ok: false, error: (err as Error).message });
+    perf.finish({ ok: false, error: (err as Error).message, totalMs: Date.now() - startedAt });
     throw err;
   }
 }

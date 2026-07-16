@@ -168,8 +168,30 @@ function emptyCandleResult(
 
 const BATCH_CHUNK_SIZE = 100;
 
+/** Build indexable `candles.instrument_key` variants for a bare symbol. */
+function instrumentKeysForSymbol(symbol: string): string[] {
+  const sym = String(symbol ?? '').trim().toUpperCase();
+  if (!sym) return [];
+  if (sym.includes('|')) return [sym];
+  // Production warehouse uses NSE_EQ|; keep NSE| for legacy/test rows.
+  return [`NSE_EQ|${sym}`, `NSE|${sym}`];
+}
+
+/** Normalize bound to a MySQL-comparable datetime string. */
+function toTsBound(raw: string, endOfDay: boolean): string {
+  const s = String(raw ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return endOfDay ? `${s} 23:59:59` : `${s} 00:00:00`;
+  }
+  return s;
+}
+
 /** Batch candle fetch — one SQL round-trip per chunk instead of N sequential
- *  per-symbol queries (primary backtest / daily-report bottleneck fix). */
+ *  per-symbol queries (primary backtest / daily-report bottleneck fix).
+ *
+ *  Uses sargable predicates on (instrument_key, candle_type, interval_unit, ts)
+ *  so MySQL can use uq_candle / idx_candles_key_ts instead of
+ *  SUBSTRING_INDEX + DATE(ts) expression scans. */
 export async function getHistoricalCandlesBatch(
   symbols:   string[],
   startDate: string,
@@ -186,43 +208,51 @@ export async function getHistoricalCandlesBatch(
   if (!normalized.length || !startDate || !endDate) return out;
 
   const { candle_type, interval_unit } = intervalToCandleType(interval);
-  const useDateBounds = interval === '1day';
+  const tsStart = toTsBound(startDate, false);
+  const tsEnd   = toTsBound(endDate, true);
 
   for (let i = 0; i < normalized.length; i += BATCH_CHUNK_SIZE) {
     const chunk = normalized.slice(i, i + BATCH_CHUNK_SIZE);
-    const placeholders = chunk.map(() => '?').join(',');
+    const keys: string[] = [];
+    for (const sym of chunk) keys.push(...instrumentKeysForSymbol(sym));
+    const uniqueKeys = [...new Set(keys)];
+    if (!uniqueKeys.length) continue;
+    const placeholders = uniqueKeys.map(() => '?').join(',');
     try {
-      const rows: CandleRow[] = queryRows(await (db as any).query(
-        useDateBounds
-          ? `SELECT UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) AS symbol_key,
-                    ts, open, high, low, close, volume
-               FROM candles
-              WHERE candle_type   = ?
-                AND interval_unit = ?
-                AND UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) IN (${placeholders})
-                AND DATE(ts) >= DATE(?)
-                AND DATE(ts) <= DATE(?)
-              ORDER BY symbol_key, ts ASC`
-          : `SELECT UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) AS symbol_key,
-                    ts, open, high, low, close, volume
-               FROM candles
-              WHERE candle_type   = ?
-                AND interval_unit = ?
-                AND UPPER(SUBSTRING_INDEX(instrument_key, '|', -1)) IN (${placeholders})
-                AND ts >= ?
-                AND ts <= ?
-              ORDER BY symbol_key, ts ASC`,
-        useDateBounds
-          ? [candle_type, interval_unit, ...chunk, startDate, endDate]
-          : [candle_type, interval_unit, ...chunk, startDate, endDate],
+      const rows: Array<{
+        instrument_key: string;
+        ts: string | Date;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }> = queryRows(await (db as any).query(
+        `SELECT instrument_key, ts, open, high, low, close, volume
+           FROM candles
+          WHERE candle_type   = ?
+            AND interval_unit = ?
+            AND instrument_key IN (${placeholders})
+            AND ts >= ?
+            AND ts <= ?
+          ORDER BY instrument_key, ts ASC`,
+        [candle_type, interval_unit, ...uniqueKeys, tsStart, tsEnd],
       ));
 
       const bySymbol = new Map<string, HistoricalCandle[]>();
       for (const row of rows) {
-        const sym = String(row.symbol_key ?? '').trim().toUpperCase();
+        const sym = extractSymbolFromCandleInstrumentKey(row.instrument_key);
         if (!sym) continue;
         if (!bySymbol.has(sym)) bySymbol.set(sym, []);
-        const c = mapCandleRows([row])[0];
+        const c = mapCandleRows([{
+          symbol_key: sym,
+          ts: row.ts,
+          open: row.open,
+          high: row.high,
+          low: row.low,
+          close: row.close,
+          volume: row.volume,
+        }])[0];
         if (c) bySymbol.get(sym)!.push(c);
       }
 
@@ -305,11 +335,15 @@ export function isExpectedBacktestWarehouseLagWarning(message: string): boolean 
 /** Latest trade date with any EOD bar in the warehouse. */
 export async function getLatestEodTradeDateInWarehouse(): Promise<string | null> {
   try {
+    // Prefer ORDER BY ts DESC LIMIT 1 — uses idx on (candle_type, interval_unit, ts)
+    // better than a full MAX aggregate on large tables.
     const { rows } = await db.query<{ trade_date: string | Date | null }>(
-      `SELECT DATE(MAX(ts)) AS trade_date
+      `SELECT DATE(ts) AS trade_date
          FROM candles
         WHERE candle_type = ?
-          AND interval_unit = ?`,
+          AND interval_unit = ?
+        ORDER BY ts DESC
+        LIMIT 1`,
       [EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT],
     );
     const raw = rows[0]?.trade_date;
@@ -327,8 +361,11 @@ async function queryMarketMoversForDate(
   tradeDate: string,
   limit: number,
 ): Promise<MarketMover[]> {
-  // Window-function scan bounded to ±10 calendar days around tradeDate —
-  // avoids per-row correlated subquery over the full candles table.
+  // Sargable ts window (±10 calendar days) so (candle_type, interval_unit, ts)
+  // can be used; avoid DATE(ts) in the scan predicate.
+  const windowStart = `${subtractCalendarDays(tradeDate, 10)} 00:00:00`;
+  const windowEnd   = `${addCalendarDays(tradeDate, 1)} 00:00:00`;
+
   const rows: Array<{
     instrument_key: string;
     symbol: string;
@@ -355,8 +392,8 @@ async function queryMarketMoversForDate(
        FROM candles
        WHERE candle_type   = ?
          AND interval_unit = ?
-         AND ts >= DATE_SUB(?, INTERVAL 10 DAY)
-         AND ts <= DATE_ADD(?, INTERVAL 1 DAY)
+         AND ts >= ?
+         AND ts < ?
      ) ranked
      WHERE trade_date = DATE(?)
        AND prev_close > 0
@@ -365,7 +402,8 @@ async function queryMarketMoversForDate(
      LIMIT ?`,
     [
       EOD_CANDLE_TYPE, EOD_INTERVAL_UNIT,
-      tradeDate, tradeDate, tradeDate,
+      windowStart, windowEnd,
+      tradeDate,
       limit,
     ],
   ));
@@ -383,6 +421,18 @@ async function queryMarketMoversForDate(
       date:        tradeDate,
     };
   });
+}
+
+function subtractCalendarDays(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function addCalendarDays(isoDate: string, days: number): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 /** Daily market movers from EOD `candles` — close vs previous trading day.

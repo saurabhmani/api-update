@@ -7,12 +7,14 @@
 //    - Parallel fetch: market movers + /api/signals (was sequential).
 //    - Backtest preview via runSignalsBacktestFromPayload (no nested
 //      HTTP to /api/signals/backtest — avoids duplicate signals fetch).
+//    - Shared short-TTL signals payload cache + 4s nested budget so
+//      parent 8s callers (dashboard / engine-health) do not abort.
+//    - Reuse movers in embedded backtest (no second movers SQL).
 //    - Structured [API_PERF] logging via apiPerf.ts.
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
-import { internalFetch }             from '@/lib/api/internalFetch';
 import { createApiPerfTracker }      from '@/lib/api/apiPerf';
 import { getMarketStatus, toIstCalendarDate } from '@/lib/marketData/marketHours';
 import {
@@ -24,9 +26,15 @@ import {
   backtestToDailyReportPreview,
   runSignalsBacktestFromPayload,
 }                                    from '@/lib/signals/signalsBacktestHandler';
+import { fetchEngineSignalsPayload } from '@/lib/signals/engineSignalsPayload';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
+
+/** Stay under parent 8s abort (dashboard / engine-health). */
+const RESPONSE_BUDGET_MS = 7_500;
+/** Need this much headroom to attempt embedded backtest preview. */
+const BACKTEST_MIN_REMAINING_MS = 1_200;
 
 const isoDate = (s?: string | null): string => {
   if (s && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
@@ -37,9 +45,11 @@ const todayISO = (): string => toIstCalendarDate(new Date());
 
 export async function GET(req: NextRequest) {
   const perf = createApiPerfTracker('/api/signals/daily-report');
+  const startedAt = Date.now();
 
   try {
     await requireSession();
+    perf.mark('session');
 
     const url = new URL(req.url);
     const requestedDate = isoDate(url.searchParams.get('date'));
@@ -59,13 +69,7 @@ export async function GET(req: NextRequest) {
       perf.time('market_movers', () =>
         getHistoricalMarketMovers(requestedDate, { limit: 20 }),
       ),
-      perf.time('internalFetch.signals', () =>
-        internalFetch<any>(
-          req,
-          `/api/signals?action=all&limit=20&request_id=daily-report-${Date.now()}`,
-          { cookieHeader, timeoutMs: 12_000 },
-        ),
-      ),
+      fetchEngineSignalsPayload(req, cookieHeader, perf, 'daily-report'),
     ]);
 
     if (!moversResult.available) {
@@ -107,7 +111,7 @@ export async function GET(req: NextRequest) {
         marketMovers: marketMoversInput,
       };
       const partial = buildDailySignalReport(fallbackInput);
-      perf.finish({ ok: true, partial: true });
+      perf.finish({ ok: true, partial: true, totalMs: Date.now() - startedAt });
       return NextResponse.json(
         {
           ok:           true,
@@ -157,32 +161,46 @@ export async function GET(req: NextRequest) {
       buildDailySignalReport(reportInput),
     );
 
-    try {
-      const btResult = await runSignalsBacktestFromPayload({
-        window:         '1D',
-        signalsPayload: payload,
-        perf,
-      });
-      if (btResult.backtest) {
-        report.backtestPreview = backtestToDailyReportPreview(btResult.backtest);
-      } else {
-        warnings.push('Backtest preview unavailable — no backtest result returned.');
-      }
-      if (btResult.warnings.length > 0) {
-        const previewWarn = btResult.warnings.find((w) =>
-          /Historical candle data not available|timed out/i.test(w),
-        );
-        if (previewWarn) {
-          warnings.push(`Backtest preview note — ${previewWarn}`);
+    const remainingMs = RESPONSE_BUDGET_MS - (Date.now() - startedAt);
+    if (remainingMs >= BACKTEST_MIN_REMAINING_MS) {
+      try {
+        const btResult = await runSignalsBacktestFromPayload({
+          window:         '1D',
+          signalsPayload: payload,
+          perf,
+          marketMovers:   moversResult.available ? moversResult.movers : [],
+          startedAt,
+          deadlineMs:     RESPONSE_BUDGET_MS,
+          symbolCap:      40,
+        });
+        if (btResult.backtest) {
+          report.backtestPreview = backtestToDailyReportPreview(btResult.backtest);
+        } else {
+          warnings.push('Backtest preview unavailable — no backtest result returned.');
         }
+        if (btResult.warnings.length > 0) {
+          const previewWarn = btResult.warnings.find((w) =>
+            /Historical candle data not available|timed out|budget/i.test(w),
+          );
+          if (previewWarn) {
+            warnings.push(`Backtest preview note — ${previewWarn}`);
+          }
+        }
+      } catch (e) {
+        warnings.push(`Backtest preview unavailable — ${(e as Error).message ?? 'unknown error'}.`);
       }
-    } catch (e) {
-      warnings.push(`Backtest preview unavailable — ${(e as Error).message ?? 'unknown error'}.`);
+    } else {
+      warnings.push(
+        `Backtest preview skipped — only ${remainingMs}ms remaining under ${RESPONSE_BUDGET_MS}ms budget.`,
+      );
+      perf.mark('backtest_preview_skipped_budget', { remainingMs });
     }
 
     if (Array.isArray(report.warnings)) warnings.push(...report.warnings);
 
-    perf.finish({ ok: true, source: 'computed' });
+    const totalMs = Date.now() - startedAt;
+    perf.setMeta('under8s', totalMs < 8_000);
+    perf.finish({ ok: true, source: 'computed', totalMs });
 
     return NextResponse.json(
       {
@@ -195,7 +213,7 @@ export async function GET(req: NextRequest) {
       { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
     );
   } catch (err) {
-    perf.finish({ ok: false, error: (err as Error).message });
+    perf.finish({ ok: false, error: (err as Error).message, totalMs: Date.now() - startedAt });
     throw err;
   }
 }
