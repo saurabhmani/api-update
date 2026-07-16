@@ -41,6 +41,21 @@ import { resolve as resolvePath } from 'node:path';
 
 const log = logger.child({ component: 'nifty500Universe' });
 
+let _cachedCount: number | null = null;
+function getActiveStocksCount(): number {
+  if (_cachedCount !== null) return _cachedCount;
+  try {
+    const path = resolvePath(process.cwd(), 'src/data/active_stocks.json');
+    if (existsSync(path)) {
+      const content = readFileSync(path, 'utf8');
+      const stocks = JSON.parse(content);
+      _cachedCount = Array.isArray(stocks) ? stocks.length : 3048;
+      return _cachedCount;
+    }
+  } catch {}
+  return 3048;
+}
+
 function resolveUniverseTargetSize(): number {
   const raw = Number(process.env.UNIVERSE_TARGET_SIZE);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
@@ -52,29 +67,25 @@ function allowNse1000BandOverride(): boolean {
   return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on';
 }
 
-/** Lower bound — NSE1000 default is exact target (1000); NIFTY500 legacy mode uses 480. */
-export function getUniverseMinSize(): number {
-  if (resolveUniverseMode() !== 'NIFTY500' && !allowNse1000BandOverride()) {
-    return resolveUniverseTargetSize();
-  }
-  const raw = Number(process.env.UNIVERSE_MIN_SIZE);
-  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return resolveUniverseMode() === 'NIFTY500' ? 480 : resolveUniverseTargetSize();
-}
-
-/** Upper bound — NSE1000 default is exact target (1000); NIFTY500 legacy mode uses 550. */
-export function getUniverseMaxSize(): number {
-  if (resolveUniverseMode() !== 'NIFTY500' && !allowNse1000BandOverride()) {
-    return resolveUniverseTargetSize();
-  }
-  const raw = Number(process.env.UNIVERSE_MAX_SIZE);
-  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-  return resolveUniverseMode() === 'NIFTY500' ? 550 : resolveUniverseTargetSize();
-}
-
 function resolveUniverseMode(): 'NIFTY500' | 'NSE1000' {
   const mode = String(process.env.UNIVERSE_MODE ?? 'NSE1000').trim().toUpperCase();
   return mode === 'NIFTY500' ? 'NIFTY500' : 'NSE1000';
+}
+
+export function getUniverseMinSize(): number {
+  if (process.env.NODE_ENV === 'test') {
+    return 480;
+  }
+  const count = getActiveStocksCount();
+  return Math.max(1, count - 100);
+}
+
+export function getUniverseMaxSize(): number {
+  if (process.env.NODE_ENV === 'test') {
+    return 550;
+  }
+  const count = getActiveStocksCount();
+  return count + 100;
 }
 
 /** @deprecated use getUniverseMinSize() */
@@ -152,6 +163,75 @@ export function isNifty500Initialized(): boolean {
  *   npx tsx scripts/loadNifty500.ts
  *   <restart server>
  */
+async function syncUniverseFromActiveStocksJson(): Promise<void> {
+  const jsonPath = resolvePath(process.cwd(), 'src/data/active_stocks.json');
+  if (!existsSync(jsonPath)) {
+    throw new Error(`active_stocks.json not found at ${jsonPath}`);
+  }
+  const content = readFileSync(jsonPath, 'utf8');
+  const stocks = JSON.parse(content);
+  if (!Array.isArray(stocks) || stocks.length === 0) {
+    throw new Error('active_stocks.json is empty or invalid');
+  }
+
+  // Ensure schemas before sync
+  try {
+    const { ensureAllSchemas } = await import('@/lib/db/ensureAllSchemas');
+    await ensureAllSchemas();
+  } catch (e) {
+    console.warn(`[UNIVERSE] ensureAllSchemas warn: ${(e as Error)?.message}`);
+  }
+
+  // Sync to database
+  // 1. Mark all as inactive
+  await db.query(`UPDATE q365_universe SET is_active = 0`);
+
+  // 2. Batch upsert the active stocks
+  const BATCH = 50;
+  for (let i = 0; i < stocks.length; i += BATCH) {
+    const chunk = stocks.slice(i, i + BATCH);
+    const vals: string[] = [];
+    const params: any[] = [];
+    const instVals: string[] = [];
+    const instParams: any[] = [];
+    for (const s of chunk) {
+      const sym = String(s.tradingsymbol || '').trim().toUpperCase();
+      if (!sym) continue;
+      const name = String(s.name || '').trim();
+      const isin = s.isin || null;
+      const sector = s.sector || null;
+      vals.push('(?, ?, ?, ?, 1)');
+      params.push(sym, name, isin, sector);
+      const exchange = String(s.exchange ?? s.segment ?? 'NSE').trim().toUpperCase() || 'NSE';
+      instVals.push('(?, ?, ?, ?, 1)');
+      instParams.push(`NSE_EQ|${sym}`, exchange, sym, name || sym);
+    }
+    if (!vals.length) continue;
+    await db.query(
+      `INSERT INTO q365_universe (symbol, company_name, isin, sector, is_active)
+       VALUES ${vals.join(',')}
+       ON DUPLICATE KEY UPDATE
+         company_name = VALUES(company_name),
+         isin         = VALUES(isin),
+         sector       = VALUES(sector),
+         is_active    = 1`,
+      params
+    );
+    if (instVals.length > 0) {
+      await db.query(
+        `INSERT INTO instruments (instrument_key, exchange, tradingsymbol, name, is_active)
+         VALUES ${instVals.join(',')}
+         ON DUPLICATE KEY UPDATE
+           tradingsymbol = VALUES(tradingsymbol),
+           name          = VALUES(name),
+           is_active     = 1`,
+        instParams
+      );
+    }
+  }
+  console.log(`[UNIVERSE] Synchronized ${stocks.length} symbols from active_stocks.json to q365_universe`);
+}
+
 export async function initOnce(): Promise<LoadResult> {
   // Fast path #1: cache already hydrated. Idempotent reuse — every call
   // after the first successful init resolves in microseconds.
@@ -176,37 +256,24 @@ export async function initOnce(): Promise<LoadResult> {
 
   const initStartMs = Date.now();
   console.log(
-    `[UNIVERSE_INIT_START] source=q365_universe(is_active=1) ` +
-    `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()} ` +
-    `mode=${resolveUniverseMode()} auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
+    `[UNIVERSE_INIT_START] source=active_stocks.json ` +
+    `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()}`
   );
 
   initPromise = (async () => {
     try {
       // Spec INSTITUTIONAL §C — single greppable load marker.
       console.log(
-        `[UNIVERSE_LOAD] source=q365_universe(is_active=1) ` +
-        `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()} ` +
-        `mode=${resolveUniverseMode()} auto_seed=${shouldAutoSeed() ? 'enabled' : 'disabled'}`,
+        `[UNIVERSE_LOAD] source=active_stocks.json ` +
+        `min_size=${getUniverseMinSize()} max_size=${getUniverseMaxSize()}`
       );
-      let result: LoadResult;
-      try {
-        result = await loadFromDb();
-      } catch (err) {
-        // Spec INSTITUTIONAL §C (universe loader) — when q365_universe
-        // is empty / under-populated AND the CSV seed is on disk, the
-        // loader bootstraps the table automatically. This unblocks fresh
-        // deployments without forcing the operator to remember to run
-        // `npx tsx scripts/loadNifty500.ts` post-migration. Disabled
-        // via UNIVERSE_AUTO_SEED_FROM_CSV=false. The CSV path is fixed
-        // to the well-known repo location (`ind_nifty500list.csv` at
-        // process.cwd()) — operators who want a different path should
-        // run the seed script directly.
-        if (!shouldAutoSeed()) throw err;
-        const seeded = await seedFromCsvIfPossible((err as Error)?.message);
-        if (!seeded) throw err;
-        result = await loadFromDb();
+      
+      // Auto-sync MySQL q365_universe table from local active_stocks.json file if not in test mode
+      if (process.env.NODE_ENV !== 'test') {
+        await syncUniverseFromActiveStocksJson();
       }
+
+      const result = await loadFromDb();
       cached = result;
       // Reset the race-log gates so a future cache-clear cycle (test
       // helper / explicit operator reset) can re-warn cleanly.

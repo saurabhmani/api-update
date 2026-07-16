@@ -8,8 +8,11 @@
 import { getKiteClient } from './client';
 import { KiteConfigError } from './errors';
 import type { KiteExchange, KiteInstrument } from './types';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
 const GLOBAL_KEY = '__q365_kite_instruments_cache__';
+const ACTIVE_STOCKS_KEY = '__q365_active_stocks_instruments__';
 
 interface InstrumentsCache {
   all: KiteInstrument[] | null;
@@ -35,6 +38,50 @@ export function clearInstrumentsCache(): void {
   c.all = null;
   c.byExchange.clear();
   c.downloadedAt = null;
+  const g = globalThis as unknown as Record<string, Map<string, KiteInstrument> | undefined>;
+  g[ACTIVE_STOCKS_KEY] = undefined;
+}
+
+function activeStocksBySymbol(): Map<string, KiteInstrument> {
+  const g = globalThis as unknown as Record<string, Map<string, KiteInstrument> | undefined>;
+  if (g[ACTIVE_STOCKS_KEY]) return g[ACTIVE_STOCKS_KEY]!;
+  const out = new Map<string, KiteInstrument>();
+  try {
+    const jsonPath = resolvePath(process.cwd(), 'src/data/active_stocks.json');
+    if (!existsSync(jsonPath)) {
+      g[ACTIVE_STOCKS_KEY] = out;
+      return out;
+    }
+    const rows = JSON.parse(readFileSync(jsonPath, 'utf8'));
+    if (!Array.isArray(rows)) {
+      g[ACTIVE_STOCKS_KEY] = out;
+      return out;
+    }
+    for (const row of rows) {
+      const sym = String(row?.tradingsymbol ?? '').trim().toUpperCase();
+      const token = Number(row?.instrument_token);
+      if (!sym || !Number.isFinite(token) || token <= 0) continue;
+      const exchange = String(row?.exchange ?? row?.segment ?? 'NSE').trim().toUpperCase() || 'NSE';
+      out.set(`${exchange}:${sym}`, {
+        instrument_token: token,
+        exchange_token: Number(row?.exchange_token) || 0,
+        tradingsymbol: sym,
+        name: String(row?.name ?? sym),
+        last_price: Number(row?.last_price) || 0,
+        expiry: row?.expiry ?? '',
+        strike: Number(row?.strike) || 0,
+        tick_size: Number(row?.tick_size) || 0.05,
+        lot_size: Number(row?.lot_size) || 1,
+        instrument_type: String(row?.instrument_type ?? 'EQ'),
+        segment: String(row?.segment ?? exchange),
+        exchange,
+      } as KiteInstrument);
+    }
+  } catch {
+    // Best-effort — Kite dump remains the upstream fallback.
+  }
+  g[ACTIVE_STOCKS_KEY] = out;
+  return out;
 }
 
 /**
@@ -149,6 +196,10 @@ export async function getInstrumentBySymbol(
   }
 
   const ex = String(exchange ?? 'NSE').trim().toUpperCase() || 'NSE';
+
+  const fromActive = activeStocksBySymbol().get(`${ex}:${sym}`);
+  if (fromActive) return fromActive;
+
   const universe = await ensureCache(ex);
 
   const exact = universe.find(

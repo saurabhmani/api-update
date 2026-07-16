@@ -73,14 +73,6 @@ export async function getCandles(
     return { ok: false, source: 'kite', reason: 'neg_cache:provider_recently_failed' };
   }
 
-  if (!isKiteHistoricalConfigured()) {
-    return {
-      ok: false,
-      source: 'kite',
-      reason: providerReason('KITE_NOT_CONFIGURED', 'KITE_API_KEY / KITE_ACCESS_TOKEN not set'),
-    };
-  }
-
   const sufficientDepth = SUFFICIENT_BAR_DEPTH();
   if (!opts.incrementalRefresh) {
     const dbCount = await getDbBarCount(sym);
@@ -93,18 +85,30 @@ export async function getCandles(
     }
   }
 
-  // 1) Kite upstream
-  const up = await fetchUpstreamDailyCandles(sym);
-  if (up.ok && up.candles.length > 0) {
-    failedAt.delete(sym);
-    return { ok: true, candles: toOhlcBars(up.candles), source: 'kite' };
-  }
+  const kiteConfigured = isKiteHistoricalConfigured();
+  let upCode = 'KITE_NOT_CONFIGURED';
+  let upMessage = 'KITE_API_KEY / KITE_ACCESS_TOKEN not set';
 
-  const upCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
-  console.warn(
-    `[getCandles] upstream failed symbol=${sym} code=${upCode} — ` +
-    `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
-  );
+  // 1) Kite upstream
+  if (kiteConfigured) {
+    const up = await fetchUpstreamDailyCandles(sym);
+    if (up.ok && up.candles.length > 0) {
+      failedAt.delete(sym);
+      return { ok: true, candles: toOhlcBars(up.candles), source: 'kite' };
+    }
+
+    upCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
+    upMessage = up.errorMessage ?? upMessage;
+    console.warn(
+      `[getCandles] upstream failed symbol=${sym} code=${upCode} — ` +
+      `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
+    );
+  } else {
+    console.warn(
+      `[getCandles] Kite not configured for ${sym} — ` +
+      `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
+    );
+  }
 
   // 2) NSE — opt-in fallback only
   if (isNseHistoricalFetchEnabled()) {
@@ -126,6 +130,6 @@ export async function getCandles(
   return {
     ok: false,
     source: 'kite',
-    reason: providerReason(upCode, up.errorMessage),
+    reason: providerReason(upCode, upMessage),
   };
 }

@@ -581,16 +581,13 @@ function shapeQ365Row(r: RawSignalRow): ConfirmedSignalRow {
     classification:     normalizedClassification,
     risk_reward:        rr,
     rr_ratio:           rr,
-    // BUG-FIX (2026-05) — `status` is the lifecycle column
-    // (ACTIVE/INVALIDATED/EXPIRED/STOP_LOSS_HIT/TARGET_HIT), NOT the
-    // engine signal_status (APPROVED_SIGNAL/DEVELOPING_SETUP/NO_TRADE).
-    // Earlier shaping leaked `signal_status` into `status` so every
-    // closed-market row entered the response with status='APPROVED_SIGNAL',
-    // then dropStaleOrConflictingRows() in responseAssembly.ts rejected
-    // them all because `status !== 'ACTIVE'`. Map lifecycle from the
-    // upstream lifecycle column only; default to 'ACTIVE' for live rows
-    // that pass invalidation/expiry checks above (isAlive=true).
-    status:             r.status ?? (isAlive ? 'ACTIVE' : 'EXPIRED'),
+    // Rescore marks validity-window elapsed rows as status='expired' while
+    // they remain the best institutional candidates. Wire them as ACTIVE
+    // when isAlive so partitionByTier / isExecutionReady do not bucket
+    // them into RISK_RESTRICTED solely on the lifecycle column.
+    status:             isAlive
+      ? 'ACTIVE'
+      : String(r.status ?? 'EXPIRED').toUpperCase(),
     signal_status:      r.signal_status ?? 'APPROVED_SIGNAL',
     invalidation_reason: r.invalidation_reason,
     confirmed_at:       toIso(r.generated_at),
@@ -1000,7 +997,12 @@ export async function loadQ365SignalsRelaxed(limit: number): Promise<ConfirmedSi
       AND COALESCE(s.invalidation_reason, '') = ''
       AND UPPER(COALESCE(s.signal_status, '')) IN ('APPROVED_SIGNAL','DEVELOPING_SETUP')
       ${watchlistClause}
-      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE','')
+      -- Include EXPIRED lifecycle rows — the rescore cron tags valid
+      -- APPROVED_SIGNAL / DEVELOPING_SETUP rows as status='expired'
+      -- once their validity window elapses, but they remain the best
+      -- institutional candidates until a fresher batch promotes.
+      -- Confirmed snapshots use the same ACTIVE|EXPIRED contract.
+      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'EXPIRED', '')
       AND COALESCE(s.signal_type, '') <> 'force_seed'
       AND COALESCE(s.batch_id, '') NOT LIKE 'force_seed%'
       -- AND (s.expires_at IS NULL OR s.expires_at > NOW())
@@ -1075,7 +1077,7 @@ async function loadQ365SignalsStrict(limit: number): Promise<ConfirmedSignalRow[
       AND COALESCE(s.invalidation_reason, '') = ''
       AND UPPER(COALESCE(s.signal_status, '')) = 'APPROVED_SIGNAL'
       AND UPPER(COALESCE(s.classification, '')) <> 'WATCHLIST_ONLY'
-      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE','')
+      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'EXPIRED', '')
       AND COALESCE(s.signal_type, '') <> 'force_seed'
       AND COALESCE(s.batch_id, '') NOT LIKE 'force_seed%'
       -- AND (s.expires_at IS NULL OR s.expires_at > NOW())
