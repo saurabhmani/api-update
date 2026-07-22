@@ -52,11 +52,10 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
   const kitePrimary = !provider || provider === 'kite';
   if (kitePrimary) {
     const key = (process.env.KITE_API_KEY ?? '').trim();
-    const token = (process.env.KITE_ACCESS_TOKEN ?? '').trim();
-    if (!key || !token) {
+    if (!key) {
       warnings.push(
-        'MARKET_DATA_PROVIDER defaults to kite but KITE_API_KEY / KITE_ACCESS_TOKEN '
-        + 'look unset — expect yahoo/nse/db cascade for quotes until Kite is configured.',
+        'MARKET_DATA_PROVIDER defaults to kite but KITE_API_KEY looks unset — '
+        + 'expect yahoo/nse/db cascade until Kite app credentials and a dashboard session exist.',
       );
     }
   }

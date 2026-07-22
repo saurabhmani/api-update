@@ -32,6 +32,7 @@ import {
   TrendingDown, TrendingUp, Zap,
 } from 'lucide-react';
 import styles from './dashboard.module.scss';
+import KiteConnectionPanel from './KiteConnectionPanel';
 import {
   type EngineHealthStatus,
   type FusionStatus,
@@ -873,6 +874,8 @@ export default function DashboardPage() {
             sub={riskGateSub}
           />
         </section>
+
+        <KiteConnectionPanel />
 
         {/* ── Section C: Signal Summary Grid ──────────────────────── */}
         <section className={styles.signalGrid}>

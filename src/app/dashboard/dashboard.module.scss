@@ -752,6 +752,53 @@ $tones: (
   line-height: 1.4;
 }
 
+.kitePanelActions {
+  display: flex;
+  align-items: center;
+  gap: $s2;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.kiteProfileDetails {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: $s3;
+  margin-bottom: $s3;
+  padding: $s3;
+  background: $color-bg;
+  border: 1px solid $color-border;
+  border-radius: $r-md;
+
+  @media (max-width: $bp-md) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kiteProfileItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kiteProfileLabel {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $color-subtle;
+}
+
+.kiteProfileValue {
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $color-text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 // "Approval Gate Explanation" subsection inside Risk & Blockers.
 // One-line explainer that reframes blocked trades as protective.
 .approvalNote {

@@ -20,7 +20,7 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleBackfillJob, type BackfillSymbolSource } from '@/lib/marketData/candleBackfillJob';
-import { getHistorical as getKiteHistorical, isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
+import { getHistorical as getKiteHistorical, ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import {
   EMERGENCY_REPAIR_MAX_FETCH,
   INITIAL_BACKFILL_PER_RUN_LIMIT,
@@ -85,8 +85,10 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  if (!isKiteHistoricalConfigured()) {
-    console.error('[CANDLE BACKFILL PREFLIGHT] Kite historical is not configured');
+  if (!(await ensureKiteHistoricalConfigured())) {
+    console.error(
+      '[CANDLE BACKFILL PREFLIGHT] No active Kite session — connect Zerodha from the dashboard (Redis required)',
+    );
     return false;
   }
   console.log(`[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via Kite ...`);

@@ -17,7 +17,7 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from './providers/nseHistoricalProvider';
-import { isKiteHistoricalConfigured } from './providers/kiteHistoricalProvider';
+import { ensureKiteHistoricalConfigured } from './providers/kiteHistoricalProvider';
 import type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
 
 export type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
@@ -85,9 +85,9 @@ export async function getCandles(
     }
   }
 
-  const kiteConfigured = isKiteHistoricalConfigured();
+  const kiteConfigured = await ensureKiteHistoricalConfigured();
   let upCode = 'KITE_NOT_CONFIGURED';
-  let upMessage = 'KITE_API_KEY / KITE_ACCESS_TOKEN not set';
+  let upMessage = 'No active Kite session — connect Zerodha from the dashboard';
 
   // 1) Kite upstream
   if (kiteConfigured) {

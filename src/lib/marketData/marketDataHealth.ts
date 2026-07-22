@@ -110,7 +110,7 @@ export function getMarketDataHealth(): MarketDataHealth {
       } else {
         health = 'FAIL';
         source = 'none';
-        reason = 'KITE_API_KEY/KITE_ACCESS_TOKEN missing';
+        reason = 'KITE_API_KEY missing or no active Kite session';
       }
     } else if (kiteHealth.auth_failed) {
       health = 'DEGRADED';

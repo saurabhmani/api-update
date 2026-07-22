@@ -28,7 +28,7 @@ import {
   loadActiveUniverseSymbols,
   persistBarsForSymbol,
 } from '@/lib/marketData/candleBackfillJob';
-import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
+import { ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import type { HistoricalRange } from '@/types/market';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
@@ -268,10 +268,10 @@ async function runCandleDailyUpdateJobInner(
   const maxFetch = resolveDailyUpdateMaxFetch(options.maxFetch);
   const targetTradingDay = getLatestCompletedTradingDay();
 
-  if (!isKiteHistoricalConfigured() && !dryRun) {
+  if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
     throw new Error(
-      'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
-      + 'before running daily update',
+      'No active Kite session — connect Zerodha from the dashboard '
+      + '(requires Redis) before running daily update',
     );
   }
 

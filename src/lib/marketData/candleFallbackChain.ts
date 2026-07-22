@@ -21,7 +21,7 @@ import { db } from '@/lib/db';
 import type { Candle } from '@/lib/signal-engine';
 import {
   getHistorical as getKiteHistorical,
-  isKiteHistoricalConfigured,
+  ensureKiteHistoricalConfigured,
 } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import {
   fetchNseHistoricalCandles,
@@ -267,12 +267,12 @@ export async function fetchKiteDailyCandles(
   const sym = symbol.toUpperCase();
   const endpoint = `kite.historical:${range}`;
 
-  if (!isKiteHistoricalConfigured()) {
+  if (!(await ensureKiteHistoricalConfigured())) {
     return {
       ok: false,
       candles: [],
       errorCode: 'KITE_NOT_CONFIGURED',
-      errorMessage: 'KITE_API_KEY / KITE_ACCESS_TOKEN not set',
+      errorMessage: 'No active Kite session — connect Zerodha from the dashboard',
       rawBarCount: 0,
       validBarCount: 0,
       provider: 'kite',

@@ -43,16 +43,18 @@ export async function validateConnection(): Promise<KiteConnectionValidation> {
       error: 'KITE_API_KEY is not configured',
     };
   }
-  if (!cfg.accessToken && !getKiteClient().getAccessToken()) {
+
+  const client = getKiteClient();
+  const hasSession = await client.hydrateAccessTokenFromSession();
+  if (!hasSession) {
     return {
       ok: false,
       profile: null,
-      error: 'KITE_ACCESS_TOKEN is not configured',
+      error: 'No active Kite session — connect Zerodha from the dashboard',
     };
   }
 
   try {
-    const client = getKiteClient();
     const profile = await client.call((kc) => kc.getProfile()) as KiteProfile;
     return { ok: true, profile, error: null };
   } catch (err) {

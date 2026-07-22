@@ -9,7 +9,6 @@ export async function GET(): Promise<Response> {
   const kiteConfigured = isKiteConfigured();
   const kite = getKiteHealth();
   const apiKey = (process.env.KITE_API_KEY ?? '').trim();
-  const accessToken = (process.env.KITE_ACCESS_TOKEN ?? '').trim();
 
   const schedulerActive = (() => {
     const sched = (process.env.Q365_INPROC_SCHEDULER ?? '').trim().toLowerCase();
@@ -30,7 +29,7 @@ export async function GET(): Promise<Response> {
         api_key_loaded: apiKey.length > 0,
         api_key_length: apiKey.length,
         api_key_prefix: apiKey ? apiKey.slice(0, 4) : null,
-        access_token_loaded: accessToken.length > 0,
+        session_token_loaded: kiteConfigured && apiKey.length > 0,
       },
       breaker: null,
       scheduler_active: schedulerActive,
@@ -42,10 +41,12 @@ export async function GET(): Promise<Response> {
         Q365_INPROC_REGEN: process.env.Q365_INPROC_REGEN ?? 'unset',
         NODE_ENV: process.env.NODE_ENV ?? 'unset',
       },
-      recommendation: !kiteConfigured
-        ? 'KITE_API_KEY / KITE_ACCESS_TOKEN not loaded. Add them to .env.local and restart.'
+      recommendation: !apiKey
+        ? 'KITE_API_KEY not loaded. Add it to .env.local and restart.'
+        : !kiteConfigured
+        ? 'Connect Zerodha from the dashboard to create an active Kite session.'
         : kite.auth_failed
-        ? 'Kite credentials loaded but authentication failed — refresh KITE_ACCESS_TOKEN.'
+        ? 'Kite session authentication failed — reconnect from the dashboard.'
         : kite.rate_limited
         ? 'Kite rate limit active — backoff and retry.'
         : 'Kite is configured and healthy.',

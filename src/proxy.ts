@@ -1,6 +1,11 @@
 // Auth proxy — Next.js 16 replacement for middleware.ts
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  applySecurityHeaders,
+  buildContentSecurityPolicy,
+  createRequestNonce,
+} from '@/lib/security/csp';
 
 const PUBLIC_PATHS = [
   '/',
@@ -36,32 +41,76 @@ function isPublicPath(pathname: string) {
   );
 }
 
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+function isDev(): boolean {
+  return process.env.NODE_ENV === 'development';
+}
+
+function withSecurity(
+  request: NextRequest,
+  response: NextResponse,
+  nonce: string,
+): NextResponse {
+  const headerOptions = {
+    nonce,
+    pathname: request.nextUrl.pathname,
+    isDev: isDev(),
+    isProduction: isProduction(),
+  };
+
+  applySecurityHeaders(response.headers, headerOptions);
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-nonce', nonce);
+  requestHeaders.set('Content-Security-Policy', buildContentSecurityPolicy(headerOptions));
+
+  response.headers.set('x-nonce', nonce);
+  return response;
+}
+
+function secureNext(request: NextRequest, nonce: string): NextResponse {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-nonce', nonce);
+
+  const response = NextResponse.next({
+    request: { headers: requestHeaders },
+  });
+
+  return withSecurity(request, response, nonce);
+}
+
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const nonce = createRequestNonce();
 
   if (process.env.LOG_VERBOSE_MIDDLEWARE === '1') {
     console.log('MIDDLEWARE PATH:', pathname);
   }
 
   if (isPublicPath(pathname)) {
-    return NextResponse.next();
+    return secureNext(req, nonce);
   }
 
   const session = req.cookies.get('q200_session')?.value;
   if (!session) {
     if (pathname.startsWith('/api/')) {
-      return NextResponse.json(
+      const response = NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 },
       );
+      return withSecurity(req, response, nonce);
     }
 
     const loginUrl = new URL('/login', req.url);
     loginUrl.searchParams.set('from', pathname);
-    return NextResponse.redirect(loginUrl);
+    const response = NextResponse.redirect(loginUrl);
+    return withSecurity(req, response, nonce);
   }
 
-  return NextResponse.next();
+  return secureNext(req, nonce);
 }
 
 export const config = {

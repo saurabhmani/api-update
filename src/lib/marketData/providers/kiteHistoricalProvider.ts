@@ -11,7 +11,7 @@
 //  candleFallbackChain) — never `src/lib/kite` directly.
 // ════════════════════════════════════════════════════════════════
 
-import { loadKiteConfig } from '@/lib/kite';
+import { getKiteClient, loadKiteConfig } from '@/lib/kite';
 import {
   KiteAuthenticationError,
   KiteRateLimitError,
@@ -43,10 +43,21 @@ export type KiteHistoricalErrorCode =
   | 'EMPTY_RESPONSE'
   | 'UPSTREAM_ERROR';
 
-/** True when Kite credentials look present enough to attempt historical. */
+/**
+ * True when API key is set and a session access token is already loaded
+ * in-process. Prefer `ensureKiteHistoricalConfigured()` before jobs.
+ */
 export function isKiteHistoricalConfigured(): boolean {
   const cfg = loadKiteConfig();
-  return Boolean(cfg.apiKey && cfg.accessToken);
+  return Boolean(cfg.apiKey && getKiteClient().getAccessToken());
+}
+
+/** Hydrate session token from Redis, then check readiness. */
+export async function ensureKiteHistoricalConfigured(): Promise<boolean> {
+  const cfg = loadKiteConfig();
+  if (!cfg.apiKey) return false;
+  await getKiteClient().hydrateAccessTokenFromSession();
+  return Boolean(getKiteClient().getAccessToken());
 }
 
 function nowIso(): string {
@@ -107,13 +118,13 @@ export async function getHistorical(
     return failedInv(endpoint, startedAt, t0, 'UPSTREAM_ERROR', 'empty symbol');
   }
 
-  if (!isKiteHistoricalConfigured()) {
+  if (!(await ensureKiteHistoricalConfigured())) {
     return failedInv(
       endpoint,
       startedAt,
       t0,
       'KITE_NOT_CONFIGURED',
-      'KITE_API_KEY / KITE_ACCESS_TOKEN not set',
+      'No active Kite session — connect Zerodha from the dashboard',
     );
   }
 
@@ -173,13 +184,13 @@ export async function getHistoricalForInterval(
   const startedAt = nowIso();
   const t0 = Date.now();
 
-  if (!isKiteHistoricalConfigured()) {
+  if (!(await ensureKiteHistoricalConfigured())) {
     return failedInv(
       endpoint,
       startedAt,
       t0,
       'KITE_NOT_CONFIGURED',
-      'KITE_API_KEY / KITE_ACCESS_TOKEN not set',
+      'No active Kite session — connect Zerodha from the dashboard',
     );
   }
 

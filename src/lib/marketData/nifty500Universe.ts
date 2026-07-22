@@ -49,7 +49,22 @@ function getActiveStocksCount(): number {
     if (existsSync(path)) {
       const content = readFileSync(path, 'utf8');
       const stocks = JSON.parse(content);
-      _cachedCount = Array.isArray(stocks) ? stocks.length : 3048;
+      if (!Array.isArray(stocks)) {
+        _cachedCount = 3048;
+        return _cachedCount;
+      }
+      const excludeInav = (() => {
+        const raw = String(process.env.UNIVERSE_EXCLUDE_INAV ?? 'true').trim().toLowerCase();
+        return raw !== 'false' && raw !== '0' && raw !== 'no' && raw !== 'off';
+      })();
+      let n = 0;
+      for (const s of stocks) {
+        const sym = String(s?.tradingsymbol ?? '').trim().toUpperCase();
+        if (!sym) continue;
+        if (excludeInav && /INAV$/i.test(sym)) continue;
+        n += 1;
+      }
+      _cachedCount = n > 0 ? n : stocks.length;
       return _cachedCount;
     }
   } catch {}
@@ -174,6 +189,11 @@ async function syncUniverseFromActiveStocksJson(): Promise<void> {
     throw new Error('active_stocks.json is empty or invalid');
   }
 
+  const excludeInav = (() => {
+    const raw = String(process.env.UNIVERSE_EXCLUDE_INAV ?? 'true').trim().toLowerCase();
+    return raw !== 'false' && raw !== '0' && raw !== 'no' && raw !== 'off';
+  })();
+
   // Ensure schemas before sync
   try {
     const { ensureAllSchemas } = await import('@/lib/db/ensureAllSchemas');
@@ -188,6 +208,8 @@ async function syncUniverseFromActiveStocksJson(): Promise<void> {
 
   // 2. Batch upsert the active stocks
   const BATCH = 50;
+  let upserted = 0;
+  let skippedInav = 0;
   for (let i = 0; i < stocks.length; i += BATCH) {
     const chunk = stocks.slice(i, i + BATCH);
     const vals: string[] = [];
@@ -197,6 +219,10 @@ async function syncUniverseFromActiveStocksJson(): Promise<void> {
     for (const s of chunk) {
       const sym = String(s.tradingsymbol || '').trim().toUpperCase();
       if (!sym) continue;
+      if (excludeInav && /INAV$/i.test(sym)) {
+        skippedInav += 1;
+        continue;
+      }
       const name = String(s.name || '').trim();
       const isin = s.isin || null;
       const sector = s.sector || null;
@@ -228,8 +254,12 @@ async function syncUniverseFromActiveStocksJson(): Promise<void> {
         instParams
       );
     }
+    upserted += vals.length;
   }
-  console.log(`[UNIVERSE] Synchronized ${stocks.length} symbols from active_stocks.json to q365_universe`);
+  console.log(
+    `[UNIVERSE] Synchronized ${upserted} symbols from active_stocks.json ` +
+    `(skipped_inav=${skippedInav}, exclude_inav=${excludeInav}) to q365_universe`,
+  );
 }
 
 export async function initOnce(): Promise<LoadResult> {

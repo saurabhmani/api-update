@@ -20,7 +20,7 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
-import { isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
+import { ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 import {
@@ -590,10 +590,10 @@ export async function runCandleBackfillJob(
     symbols: options.symbols,
   });
 
-  if (!isKiteHistoricalConfigured() && !dryRun) {
+  if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
     throw new Error(
-      'No historical upstream configured — set KITE_API_KEY+KITE_ACCESS_TOKEN '
-      + 'before running backfill',
+      'No active Kite session — connect Zerodha from the dashboard '
+      + '(requires Redis) before running backfill',
     );
   }
 

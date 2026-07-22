@@ -60,6 +60,11 @@ function getRedis(): Redis | null {
   return redis;
 }
 
+/** Shared ioredis client for fail-closed server modules (no in-memory fallback). */
+export function getRedisClient(): Redis | null {
+  return getRedis();
+}
+
 // ── Typed helpers — Redis first, in-process memory fallback ───────
 export async function cacheSet(key: string, data: unknown, ttl?: number) {
   // Always write to in-process memory (fast, same-process reads skip Redis)

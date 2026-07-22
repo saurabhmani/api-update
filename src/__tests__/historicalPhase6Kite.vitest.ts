@@ -27,8 +27,20 @@ vi.mock('@/lib/kite', async () => {
   return {
     ...actual,
     loadKiteConfig,
+    getKiteClient: () => ({
+      getAccessToken: () => 't',
+      hydrateAccessTokenFromSession: async () => true,
+      setAccessToken: vi.fn(),
+    }),
   };
 });
+
+vi.mock('@/lib/kite/active-session-store', () => ({
+  getActiveKiteAccessToken: vi.fn(async () => 't'),
+  getActiveKiteSession: vi.fn(async () => null),
+  saveActiveKiteSession: vi.fn(async () => undefined),
+  clearActiveKiteSession: vi.fn(async () => true),
+}));
 
 vi.mock('@/providers/adapters/KiteAdapter', () => ({
   getHistorical: kiteGetHistorical,
@@ -76,11 +88,10 @@ beforeEach(() => {
   loadKiteConfig.mockReturnValue({
     apiKey: 'k',
     apiSecret: 's',
-    accessToken: 't',
+    accessToken: '',
     redirectUrl: '',
   });
   process.env.KITE_API_KEY = 'k';
-  process.env.KITE_ACCESS_TOKEN = 't';
 });
 
 afterEach(() => {

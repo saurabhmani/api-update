@@ -17,7 +17,7 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
-import { getHistorical as getKiteHistorical, isKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
+import { getHistorical as getKiteHistorical, ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
 import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
 
@@ -65,8 +65,10 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  if (!isKiteHistoricalConfigured()) {
-    console.error('[CANDLE DAILY PREFLIGHT] Kite historical is not configured');
+  if (!(await ensureKiteHistoricalConfigured())) {
+    console.error(
+      '[CANDLE DAILY PREFLIGHT] No active Kite session — connect Zerodha from the dashboard (Redis required)',
+    );
     return false;
   }
   console.log(`[CANDLE DAILY PREFLIGHT] probing ${symbol} via Kite ...`);

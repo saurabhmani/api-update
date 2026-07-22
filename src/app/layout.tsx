@@ -3,6 +3,8 @@ import { AuthProvider } from '@/hooks/useAuth';
 import { QueryProvider } from '@/providers/QueryProvider';
 import '@/styles/globals.scss';
 
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'Quantorus365 — India Stock Intelligence',
   description: 'Institutional-grade equity analytics, signal intelligence, rankings, and portfolio tools',

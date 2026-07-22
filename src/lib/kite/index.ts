@@ -5,6 +5,9 @@
 //  MarketDataProvider / marketDataResolver / UI.
 // ════════════════════════════════════════════════════════════════
 
+// Phase 1 config (`./config` / getKiteConfig) is server-only and must
+// be imported via `@/lib/kite/config` — never from this barrel.
+
 export {
   KiteClient,
   getKiteClient,
@@ -54,6 +57,7 @@ export {
   getKiteHealth,
   recordKiteCall,
   isKiteConfigured,
+  markKiteSessionTokenPresent,
   _resetKiteHealthForTests,
 } from './health';
 export type { KiteHealthSnapshot, RecordKiteCallInput } from './health';
@@ -82,3 +86,11 @@ export type {
 } from './types';
 
 export type { KiteErrorType } from './errors';
+
+// Phase 2 — client-safe browser session (safe for client components)
+export {
+  saveKiteSession,
+  getKiteSession,
+  clearKiteSession,
+} from './browser-session';
+export type { KiteBrowserSession } from './browser-session';

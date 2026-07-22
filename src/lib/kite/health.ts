@@ -20,8 +20,16 @@ const RATE_LIMIT_COOLDOWN_MS = Math.max(
   Number(process.env.KITE_RATE_LIMIT_COOLDOWN_MS) || 60_000,
 );
 
+/** Set by KiteClient when a session access token is applied in-memory. */
+let runtimeSessionTokenPresent = false;
+
+/** Track whether the process currently holds a session access token. */
+export function markKiteSessionTokenPresent(present: boolean): void {
+  runtimeSessionTokenPresent = present;
+}
+
 export interface KiteHealthSnapshot {
-  /** True when API key + access token are present in env/runtime. */
+  /** True when API key is set and a session access token is loaded in-process. */
   configured: boolean;
   /** Soft availability: configured && !auth_failed && !rate_limited. */
   available: boolean;
@@ -107,8 +115,7 @@ function rolloverDay(s: InternalState): void {
 
 export function isKiteConfigured(): boolean {
   const apiKey = (process.env.KITE_API_KEY ?? '').trim();
-  const token = (process.env.KITE_ACCESS_TOKEN ?? '').trim();
-  return Boolean(apiKey && token);
+  return Boolean(apiKey && runtimeSessionTokenPresent);
 }
 
 function logHealthEvent(meta: Record<string, unknown>): void {
@@ -232,4 +239,5 @@ export function getKiteHealth(): KiteHealthSnapshot {
 export function _resetKiteHealthForTests(): void {
   const g = globalThis as unknown as Record<string, InternalState | undefined>;
   g[GLOBAL_KEY] = undefined;
+  runtimeSessionTokenPresent = false;
 }

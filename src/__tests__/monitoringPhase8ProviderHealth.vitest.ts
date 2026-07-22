@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   recordKiteCall,
   getKiteHealth,
+  markKiteSessionTokenPresent,
   _resetKiteHealthForTests,
 } from '@/lib/kite/health';
 import {
@@ -34,14 +35,13 @@ beforeEach(() => {
   _resetProviderReportForTests();
   try { _resetApiMonitorForTests(); } catch { /* optional */ }
   process.env.KITE_API_KEY = 'k';
-  process.env.KITE_ACCESS_TOKEN = 't';
   process.env.MARKET_DATA_PROVIDER = 'kite';
+  markKiteSessionTokenPresent(true);
 });
 
 afterEach(() => {
   _resetKiteHealthForTests();
   delete process.env.KITE_API_KEY;
-  delete process.env.KITE_ACCESS_TOKEN;
   delete process.env.MARKET_DATA_PROVIDER;
 });
 

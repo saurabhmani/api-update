@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.vitest.ts'],
+    include: ['src/**/*.vitest.ts', 'src/**/*.vitest.tsx'],
     testTimeout: 30000,
   },
   resolve: {

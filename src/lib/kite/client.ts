@@ -16,7 +16,7 @@ import {
   withKiteErrors,
 } from './errors';
 import type { KiteConfig } from './types';
-import { recordKiteCall } from './health';
+import { recordKiteCall, markKiteSessionTokenPresent } from './health';
 
 const log = logger.child({ component: 'kite.client' });
 
@@ -36,11 +36,15 @@ function readEnv(name: string): string {
   return (process.env[name] ?? '').trim();
 }
 
+/**
+ * App credentials from env. Access token is session-only (Redis / runtime
+ * setAccessToken after OAuth) — never read from KITE_ACCESS_TOKEN.
+ */
 export function loadKiteConfig(): KiteConfig {
   return {
     apiKey:       readEnv('KITE_API_KEY'),
     apiSecret:    readEnv('KITE_API_SECRET'),
-    accessToken:  readEnv('KITE_ACCESS_TOKEN'),
+    accessToken:  '',
     redirectUrl:  readEnv('KITE_REDIRECT_URL'),
   };
 }
@@ -75,6 +79,7 @@ export class KiteClient {
 
     if (this.cfg.accessToken) {
       this.kc.setAccessToken(this.cfg.accessToken);
+      markKiteSessionTokenPresent(true);
     }
 
     log.info('KiteConnect client initialized', {
@@ -104,11 +109,28 @@ export class KiteClient {
     }
     this.cfg.accessToken = token;
     this.kc.setAccessToken(token);
+    markKiteSessionTokenPresent(true);
     log.info('Kite access token updated on singleton client');
   }
 
   getAccessToken(): string {
     return this.cfg.accessToken;
+  }
+
+  /**
+   * Load access token from the Redis active session when memory is empty.
+   * No-op if already set. Returns whether a usable token is present after.
+   */
+  async hydrateAccessTokenFromSession(): Promise<boolean> {
+    if (this.cfg.accessToken.trim()) return true;
+
+    // Dynamic import keeps `server-only` off the static client graph for tests.
+    const { getActiveKiteAccessToken } = await import('./active-session-store');
+    const token = await getActiveKiteAccessToken();
+    if (!token) return false;
+
+    this.setAccessToken(token);
+    return true;
   }
 
   getApiSecret(): string {
@@ -121,9 +143,10 @@ export class KiteClient {
    * Phase 8: every hop updates the Kite health tracker.
    */
   async call<T>(fn: (kc: Connect) => Promise<T>): Promise<T> {
-    if (!this.cfg.accessToken) {
+    const hydrated = await this.hydrateAccessTokenFromSession();
+    if (!hydrated || !this.cfg.accessToken) {
       const err = new KiteConfigError(
-        'KITE_ACCESS_TOKEN is not set — call setAccessToken() or configure the env var',
+        'No active Kite session — connect Zerodha from the dashboard',
       );
       recordKiteCall({ operation: 'call', success: false, error: err, latencyMs: 0 });
       throw err;
@@ -152,6 +175,7 @@ export class KiteClient {
 /** Reset the singleton (tests / key rotation). */
 export function resetKiteClient(): void {
   glob().instance = null;
+  markKiteSessionTokenPresent(false);
 }
 
 /**
