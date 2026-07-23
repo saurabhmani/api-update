@@ -66,12 +66,20 @@ function makeCallbackRequest(query: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/kite/auth/callback?${query}`);
 }
 
+const ORIGIN_ENV_KEYS = ['APP_URL', 'NEXT_PUBLIC_APP_URL', 'KITE_REDIRECT_URL'] as const;
+
+function clearOriginEnv(): void {
+  for (const key of ORIGIN_ENV_KEYS) delete process.env[key];
+}
+
 describe('GET /api/kite/auth/callback redirect', () => {
-  const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const previousEnv = Object.fromEntries(
+    ORIGIN_ENV_KEYS.map((key) => [key, process.env[key]]),
+  );
 
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.NEXT_PUBLIC_APP_URL;
+    clearOriginEnv();
     mockRequireSession.mockResolvedValue({ id: 42 });
     mockConsumeKiteAuthState.mockResolvedValue(true);
     mockCreateKiteSession.mockResolvedValue({
@@ -82,8 +90,12 @@ describe('GET /api/kite/auth/callback redirect', () => {
   });
 
   afterEach(() => {
-    if (previousAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
-    else process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
+    clearOriginEnv();
+    for (const key of ORIGIN_ENV_KEYS) {
+      const value = previousEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
   it('redirects with a fragment code and no query-string code', async () => {
@@ -98,12 +110,34 @@ describe('GET /api/kite/auth/callback redirect', () => {
     expect(response.headers.get('Cache-Control')).toBe('no-store');
   });
 
-  it('uses NEXT_PUBLIC_APP_URL when request origin is the proxy loopback', async () => {
-    process.env.NEXT_PUBLIC_APP_URL = 'https://quantorus.in/';
+  it('uses APP_URL when request origin is the proxy loopback', async () => {
+    process.env.APP_URL = 'https://quantorus.in/';
 
     const response = await GET(
       new NextRequest(
         'https://localhost:5000/api/kite/auth/callback?status=success&request_token=req-token&state=csrf-state',
+      ),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(
+      buildAuthCompleteRedirectUrl('https://quantorus.in', 'completion-code-123'),
+    );
+  });
+
+  it('uses X-Forwarded-Host when env URLs are loopback', async () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://localhost:5000';
+    process.env.KITE_REDIRECT_URL = 'https://localhost:5000/api/kite/auth/callback';
+
+    const response = await GET(
+      new NextRequest(
+        'https://localhost:5000/api/kite/auth/callback?status=success&request_token=req-token&state=csrf-state',
+        {
+          headers: {
+            'x-forwarded-host': 'quantorus.in',
+            'x-forwarded-proto': 'https',
+          },
+        },
       ),
     );
 
@@ -128,20 +162,32 @@ describe('GET /api/kite/auth/callback redirect', () => {
 });
 
 describe('resolveAuthCompleteOrigin', () => {
-  const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const previousEnv = Object.fromEntries(
+    ORIGIN_ENV_KEYS.map((key) => [key, process.env[key]]),
+  );
 
   afterEach(() => {
-    if (previousAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
-    else process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
+    clearOriginEnv();
+    for (const key of ORIGIN_ENV_KEYS) {
+      const value = previousEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
-  it('prefers NEXT_PUBLIC_APP_URL origin over request origin', () => {
-    process.env.NEXT_PUBLIC_APP_URL = 'https://quantorus.in/';
+  it('prefers public APP_URL over loopback request origin', () => {
+    process.env.APP_URL = 'https://quantorus.in/';
+    expect(resolveAuthCompleteOrigin('https://localhost:5000')).toBe('https://quantorus.in');
+  });
+
+  it('skips loopback NEXT_PUBLIC_APP_URL in favor of KITE_REDIRECT_URL', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://localhost:5000';
+    process.env.KITE_REDIRECT_URL = 'https://quantorus.in/api/kite/auth/callback';
     expect(resolveAuthCompleteOrigin('https://localhost:5000')).toBe('https://quantorus.in');
   });
 
   it('falls back to request origin when unset', () => {
-    delete process.env.NEXT_PUBLIC_APP_URL;
+    clearOriginEnv();
     expect(resolveAuthCompleteOrigin('https://localhost:5000')).toBe('https://localhost:5000');
   });
 });

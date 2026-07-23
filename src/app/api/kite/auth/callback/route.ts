@@ -67,7 +67,9 @@ export async function GET(request: NextRequest) {
       accessToken: session.accessToken,
     });
 
-    const origin = resolveAuthCompleteOrigin(request.nextUrl.origin);
+    const origin = resolveAuthCompleteOrigin(request.nextUrl.origin, {
+      headers: request.headers,
+    });
     return redirectWithNoStore(buildAuthCompleteRedirectUrl(origin, code));
   } catch (err) {
     if (err instanceof AuthenticationError) {

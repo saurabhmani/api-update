@@ -46,22 +46,90 @@ export function stripCodeFragmentFromUrl(href: string): string {
   return `${url.pathname}${url.search}`;
 }
 
+/** True for localhost / loopback hosts that must never be used on live redirects. */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    return (
+      host === 'localhost'
+      || host === '127.0.0.1'
+      || host === '::1'
+      || host === '[::1]'
+      || host.endsWith('.localhost')
+    );
+  } catch {
+    return true;
+  }
+}
+
+function originFromConfiguredUrl(raw: string | undefined | null): string | null {
+  const value = (raw ?? '').trim();
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read env without static `process.env.NEXT_PUBLIC_*` access so Next cannot
+ * bake a stale build-time localhost value into the server redirect path.
+ */
+function readRuntimeEnv(name: string): string {
+  return (process.env[name] ?? '').trim();
+}
+
+function originFromForwardedHeaders(headers?: Headers): string | null {
+  if (!headers) return null;
+
+  const xfHost = headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+  if (!xfHost) return null;
+
+  const xfProto = headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || 'https';
+  try {
+    return new URL(`${xfProto}://${xfHost}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolveAuthCompleteOriginOptions {
+  headers?: Headers;
+}
+
 /**
  * Canonical browser origin for post-login redirects.
  *
- * Prefer NEXT_PUBLIC_APP_URL so production (proxied to localhost:PORT)
- * never sends users to https://localhost:5000/kite/auth-complete.
- * Falls back to the request origin when the env var is unset (local/dev).
+ * Prefer a public origin from (in order):
+ *   1. APP_URL / NEXT_PUBLIC_APP_URL / KITE_REDIRECT_URL (runtime env)
+ *   2. X-Forwarded-Host from the reverse proxy
+ *   3. Non-loopback request origin
+ *
+ * Loopback origins (localhost / 127.0.0.1) are skipped whenever any public
+ * candidate exists — this is what was sending live users to
+ * https://localhost:5000/kite/auth-complete.
  */
-export function resolveAuthCompleteOrigin(fallbackOrigin: string): string {
-  const configured = (process.env.NEXT_PUBLIC_APP_URL ?? '').trim();
-  if (!configured) return fallbackOrigin;
+export function resolveAuthCompleteOrigin(
+  fallbackOrigin: string,
+  options: ResolveAuthCompleteOriginOptions = {},
+): string {
+  const candidates: string[] = [];
 
-  try {
-    return new URL(configured).origin;
-  } catch {
-    return fallbackOrigin;
+  for (const key of ['APP_URL', 'NEXT_PUBLIC_APP_URL', 'KITE_REDIRECT_URL'] as const) {
+    const origin = originFromConfiguredUrl(readRuntimeEnv(key));
+    if (origin) candidates.push(origin);
   }
+
+  const forwarded = originFromForwardedHeaders(options.headers);
+  if (forwarded) candidates.push(forwarded);
+
+  if (fallbackOrigin) candidates.push(fallbackOrigin);
+
+  const publicOrigin = candidates.find((origin) => !isLoopbackOrigin(origin));
+  if (publicOrigin) return publicOrigin;
+
+  return fallbackOrigin || candidates[0] || 'http://localhost:3000';
 }
 
 export function buildAuthCompleteRedirectUrl(origin: string, code: string): string {
