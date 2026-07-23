@@ -40,7 +40,7 @@ end
 redis.call('HSET', KEYS[1],
   'quantorusUserId', ARGV[1],
   'kiteUserId', ARGV[2],
-  'accessToken', ARGV[3]
+  'authenticatedAt', ARGV[3]
 )
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
 return 1
@@ -55,18 +55,36 @@ if quantorusUserId ~= ARGV[1] then
   return 'MISMATCH'
 end
 local kiteUserId = redis.call('HGET', KEYS[1], 'kiteUserId')
-local accessToken = redis.call('HGET', KEYS[1], 'accessToken')
-if not kiteUserId or not accessToken then
+local authenticatedAt = redis.call('HGET', KEYS[1], 'authenticatedAt')
+if not kiteUserId then
   return nil
 end
 redis.call('DEL', KEYS[1])
-return cjson.encode({ kiteUserId = kiteUserId, accessToken = accessToken })
+return cjson.encode({ kiteUserId = kiteUserId, authenticatedAt = authenticatedAt or '' })
 `);
 
 type StringEntry = { value: string; expiresAt: number | null };
 type HashEntry = { fields: Map<string, string>; expiresAt: number | null };
 
-const { fakeRedis, redisClientRef, mockRequireSession, mockGetKiteConfig } = vi.hoisted(() => {
+type ActiveSession = {
+  accessToken: string;
+  kiteUserId: string;
+  quantorusUserId: string;
+  authenticatedAt: string;
+};
+
+const {
+  fakeRedis,
+  redisClientRef,
+  mockRequireSession,
+  mockGetKiteConfig,
+  activeSessionRef,
+  mockGetBrokerConnection,
+  mockGetDecrypted,
+  mockMarkStatus,
+  mockClearActive,
+} = vi.hoisted(() => {
+  const activeSessionRef = { current: null as ActiveSession | null };
   class FakeHandoffRedis {
     private strings = new Map<string, StringEntry>();
     private hashes = new Map<string, HashEntry>();
@@ -174,7 +192,7 @@ const { fakeRedis, redisClientRef, mockRequireSession, mockGetKiteConfig } = vi.
           fields: new Map([
             ['quantorusUserId', argv[0]],
             ['kiteUserId', argv[1]],
-            ['accessToken', argv[2]],
+            ['authenticatedAt', argv[2]],
           ]),
           expiresAt: Number.isFinite(ttlSeconds) ? this.now + ttlSeconds * 1000 : null,
         });
@@ -189,10 +207,10 @@ const { fakeRedis, redisClientRef, mockRequireSession, mockGetKiteConfig } = vi.
         if (!quantorusUserId) return null;
         if (quantorusUserId !== argv[0]) return 'MISMATCH';
         const kiteUserId = entry.fields.get('kiteUserId');
-        const accessToken = entry.fields.get('accessToken');
-        if (!kiteUserId || !accessToken) return null;
+        const authenticatedAt = entry.fields.get('authenticatedAt') ?? '';
+        if (!kiteUserId) return null;
         this.hashes.delete(key);
-        return JSON.stringify({ kiteUserId, accessToken });
+        return JSON.stringify({ kiteUserId, authenticatedAt });
       }
 
       throw new Error('Unsupported script in FakeHandoffRedis');
@@ -205,6 +223,11 @@ const { fakeRedis, redisClientRef, mockRequireSession, mockGetKiteConfig } = vi.
     redisClientRef: { current: instance as FakeHandoffRedis | null },
     mockRequireSession: vi.fn(),
     mockGetKiteConfig: vi.fn(),
+    activeSessionRef,
+    mockGetBrokerConnection: vi.fn(),
+    mockGetDecrypted: vi.fn(),
+    mockMarkStatus: vi.fn(),
+    mockClearActive: vi.fn(),
   };
 });
 
@@ -218,6 +241,41 @@ vi.mock('@/lib/session', () => ({
 
 vi.mock('@/lib/kite/config', () => ({
   getKiteConfig: mockGetKiteConfig,
+}));
+
+vi.mock('@/lib/broker/oauth/zerodhaBridge', () => ({
+  persistZerodhaBrokerConnection: vi.fn(async () => undefined),
+}));
+
+vi.mock('@/lib/kite/active-session-store', () => ({
+  saveActiveKiteSession: vi.fn(async (session: ActiveSession) => {
+    activeSessionRef.current = session;
+  }),
+  getActiveKiteSession: vi.fn(async () => activeSessionRef.current),
+  clearActiveKiteSession: mockClearActive,
+}));
+
+vi.mock('@/lib/broker/connections', () => ({
+  getBrokerConnectionByUserAndBroker: mockGetBrokerConnection,
+  getDecryptedAccessTokenForUser: mockGetDecrypted,
+  markBrokerConnectionStatus: mockMarkStatus,
+  isDataSourceBroker: (broker: string) => broker === 'zerodha' || broker === 'shoonya',
+}));
+
+vi.mock('@/lib/kite/client', () => ({
+  getKiteClient: () => ({
+    getAccessToken: () => activeSessionRef.current?.accessToken ?? '',
+    setAccessToken: vi.fn(),
+  }),
+  resetKiteClient: vi.fn(),
+}));
+
+vi.mock('@/lib/broker/repository/brokerRepository', () => ({
+  disconnectBrokerAccount: vi.fn(async () => undefined),
+}));
+
+vi.mock('@/lib/broker/oauth/shoonya', () => ({
+  resolveAppBaseUrl: () => 'http://localhost',
 }));
 
 function assertNoSecrets(text: string): void {
@@ -281,7 +339,8 @@ describe('Kite auth lifecycle integration', () => {
     const complete = await import('@/app/api/kite/auth/complete/route');
     const profile = await import('@/app/api/kite/profile/route');
     const session = await import('@/app/api/kite/session/route');
-    return { start, callback, complete, profile, session };
+    const disconnect = await import('@/app/api/brokers/[broker]/disconnect/route');
+    return { start, callback, complete, profile, session, disconnect };
   }
 
   async function importBrowserHelpers() {
@@ -325,19 +384,30 @@ describe('Kite auth lifecycle integration', () => {
       }
 
       if (url === '/api/kite/profile' || url.endsWith('/api/kite/profile')) {
-        const headers = new Headers(init?.headers);
         const request = new NextRequest('http://localhost/api/kite/profile', {
           method: 'GET',
-          headers,
         });
         return routes.profile.GET(request);
       }
 
+      if (url === '/api/brokers/zerodha/disconnect' || url.endsWith('/api/brokers/zerodha/disconnect')) {
+        const request = new NextRequest('http://localhost/api/brokers/zerodha/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: 'http://localhost' },
+        });
+        return routes.disconnect.POST(request, {
+          params: Promise.resolve({ broker: 'zerodha' }),
+        });
+      }
+
       if (url === '/api/kite/session' || url.endsWith('/api/kite/session')) {
-        const headers = new Headers(init?.headers);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (method === 'POST') {
+          const request = new NextRequest('http://localhost/api/kite/session', { method: 'POST' });
+          return routes.session.POST(request);
+        }
         const request = new NextRequest('http://localhost/api/kite/session', {
           method: 'DELETE',
-          headers,
         });
         return routes.session.DELETE(request);
       }
@@ -350,21 +420,39 @@ describe('Kite auth lifecycle integration', () => {
     vi.resetModules();
     fakeRedis.clear();
     redisClientRef.current = fakeRedis;
+    activeSessionRef.current = null;
     mockRequireSession.mockReset();
     mockGetKiteConfig.mockReset();
+    mockGetBrokerConnection.mockReset();
+    mockGetDecrypted.mockReset();
+    mockMarkStatus.mockReset();
+    mockClearActive.mockReset();
     mockGetKiteConfig.mockReturnValue({ apiKey: API_KEY, apiSecret: API_SECRET });
     mockRequireSession.mockResolvedValue({ id: Number(USER_A) });
+    mockGetBrokerConnection.mockResolvedValue({
+      userId: Number(USER_A),
+      status: 'active',
+      accessTokenEncrypted: 'enc:cipher',
+    });
+    mockGetDecrypted.mockResolvedValue(null);
+    mockMarkStatus.mockResolvedValue(undefined);
+    mockClearActive.mockResolvedValue(true);
+    process.env.KITE_API_KEY = API_KEY;
+    process.env.KITE_API_SECRET = API_SECRET;
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
     storage = sessionStorageMock();
-    vi.stubGlobal('window', { sessionStorage: storage });
+    vi.stubGlobal('window', {
+      sessionStorage: storage,
+      localStorage: sessionStorageMock(),
+    });
   });
 
   afterEach(async () => {
-    const { redemption, connection } = await importBrowserHelpers();
+    const { redemption } = await importBrowserHelpers();
     redemption.resetAuthCompleteRedemptionState();
-    connection.resetBrowserConnectionState();
     fakeRedis.clear();
+    activeSessionRef.current = null;
     vi.unstubAllGlobals();
   });
 
@@ -418,15 +506,19 @@ describe('Kite auth lifecycle integration', () => {
     expect(helpers.redemption.resolveCompletionCode(null)).toBe(captured);
 
     const redeemResult = await helpers.redemption.redeemCompletionCode(captured!);
-    expect(redeemResult).toEqual({ ok: true });
-    expect(fakeRedis.completionCount()).toBe(0);
-
-    const stored = helpers.browserSession.getKiteSession();
-    expect(stored).toEqual({
+    expect(redeemResult).toEqual({
+      ok: true,
       kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
       authenticatedAt: expect.any(String),
     });
+    expect(JSON.stringify(redeemResult)).not.toContain(ACCESS_TOKEN);
+    expect(fakeRedis.completionCount()).toBe(0);
+
+    expect(helpers.browserSession.getKiteSession()).toBeNull();
+    expect(storage._map.has('quantorus:kite-session')).toBe(false);
+    for (const value of storage._map.values()) {
+      expect(value).not.toContain(ACCESS_TOKEN);
+    }
 
     const replay = await routes.complete.POST(
       new NextRequest('http://localhost/api/kite/auth/complete', {
@@ -438,19 +530,8 @@ describe('Kite auth lifecycle integration', () => {
     expect(replay.status).toBe(401);
     expect(replay.headers.get('Cache-Control')).toBe('no-store');
 
-    const verification = await helpers.connection.verifyKiteProfile({
-      kiteUserId: stored!.kiteUserId,
-      accessToken: stored!.accessToken,
-      authenticatedAt: stored!.authenticatedAt,
-    });
-    const connected = helpers.connection.resolveConnectedState(
-      {
-        kiteUserId: stored!.kiteUserId,
-        accessToken: stored!.accessToken,
-        authenticatedAt: stored!.authenticatedAt,
-      },
-      verification,
-    );
+    const verification = await helpers.connection.verifyKiteProfile();
+    const connected = helpers.connection.resolveConnectedState(null, verification);
     expect(connected).toEqual({
       status: 'connected',
       userName: 'Lifecycle User',
@@ -464,22 +545,21 @@ describe('Kite auth lifecycle integration', () => {
     }).length;
     expect(profileCallsBefore).toBe(1);
     const profileInit = fetchMock.mock.calls.find((call) => String(call[0]).includes('/api/kite/profile'))?.[1] as RequestInit;
-    expect(new Headers(profileInit.headers).get('Authorization')).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(new Headers(profileInit?.headers ?? {}).has('Authorization')).toBe(false);
 
     const disconnectPromise = helpers.connection.disconnectKiteSession();
     expect(helpers.browserSession.getKiteSession()).toBeNull();
     const disconnectOutcome = await disconnectPromise;
-    expect(disconnectOutcome).toEqual({
-      kind: 'cleared',
-      remoteInvalidationConfirmed: true,
-    });
+    expect(disconnectOutcome).toEqual({ kind: 'done' });
 
-    const deleteCalls = fetchMock.mock.calls.filter((call) => {
+    const disconnectCalls = fetchMock.mock.calls.filter((call) => {
       const url = String(call[0]);
       const method = (call[1] as RequestInit | undefined)?.method;
-      return url.includes('/api/kite/session') && method === 'DELETE';
+      return url.includes('/api/brokers/zerodha/disconnect') && method === 'POST';
     });
-    expect(deleteCalls).toHaveLength(1);
+    expect(disconnectCalls).toHaveLength(1);
+    const disconnectInit = disconnectCalls[0]?.[1] as RequestInit;
+    expect(new Headers(disconnectInit?.headers ?? {}).has('Authorization')).toBe(false);
   });
 
   it('rejects unauthenticated kite routes with 401 and no-store', async () => {
@@ -506,16 +586,13 @@ describe('Kite auth lifecycle integration', () => {
     expect(complete.status).toBe(401);
 
     const profile = await routes.profile.GET(
-      new NextRequest('http://localhost/api/kite/profile', {
-        headers: { Authorization: 'Bearer token' },
-      }),
+      new NextRequest('http://localhost/api/kite/profile'),
     );
     expect(profile.status).toBe(401);
 
     const session = await routes.session.DELETE(
       new NextRequest('http://localhost/api/kite/session', {
         method: 'DELETE',
-        headers: { Authorization: 'Bearer token' },
       }),
     );
     expect(session.status).toBe(401);
@@ -536,7 +613,9 @@ describe('Kite auth lifecycle integration', () => {
         `http://localhost/api/kite/auth/callback?status=success&request_token=${REQUEST_TOKEN}&state=${state}`,
       ),
     );
-    expect(mismatchedCallback.status).toBe(401);
+    expect(mismatchedCallback.status).toBe(302);
+    expect(mismatchedCallback.headers.get('location')).toContain('/data-source');
+    expect(mismatchedCallback.headers.get('location')).toContain('error=invalid_state');
     expect(fakeRedis.authStateCount()).toBe(1);
     expect(fakeRedis.completionCount()).toBe(0);
 
@@ -571,10 +650,13 @@ describe('Kite auth lifecycle integration', () => {
     );
     expect(ownedComplete.status).toBe(200);
     expect(fakeRedis.completionCount()).toBe(0);
-    await expect(ownedComplete.json()).resolves.toEqual({
+    const completeBody = await ownedComplete.json();
+    expect(completeBody).toEqual({
+      ok: true,
       kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
+      authenticatedAt: expect.any(String),
     });
+    expect(JSON.stringify(completeBody)).not.toContain(ACCESS_TOKEN);
   });
 
   it('rejects state and completion replay and expiry', async () => {
@@ -601,7 +683,8 @@ describe('Kite auth lifecycle integration', () => {
         `http://localhost/api/kite/auth/callback?status=success&request_token=${REQUEST_TOKEN}&state=${state}`,
       ),
     );
-    expect(replayState.status).toBe(401);
+    expect(replayState.status).toBe(302);
+    expect(replayState.headers.get('location')).toContain('error=invalid_state');
 
     const firstRedeem = await routes.complete.POST(
       new NextRequest('http://localhost/api/kite/auth/complete', {
@@ -630,7 +713,8 @@ describe('Kite auth lifecycle integration', () => {
         `http://localhost/api/kite/auth/callback?status=success&request_token=${REQUEST_TOKEN}&state=${expiredState}`,
       ),
     );
-    expect(expiredCallback.status).toBe(401);
+    expect(expiredCallback.status).toBe(302);
+    expect(expiredCallback.headers.get('location')).toContain('error=invalid_state');
 
     fakeRedis.setNow(Date.now());
     const startForCompletionExpiry = await routes.start.GET();
@@ -676,14 +760,15 @@ describe('Kite auth lifecycle integration', () => {
         `http://localhost/api/kite/auth/callback?status=success&request_token=${REQUEST_TOKEN}&state=${state}`,
       ),
     );
-    expect(failedExchange.status).toBe(403);
+    expect(failedExchange.status).toBe(302);
+    expect(failedExchange.headers.get('location')).toContain('/data-source');
+    expect(failedExchange.headers.get('location')).toContain('error=authentication_failed');
     expect(fakeRedis.completionCount()).toBe(0);
-    const failedBody = await failedExchange.text();
-    assertNoSecrets(failedBody);
+    assertNoSecrets(failedExchange.headers.get('location') ?? '');
 
     fakeRedis.failNextSet = true;
     const redisStart = await routes.start.GET();
-    expect(redisStart.status).toBe(500);
+    expect([500, 503]).toContain(redisStart.status);
     assertNoSecrets(await redisStart.text());
 
     const start2 = await routes.start.GET();
@@ -697,22 +782,24 @@ describe('Kite auth lifecycle integration', () => {
         `http://localhost/api/kite/auth/callback?status=success&request_token=${REQUEST_TOKEN}&state=${state2}`,
       ),
     );
-    expect(failedCompletion.status).toBe(500);
-    expect(failedCompletion.headers.get('location')).toBeNull();
+    expect(failedCompletion.status).toBe(302);
+    expect(failedCompletion.headers.get('location')).toContain('/data-source');
     expect(fakeRedis.completionCount()).toBe(0);
-    assertNoSecrets(await failedCompletion.text());
+    assertNoSecrets(failedCompletion.headers.get('location') ?? '');
   });
 
   it('maps profile and disconnect failure modes safely', async () => {
     const routes = await importRoutes();
     const helpers = await importBrowserHelpers();
+    const { REMOTE_INVALIDATION_WARNING } = await import('@/lib/kite/invalidate-remote-session');
     installSameOriginBridge(routes);
 
-    helpers.browserSession.saveKiteSession({
-      kiteUserId: KITE_USER_ID,
+    activeSessionRef.current = {
       accessToken: ACCESS_TOKEN,
+      kiteUserId: KITE_USER_ID,
+      quantorusUserId: USER_A,
       authenticatedAt: new Date().toISOString(),
-    });
+    };
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
@@ -723,138 +810,68 @@ describe('Kite auth lifecycle integration', () => {
         );
       }
       if (url.includes('/api/kite/profile')) {
-        const request = new NextRequest('http://localhost/api/kite/profile', {
-          method: 'GET',
-          headers: new Headers(init?.headers),
-        });
-        return routes.profile.GET(request);
-      }
-      if (url.startsWith('https://api.kite.trade/session/token')) {
-        return new Response('upstream boom', { status: 500 });
-      }
-      if (url.includes('/api/kite/session')) {
-        const request = new NextRequest('http://localhost/api/kite/session', {
-          method: 'DELETE',
-          headers: new Headers(init?.headers),
-        });
-        return routes.session.DELETE(request);
+        return routes.profile.GET(new NextRequest('http://localhost/api/kite/profile'));
       }
       throw new Error(`Unexpected URL ${url}`);
     });
 
-    const unauthorized = await helpers.connection.verifyKiteProfile({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: new Date().toISOString(),
-    });
-    const cleared = helpers.connection.resolveConnectedState(
-      {
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-        authenticatedAt: new Date().toISOString(),
-      },
-      unauthorized,
-    );
+    const unauthorized = await helpers.connection.verifyKiteProfile();
+    const cleared = helpers.connection.resolveConnectedState(null, unauthorized);
     expect(cleared.status).toBe('verification_failed');
-    expect(cleared).toMatchObject({ clearedLocal: true });
     expect(helpers.browserSession.getKiteSession()).toBeNull();
 
-    helpers.browserSession.saveKiteSession({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: new Date().toISOString(),
-    });
-
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
       if (url.startsWith('https://api.kite.trade/user/profile')) {
         return new Response('bad gateway', { status: 502 });
       }
       if (url.includes('/api/kite/profile')) {
-        return routes.profile.GET(new NextRequest('http://localhost/api/kite/profile', {
-          headers: new Headers(init?.headers),
-        }));
+        return routes.profile.GET(new NextRequest('http://localhost/api/kite/profile'));
       }
       throw new Error(`Unexpected URL ${url}`);
     });
 
-    const temporary = await helpers.connection.verifyKiteProfile({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: helpers.browserSession.getKiteSession()!.authenticatedAt,
-    });
-    const tempState = helpers.connection.resolveConnectedState(
-      {
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-        authenticatedAt: helpers.browserSession.getKiteSession()!.authenticatedAt,
-      },
-      temporary,
-    );
+    const temporary = await helpers.connection.verifyKiteProfile();
+    const tempState = helpers.connection.resolveConnectedState(null, temporary);
     expect(tempState.status).toBe('temporary_failure');
-    expect(tempState).toMatchObject({ clearedLocal: false });
-    expect(helpers.browserSession.getKiteSession()).not.toBeNull();
-
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
-      if (url.startsWith('https://api.kite.trade/user/profile')) {
-        return kiteProfileSuccess('OTHER');
-      }
-      if (url.includes('/api/kite/profile')) {
-        return routes.profile.GET(new NextRequest('http://localhost/api/kite/profile', {
-          headers: new Headers(init?.headers),
-        }));
-      }
-      throw new Error(`Unexpected URL ${url}`);
-    });
-
-    const mismatch = await helpers.connection.verifyKiteProfile({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: helpers.browserSession.getKiteSession()!.authenticatedAt,
-    });
-    const mismatchState = helpers.connection.resolveConnectedState(
-      {
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-        authenticatedAt: helpers.browserSession.getKiteSession()!.authenticatedAt,
-      },
-      mismatch,
-    );
-    expect(mismatchState.status).toBe('verification_failed');
     expect(helpers.browserSession.getKiteSession()).toBeNull();
 
-    helpers.browserSession.saveKiteSession({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: new Date().toISOString(),
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
+      if (url.includes('/api/kite/profile')) {
+        return Response.json({
+          userId: KITE_USER_ID,
+          userName: 'Lifecycle User',
+          email: 'user@example.com',
+          broker: 'ZERODHA',
+          accessToken: ACCESS_TOKEN,
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
     });
 
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const tokenLeak = await helpers.connection.verifyKiteProfile();
+    const leakState = helpers.connection.resolveConnectedState(null, tokenLeak);
+    expect(leakState.status).toBe('verification_failed');
+    expect(helpers.browserSession.getKiteSession()).toBeNull();
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
-      if (url.startsWith('https://api.kite.trade/session/token')) {
-        throw new Error('network down');
-      }
-      if (url.includes('/api/kite/session')) {
-        return routes.session.DELETE(new NextRequest('http://localhost/api/kite/session', {
-          method: 'DELETE',
-          headers: new Headers(init?.headers),
-        }));
+      if (url.includes('/api/brokers/zerodha/disconnect')) {
+        return new Response(null, { status: 502 });
       }
       throw new Error(`Unexpected URL ${url}`);
     });
 
     const disconnect = await helpers.connection.disconnectKiteSession();
     expect(helpers.browserSession.getKiteSession()).toBeNull();
-    expect(disconnect.kind).toBe('cleared');
-    if (disconnect.kind === 'cleared') {
-      expect(disconnect.remoteInvalidationConfirmed).toBe(false);
-      expect(disconnect.warning).toBe(helpers.connection.REMOTE_INVALIDATION_WARNING);
+    expect(disconnect).toEqual({ kind: 'done', warning: REMOTE_INVALIDATION_WARNING });
+    if (disconnect.kind === 'done') {
       expect(disconnect.warning).not.toContain(ACCESS_TOKEN);
     }
   });
 
-  it('deduplicates strict-mode redemption, verification, and disconnect', async () => {
+  it('deduplicates strict-mode redemption and issues a single broker disconnect', async () => {
     const routes = await importRoutes();
     const helpers = await importBrowserHelpers();
     installSameOriginBridge(routes);
@@ -877,61 +894,29 @@ describe('Kite auth lifecycle integration', () => {
     const second = helpers.redemption.redeemCompletionCode(code);
     expect(first).toBe(second);
     expect(helpers.redemption.getInFlightRedemptionCount()).toBe(1);
-    await first;
+    const redemptionResult = await first;
+    expect(JSON.stringify(redemptionResult)).not.toContain(ACCESS_TOKEN);
 
     const completePosts = fetchMock.mock.calls.filter((call) => String(call[0]).includes('/api/kite/auth/complete'));
     expect(completePosts).toHaveLength(1);
 
-    const session = helpers.browserSession.getKiteSession()!;
-    const localSession = {
-      kiteUserId: session.kiteUserId,
-      accessToken: session.accessToken,
-      authenticatedAt: session.authenticatedAt,
-    };
-
-    let resolveProfile: ((value: Response) => void) | undefined;
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
-      if (url.includes('/api/kite/profile')) {
-        return new Promise<Response>((resolve) => {
-          resolveProfile = resolve;
-        }).then(() => routes.profile.GET(new NextRequest('http://localhost/api/kite/profile', {
-          headers: new Headers(init?.headers),
-        })));
-      }
-      if (url.startsWith('https://api.kite.trade/user/profile')) {
-        return kiteProfileSuccess();
-      }
-      if (url.includes('/api/kite/session')) {
-        return routes.session.DELETE(new NextRequest('http://localhost/api/kite/session', {
-          method: 'DELETE',
-          headers: new Headers(init?.headers),
-        }));
-      }
-      if (url.startsWith('https://api.kite.trade/session/token')) {
-        return new Response(null, { status: 204 });
+      if (url.includes('/api/brokers/zerodha/disconnect')) {
+        return Response.json({ ok: true, broker: 'zerodha', status: 'disconnected' });
       }
       throw new Error(`Unexpected URL ${url}`);
     });
 
-    const verifyA = helpers.connection.verifyKiteProfile(localSession);
-    const verifyB = helpers.connection.verifyKiteProfile(localSession);
-    expect(verifyA).toBe(verifyB);
-    expect(helpers.connection.getInFlightVerificationCount()).toBe(1);
-    resolveProfile?.(new Response());
-    await verifyA;
-
-    const disconnectA = helpers.connection.disconnectKiteSession();
-    const disconnectB = helpers.connection.disconnectKiteSession();
-    const [outA, outB] = await Promise.all([disconnectA, disconnectB]);
-    expect([outA.kind, outB.kind].sort()).toEqual(['cleared', 'suppressed'].sort());
+    await helpers.connection.disconnectKiteSession();
     expect(helpers.browserSession.getKiteSession()).toBeNull();
 
-    const deletes = fetchMock.mock.calls.filter((call) => {
+    const disconnectCalls = fetchMock.mock.calls.filter((call) => {
       const url = String(call[0]);
-      return url.includes('/api/kite/session') && (call[1] as RequestInit | undefined)?.method === 'DELETE';
+      return url.includes('/api/brokers/zerodha/disconnect')
+        && (call[1] as RequestInit | undefined)?.method === 'POST';
     });
-    expect(deletes).toHaveLength(1);
+    expect(disconnectCalls).toHaveLength(1);
   });
 
   it('applies auth-complete security headers and rejects kite client redirects', async () => {

@@ -13,3 +13,14 @@ export { isGlobalLiveKillSwitchActive, isLiveTradingEnabled } from './killSwitch
 export { withRetry } from './sdk/retry';
 export { ensureBrokerTables, acceptDisclaimer, hasAcceptedDisclaimer } from './repository/brokerRepository';
 export { LIVE_DISCLAIMER_VERSION, MIN_PAPER_TRADES_FOR_LIVE } from './types';
+
+// Data-source login (Zerodha / Shoonya)
+export {
+  ensureBrokerConnectionTables,
+  hasActiveBrokerConnection,
+  getSafeBrokerStatus,
+  resolvePostLoginDestination,
+  encryptBrokerCredential,
+  decryptBrokerCredential,
+} from './connections';
+export { getDataSourceBrokerAdapter } from './oauth/registry';

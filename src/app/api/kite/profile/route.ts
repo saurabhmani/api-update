@@ -6,6 +6,8 @@ import {
   kiteAuthenticatedRequest,
   KiteApiError,
 } from '@/lib/kite/api-client';
+import { getActiveKiteSession } from '@/lib/kite/active-session-store';
+import { getDecryptedAccessTokenForUser } from '@/lib/broker/connections';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +18,8 @@ export interface KiteProfileResponse {
   userName: string;
   email: string;
   broker: string;
+  kiteUserId?: string;
+  authenticatedAt?: string;
 }
 
 function jsonError(message: string, status: number): NextResponse {
@@ -30,17 +34,6 @@ function readNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function parseBearerAccessToken(request: NextRequest): string | null {
-  const header = request.headers.get('authorization');
-  if (!header) return null;
-
-  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
-  if (!match) return null;
-
-  const token = match[1].trim();
-  return token.length > 0 ? token : null;
 }
 
 function parseKiteProfile(body: unknown): KiteProfileResponse | null {
@@ -60,20 +53,46 @@ function parseKiteProfile(body: unknown): KiteProfileResponse | null {
   return { userId, userName, email, broker };
 }
 
-/** GET /api/kite/profile — verify a browser-held Kite access token against Zerodha */
-export async function GET(request: NextRequest) {
-  try {
-    await requireSession();
+/**
+ * Resolve the server-side Kite access token for the authenticated Quant user.
+ * Never accepts browser-supplied Bearer tokens.
+ */
+async function resolveServerAccessToken(userId: number): Promise<{
+  accessToken: string;
+  kiteUserId?: string;
+  authenticatedAt?: string;
+} | null> {
+  const active = await getActiveKiteSession().catch(() => null);
+  if (
+    active
+    && active.quantorusUserId === String(userId)
+    && active.accessToken.trim()
+  ) {
+    return {
+      accessToken: active.accessToken,
+      kiteUserId: active.kiteUserId,
+      authenticatedAt: active.authenticatedAt,
+    };
+  }
 
-    const accessToken = parseBearerAccessToken(request);
-    if (!accessToken) {
-      return jsonError('Kite access token is required', 401);
+  const decrypted = await getDecryptedAccessTokenForUser(userId, 'zerodha');
+  if (!decrypted) return null;
+  return { accessToken: decrypted };
+}
+
+/** GET /api/kite/profile — verify server-side Kite credentials against Zerodha */
+export async function GET(_request: NextRequest) {
+  try {
+    const user = await requireSession();
+    const resolved = await resolveServerAccessToken(user.id);
+    if (!resolved) {
+      return jsonError('Kite is not connected', 401);
     }
 
     const response = await kiteAuthenticatedRequest({
       method: 'GET',
       path: '/user/profile',
-      accessToken,
+      accessToken: resolved.accessToken,
     });
 
     if (response.empty) {
@@ -96,7 +115,14 @@ export async function GET(request: NextRequest) {
       return jsonError('Invalid response from Kite API', 502);
     }
 
-    return NextResponse.json(profile, { status: 200, headers: NO_STORE });
+    return NextResponse.json(
+      {
+        ...profile,
+        kiteUserId: resolved.kiteUserId ?? profile.userId,
+        authenticatedAt: resolved.authenticatedAt,
+      },
+      { status: 200, headers: NO_STORE },
+    );
   } catch (err) {
     if (err instanceof AuthenticationError) {
       return jsonError('Unauthorized', 401);

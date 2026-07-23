@@ -105,7 +105,12 @@ export function proxy(req: NextRequest) {
     }
 
     const loginUrl = new URL('/login', req.url);
-    loginUrl.searchParams.set('from', pathname);
+    // Preserve path + query so post-login can restore error banners, etc.
+    const from =
+      req.nextUrl.search && req.nextUrl.search.length > 1
+        ? `${pathname}${req.nextUrl.search}`
+        : pathname;
+    loginUrl.searchParams.set('from', from);
     const response = NextResponse.redirect(loginUrl);
     return withSecurity(req, response, nonce);
   }

@@ -1,6 +1,6 @@
 'use client';
-import { useState, FormEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, FormEvent, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Eye,
   EyeOff,
@@ -19,6 +19,17 @@ import styles from './login.module.scss';
 
 type Step = 'login' | '2fa';
 
+/** Only allow same-origin relative paths (blocks open redirects). */
+function safeInternalPath(raw: string | null): string | null {
+  if (!raw) return null;
+  const path = raw.trim();
+  if (!path.startsWith('/')) return null;
+  if (path.startsWith('//')) return null;
+  if (path.includes('://')) return null;
+  if (path.length > 512) return null;
+  return path;
+}
+
 function GoogleIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
@@ -32,6 +43,11 @@ function GoogleIcon({ size = 18 }: { size?: number }) {
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromPath = useMemo(
+    () => safeInternalPath(searchParams.get('from')),
+    [searchParams],
+  );
   const [step,     setStep]     = useState<Step>('login');
   const [userId,   setUserId]   = useState<number | null>(null);
   const [email,    setEmail]    = useState('');
@@ -41,6 +57,20 @@ export default function LoginPage() {
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
 
+  async function resolvePostLoginPath(apiRedirectTo?: string): Promise<string> {
+    if (fromPath) return fromPath;
+    if (apiRedirectTo && safeInternalPath(apiRedirectTo)) return apiRedirectTo;
+    try {
+      const post = await fetch('/api/auth/post-login-destination', { credentials: 'include' })
+        .then((r) => r.json());
+      const dest = typeof post.redirectTo === 'string' ? post.redirectTo : null;
+      if (dest && safeInternalPath(dest)) return dest;
+    } catch {
+      // fall through
+    }
+    return '/data-source';
+  }
+
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
     if (!email || !password) return setError('Email and password are required');
@@ -48,7 +78,10 @@ export default function LoginPage() {
     try {
       const data = await authApi.login(email, password) as any;
       if (data.requires2fa) { setUserId(data.userId); setStep('2fa'); }
-      else router.push('/dashboard');
+      else {
+        const path = await resolvePostLoginPath(data.redirectTo as string | undefined);
+        router.push(path);
+      }
     } catch (err: any) {
       setError(err.data?.error || 'Login failed. Check your credentials.');
     } finally { setLoading(false); }
@@ -59,8 +92,9 @@ export default function LoginPage() {
     if (!otp || otp.length !== 6) return setError('Enter the 6-digit code');
     setLoading(true); setError('');
     try {
-      await authApi.verify2fa(userId!, otp);
-      router.push('/dashboard');
+      const data = await authApi.verify2fa(userId!, otp) as any;
+      const path = await resolvePostLoginPath(data.redirectTo as string | undefined);
+      router.push(path);
     } catch (err: any) {
       setError(err.data?.error || 'Invalid code. Try again.');
     } finally { setLoading(false); }

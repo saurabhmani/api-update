@@ -1,8 +1,8 @@
 // ════════════════════════════════════════════════════════════════
-//  Kite Connect — one-time completion codes (Phase 6, server-only)
+//  Kite Connect — one-time opaque completion codes (server-only)
 //
-//  Redis-backed codes bridge the OAuth callback to the client session.
-//  Import via `@/lib/kite/completion-store` — never from the client barrel.
+//  Codes are random, short-lived, single-use, and bound to the
+//  authenticated Quant user. They NEVER contain access tokens.
 // ════════════════════════════════════════════════════════════════
 
 import 'server-only';
@@ -17,9 +17,7 @@ const COMPLETION_KEY_PREFIX = 'kite:completion:';
 
 /**
  * Atomic create-only: write fields + TTL only when the key is absent.
- * Concurrent creators racing the same key cannot overwrite each other because
- * EXISTS+HSET+EXPIRE run in one Lua script (single Redis atomic execution).
- * A colliding key is left completely unchanged (fields and remaining TTL).
+ * Stores no access token — only opaque user binding metadata.
  */
 const CREATE_COMPLETION_LUA = `
 if redis.call('EXISTS', KEYS[1]) == 1 then
@@ -28,7 +26,7 @@ end
 redis.call('HSET', KEYS[1],
   'quantorusUserId', ARGV[1],
   'kiteUserId', ARGV[2],
-  'accessToken', ARGV[3]
+  'authenticatedAt', ARGV[3]
 )
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
 return 1
@@ -43,23 +41,26 @@ if quantorusUserId ~= ARGV[1] then
   return 'MISMATCH'
 end
 local kiteUserId = redis.call('HGET', KEYS[1], 'kiteUserId')
-local accessToken = redis.call('HGET', KEYS[1], 'accessToken')
-if not kiteUserId or not accessToken then
+local authenticatedAt = redis.call('HGET', KEYS[1], 'authenticatedAt')
+if not kiteUserId then
   return nil
 end
 redis.call('DEL', KEYS[1])
-return cjson.encode({ kiteUserId = kiteUserId, accessToken = accessToken })
+return cjson.encode({
+  kiteUserId = kiteUserId,
+  authenticatedAt = authenticatedAt or ''
+})
 `;
 
 export interface KiteCompletionCodeData {
   quantorusUserId: string;
   kiteUserId: string;
-  accessToken: string;
+  authenticatedAt: string;
 }
 
 export interface KiteCompletionConsumption {
   kiteUserId: string;
-  accessToken: string;
+  authenticatedAt: string;
 }
 
 function hashCode(code: string): string {
@@ -86,31 +87,31 @@ function parseConsumptionPayload(value: unknown): KiteCompletionConsumption | nu
   if (!isRecord(value)) return null;
 
   const kiteUserId = value.kiteUserId;
-  const accessToken = value.accessToken;
+  if (!isNonEmptyString(kiteUserId)) return null;
 
-  if (!isNonEmptyString(kiteUserId) || !isNonEmptyString(accessToken)) {
-    return null;
-  }
+  const authenticatedAt = isNonEmptyString(value.authenticatedAt)
+    ? value.authenticatedAt.trim()
+    : new Date().toISOString();
 
   return {
     kiteUserId: kiteUserId.trim(),
-    accessToken: accessToken.trim(),
+    authenticatedAt,
   };
 }
 
 /**
- * Store a one-time completion code for a Kite session handoff.
- * Returns the plaintext code; only its hash and session fields are stored.
+ * Store a one-time opaque completion code (no token material).
+ * Returns the plaintext code; only its hash and binding fields are stored.
  */
 export async function createKiteCompletionCode(
   data: KiteCompletionCodeData,
 ): Promise<string> {
   const quantorusUserId = data.quantorusUserId.trim();
   const kiteUserId = data.kiteUserId.trim();
-  const accessToken = data.accessToken.trim();
+  const authenticatedAt = data.authenticatedAt.trim() || new Date().toISOString();
 
-  if (!quantorusUserId || !kiteUserId || !accessToken) {
-    throw new Error('createKiteCompletionCode requires quantorusUserId, kiteUserId, and accessToken');
+  if (!quantorusUserId || !kiteUserId) {
+    throw new Error('createKiteCompletionCode requires quantorusUserId and kiteUserId');
   }
 
   const redis = getRedisClient();
@@ -129,7 +130,7 @@ export async function createKiteCompletionCode(
         key,
         quantorusUserId,
         kiteUserId,
-        accessToken,
+        authenticatedAt,
         String(COMPLETION_TTL_SECONDS),
       );
       if (isRedisSuccess(result)) {
@@ -145,7 +146,7 @@ export async function createKiteCompletionCode(
 
 /**
  * Validate and consume a completion code for the given Quantorus user.
- * Returns session fields only on success; otherwise null.
+ * Rejects cross-user redemption and duplicate consumption.
  */
 export async function consumeKiteCompletionCode(
   code: string,

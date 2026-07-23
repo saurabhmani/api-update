@@ -31,7 +31,7 @@ end
 redis.call('HSET', KEYS[1],
   'quantorusUserId', ARGV[1],
   'kiteUserId', ARGV[2],
-  'accessToken', ARGV[3]
+  'authenticatedAt', ARGV[3]
 )
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
 return 1
@@ -46,12 +46,15 @@ if quantorusUserId ~= ARGV[1] then
   return 'MISMATCH'
 end
 local kiteUserId = redis.call('HGET', KEYS[1], 'kiteUserId')
-local accessToken = redis.call('HGET', KEYS[1], 'accessToken')
-if not kiteUserId or not accessToken then
+local authenticatedAt = redis.call('HGET', KEYS[1], 'authenticatedAt')
+if not kiteUserId then
   return nil
 end
 redis.call('DEL', KEYS[1])
-return cjson.encode({ kiteUserId = kiteUserId, accessToken = accessToken })
+return cjson.encode({
+  kiteUserId = kiteUserId,
+  authenticatedAt = authenticatedAt or ''
+})
 `);
 
 type StringEntry = { value: string; expiresAt: number | null };
@@ -194,7 +197,7 @@ const { fakeRedis, redisClientRef, randomBytesMock, realRandomBytes } = vi.hoist
           fields: new Map([
             ['quantorusUserId', argv[0]],
             ['kiteUserId', argv[1]],
-            ['accessToken', argv[2]],
+            ['authenticatedAt', argv[2]],
           ]),
           expiresAt: Number.isFinite(ttlSeconds)
             ? this.now + ttlSeconds * 1000
@@ -211,10 +214,10 @@ const { fakeRedis, redisClientRef, randomBytesMock, realRandomBytes } = vi.hoist
         if (!quantorusUserId) return null;
         if (quantorusUserId !== argv[0]) return 'MISMATCH';
         const kiteUserId = entry.fields.get('kiteUserId');
-        const accessToken = entry.fields.get('accessToken');
-        if (!kiteUserId || !accessToken) return null;
+        const authenticatedAt = entry.fields.get('authenticatedAt') ?? '';
+        if (!kiteUserId) return null;
         this.hashes.delete(key);
-        return JSON.stringify({ kiteUserId, accessToken });
+        return JSON.stringify({ kiteUserId, authenticatedAt });
       }
 
       throw new Error('Unsupported script in FakeHandoffRedis');
@@ -338,12 +341,12 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: '7',
       kiteUserId: 'KITE123',
-      accessToken: 'token-value',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     });
 
     await expect(consumeKiteCompletionCode(code, '7')).resolves.toEqual({
       kiteUserId: 'KITE123',
-      accessToken: 'token-value',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     });
     await expect(consumeKiteCompletionCode(code, '7')).resolves.toBeNull();
   });
@@ -363,7 +366,7 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: '8',
       kiteUserId: 'KITE-8',
-      accessToken: 'token-8',
+      authenticatedAt: '2026-01-01T00:00:08.000Z',
     });
 
     fakeRedis.setNow(Date.now() + 61 * 1000);
@@ -384,13 +387,13 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: '11',
       kiteUserId: 'KITE-A',
-      accessToken: 'token-a',
+      authenticatedAt: '2026-01-01T00:00:11.000Z',
     });
 
     await expect(consumeKiteCompletionCode(code, '22')).resolves.toBeNull();
     await expect(consumeKiteCompletionCode(code, '11')).resolves.toEqual({
       kiteUserId: 'KITE-A',
-      accessToken: 'token-a',
+      authenticatedAt: '2026-01-01T00:00:11.000Z',
     });
   });
 
@@ -413,7 +416,7 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: '3',
       kiteUserId: 'KITE-Z',
-      accessToken: 'token-z',
+      authenticatedAt: '2026-01-01T00:00:03.000Z',
     });
 
     const results = await Promise.all([
@@ -428,7 +431,7 @@ describe('Kite Redis handoff stores', () => {
     expect(failures).toHaveLength(1);
     expect(successes[0]).toEqual({
       kiteUserId: 'KITE-Z',
-      accessToken: 'token-z',
+      authenticatedAt: '2026-01-01T00:00:03.000Z',
     });
   });
 
@@ -442,7 +445,7 @@ describe('Kite Redis handoff stores', () => {
     await expect(createKiteCompletionCode({
       quantorusUserId: '1',
       kiteUserId: 'K',
-      accessToken: 'T',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     })).rejects.toThrow('Kite completion store unavailable');
     await expect(consumeKiteAuthState('state', '1')).resolves.toBe(false);
     await expect(consumeKiteCompletionCode('code', '1')).resolves.toBeNull();
@@ -465,7 +468,7 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: '5',
       kiteUserId: 'KITE-5',
-      accessToken: 'token-5',
+      authenticatedAt: '2026-01-01T00:00:05.000Z',
     });
     const digest = hashCode(code);
 
@@ -520,7 +523,7 @@ describe('Kite Redis handoff stores', () => {
       {
         quantorusUserId: 'original',
         kiteUserId: 'KITE-ORIG',
-        accessToken: 'token-orig',
+        authenticatedAt: '2026-01-01T00:00:00.000Z',
       },
       45,
     );
@@ -531,7 +534,7 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: 'retry-user',
       kiteUserId: 'KITE-RETRY',
-      accessToken: 'token-retry',
+      authenticatedAt: '2026-01-01T00:00:01.000Z',
     });
 
     expect(code).toBe(successPlain);
@@ -540,7 +543,7 @@ describe('Kite Redis handoff stores', () => {
       fields: {
         quantorusUserId: 'retry-user',
         kiteUserId: 'KITE-RETRY',
-        accessToken: 'token-retry',
+        authenticatedAt: '2026-01-01T00:00:01.000Z',
       },
       expiresAt: fakeRedis.getNow() + COMPLETION_TTL_SECONDS * 1000,
     });
@@ -556,7 +559,7 @@ describe('Kite Redis handoff stores', () => {
       {
         quantorusUserId: 'keeper',
         kiteUserId: 'KITE-KEEP',
-        accessToken: 'token-keep',
+        authenticatedAt: '2026-01-01T00:00:00.000Z',
       },
       37,
     );
@@ -568,7 +571,7 @@ describe('Kite Redis handoff stores', () => {
     await createKiteCompletionCode({
       quantorusUserId: 'intruder',
       kiteUserId: 'KITE-INTRUDE',
-      accessToken: 'token-intrude',
+      authenticatedAt: '2026-01-01T00:00:99.000Z',
     });
 
     expect(fakeRedis.inspectHash(collidingKey)).toEqual(before);
@@ -589,12 +592,12 @@ describe('Kite Redis handoff stores', () => {
       createKiteCompletionCode({
         quantorusUserId: 'a',
         kiteUserId: 'KITE-A',
-        accessToken: 'token-a',
+        authenticatedAt: '2026-01-01T00:00:10.000Z',
       }),
       createKiteCompletionCode({
         quantorusUserId: 'b',
         kiteUserId: 'KITE-B',
-        accessToken: 'token-b',
+        authenticatedAt: '2026-01-01T00:00:11.000Z',
       }),
     ]);
 
@@ -605,8 +608,9 @@ describe('Kite Redis handoff stores', () => {
     expect(['a', 'b']).toContain(shared!.fields.quantorusUserId);
 
     const winnerOwner = shared!.fields.quantorusUserId;
-    const winnerToken = winnerOwner === 'a' ? 'token-a' : 'token-b';
-    expect(shared!.fields.accessToken).toBe(winnerToken);
+    const winnerAt = winnerOwner === 'a' ? '2026-01-01T00:00:10.000Z' : '2026-01-01T00:00:11.000Z';
+    expect(shared!.fields.authenticatedAt).toBe(winnerAt);
+    expect(shared!.fields.accessToken).toBeUndefined();
   });
 
   it('throws safely when auth-state creation retries are exhausted', async () => {
@@ -629,7 +633,7 @@ describe('Kite Redis handoff stores', () => {
       {
         quantorusUserId: 'holder',
         kiteUserId: 'KITE-HOLD',
-        accessToken: 'token-hold',
+        authenticatedAt: '2026-01-01T00:00:00.000Z',
       },
       COMPLETION_TTL_SECONDS,
     );
@@ -639,12 +643,12 @@ describe('Kite Redis handoff stores', () => {
     const error = asError(await createKiteCompletionCode({
       quantorusUserId: 'exhausted',
       kiteUserId: 'KITE-X',
-      accessToken: 'token-x',
+      authenticatedAt: '2026-01-01T00:00:99.000Z',
     }).catch((err: unknown) => err));
 
     expect(error.message).toBe('Kite completion store unavailable');
     expect(error.message).not.toContain(collidingPlain);
-    expect(error.message).not.toContain('token-x');
+    expect(error.message).not.toContain('2026-01-01T00:00:99.000Z');
     expect(error.message).not.toContain('exhausted');
   });
 
@@ -658,7 +662,7 @@ describe('Kite Redis handoff stores', () => {
     await expect(createKiteCompletionCode({
       quantorusUserId: '1',
       kiteUserId: 'K',
-      accessToken: 'T',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     })).rejects.toThrow('Kite completion store unavailable');
   });
 
@@ -670,7 +674,7 @@ describe('Kite Redis handoff stores', () => {
     const code = await createKiteCompletionCode({
       quantorusUserId: 'ttl-user',
       kiteUserId: 'KITE-TTL',
-      accessToken: 'token-ttl',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     });
 
     expect(fakeRedis.ttlSeconds(authKeyForPlaintext(state))).toBe(AUTH_STATE_TTL_SECONDS);

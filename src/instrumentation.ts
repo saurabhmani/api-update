@@ -117,14 +117,36 @@ export async function register() {
                status: ['APPROVED_SIGNAL', 'DEVELOPING_SETUP'] },
   });
 
-  // Env validation: log missing vars but NEVER throw from the
-  // instrumentation hook. Throwing kills the entire Next server boot.
+  // Env validation — production fails closed; non-prod logs and continues.
   const { ensureEnv } = await import('@/lib/validateEnv');
   try {
     ensureEnv();
     log.info('Environment validation passed');
   } catch (err) {
-    log.error('Environment validation failed — server will boot but requests may fail', err instanceof Error ? err : new Error(String(err)));
+    if (process.env.NODE_ENV === 'production') {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    log.error(
+      'Environment validation failed — server will boot but requests may fail',
+      err instanceof Error ? err : new Error(String(err)),
+    );
+  }
+
+  try {
+    const { validateBrokerTokenEncryptionKey } = await import(
+      '@/lib/broker/connections/encryption'
+    );
+    const brokerEnc = validateBrokerTokenEncryptionKey();
+    if (!brokerEnc.ok) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(brokerEnc.error ?? 'BROKER_TOKEN_ENCRYPTION_KEY required');
+      }
+      log.warn(brokerEnc.error ?? brokerEnc.warning ?? 'Broker encryption key missing');
+    } else if (brokerEnc.warning) {
+      log.warn(brokerEnc.warning);
+    }
+  } catch (err) {
+    if (process.env.NODE_ENV === 'production') throw err;
   }
 
   // ── Production env safety lock ──────────────────────────────

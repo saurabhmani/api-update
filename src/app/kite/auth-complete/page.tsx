@@ -34,7 +34,7 @@ export default function KiteAuthCompletePage() {
       if (!completionCode) {
         if (!cancelled) {
           setState('failure');
-          setMessage('Missing completion code. Return to the dashboard and start Kite login again.');
+          setMessage('Missing completion code. Return to Data Source Login and start Kite login again.');
         }
         return;
       }

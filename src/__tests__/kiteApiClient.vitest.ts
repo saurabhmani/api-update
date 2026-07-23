@@ -18,6 +18,37 @@ vi.mock('@/lib/session', () => ({
   requireSession: mockRequireSession,
 }));
 
+const {
+  mockGetActiveKiteSession,
+  mockGetDecrypted,
+  mockClearActive,
+  mockMarkStatus,
+} = vi.hoisted(() => ({
+  mockGetActiveKiteSession: vi.fn(),
+  mockGetDecrypted: vi.fn(),
+  mockClearActive: vi.fn(),
+  mockMarkStatus: vi.fn(),
+}));
+
+vi.mock('@/lib/kite/active-session-store', () => ({
+  getActiveKiteSession: mockGetActiveKiteSession,
+  clearActiveKiteSession: mockClearActive,
+  saveActiveKiteSession: vi.fn(),
+}));
+
+vi.mock('@/lib/broker/connections', () => ({
+  getDecryptedAccessTokenForUser: mockGetDecrypted,
+  markBrokerConnectionStatus: mockMarkStatus,
+}));
+
+vi.mock('@/lib/kite/client', () => ({
+  getKiteClient: () => ({
+    getAccessToken: () => ACCESS_TOKEN,
+    setAccessToken: vi.fn(),
+  }),
+  resetKiteClient: vi.fn(),
+}));
+
 import {
   classifyKiteApiResponse,
   isKiteInvalidToken,
@@ -327,6 +358,15 @@ describe('kite routes using api client', () => {
     vi.clearAllMocks();
     mockRequireSession.mockResolvedValue({ id: 42 });
     mockGetKiteConfig.mockReturnValue({ apiKey: API_KEY, apiSecret: 'secret' });
+    mockGetActiveKiteSession.mockResolvedValue({
+      quantorusUserId: '42',
+      kiteUserId: 'AB1234',
+      accessToken: ACCESS_TOKEN,
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    mockGetDecrypted.mockResolvedValue(null);
+    mockClearActive.mockResolvedValue(true);
+    mockMarkStatus.mockResolvedValue(undefined);
     vi.stubGlobal('fetch', fetchMock);
   });
 
@@ -343,7 +383,7 @@ describe('kite routes using api client', () => {
     );
 
     const request = new NextRequest('http://localhost/api/kite/profile', {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: { Authorization: 'Bearer browser-supplied-token' },
     });
     const response = await getKiteProfile(request);
 
@@ -354,7 +394,14 @@ describe('kite routes using api client', () => {
       userName: 'Test User',
       email: 'user@example.com',
       broker: 'ZERODHA',
+      kiteUserId: 'AB1234',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
     });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = init.headers as Headers;
+    expect(headers.get('Authorization')).toBe(`token ${API_KEY}:${ACCESS_TOKEN}`);
+    expect(headers.get('Authorization')).not.toContain('browser-supplied-token');
   });
 
   it('keeps profile invalid-token mapping', async () => {
@@ -369,9 +416,7 @@ describe('kite routes using api client', () => {
       ),
     );
 
-    const request = new NextRequest('http://localhost/api/kite/profile', {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
+    const request = new NextRequest('http://localhost/api/kite/profile');
     const response = await getKiteProfile(request);
 
     expect(response.status).toBe(401);
@@ -381,14 +426,16 @@ describe('kite routes using api client', () => {
     });
   });
 
-  it('keeps session invalidation success and idempotent token behavior', async () => {
+  it('keeps session invalidation success and idempotent token behavior without browser Bearer', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     const successRequest = new NextRequest('http://localhost/api/kite/session', {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     });
     const successResponse = await deleteKiteSession(successRequest);
     expect(successResponse.status).toBe(204);
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.body).toBe(`api_key=${API_KEY}&access_token=${ACCESS_TOKEN}`);
 
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -403,7 +450,6 @@ describe('kite routes using api client', () => {
 
     const idempotentRequest = new NextRequest('http://localhost/api/kite/session', {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     });
     const idempotentResponse = await deleteKiteSession(idempotentRequest);
     expect(idempotentResponse.status).toBe(204);
@@ -414,9 +460,7 @@ describe('kite routes using api client', () => {
       throw new KiteConfigError('Missing KITE_API_KEY');
     });
 
-    const request = new NextRequest('http://localhost/api/kite/profile', {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
+    const request = new NextRequest('http://localhost/api/kite/profile');
     const response = await getKiteProfile(request);
 
     expect(response.status).toBe(503);
@@ -429,9 +473,7 @@ describe('kite routes using api client', () => {
   it('maps Quantorus auth failures to 401', async () => {
     mockRequireSession.mockRejectedValue(new AuthenticationError('Unauthorized'));
 
-    const request = new NextRequest('http://localhost/api/kite/profile', {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
+    const request = new NextRequest('http://localhost/api/kite/profile');
     const response = await getKiteProfile(request);
 
     expect(response.status).toBe(401);

@@ -28,6 +28,8 @@ import {
   ACCESS_TOKEN,
   COMPLETION_CODE,
   KITE_USER_ID,
+  LEGACY_SESSION_KEY,
+  assertNoAccessTokensInBrowserStorage,
   deferred,
   jsonResponse,
   setWindowLocation,
@@ -48,18 +50,36 @@ function createSessionStorage() {
     setItem: (key: string, value: string) => {
       map.set(key, value);
     },
-  } as Storage;
+    _map: map,
+  };
+}
+
+const AUTHENTICATED_AT = '2026-01-01T00:00:00.000Z';
+
+function successPayload() {
+  return {
+    ok: true,
+    kiteUserId: KITE_USER_ID,
+    authenticatedAt: AUTHENTICATED_AT,
+  };
 }
 
 describe('KiteAuthCompletePage component', () => {
   const fetchMock = vi.fn();
+  let storageMap: Map<string, string>;
 
   beforeEach(() => {
     resetAuthCompleteRedemptionState();
     routerReplace.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
+    const storage = createSessionStorage();
+    storageMap = storage._map;
     Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      value: storage,
+    });
+    Object.defineProperty(window, 'localStorage', {
       configurable: true,
       value: createSessionStorage(),
     });
@@ -95,21 +115,16 @@ describe('KiteAuthCompletePage component', () => {
     expect(window.location.hash).toBe('');
 
     await act(async () => {
-      redemption.resolve(jsonResponse({
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-      }));
+      redemption.resolve(jsonResponse(successPayload()));
     });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Authentication successful' })).toBeInTheDocument();
     });
     expect(routerReplace).toHaveBeenCalledWith('/dashboard');
-    expect(getKiteSession()).toEqual({
-      kiteUserId: KITE_USER_ID,
-      accessToken: ACCESS_TOKEN,
-      authenticatedAt: expect.any(String),
-    });
+    expect(getKiteSession()).toBeNull();
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap);
     expect(document.body.textContent).not.toContain(ACCESS_TOKEN);
     expect(document.body.textContent).not.toContain(COMPLETION_CODE);
   });
@@ -144,11 +159,12 @@ describe('KiteAuthCompletePage component', () => {
     });
     expect(screen.getByText('Invalid or expired completion code')).toBeInTheDocument();
     expect(getKiteSession()).toBeNull();
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
     expect(routerReplace).not.toHaveBeenCalled();
   });
 
   it('stores no session when the success payload is invalid', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ kiteUserId: KITE_USER_ID }, 200));
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }, 200));
     setWindowLocation(`/kite/auth-complete#code=${COMPLETION_CODE}`);
 
     render(<KiteAuthCompletePage />);
@@ -157,34 +173,49 @@ describe('KiteAuthCompletePage component', () => {
       expect(screen.getByText(/Invalid session data received/i)).toBeInTheDocument();
     });
     expect(getKiteSession()).toBeNull();
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
     expect(routerReplace).not.toHaveBeenCalled();
   });
 
-  it('shows safe failure UI when saveKiteSession fails', async () => {
+  it('rejects token leakage in the complete API response', async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse({ kiteUserId: KITE_USER_ID, accessToken: ACCESS_TOKEN }),
+      jsonResponse({
+        ok: true,
+        kiteUserId: KITE_USER_ID,
+        accessToken: ACCESS_TOKEN,
+        authenticatedAt: AUTHENTICATED_AT,
+      }),
     );
-    Object.defineProperty(window, 'sessionStorage', {
-      configurable: true,
-      value: {
-        getItem: () => null,
-        setItem: () => {
-          throw new Error('quota exceeded');
-        },
-        removeItem: () => undefined,
-        clear: () => undefined,
-        key: () => null,
-        length: 0,
-      } as Storage,
-    });
-
     setWindowLocation(`/kite/auth-complete#code=${COMPLETION_CODE}`);
+
     render(<KiteAuthCompletePage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Unable to save your Kite session locally/i)).toBeInTheDocument();
+      expect(screen.getByText(/Invalid session data received/i)).toBeInTheDocument();
     });
+    expect(getKiteSession()).toBeNull();
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
     expect(routerReplace).not.toHaveBeenCalled();
+  });
+
+  it('clears legacy browser storage after successful redemption', async () => {
+    window.sessionStorage.setItem(
+      LEGACY_SESSION_KEY,
+      JSON.stringify({ accessToken: ACCESS_TOKEN, kiteUserId: 'OLD' }),
+    );
+    fetchMock.mockResolvedValue(jsonResponse(successPayload()));
+    setWindowLocation(`/kite/auth-complete#code=${COMPLETION_CODE}`);
+
+    render(<KiteAuthCompletePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Authentication successful' })).toBeInTheDocument();
+    });
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
+    expect(getKiteSession()).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
+    expect(routerReplace).toHaveBeenCalledWith('/dashboard');
   });
 
   it('shares one redemption POST under React StrictMode', async () => {
@@ -204,13 +235,11 @@ describe('KiteAuthCompletePage component', () => {
     });
 
     await act(async () => {
-      redemption.resolve(jsonResponse({
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-      }));
+      redemption.resolve(jsonResponse(successPayload()));
     });
 
     await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/dashboard'));
+    expect(getKiteSession()).toBeNull();
   });
 
   it('does not navigate or update after unmount during redemption', async () => {
@@ -224,10 +253,7 @@ describe('KiteAuthCompletePage component', () => {
     unmount();
 
     await act(async () => {
-      redemption.resolve(jsonResponse({
-        kiteUserId: KITE_USER_ID,
-        accessToken: ACCESS_TOKEN,
-      }));
+      redemption.resolve(jsonResponse(successPayload()));
       await redemption.promise;
     });
 

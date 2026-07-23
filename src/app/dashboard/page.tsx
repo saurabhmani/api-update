@@ -32,7 +32,7 @@ import {
   TrendingDown, TrendingUp, Zap,
 } from 'lucide-react';
 import styles from './dashboard.module.scss';
-import KiteConnectionPanel from './KiteConnectionPanel';
+import BrokerStatusBar from './BrokerStatusBar';
 import {
   type EngineHealthStatus,
   type FusionStatus,
@@ -875,7 +875,7 @@ export default function DashboardPage() {
           />
         </section>
 
-        <KiteConnectionPanel />
+        <BrokerStatusBar />
 
         {/* ── Section C: Signal Summary Grid ──────────────────────── */}
         <section className={styles.signalGrid}>

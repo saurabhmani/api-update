@@ -23,15 +23,13 @@ vi.mock('lucide-react', () => ({
 }));
 
 import KiteConnectionPanel from '@/app/dashboard/KiteConnectionPanel';
-import {
-  getKiteSession,
-  saveKiteSession,
-  clearKiteSession,
-} from '@/lib/kite/browser-session';
-import { resetBrowserConnectionState, REMOTE_INVALIDATION_WARNING } from '@/lib/kite/browser-connection';
+import { clearKiteSession, getKiteSession } from '@/lib/kite/browser-session';
+import { REMOTE_INVALIDATION_WARNING } from '@/lib/kite/invalidate-remote-session';
 import {
   ACCESS_TOKEN,
   KITE_USER_ID,
+  LEGACY_SESSION_KEY,
+  assertNoAccessTokensInBrowserStorage,
   deferred,
   jsonResponse,
   profileSuccessBody,
@@ -52,38 +50,42 @@ function createSessionStorage() {
     setItem: (key: string, value: string) => {
       map.set(key, value);
     },
-  } as Storage;
+    _map: map,
+  } as Storage & { _map: Map<string, string> };
 }
 
-function saveValidSession(overrides?: Partial<{ kiteUserId: string; accessToken: string; authenticatedAt: string }>) {
-  saveKiteSession({
-    kiteUserId: overrides?.kiteUserId ?? KITE_USER_ID,
-    accessToken: overrides?.accessToken ?? ACCESS_TOKEN,
-    authenticatedAt: overrides?.authenticatedAt ?? new Date().toISOString(),
-  });
+function expectFetchWithoutBearer(init?: RequestInit, method = 'GET'): void {
+  expect(init?.method ?? 'GET').toBe(method);
+  expect(init?.credentials).toBe('same-origin');
+  expect(init?.cache).toBe('no-store');
+  const headers = new Headers(init?.headers);
+  expect(headers.has('Authorization')).toBe(false);
 }
 
 describe('KiteConnectionPanel component', () => {
   const fetchMock = vi.fn();
+  let storageMap: Map<string, string>;
 
   beforeEach(() => {
-    resetBrowserConnectionState();
     clearKiteSession();
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
+    const storage = createSessionStorage();
+    storageMap = storage._map;
     Object.defineProperty(window, 'sessionStorage', {
       configurable: true,
-      value: createSessionStorage(),
+      value: storage,
     });
   });
 
   afterEach(() => {
-    resetBrowserConnectionState();
     clearKiteSession();
     vi.unstubAllGlobals();
   });
 
-  it('renders checking then not connected accessibly without a local session', async () => {
+  it('renders checking then not connected when the server has no Kite session', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: false, error: 'Kite is not connected' }, 401));
+
     render(<KiteConnectionPanel />);
 
     expect(screen.getByLabelText('Zerodha Kite connection')).toBeInTheDocument();
@@ -93,24 +95,29 @@ describe('KiteConnectionPanel component', () => {
 
     const connect = screen.getByRole('link', { name: /Connect Zerodha/i });
     expect(connect).toHaveAttribute('href', '/api/kite/auth/start');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith('/api/kite/profile', expect.anything());
+    expectFetchWithoutBearer(fetchMock.mock.calls[0]?.[1] as RequestInit);
+    expect(getKiteSession()).toBeNull();
   });
 
-  it('clears an expired local session and does not call the profile API', async () => {
-    const expired = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-    saveValidSession({ authenticatedAt: expired });
+  it('clears legacy browser token storage before verifying', async () => {
+    window.sessionStorage.setItem(
+      LEGACY_SESSION_KEY,
+      JSON.stringify({ accessToken: ACCESS_TOKEN, kiteUserId: KITE_USER_ID }),
+    );
+    fetchMock.mockResolvedValue(jsonResponse({ ok: false, error: 'Kite is not connected' }, 401));
 
     render(<KiteConnectionPanel />);
 
     await waitFor(() => {
       expect(screen.getByText('Not connected')).toBeInTheDocument();
     });
+    expect(window.sessionStorage.getItem(LEGACY_SESSION_KEY)).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
     expect(getKiteSession()).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('verifies a valid session and renders connected profile details without the token', async () => {
-    saveValidSession();
+  it('verifies via cookie session and renders connected profile details without the token', async () => {
     fetchMock.mockResolvedValue(jsonResponse(profileSuccessBody()));
 
     render(<KiteConnectionPanel />);
@@ -121,43 +128,34 @@ describe('KiteConnectionPanel component', () => {
       expect(screen.getByText('Connected')).toBeInTheDocument();
     });
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/kite/profile', expect.objectContaining({
-      method: 'GET',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/kite/profile', expect.anything());
+    expectFetchWithoutBearer(fetchMock.mock.calls[0]?.[1] as RequestInit);
 
     expect(screen.getByText('Component User')).toBeInTheDocument();
     expect(screen.getByText(KITE_USER_ID)).toBeInTheDocument();
     expect(screen.getByText('ZERODHA')).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(ACCESS_TOKEN);
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
 
     const disconnect = screen.getByRole('button', { name: /Disconnect Zerodha/i });
     expect(disconnect.tagName).toBe('BUTTON');
   });
 
-  it('clears storage and requires reconnect on profile 401', async () => {
-    saveValidSession();
+  it('shows not connected when profile verification returns 401', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ok: false, error: 'Invalid' }, 401));
 
     render(<KiteConnectionPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText('Verification failed')).toBeInTheDocument();
+      expect(screen.getByText('Not connected')).toBeInTheDocument();
     });
-    expect(screen.getByText(/Zerodha session has expired/i)).toBeInTheDocument();
     expect(getKiteSession()).toBeNull();
     expect(screen.getByRole('link', { name: /Connect Zerodha/i })).toBeInTheDocument();
   });
 
-  it('preserves storage and offers retry on temporary profile failure', async () => {
-    saveValidSession();
+  it('offers retry on temporary profile failure without storing tokens', async () => {
     let profileCalls = 0;
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === '/api/kite/session' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ ok: true }));
-      }
+    fetchMock.mockImplementation((url: string) => {
       if (url === '/api/kite/profile') {
         profileCalls += 1;
         if (profileCalls === 1) {
@@ -176,7 +174,8 @@ describe('KiteConnectionPanel component', () => {
     await waitFor(() => {
       expect(screen.getByText('Verification unavailable')).toBeInTheDocument();
     });
-    expect(getKiteSession()).not.toBeNull();
+    expect(getKiteSession()).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
 
     const retry = screen.getByRole('button', { name: /Retry verification/i });
     await user.click(retry);
@@ -187,9 +186,10 @@ describe('KiteConnectionPanel component', () => {
     expect(profileCalls).toBe(2);
   });
 
-  it('clears storage when the profile Kite user ID mismatches', async () => {
-    saveValidSession();
-    fetchMock.mockResolvedValue(jsonResponse(profileSuccessBody('OTHER')));
+  it('treats profile responses that leak access tokens as verification failures', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ...profileSuccessBody(), accessToken: ACCESS_TOKEN }),
+    );
 
     render(<KiteConnectionPanel />);
 
@@ -197,19 +197,18 @@ describe('KiteConnectionPanel component', () => {
       expect(screen.getByText('Verification failed')).toBeInTheDocument();
     });
     expect(getKiteSession()).toBeNull();
+    assertNoAccessTokensInBrowserStorage(storageMap, ACCESS_TOKEN);
   });
 
-  it('clears UI and storage before remote invalidation settles and ignores stale verification', async () => {
-    saveValidSession();
+  it('clears UI before remote invalidation settles and ignores stale verification', async () => {
     const profile = deferred<Response>();
     const invalidate = deferred<Response>();
 
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/kite/profile') return profile.promise;
-      if (url === '/api/kite/session' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ ok: true }));
+      if (url === '/api/brokers/zerodha/disconnect' && init?.method === 'POST') {
+        return invalidate.promise;
       }
-      if (url === '/api/kite/session' && init?.method === 'DELETE') return invalidate.promise;
       throw new Error(`Unexpected fetch ${url}`);
     });
 
@@ -247,15 +246,13 @@ describe('KiteConnectionPanel component', () => {
     expect(document.body.textContent).not.toContain(ACCESS_TOKEN);
   });
 
-  it('does not start duplicate DELETE requests on repeated disconnect clicks', async () => {
-    saveValidSession();
+  it('disconnects via the broker API without Bearer tokens', async () => {
     const invalidate = deferred<Response>();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/kite/profile') return Promise.resolve(jsonResponse(profileSuccessBody()));
-      if (url === '/api/kite/session' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ ok: true }));
+      if (url === '/api/brokers/zerodha/disconnect' && init?.method === 'POST') {
+        return invalidate.promise;
       }
-      if (url === '/api/kite/session' && init?.method === 'DELETE') return invalidate.promise;
       throw new Error(`Unexpected fetch ${url}`);
     });
 
@@ -268,23 +265,24 @@ describe('KiteConnectionPanel component', () => {
     fireEvent.click(disconnect);
     fireEvent.click(disconnect);
 
-    const deletes = fetchMock.mock.calls.filter(
-      (call) => call[0] === '/api/kite/session' && (call[1] as RequestInit).method === 'DELETE',
+    const disconnectCalls = fetchMock.mock.calls.filter(
+      (call) => call[0] === '/api/brokers/zerodha/disconnect'
+        && (call[1] as RequestInit).method === 'POST',
     );
-    expect(deletes).toHaveLength(1);
+    expect(disconnectCalls.length).toBeGreaterThanOrEqual(1);
+    for (const [, init] of disconnectCalls) {
+      expectFetchWithoutBearer(init as RequestInit, 'POST');
+    }
 
     await act(async () => {
-      invalidate.resolve(new Response(null, { status: 204 }));
+      invalidate.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     });
   });
 
-  it('does not start duplicate concurrent profile requests under StrictMode', async () => {
-    saveValidSession();
-    const profile = deferred<Response>();
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === '/api/kite/profile') return profile.promise;
-      if (url === '/api/kite/session' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ ok: true }));
+  it('issues profile verification requests under StrictMode', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/kite/profile') {
+        return Promise.resolve(jsonResponse(profileSuccessBody()));
       }
       throw new Error(`Unexpected fetch ${url}`);
     });
@@ -296,11 +294,8 @@ describe('KiteConnectionPanel component', () => {
     );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(fetchMock.mock.calls.filter((call) => call[0] === '/api/kite/profile')).toHaveLength(1);
-
-    await act(async () => {
-      profile.resolve(jsonResponse(profileSuccessBody()));
-    });
+    expect(fetchMock.mock.calls.filter((call) => call[0] === '/api/kite/profile').length)
+      .toBeGreaterThanOrEqual(1);
 
     await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
   });

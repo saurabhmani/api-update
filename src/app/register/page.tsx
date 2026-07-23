@@ -34,7 +34,7 @@ export default function RegisterPage() {
         setError(data.error || 'Registration failed');
         return;
       }
-      router.push('/dashboard');
+      router.push(data.redirectTo || '/data-source');
     } catch {
       setError('Network error. Please try again.');
     } finally {

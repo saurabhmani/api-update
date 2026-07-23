@@ -10,6 +10,7 @@ import {
 } from '@/lib/kite/auth-complete-fragment';
 import { getKiteClient } from '@/lib/kite/client';
 import { saveActiveKiteSession } from '@/lib/kite/active-session-store';
+import { persistZerodhaBrokerConnection } from '@/lib/broker/oauth/zerodhaBridge';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,8 +26,18 @@ function redirectWithNoStore(url: string): NextResponse {
   return response;
 }
 
+function dataSourceErrorRedirect(origin: string, error: string): NextResponse {
+  return redirectWithNoStore(
+    `${origin}/data-source?broker=zerodha&error=${encodeURIComponent(error)}`,
+  );
+}
+
 /** GET /api/kite/auth/callback — complete Zerodha Kite Connect login for the signed-in user */
 export async function GET(request: NextRequest) {
+  const origin = resolveAuthCompleteOrigin(request.nextUrl.origin, {
+    headers: request.headers,
+  });
+
   try {
     const user = await requireSession();
     const quantorusUserId = String(user.id);
@@ -37,11 +48,11 @@ export async function GET(request: NextRequest) {
     const state = searchParams.get('state')?.trim() ?? '';
 
     if (status !== 'success' || !requestToken || !state) {
-      return jsonError('Invalid Kite authentication callback', 400);
+      return dataSourceErrorRedirect(origin, 'authentication_failed');
     }
 
     if (!(await consumeKiteAuthState(state, quantorusUserId))) {
-      return jsonError('Invalid or expired authentication state', 401);
+      return dataSourceErrorRedirect(origin, 'invalid_state');
     }
 
     const session = await createKiteSession(requestToken);
@@ -61,15 +72,30 @@ export async function GET(request: NextRequest) {
       // Non-fatal for browser handoff; market APIs need Redis + reconnect if this fails.
     }
 
+    // Durable per-user broker_connections row (encrypted token at rest).
+    // Failure here must not present a successful dashboard handoff — the
+    // dashboard gate requires broker_connections.
+    try {
+      await persistZerodhaBrokerConnection({
+        userId: user.id,
+        accessToken: session.accessToken,
+        kiteUserId: session.userId,
+        userName: session.userName ?? null,
+        authenticatedAt,
+      });
+    } catch (persistErr) {
+      console.error('[kite/callback] failed to persist broker connection', {
+        reason: persistErr instanceof Error ? persistErr.name : 'unknown',
+      });
+      return dataSourceErrorRedirect(origin, 'persistence_failed');
+    }
+
     const code = await createKiteCompletionCode({
       quantorusUserId,
       kiteUserId: session.userId,
-      accessToken: session.accessToken,
+      authenticatedAt,
     });
 
-    const origin = resolveAuthCompleteOrigin(request.nextUrl.origin, {
-      headers: request.headers,
-    });
     return redirectWithNoStore(buildAuthCompleteRedirectUrl(origin, code));
   } catch (err) {
     if (err instanceof AuthenticationError) {
@@ -77,10 +103,9 @@ export async function GET(request: NextRequest) {
     }
 
     if (err instanceof KiteSessionError) {
-      const status = err.status >= 400 && err.status < 600 ? err.status : 502;
-      return jsonError('Kite session exchange failed', status);
+      return dataSourceErrorRedirect(origin, 'authentication_failed');
     }
 
-    return jsonError('Unable to complete Kite authentication', 500);
+    return dataSourceErrorRedirect(origin, 'authentication_failed');
   }
 }

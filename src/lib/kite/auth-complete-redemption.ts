@@ -1,7 +1,10 @@
-import { saveKiteSession } from '@/lib/kite/browser-session';
+/**
+ * Redeem an opaque Kite completion code.
+ * Never stores broker access tokens in browser storage.
+ */
 
 type RedemptionResult =
-  | { ok: true }
+  | { ok: true; kiteUserId: string; authenticatedAt: string }
   | { ok: false; message: string };
 
 const AUTH_COMPLETE_PAGE_KEY = '/kite/auth-complete';
@@ -58,24 +61,33 @@ export function redeemCompletionCode(completionCode: string): Promise<Redemption
       }
 
       const payload = data as Record<string, unknown>;
-      const kiteUserId = payload.kiteUserId;
-      const accessToken = payload.accessToken;
-
-      if (!isNonEmptyString(kiteUserId) || !isNonEmptyString(accessToken)) {
+      if (isNonEmptyString(payload.accessToken)) {
+        // Hard reject any accidental token leakage from the API.
         return { ok: false, message: 'Invalid session data received. Please try again.' };
       }
 
-      try {
-        saveKiteSession({
-          kiteUserId: kiteUserId.trim(),
-          accessToken: accessToken.trim(),
-          authenticatedAt: new Date().toISOString(),
-        });
-      } catch {
-        return { ok: false, message: 'Unable to save your Kite session locally. Please try again.' };
+      const kiteUserId = payload.kiteUserId;
+      if (!isNonEmptyString(kiteUserId)) {
+        return { ok: false, message: 'Invalid session data received. Please try again.' };
       }
 
-      return { ok: true };
+      const authenticatedAt = isNonEmptyString(payload.authenticatedAt)
+        ? payload.authenticatedAt.trim()
+        : new Date().toISOString();
+
+      // Clear any legacy browser-held Kite tokens from earlier builds.
+      try {
+        const { clearKiteSession } = await import('@/lib/kite/browser-session');
+        clearKiteSession();
+      } catch {
+        // ignore
+      }
+
+      return {
+        ok: true,
+        kiteUserId: kiteUserId.trim(),
+        authenticatedAt,
+      };
     } catch {
       return { ok: false, message: 'Network error. Please try again.' };
     }

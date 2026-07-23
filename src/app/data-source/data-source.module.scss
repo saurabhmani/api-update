@@ -1,0 +1,242 @@
+@use '@/styles/variables' as *;
+@use '@/styles/mixins' as *;
+
+.page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 80% 10%, rgba(0, 201, 255, 0.12), transparent 45%),
+    radial-gradient(circle at 15% 85%, rgba(37, 99, 235, 0.18), transparent 50%),
+    linear-gradient(160deg, #07172E 0%, #0B1F3A 48%, #102E5A 100%);
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.shell {
+  width: min(520px, 100%);
+  background: #ffffff;
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(7, 23, 46, 0.35);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid #e8eef7;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.brandDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00c9ff;
+  box-shadow: 0 0 0 4px rgba(0, 201, 255, 0.18);
+}
+
+.brandName {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0B1F3A;
+  font-size: 0.95rem;
+}
+
+.brandAccent {
+  color: #2563eb;
+}
+
+.logoutBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #dbe4f3;
+  background: #f8fbff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: #eef4ff;
+    border-color: #c7d7f5;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+.main {
+  padding: 2rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1rem;
+}
+
+.iconWrap {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #e8f3ff, #f0f7ff);
+  color: #1d4ed8;
+  margin-bottom: 0.25rem;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(1.45rem, 3vw, 1.75rem);
+  letter-spacing: -0.03em;
+  color: #0B1F3A;
+  font-weight: 700;
+}
+
+.description {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+.alert,
+.info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.alert {
+  background: #fff5f5;
+  color: #9b1c1c;
+  border: 1px solid #f5c2c2;
+}
+
+.info {
+  background: #f0f7ff;
+  color: #1e40af;
+  border: 1px solid #c7dbff;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.brokerBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d7e3f5;
+  background: #fff;
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  color: #0f172a;
+
+  &:hover:not(:disabled) {
+    border-color: #93b4ef;
+    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.1);
+    transform: translateY(-1px);
+  }
+
+  &:disabled {
+    opacity: 0.7;
+    cursor: wait;
+  }
+}
+
+.brokerBtnPrimary {
+  background: linear-gradient(180deg, #0B1F3A 0%, #12305a 100%);
+  border-color: transparent;
+  color: #fff;
+
+  small {
+    color: rgba(255, 255, 255, 0.72) !important;
+  }
+
+  &:hover:not(:disabled) {
+    box-shadow: 0 10px 28px rgba(11, 31, 58, 0.28);
+  }
+}
+
+.brokerBtnText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+
+  strong {
+    font-size: 0.95rem;
+    font-weight: 650;
+  }
+
+  small {
+    font-size: 0.78rem;
+    color: #64748b;
+  }
+}
+
+.chevron {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.footnote {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.footer {
+  padding: 0 1.5rem 1.35rem;
+}
+
+.footerLink {
+  font-size: 0.82rem;
+  color: #64748b;
+  text-decoration: none;
+
+  &:hover {
+    color: #2563eb;
+  }
+}
+
+@media (max-width: 520px) {
+  .page {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .shell {
+    min-height: 100vh;
+    border-radius: 0;
+  }
+}

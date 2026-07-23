@@ -1,224 +1,193 @@
-'use client';
+/**
+ * Client-side Kite connection helpers (no browser token storage).
+ */
 
-import { clearKiteSession, getKiteSession } from '@/lib/kite/browser-session';
+import { clearKiteSession } from '@/lib/kite/browser-session';
 import {
-  invalidateRemoteKiteSession,
-  localDisconnectState,
   REMOTE_INVALIDATION_WARNING,
+  shouldApplyVerificationResult,
 } from '@/lib/kite/invalidate-remote-session';
 
-export { REMOTE_INVALIDATION_WARNING };
-
-export interface LocalKiteSession {
+export type LocalKiteSession = {
   kiteUserId: string;
-  accessToken: string;
   authenticatedAt: string;
-}
+};
 
-export interface KiteProfilePayload {
+export type KiteProfileOk = {
+  ok: true;
   userId: string;
   userName: string;
   email: string;
   broker: string;
-}
+};
 
-export type ProfileVerificationResult =
-  | { kind: 'success'; profile: KiteProfilePayload }
-  | { kind: 'unauthorized' }
-  | { kind: 'temporary'; message: string }
-  | { kind: 'invalid' };
+export type KiteProfileFail = {
+  ok: false;
+  kind: 'unauthorized' | 'temporary' | 'invalid';
+  message: string;
+};
 
-export type DisconnectOutcome =
-  | { kind: 'suppressed' }
-  | { kind: 'cleared'; remoteInvalidationConfirmed: boolean; warning?: string };
+export type KiteProfileResult = KiteProfileOk | KiteProfileFail;
 
-const inFlightVerifications = new Map<string, Promise<ProfileVerificationResult>>();
-let disconnectInFlight = false;
+export type ConnectedStateResult =
+  | { status: 'connected'; userName: string; userId: string; broker: string }
+  | { status: 'temporary_failure'; message: string }
+  | { status: 'verification_failed'; message: string };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
+/**
+ * Verify Kite profile using the authenticated Quant cookie session.
+ * Server resolves the decrypted broker token — no Bearer token from the browser.
+ */
+export async function verifyKiteProfile(
+  _session?: LocalKiteSession | null,
+): Promise<KiteProfileResult> {
+  clearKiteSession();
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function parseKiteProfilePayload(data: unknown): KiteProfilePayload | null {
-  if (!isRecord(data)) return null;
-
-  const userId = data.userId;
-  const userName = data.userName;
-  const email = data.email;
-  const broker = data.broker;
-
-  if (
-    !isNonEmptyString(userId)
-    || !isNonEmptyString(userName)
-    || !isNonEmptyString(email)
-    || !isNonEmptyString(broker)
-  ) {
-    return null;
-  }
-
-  return {
-    userId: userId.trim(),
-    userName: userName.trim(),
-    email: email.trim(),
-    broker: broker.trim(),
-  };
-}
-
-function sessionVerificationKey(session: LocalKiteSession): string {
-  return `${session.kiteUserId}\u0000${session.accessToken}\u0000${session.authenticatedAt}`;
-}
-
-async function fetchKiteProfile(accessToken: string): Promise<ProfileVerificationResult> {
   try {
     const response = await fetch('/api/kite/profile', {
       method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
       credentials: 'same-origin',
       cache: 'no-store',
     });
 
-    let data: unknown = null;
-    try {
-      data = await response.json();
-    } catch {
-      if (response.status === 401) return { kind: 'unauthorized' };
-      if (response.status === 502 || response.status === 503) {
-        return { kind: 'temporary', message: 'Kite verification is temporarily unavailable.' };
-      }
-      return { kind: 'temporary', message: 'Unable to verify Kite session right now.' };
+    if (response.status === 401 || response.status === 404) {
+      return {
+        ok: false,
+        kind: 'unauthorized',
+        message: 'Zerodha is not connected. Connect again to continue.',
+      };
     }
 
-    if (response.status === 401) return { kind: 'unauthorized' };
-
-    if (response.status === 502 || response.status === 503) {
-      const message =
-        isRecord(data) && isNonEmptyString(data.error)
-          ? data.error
-          : 'Kite verification is temporarily unavailable.';
-      return { kind: 'temporary', message };
+    if (response.status >= 500) {
+      return {
+        ok: false,
+        kind: 'temporary',
+        message: 'Unable to verify Zerodha right now. Retry shortly.',
+      };
     }
 
     if (!response.ok) {
-      return { kind: 'temporary', message: 'Unable to verify Kite session right now.' };
+      return {
+        ok: false,
+        kind: 'invalid',
+        message: 'Zerodha verification failed. Please reconnect.',
+      };
     }
 
-    const profile = parseKiteProfilePayload(data);
-    if (!profile) return { kind: 'invalid' };
-
-    // Best-effort: register browser token as server active session for market data / CLI.
-    try {
-      void fetch('/api/kite/session', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        credentials: 'same-origin',
-        cache: 'no-store',
-      }).catch(() => undefined);
-    } catch {
-      // ignore sync registration failures
+    const data: unknown = await response.json().catch(() => null);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { ok: false, kind: 'invalid', message: 'Invalid profile response.' };
     }
 
-    return { kind: 'success', profile };
+    const payload = data as Record<string, unknown>;
+    if (typeof payload.accessToken === 'string' && payload.accessToken.trim()) {
+      return { ok: false, kind: 'invalid', message: 'Invalid profile response.' };
+    }
+
+    const userId =
+      typeof payload.userId === 'string' && payload.userId.trim()
+        ? payload.userId.trim()
+        : typeof payload.user_id === 'string' && payload.user_id.trim()
+          ? payload.user_id.trim()
+          : '';
+    const userName =
+      typeof payload.userName === 'string' && payload.userName.trim()
+        ? payload.userName.trim()
+        : typeof payload.user_name === 'string' && payload.user_name.trim()
+          ? payload.user_name.trim()
+          : '';
+    const email = typeof payload.email === 'string' ? payload.email.trim() : '';
+    const broker = typeof payload.broker === 'string' ? payload.broker.trim() : '';
+
+    if (!userId || !userName || !email || !broker) {
+      return { ok: false, kind: 'invalid', message: 'Incomplete Kite profile.' };
+    }
+
+    return { ok: true, userId, userName, email, broker };
   } catch {
-    return { kind: 'temporary', message: 'Network error while verifying Kite session.' };
+    return {
+      ok: false,
+      kind: 'temporary',
+      message: 'Network error while verifying Zerodha.',
+    };
   }
-}
-
-export function verifyKiteProfile(session: LocalKiteSession): Promise<ProfileVerificationResult> {
-  const key = sessionVerificationKey(session);
-  const existing = inFlightVerifications.get(key);
-  if (existing) return existing;
-
-  const promise = fetchKiteProfile(session.accessToken).finally(() => {
-    inFlightVerifications.delete(key);
-  });
-
-  inFlightVerifications.set(key, promise);
-  return promise;
 }
 
 export function resolveConnectedState(
-  session: LocalKiteSession,
-  result: ProfileVerificationResult,
-):
-  | { status: 'connected'; userName: string; userId: string; broker: string }
-  | { status: 'verification_failed'; message: string; clearedLocal: boolean }
-  | { status: 'temporary_failure'; message: string; clearedLocal: boolean } {
-  if (result.kind === 'unauthorized') {
-    clearKiteSession();
+  _session: LocalKiteSession | null,
+  result: KiteProfileResult,
+): ConnectedStateResult {
+  if (result.ok === true) {
     return {
-      status: 'verification_failed',
-      message: 'Your Zerodha session has expired. Reconnect to continue.',
-      clearedLocal: true,
+      status: 'connected',
+      userName: result.userName,
+      userId: result.userId,
+      broker: result.broker,
     };
   }
 
-  if (result.kind === 'temporary') {
-    return {
-      status: 'temporary_failure',
-      message: result.message,
-      clearedLocal: false,
-    };
-  }
-
-  if (result.kind === 'invalid' || result.profile.userId !== session.kiteUserId) {
-    clearKiteSession();
-    return {
-      status: 'verification_failed',
-      message: 'Kite session verification failed. Reconnect to continue.',
-      clearedLocal: true,
-    };
+  if (result.ok === false && result.kind === 'temporary') {
+    return { status: 'temporary_failure', message: result.message };
   }
 
   return {
-    status: 'connected',
-    userName: result.profile.userName,
-    userId: result.profile.userId,
-    broker: result.profile.broker,
+    status: 'verification_failed',
+    message: result.ok === false ? result.message : 'Verification failed.',
   };
 }
 
-export async function disconnectKiteSession(): Promise<DisconnectOutcome> {
-  if (disconnectInFlight) {
-    return { kind: 'suppressed' };
-  }
+export type DisconnectOutcome =
+  | { kind: 'done'; warning?: string }
+  | { kind: 'suppressed' };
 
-  const session = getKiteSession();
-  const capturedAccessToken = session?.accessToken?.trim() ?? '';
-
-  disconnectInFlight = true;
+/**
+ * Disconnect Zerodha via authenticated broker API (server clears tokens).
+ */
+export async function disconnectKiteSession(
+  options?: { generation?: number; currentGeneration?: () => number },
+): Promise<DisconnectOutcome> {
   clearKiteSession();
 
-  if (!capturedAccessToken) {
-    disconnectInFlight = false;
-    return { kind: 'cleared', remoteInvalidationConfirmed: true };
-  }
+  const generation = options?.generation;
+  const currentGeneration = options?.currentGeneration;
 
   try {
-    const remoteInvalidationConfirmed = await invalidateRemoteKiteSession(capturedAccessToken);
-    const next = localDisconnectState(remoteInvalidationConfirmed);
-    return {
-      kind: 'cleared',
-      remoteInvalidationConfirmed,
-      warning: next.remoteInvalidationWarning,
-    };
-  } finally {
-    disconnectInFlight = false;
+    const response = await fetch('/api/brokers/zerodha/disconnect', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (
+      generation !== undefined
+      && currentGeneration
+      && !shouldApplyVerificationResult(generation, currentGeneration())
+    ) {
+      return { kind: 'suppressed' };
+    }
+
+    if (!response.ok) {
+      return { kind: 'done', warning: REMOTE_INVALIDATION_WARNING };
+    }
+
+    return { kind: 'done' };
+  } catch {
+    if (
+      generation !== undefined
+      && currentGeneration
+      && !shouldApplyVerificationResult(generation, currentGeneration())
+    ) {
+      return { kind: 'suppressed' };
+    }
+    return { kind: 'done', warning: REMOTE_INVALIDATION_WARNING };
   }
 }
 
-export function getInFlightVerificationCount(): number {
-  return inFlightVerifications.size;
-}
-
-export function isDisconnectInFlight(): boolean {
-  return disconnectInFlight;
-}
-
-export function resetBrowserConnectionState(): void {
-  inFlightVerifications.clear();
-  disconnectInFlight = false;
+/** @deprecated Prefer disconnectKiteSession */
+export async function disconnectKite(): Promise<{ ok: true } | { ok: false; message: string }> {
+  const outcome = await disconnectKiteSession();
+  if (outcome.kind === 'suppressed') return { ok: true };
+  if (outcome.warning) return { ok: false, message: outcome.warning };
+  return { ok: true };
 }

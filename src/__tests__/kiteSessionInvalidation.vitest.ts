@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { AuthenticationError } from '@/lib/errors';
-import { KiteConfigError } from '@/lib/kite/errors';
 import {
   clearKiteSession,
   getKiteSession,
-  saveKiteSession,
 } from '@/lib/kite/browser-session';
 import {
   invalidateRemoteKiteSession,
@@ -16,9 +14,22 @@ import {
 
 vi.mock('server-only', () => ({}));
 
-const { mockRequireSession, mockGetKiteConfig } = vi.hoisted(() => ({
+const {
+  mockRequireSession,
+  mockGetKiteConfig,
+  mockGetActiveKiteSession,
+  mockGetDecrypted,
+  mockClearActive,
+  mockMarkStatus,
+  mockKiteAuthenticatedRequest,
+} = vi.hoisted(() => ({
   mockRequireSession: vi.fn(),
   mockGetKiteConfig: vi.fn(),
+  mockGetActiveKiteSession: vi.fn(),
+  mockGetDecrypted: vi.fn(),
+  mockClearActive: vi.fn(),
+  mockMarkStatus: vi.fn(),
+  mockKiteAuthenticatedRequest: vi.fn(),
 }));
 
 vi.mock('@/lib/session', () => ({
@@ -30,13 +41,42 @@ vi.mock('@/lib/kite/config', () => ({
 }));
 
 vi.mock('@/lib/kite/active-session-store', () => ({
-  clearActiveKiteSession: vi.fn().mockResolvedValue(true),
-  saveActiveKiteSession: vi.fn().mockResolvedValue(undefined),
+  clearActiveKiteSession: mockClearActive,
+  getActiveKiteSession: mockGetActiveKiteSession,
+  saveActiveKiteSession: vi.fn(),
+}));
+
+vi.mock('@/lib/broker/connections', () => ({
+  getDecryptedAccessTokenForUser: mockGetDecrypted,
+  markBrokerConnectionStatus: mockMarkStatus,
+}));
+
+vi.mock('@/lib/kite/api-client', () => ({
+  kiteAuthenticatedRequest: mockKiteAuthenticatedRequest,
+  isKiteInvalidToken: (response: { httpStatus?: number; kiteStatus?: string; body?: unknown }) => {
+    if (response.httpStatus === 403 || response.httpStatus === 404) return true;
+    if (
+      response.body
+      && typeof response.body === 'object'
+      && !Array.isArray(response.body)
+      && (response.body as { error_type?: string }).error_type === 'TokenException'
+    ) {
+      return true;
+    }
+    return false;
+  },
+  KiteApiError: class KiteApiError extends Error {
+    classification: string;
+    constructor(message: string, opts?: { classification?: string }) {
+      super(message);
+      this.classification = opts?.classification ?? 'network';
+    }
+  },
 }));
 
 vi.mock('@/lib/kite/client', () => ({
   getKiteClient: () => ({
-    getAccessToken: () => '',
+    getAccessToken: () => 'kite-access-token',
     setAccessToken: vi.fn(),
   }),
   resetKiteClient: vi.fn(),
@@ -44,101 +84,94 @@ vi.mock('@/lib/kite/client', () => ({
 
 import { DELETE } from '@/app/api/kite/session/route';
 
-function makeDeleteRequest(accessToken?: string): NextRequest {
-  const headers = new Headers();
-  if (accessToken !== undefined) {
-    headers.set('Authorization', `Bearer ${accessToken}`);
-  }
+function makeDeleteRequest(): NextRequest {
   return new NextRequest('http://localhost/api/kite/session', {
     method: 'DELETE',
-    headers,
   });
 }
 
 describe('DELETE /api/kite/session', () => {
-  const fetchMock = vi.fn();
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireSession.mockResolvedValue({ id: 42 });
     mockGetKiteConfig.mockReturnValue({ apiKey: 'test-api-key', apiSecret: 'secret' });
-    vi.stubGlobal('fetch', fetchMock);
+    mockGetActiveKiteSession.mockResolvedValue({
+      quantorusUserId: '42',
+      kiteUserId: 'AB1234',
+      accessToken: 'kite-access-token',
+      authenticatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    mockClearActive.mockResolvedValue(true);
+    mockMarkStatus.mockResolvedValue(undefined);
+    mockKiteAuthenticatedRequest.mockResolvedValue({
+      empty: false,
+      httpStatus: 204,
+      kiteStatus: 'success',
+      body: { status: 'success' },
+    });
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('invalidates a Kite session successfully', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
-
-    const response = await DELETE(makeDeleteRequest('kite-access-token'));
+  it('invalidates a Kite session using server-side credentials without browser Bearer', async () => {
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(204);
     expect(response.headers.get('Cache-Control')).toBe('no-store');
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.kite.trade/session/token',
+    expect(mockKiteAuthenticatedRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'DELETE',
-        cache: 'no-store',
-        redirect: 'manual',
-        body: 'api_key=test-api-key&access_token=kite-access-token',
+        path: '/session/token',
+        accessToken: 'kite-access-token',
+        credentialMode: 'form',
       }),
     );
-
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const headers = init.headers as Headers;
-    expect(headers.get('X-Kite-Version')).toBe('3');
-    expect(headers.get('Content-Type')).toBe('application/x-www-form-urlencoded');
+    expect(mockClearActive).toHaveBeenCalledWith('kite-access-token');
+    expect(mockMarkStatus).toHaveBeenCalledWith(42, 'zerodha', 'disconnected', true);
 
     const body = await response.text();
     expect(body).toBe('');
   });
 
-  it('rejects a missing bearer token with 401', async () => {
-    const response = await DELETE(makeDeleteRequest());
-    expect(response.status).toBe(401);
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('treats missing server-side credentials as idempotent success', async () => {
+    mockGetActiveKiteSession.mockResolvedValue(null);
+    mockGetDecrypted.mockResolvedValue(null);
 
-    const payload = await response.json();
-    expect(payload).toEqual({
-      ok: false,
-      error: 'Kite access token is required',
-    });
+    const response = await DELETE(makeDeleteRequest());
+    expect(response.status).toBe(204);
+    expect(mockKiteAuthenticatedRequest).not.toHaveBeenCalled();
+    expect(mockClearActive).toHaveBeenCalled();
+    expect(mockMarkStatus).toHaveBeenCalledWith(42, 'zerodha', 'disconnected', true);
   });
 
   it('treats an already-invalid Kite token as idempotent success', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: 'error',
-          error_type: 'TokenException',
-          message: 'Invalid session',
-        }),
-        { status: 403, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
+    mockKiteAuthenticatedRequest.mockResolvedValue({
+      empty: false,
+      httpStatus: 403,
+      kiteStatus: 'error',
+      body: {
+        status: 'error',
+        error_type: 'TokenException',
+        message: 'Invalid session',
+      },
+    });
 
-    const response = await DELETE(makeDeleteRequest('expired-token'));
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(204);
     expect(await response.text()).toBe('');
   });
 
   it('maps upstream failures to 502', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: 'error',
-          error_type: 'GeneralException',
-          message: 'Upstream failure',
-        }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
+    mockKiteAuthenticatedRequest.mockResolvedValue({
+      empty: false,
+      httpStatus: 500,
+      kiteStatus: 'error',
+      body: {
+        status: 'error',
+        error_type: 'GeneralException',
+        message: 'Upstream failure',
+      },
+    });
 
-    const response = await DELETE(makeDeleteRequest('kite-access-token'));
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(502);
 
     const payload = await response.json();
@@ -149,27 +182,30 @@ describe('DELETE /api/kite/session', () => {
   });
 
   it('maps Kite configuration failure to 503', async () => {
-    mockGetKiteConfig.mockImplementation(() => {
-      throw new KiteConfigError('Missing KITE_API_KEY');
-    });
+    const { KiteApiError } = await import('@/lib/kite/api-client');
+    mockKiteAuthenticatedRequest.mockRejectedValue(
+      new KiteApiError('Missing KITE_API_KEY', { status: 503, classification: 'configuration' }),
+    );
 
-    const response = await DELETE(makeDeleteRequest('kite-access-token'));
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(503);
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('maps Quantorus authentication failure to 401', async () => {
     mockRequireSession.mockRejectedValue(new AuthenticationError('Unauthorized'));
 
-    const response = await DELETE(makeDeleteRequest('kite-access-token'));
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(401);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockKiteAuthenticatedRequest).not.toHaveBeenCalled();
   });
 
   it('maps network failures to 502', async () => {
-    fetchMock.mockRejectedValue(new Error('network down'));
+    const { KiteApiError } = await import('@/lib/kite/api-client');
+    mockKiteAuthenticatedRequest.mockRejectedValue(
+      new KiteApiError('Unable to reach Kite API', { status: 502, classification: 'network' }),
+    );
 
-    const response = await DELETE(makeDeleteRequest('kite-access-token'));
+    const response = await DELETE(makeDeleteRequest());
     expect(response.status).toBe(502);
 
     const payload = await response.json();
@@ -195,6 +231,15 @@ describe('Kite disconnect client helpers', () => {
           storage.delete(key);
         },
       },
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          storage.set(key, value);
+        },
+        removeItem: (key: string) => {
+          storage.delete(key);
+        },
+      },
     });
   });
 
@@ -202,23 +247,30 @@ describe('Kite disconnect client helpers', () => {
     vi.unstubAllGlobals();
   });
 
-  it('clears local session immediately even when remote invalidation fails', async () => {
-    saveKiteSession({
-      accessToken: 'local-token',
-      kiteUserId: 'AB1234',
-      authenticatedAt: new Date().toISOString(),
-    });
-
-    const capturedAccessToken = getKiteSession()?.accessToken ?? '';
+  it('clears local legacy storage immediately even when remote invalidation fails', async () => {
+    storage.set(
+      'quantorus:kite-session',
+      JSON.stringify({ accessToken: 'local-token', kiteUserId: 'AB1234' }),
+    );
     clearKiteSession();
 
     expect(getKiteSession()).toBeNull();
-    expect(capturedAccessToken).toBe('local-token');
+    expect(storage.has('quantorus:kite-session')).toBe(false);
 
     fetchMock.mockRejectedValue(new Error('network down'));
-    const remoteInvalidationConfirmed = await invalidateRemoteKiteSession(capturedAccessToken);
+    const remoteInvalidationConfirmed = await invalidateRemoteKiteSession();
 
     expect(remoteInvalidationConfirmed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/brokers/zerodha/disconnect',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+      }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).has('Authorization')).toBe(false);
     expect(getKiteSession()).toBeNull();
     expect(localDisconnectState(remoteInvalidationConfirmed)).toEqual({
       status: 'not_connected',
@@ -239,9 +291,13 @@ describe('Kite disconnect client helpers', () => {
   });
 
   it('reports remote invalidation success without a warning', async () => {
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-    await expect(invalidateRemoteKiteSession('token')).resolves.toBe(true);
+    await expect(invalidateRemoteKiteSession()).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/brokers/zerodha/disconnect',
+      expect.objectContaining({ method: 'POST' }),
+    );
     expect(localDisconnectState(true)).toEqual({ status: 'not_connected' });
   });
 });

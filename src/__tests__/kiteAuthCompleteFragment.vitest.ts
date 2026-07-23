@@ -59,6 +59,10 @@ vi.mock('@/lib/kite/client', () => ({
   getKiteClient: () => ({ setAccessToken: vi.fn() }),
 }));
 
+vi.mock('@/lib/broker/oauth/zerodhaBridge', () => ({
+  persistZerodhaBrokerConnection: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { GET } from '@/app/api/kite/auth/callback/route';
 import { resolveAuthCompleteOrigin } from '@/lib/kite/auth-complete-fragment';
 
@@ -270,8 +274,9 @@ describe('auth-complete fragment handling', () => {
           () => resolve(
             new Response(
               JSON.stringify({
+                ok: true,
                 kiteUserId: 'AB1234',
-                accessToken: 'token-value',
+                authenticatedAt: '2026-01-01T00:00:00.000Z',
               }),
               { status: 200, headers: { 'Content-Type': 'application/json' } },
             ),
@@ -299,7 +304,11 @@ describe('auth-complete fragment handling', () => {
   it('removes the captured code after successful settlement', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({ kiteUserId: 'AB1234', accessToken: 'token-value' }),
+        JSON.stringify({
+          ok: true,
+          kiteUserId: 'AB1234',
+          authenticatedAt: '2026-01-01T00:00:00.000Z',
+        }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
@@ -357,7 +366,11 @@ describe('auth-complete fragment handling', () => {
 
     resolveFetch?.(
       new Response(
-        JSON.stringify({ kiteUserId: 'AB1234', accessToken: 'token-value' }),
+        JSON.stringify({
+          ok: true,
+          kiteUserId: 'AB1234',
+          authenticatedAt: '2026-01-01T00:00:00.000Z',
+        }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
@@ -378,7 +391,11 @@ describe('auth-complete fragment handling', () => {
       )
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ kiteUserId: 'AB1234', accessToken: 'token-value' }),
+          JSON.stringify({
+            ok: true,
+            kiteUserId: 'AB1234',
+            authenticatedAt: '2026-01-01T00:00:00.000Z',
+          }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
       );

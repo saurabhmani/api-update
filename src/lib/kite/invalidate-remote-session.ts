@@ -3,13 +3,17 @@
 export const REMOTE_INVALIDATION_WARNING =
   'Your local Zerodha session was removed, but remote invalidation could not be confirmed. Reconnect if you use another device.';
 
-export async function invalidateRemoteKiteSession(accessToken: string): Promise<boolean> {
+/**
+ * Invalidate the server-side Kite session using the authenticated Quant cookie.
+ * Never sends a broker access token from the browser.
+ */
+export async function invalidateRemoteKiteSession(): Promise<boolean> {
   try {
-    const response = await fetch('/api/kite/session', {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const response = await fetch('/api/brokers/zerodha/disconnect', {
+      method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
     });
     return response.ok;
   } catch {

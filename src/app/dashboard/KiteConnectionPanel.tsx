@@ -2,16 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link2, LogOut, Plug, RefreshCw } from 'lucide-react';
-import { clearKiteSession, getKiteSession } from '@/lib/kite/browser-session';
+import { clearKiteSession } from '@/lib/kite/browser-session';
 import {
   disconnectKiteSession,
   resolveConnectedState,
   verifyKiteProfile,
-  type LocalKiteSession,
 } from '@/lib/kite/browser-connection';
 import styles from './dashboard.module.scss';
-
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 type KitePanelState =
   | { status: 'checking' }
@@ -20,28 +17,6 @@ type KitePanelState =
   | { status: 'connected'; userName: string; userId: string; broker: string }
   | { status: 'verification_failed'; message: string }
   | { status: 'temporary_failure'; message: string };
-
-function readLocalKiteSession(): LocalKiteSession | null {
-  const session = getKiteSession();
-  if (!session) return null;
-
-  const authenticatedAt = new Date(session.authenticatedAt);
-  if (Number.isNaN(authenticatedAt.getTime())) {
-    clearKiteSession();
-    return null;
-  }
-
-  if (Date.now() - authenticatedAt.getTime() > SESSION_MAX_AGE_MS) {
-    clearKiteSession();
-    return null;
-  }
-
-  return {
-    kiteUserId: session.kiteUserId,
-    accessToken: session.accessToken,
-    authenticatedAt: session.authenticatedAt.trim(),
-  };
-}
 
 function StatusDot({ tone }: { tone: 'green' | 'amber' | 'grey' }) {
   return <span className={`${styles.dot} ${styles[`dot--${tone}`]}`} />;
@@ -53,21 +28,18 @@ export default function KiteConnectionPanel() {
 
   const verifySession = useCallback(async () => {
     const generation = ++verifyGenerationRef.current;
-    const session = readLocalKiteSession();
+    clearKiteSession();
+    setPanelState({ status: 'verifying' });
 
-    if (!session) {
-      if (generation === verifyGenerationRef.current) {
-        setPanelState({ status: 'not_connected' });
-      }
+    const result = await verifyKiteProfile();
+    if (generation !== verifyGenerationRef.current) return;
+
+    if (result.ok === false && result.kind === 'unauthorized') {
+      setPanelState({ status: 'not_connected' });
       return;
     }
 
-    setPanelState({ status: 'verifying' });
-
-    const result = await verifyKiteProfile(session);
-    if (generation !== verifyGenerationRef.current) return;
-
-    const next = resolveConnectedState(session, result);
+    const next = resolveConnectedState(null, result);
     if (next.status === 'connected') {
       setPanelState(next);
       return;
@@ -216,12 +188,12 @@ export default function KiteConnectionPanel() {
       )}
 
       <p className={styles.panelHelper}>
-        {panelState.status === 'checking' && 'Checking for a stored Zerodha session in this browser tab.'}
+        {panelState.status === 'checking' && 'Checking your Zerodha connection on the server.'}
         {panelState.status === 'verifying' && 'Verifying your Zerodha session with Kite.'}
-        {panelState.status === 'connected' && 'Zerodha session verified for Kite-backed features in this browser tab.'}
+        {panelState.status === 'connected' && 'Zerodha session verified for Kite-backed features.'}
         {panelState.status === 'not_connected' && (
           panelState.remoteInvalidationWarning
-          ?? 'Connect your Zerodha account to enable Kite-backed market data in this browser session.'
+          ?? 'Connect your Zerodha account to enable Kite-backed market data.'
         )}
         {panelState.status === 'verification_failed' && panelState.message}
         {panelState.status === 'temporary_failure' && panelState.message}

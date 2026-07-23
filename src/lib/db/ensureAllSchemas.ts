@@ -1119,6 +1119,22 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
     console.error('[ensureAllSchemas] migrateDualSource failed:', (err as Error).message);
   }
 
+  try {
+    const { ensureBrokerTables } = await import('@/lib/broker/repository/brokerRepository');
+    await ensureBrokerTables();
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] ensureBrokerTables failed:', (err as Error).message);
+  }
+
+  try {
+    const { ensureBrokerConnectionTables } = await import('@/lib/broker/connections');
+    await ensureBrokerConnectionTables();
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] ensureBrokerConnectionTables failed:', (err as Error).message);
+  }
+
   // 3. Seed minimal rows so dashboards have something to render
   for (const seed of SEED_STATEMENTS) {
     try {

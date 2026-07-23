@@ -87,10 +87,10 @@ export type {
 
 export type { KiteErrorType } from './errors';
 
-// Phase 2 — client-safe browser session (safe for client components)
+// Phase 2 — client-safe browser session cleanup (no token storage)
 export {
   saveKiteSession,
   getKiteSession,
   clearKiteSession,
+  getKiteAccessToken,
 } from './browser-session';
-export type { KiteBrowserSession } from './browser-session';

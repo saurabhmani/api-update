@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session';
 import { authLimiter } from '@/lib/rateLimit';
 import { logSecurityEvent } from '@/lib/security/audit';
 import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
+import { resolvePostLoginDestination } from '@/lib/broker/connections';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,19 @@ const COOKIE_OPTS = {
   path:     '/',
   maxAge:   parseInt(process.env.SESSION_MAX_AGE || '86400'),
 };
+
+async function redirectPayload(userId: number) {
+  try {
+    const dest = await resolvePostLoginDestination(userId);
+    const redirectTo =
+      dest.path === '/data-source' && dest.reason
+        ? `/data-source?reason=${dest.reason}`
+        : dest.path;
+    return { redirectTo };
+  } catch {
+    return { redirectTo: '/data-source' };
+  }
+}
 
 // POST /api/auth  → login / register / 2fa / logout
 export async function POST(req: NextRequest) {
@@ -54,7 +68,8 @@ export async function POST(req: NextRequest) {
       if (result.requires2fa) {
         return NextResponse.json({ requires2fa: true, userId: result.user.id });
       }
-      const res = NextResponse.json({ user: result.user, requires2fa: false });
+      const dest = await redirectPayload(result.user.id);
+      const res = NextResponse.json({ user: result.user, requires2fa: false, ...dest });
       res.cookies.set(COOKIE, result.sessionToken!, COOKIE_OPTS);
       await logSecurityEvent({
         userId: result.user.id,
@@ -72,7 +87,8 @@ export async function POST(req: NextRequest) {
       const valid = await verifyTotp(userId, totpToken);
       if (!valid) return NextResponse.json({ error: 'Invalid OTP code' }, { status: 401 });
       const sessionToken = await createSession(userId);
-      const res = NextResponse.json({ success: true });
+      const dest = await redirectPayload(Number(userId));
+      const res = NextResponse.json({ success: true, ...dest });
       res.cookies.set(COOKIE, sessionToken, COOKIE_OPTS);
       return res;
     }
@@ -87,7 +103,8 @@ export async function POST(req: NextRequest) {
       if ('error' in result) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
-      const res = NextResponse.json({ user: result.user });
+      // New users never have a broker connection yet
+      const res = NextResponse.json({ user: result.user, redirectTo: '/data-source' });
       res.cookies.set(COOKIE, result.sessionToken, COOKIE_OPTS);
       return res;
     }

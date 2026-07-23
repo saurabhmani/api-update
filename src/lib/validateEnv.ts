@@ -12,26 +12,27 @@ interface EnvRule {
 }
 
 const ENV_RULES: EnvRule[] = [
-  // MYSQL_* vars are the canonical connection config. DATABASE_URL is
-  // still accepted as a fallback inside getMysqlConnectionConfig(),
-  // but the operator is expected to use the discrete vars going
-  // forward — simpler to read, no URL-encoding traps on the password.
   { key: 'MYSQL_HOST',       required: true,  description: 'MySQL hostname' },
   { key: 'MYSQL_DATABASE',   required: true,  description: 'MySQL database name' },
   { key: 'MYSQL_USER',       required: true,  description: 'MySQL username' },
-  // Empty password is a legitimate config for local dev (root with
-  // no password on XAMPP/WAMP). The driver passes '' through fine.
-  // Required=false so an empty value doesn't trip the boot validator;
-  // a wrong password will still surface as a clean auth error at
-  // first query time.
   { key: 'MYSQL_PASSWORD',   required: false, description: 'MySQL password' },
   { key: 'SESSION_SECRET',   required: true,  description: 'Secret for session signing (min 32 chars)' },
   { key: 'NEXT_PUBLIC_APP_URL', required: false, description: 'Public app URL (for CORS, redirects)' },
 ];
 
+function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function validateEnv(): { valid: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const isProd = process.env.NODE_ENV === 'production';
 
   for (const rule of ENV_RULES) {
     const value = process.env[rule.key];
@@ -40,14 +41,11 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     }
   }
 
-  // Validation rules
   const sessionSecret = process.env.SESSION_SECRET;
   if (sessionSecret && sessionSecret.length < 32) {
     warnings.push(`SESSION_SECRET is short (${sessionSecret.length} chars). Recommend 32+ for production.`);
   }
 
-  // Kite Connect is the default primary when MARKET_DATA_PROVIDER is
-  // unset / unrecognized. Warn when credentials look missing.
   const provider = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
   const kitePrimary = !provider || provider === 'kite';
   if (kitePrimary) {
@@ -60,7 +58,6 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     }
   }
 
-  // Encryption key validation
   const encKey = process.env.ENCRYPTION_KEY?.trim();
   if (!encKey || encKey.length < 64) {
     warnings.push(
@@ -70,8 +67,53 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     );
   }
 
-  // Seed password warnings — should not be in production
-  if (process.env.NODE_ENV === 'production') {
+  const brokerEnc = process.env.BROKER_TOKEN_ENCRYPTION_KEY?.trim();
+  if (brokerEnc && !/^[0-9a-fA-F]{64}$/.test(brokerEnc)) {
+    errors.push(
+      'BROKER_TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes).',
+    );
+  } else if (!brokerEnc) {
+    if (isProd && process.env.BROKER_TOKEN_ALLOW_LEGACY_KEY !== '1') {
+      errors.push(
+        'BROKER_TOKEN_ENCRYPTION_KEY is required in production (64 hex chars).',
+      );
+    } else {
+      warnings.push(
+        'BROKER_TOKEN_ENCRYPTION_KEY unset — broker tokens will fall back to ENCRYPTION_KEY / SESSION_SECRET.',
+      );
+    }
+  }
+
+  const shoonyaEnabled = (process.env.SHOONYA_ENABLED ?? '').trim() === '1'
+    || (process.env.SHOONYA_ENABLED ?? '').trim().toLowerCase() === 'true'
+    || Boolean(process.env.SHOONYA_CLIENT_ID?.trim());
+
+  if (shoonyaEnabled) {
+    if (!process.env.SHOONYA_CLIENT_ID?.trim()) {
+      errors.push('SHOONYA_CLIENT_ID is required when Shoonya is enabled.');
+    }
+    if (!process.env.SHOONYA_SECRET_CODE?.trim()) {
+      errors.push('SHOONYA_SECRET_CODE is required when Shoonya is enabled.');
+    }
+  } else if (!process.env.SHOONYA_CLIENT_ID?.trim() || !process.env.SHOONYA_SECRET_CODE?.trim()) {
+    warnings.push(
+      'SHOONYA_CLIENT_ID / SHOONYA_SECRET_CODE unset — Shoonya data-source login will be unavailable.',
+    );
+  }
+
+  const appBase =
+    process.env.APP_BASE_URL?.trim()
+    || process.env.APP_URL?.trim()
+    || process.env.NEXT_PUBLIC_APP_URL?.trim()
+    || '';
+
+  if (isProd) {
+    if (!appBase) {
+      errors.push('APP_BASE_URL (or APP_URL / NEXT_PUBLIC_APP_URL) is required in production.');
+    } else if (!isAbsoluteHttpsUrl(appBase)) {
+      errors.push('APP_BASE_URL must be an absolute https:// URL in production.');
+    }
+
     if (process.env.SEED_ADMIN_PASSWORD) {
       warnings.push('SEED_ADMIN_PASSWORD is set in production — remove after initial setup.');
     }
@@ -92,9 +134,6 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
 export function ensureEnv(): void {
   const { valid, errors, warnings } = validateEnv();
 
-  // Warnings + success line are intentionally suppressed — only the
-  // FAIL price log should appear in steady state. Missing required
-  // vars still throw, since they would crash later anyway.
   void warnings;
   if (!valid) {
     throw new Error(`Missing ${errors.length} required environment variable(s): ${errors.join('; ')}`);

@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach, expect, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { resetAuthCompleteRedemptionState } from '@/lib/kite/auth-complete-redemption';
-import { resetBrowserConnectionState } from '@/lib/kite/browser-connection';
 import { clearKiteSession } from '@/lib/kite/browser-session';
+
+export const LEGACY_SESSION_KEY = 'quantorus:kite-session';
 
 export const ACCESS_TOKEN = 'component-test-access-token';
 export const COMPLETION_CODE = 'component-test-completion-code';
@@ -106,9 +107,20 @@ export function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+export function assertNoAccessTokensInBrowserStorage(
+  storage: StorageMap,
+  ...extraSecrets: string[]
+): void {
+  for (const value of storage.values()) {
+    for (const secret of [ACCESS_TOKEN, ...extraSecrets]) {
+      expect(value).not.toContain(secret);
+    }
+    expect(value.toLowerCase()).not.toMatch(/access[_-]?token/);
+  }
+}
+
 export function resetKiteComponentTestState(): void {
   resetAuthCompleteRedemptionState();
-  resetBrowserConnectionState();
   clearKiteSession();
   cleanup();
 }
