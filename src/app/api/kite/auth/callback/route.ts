@@ -4,7 +4,10 @@ import { AuthenticationError } from '@/lib/errors';
 import { consumeKiteAuthState } from '@/lib/kite/auth-state';
 import { createKiteSession, KiteSessionError } from '@/lib/kite/create-session';
 import { createKiteCompletionCode } from '@/lib/kite/completion-store';
-import { buildAuthCompleteRedirectUrl } from '@/lib/kite/auth-complete-fragment';
+import {
+  buildAuthCompleteRedirectUrl,
+  resolveAuthCompleteOrigin,
+} from '@/lib/kite/auth-complete-fragment';
 import { getKiteClient } from '@/lib/kite/client';
 import { saveActiveKiteSession } from '@/lib/kite/active-session-store';
 
@@ -64,7 +67,8 @@ export async function GET(request: NextRequest) {
       accessToken: session.accessToken,
     });
 
-    return redirectWithNoStore(buildAuthCompleteRedirectUrl(request.nextUrl.origin, code));
+    const origin = resolveAuthCompleteOrigin(request.nextUrl.origin);
+    return redirectWithNoStore(buildAuthCompleteRedirectUrl(origin, code));
   } catch (err) {
     if (err instanceof AuthenticationError) {
       return jsonError('Unauthorized', 401);

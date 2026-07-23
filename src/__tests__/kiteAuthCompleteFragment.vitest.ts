@@ -51,15 +51,27 @@ vi.mock('@/lib/kite/browser-session', () => ({
   saveKiteSession: vi.fn(),
 }));
 
+vi.mock('@/lib/kite/active-session-store', () => ({
+  saveActiveKiteSession: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('@/lib/kite/client', () => ({
+  getKiteClient: () => ({ setAccessToken: vi.fn() }),
+}));
+
 import { GET } from '@/app/api/kite/auth/callback/route';
+import { resolveAuthCompleteOrigin } from '@/lib/kite/auth-complete-fragment';
 
 function makeCallbackRequest(query: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/kite/auth/callback?${query}`);
 }
 
 describe('GET /api/kite/auth/callback redirect', () => {
+  const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.NEXT_PUBLIC_APP_URL;
     mockRequireSession.mockResolvedValue({ id: 42 });
     mockConsumeKiteAuthState.mockResolvedValue(true);
     mockCreateKiteSession.mockResolvedValue({
@@ -67,6 +79,11 @@ describe('GET /api/kite/auth/callback redirect', () => {
       accessToken: 'kite-access-token',
     });
     mockCreateKiteCompletionCode.mockResolvedValue('completion-code-123');
+  });
+
+  afterEach(() => {
+    if (previousAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
+    else process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
   });
 
   it('redirects with a fragment code and no query-string code', async () => {
@@ -81,6 +98,21 @@ describe('GET /api/kite/auth/callback redirect', () => {
     expect(response.headers.get('Cache-Control')).toBe('no-store');
   });
 
+  it('uses NEXT_PUBLIC_APP_URL when request origin is the proxy loopback', async () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://quantorus.in/';
+
+    const response = await GET(
+      new NextRequest(
+        'https://localhost:5000/api/kite/auth/callback?status=success&request_token=req-token&state=csrf-state',
+      ),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(
+      buildAuthCompleteRedirectUrl('https://quantorus.in', 'completion-code-123'),
+    );
+  });
+
   it('URL-encodes special characters in the fragment code', async () => {
     const specialCode = 'a+b=c&d/e';
     mockCreateKiteCompletionCode.mockResolvedValue(specialCode);
@@ -92,6 +124,25 @@ describe('GET /api/kite/auth/callback redirect', () => {
     const location = response.headers.get('location');
     expect(location).toBe(buildAuthCompleteRedirectUrl('http://localhost:3000', specialCode));
     expect(parseCompletionCodeFromHash(new URL(location!).hash)).toBe(specialCode);
+  });
+});
+
+describe('resolveAuthCompleteOrigin', () => {
+  const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+  afterEach(() => {
+    if (previousAppUrl === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
+    else process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
+  });
+
+  it('prefers NEXT_PUBLIC_APP_URL origin over request origin', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://quantorus.in/';
+    expect(resolveAuthCompleteOrigin('https://localhost:5000')).toBe('https://quantorus.in');
+  });
+
+  it('falls back to request origin when unset', () => {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    expect(resolveAuthCompleteOrigin('https://localhost:5000')).toBe('https://localhost:5000');
   });
 });
 

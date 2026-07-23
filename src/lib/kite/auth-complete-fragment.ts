@@ -46,6 +46,24 @@ export function stripCodeFragmentFromUrl(href: string): string {
   return `${url.pathname}${url.search}`;
 }
 
+/**
+ * Canonical browser origin for post-login redirects.
+ *
+ * Prefer NEXT_PUBLIC_APP_URL so production (proxied to localhost:PORT)
+ * never sends users to https://localhost:5000/kite/auth-complete.
+ * Falls back to the request origin when the env var is unset (local/dev).
+ */
+export function resolveAuthCompleteOrigin(fallbackOrigin: string): string {
+  const configured = (process.env.NEXT_PUBLIC_APP_URL ?? '').trim();
+  if (!configured) return fallbackOrigin;
+
+  try {
+    return new URL(configured).origin;
+  } catch {
+    return fallbackOrigin;
+  }
+}
+
 export function buildAuthCompleteRedirectUrl(origin: string, code: string): string {
   const completeUrl = new URL('/kite/auth-complete', origin);
   completeUrl.hash = `code=${encodeURIComponent(code)}`;
