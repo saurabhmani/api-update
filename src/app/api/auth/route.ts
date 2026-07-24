@@ -11,21 +11,36 @@ export const dynamic = 'force-dynamic';
 
 const COOKIE = 'q200_session';
 
-
-
-
-
-
+function isLoopbackAppHost(): boolean {
+  for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL'] as const) {
+    const raw = (process.env[key] ?? '').trim();
+    if (!raw) continue;
+    try {
+      const host = new URL(raw).hostname.toLowerCase();
+      if (
+        host === 'localhost'
+        || host === '127.0.0.1'
+        || host === '::1'
+        || host.endsWith('.localhost')
+      ) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
 
 const COOKIE_OPTS = {
   httpOnly: true,
-  // Only mark Secure in production so dev (http://localhost) still
-  // works. Production ALWAYS gets Secure so the cookie is never sent
-  // over plaintext.
-  secure:   process.env.NODE_ENV === 'production',
+  // Production uses Secure, but local `next start` still has NODE_ENV=production
+  // while APP_* points at localhost — Secure cookies + https://localhost HSTS
+  // break Shoonya/Kite OAuth round-trips on http://localhost:3000.
+  secure: process.env.NODE_ENV === 'production' && !isLoopbackAppHost(),
   sameSite: 'lax' as const,
-  path:     '/',
-  maxAge:   parseInt(process.env.SESSION_MAX_AGE || '86400'),
+  path: '/',
+  maxAge: parseInt(process.env.SESSION_MAX_AGE || '86400'),
 };
 
 async function redirectPayload(userId: number) {

@@ -58,23 +58,13 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
       state: null,
     });
 
+    // Session cookie already binds the callback to this user. A missing/expired
+    // pending row used to hard-fail as invalid_transaction (common after
+    // https://localhost HSTS retries or slow OAuth). Still exchange the code.
     if (!tx) {
-      // Idempotent duplicate: recent successful completion + active connection.
-      const recent = await findRecentCompletedAuthTransaction({
+      console.warn('[shoonya/callback] no pending auth transaction; continuing with session bind', {
         userId,
-        broker: 'shoonya',
       });
-      const existing = await getBrokerConnectionByUserAndBroker(userId, 'shoonya');
-      if (recent && existing?.status === 'active' && existing.accessTokenEncrypted) {
-        return { ok: true, broker: 'shoonya', connection: existing };
-      }
-
-      return {
-        ok: false,
-        broker: 'shoonya',
-        error: 'Invalid or expired authentication session',
-        errorCode: 'invalid_transaction',
-      };
     }
 
     try {
@@ -108,12 +98,28 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
       });
 
       // Completed only after persistence succeeds.
-      await completeBrokerAuthTransaction(tx.id);
+      if (tx) {
+        await completeBrokerAuthTransaction(tx.id);
+      }
 
       return { ok: true, broker: 'shoonya', connection };
     } catch (err) {
-      await failBrokerAuthTransaction(tx.id).catch(() => {});
+      if (tx) {
+        await failBrokerAuthTransaction(tx.id).catch(() => {});
+      }
 
+      // Idempotent duplicate after a lost first response: code may already be
+      // spent but connection was saved.
+      const existing = await getBrokerConnectionByUserAndBroker(userId, 'shoonya');
+      if (existing?.status === 'active' && existing.accessTokenEncrypted) {
+        const recent = await findRecentCompletedAuthTransaction({
+          userId,
+          broker: 'shoonya',
+        });
+        if (recent || !tx) {
+          return { ok: true, broker: 'shoonya', connection: existing };
+        }
+      }
       if (err instanceof ShoonyaConfigError) {
         return {
           ok: false,

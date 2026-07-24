@@ -25,6 +25,14 @@ describe('broker auth transaction UTC datetime helpers', () => {
     }
   });
 
+  it('rejects Date#toString wall-clock values that are not ISO MySQL datetimes', () => {
+    expect(
+      Number.isNaN(
+        parseMysqlUtcDatetime('Fri Jul 24 2026 12:14:35 GMT+0530 (India Standard Time)'),
+      ),
+    ).toBe(true);
+  });
+
   it('accepts already-suffixed ISO strings', () => {
     expect(parseMysqlUtcDatetime('2026-07-24T11:08:00.000Z')).toBe(
       Date.UTC(2026, 6, 24, 11, 8, 0),

@@ -49,19 +49,49 @@ function isDev(): boolean {
   return process.env.NODE_ENV === 'development';
 }
 
+/** Local `next start` still has NODE_ENV=production — do not force HTTPS on loopback. */
+function isLoopbackAppHost(): boolean {
+  for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL'] as const) {
+    const raw = (process.env[key] ?? '').trim();
+    if (!raw) continue;
+    try {
+      const host = new URL(raw).hostname.toLowerCase();
+      if (
+        host === 'localhost'
+        || host === '127.0.0.1'
+        || host === '::1'
+        || host.endsWith('.localhost')
+      ) {
+        return true;
+      }
+    } catch {
+      // ignore invalid
+    }
+  }
+  return false;
+}
+
 function withSecurity(
   request: NextRequest,
   response: NextResponse,
   nonce: string,
 ): NextResponse {
+  const loopback = isLoopbackAppHost();
   const headerOptions = {
     nonce,
     pathname: request.nextUrl.pathname,
-    isDev: isDev(),
-    isProduction: isProduction(),
+    isDev: isDev() || loopback,
+    // npm start sets NODE_ENV=production; skip HTTPS upgrades/HSTS on localhost
+    // or browsers rewrite Shoonya/Kite callbacks to https://localhost and break OAuth.
+    isProduction: isProduction() && !loopback,
   };
 
   applySecurityHeaders(response.headers, headerOptions);
+
+  // Clear any previously cached HSTS for localhost from older production builds.
+  if (loopback) {
+    response.headers.set('Strict-Transport-Security', 'max-age=0');
+  }
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-nonce', nonce);

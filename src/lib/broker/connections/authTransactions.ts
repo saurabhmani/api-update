@@ -32,8 +32,34 @@ export function parseMysqlUtcDatetime(value: string): number {
   if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
     return new Date(trimmed).getTime();
   }
+  // Reject non-ISO Date#toString() values (e.g. "Fri Jul 24 2026 … GMT+0530").
+  if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(trimmed)) {
+    return Number.NaN;
+  }
   const normalized = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
   return new Date(`${normalized}Z`).getTime();
+}
+
+/** Normalize mysql2 Date|string DATETIME fields to UTC wall-clock SQL strings. */
+function mysqlDateTimeToUtcSql(value: unknown): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    // mysql2 interprets naive DATETIME in the session local zone. Recover the
+    // wall-clock components and treat them as UTC (matches toMysqlUtcDatetime).
+    return toMysqlUtcDatetime(new Date(Date.UTC(
+      value.getFullYear(),
+      value.getMonth(),
+      value.getDate(),
+      value.getHours(),
+      value.getMinutes(),
+      value.getSeconds(),
+    )));
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const ms = parseMysqlUtcDatetime(value);
+    if (!Number.isNaN(ms)) return toMysqlUtcDatetime(new Date(ms));
+    return value.trim().slice(0, 19).replace('T', ' ');
+  }
+  return '';
 }
 
 function rowToTx(r: Record<string, unknown>): BrokerAuthTransaction {
@@ -43,9 +69,9 @@ function rowToTx(r: Record<string, unknown>): BrokerAuthTransaction {
     broker: String(r.broker) as DataSourceBroker,
     stateHash: r.state_hash ? String(r.state_hash) : null,
     status: String(r.status) as BrokerAuthTransactionStatus,
-    expiresAt: String(r.expires_at),
-    completedAt: r.completed_at ? String(r.completed_at) : null,
-    createdAt: String(r.created_at),
+    expiresAt: mysqlDateTimeToUtcSql(r.expires_at),
+    completedAt: r.completed_at != null ? mysqlDateTimeToUtcSql(r.completed_at) : null,
+    createdAt: mysqlDateTimeToUtcSql(r.created_at) || String(r.created_at ?? ''),
   };
 }
 
@@ -65,7 +91,7 @@ export async function createBrokerAuthTransaction(opts: {
   const state = opts.state === undefined ? createBrokerOAuthState() : opts.state;
   const stateHash = state ? hashState(state) : null;
   const ttl = opts.ttlMs ?? DEFAULT_TTL_MS;
-  const expiresSql = toMysqlUtcDatetime(new Date(Date.now() + ttl));
+  const ttlSeconds = Math.max(60, Math.ceil(ttl / 1000));
 
   // Invalidate any other pending transactions for this user+broker
   await db.query(
@@ -75,11 +101,12 @@ export async function createBrokerAuthTransaction(opts: {
     [opts.userId, opts.broker],
   );
 
+  // Expire using MySQL UTC_TIMESTAMP so claim checks stay timezone-safe.
   await db.query(
     `INSERT INTO broker_auth_transactions
        (id, user_id, broker, state_hash, status, expires_at)
-     VALUES (?, ?, ?, ?, 'pending', ?)`,
-    [id, opts.userId, opts.broker, stateHash, expiresSql],
+     VALUES (?, ?, ?, ?, 'pending', DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND))`,
+    [id, opts.userId, opts.broker, stateHash, ttlSeconds],
   );
 
   const { rows } = await db.query(
@@ -141,16 +168,9 @@ export async function consumeBrokerAuthTransaction(opts: {
   if (!rows.length) return null;
 
   const tx = rowToTx(rows[0]);
-  const expiresAt = parseMysqlUtcDatetime(tx.expiresAt);
-  if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
-    await db.query(
-      `UPDATE broker_auth_transactions SET status = 'expired' WHERE id = ? AND status = 'pending'`,
-      [tx.id],
-    );
-    return null;
-  }
 
-  // Claim without completing — prevents duplicate exchangers.
+  // Claim without completing — expiry enforced only in SQL (UTC_TIMESTAMP),
+  // never via JS Date parsing (mysql2 local Date objects break IST).
   const updateResult = await db.query(
     `UPDATE broker_auth_transactions
      SET status = 'used'
@@ -159,7 +179,13 @@ export async function consumeBrokerAuthTransaction(opts: {
   );
 
   const affected = Number(updateResult.affectedRows ?? 0);
-  if (affected === 0) return null;
+  if (affected === 0) {
+    await db.query(
+      `UPDATE broker_auth_transactions SET status = 'expired' WHERE id = ? AND status = 'pending'`,
+      [tx.id],
+    );
+    return null;
+  }
 
   return { ...tx, status: 'used' };
 }
