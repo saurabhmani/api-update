@@ -1,14 +1,12 @@
 /**
  * Same-host redirects for in-app pages (data-source, dashboard, login).
  *
- * Prefer the live request host, but never emit https://localhost — local
- * `next start` has no TLS, and browsers with cached HSTS then show
- * ERR_SSL_PROTOCOL_ERROR after OAuth.
+ * Prefer the browser-facing public host (APP_* / X-Forwarded-*), never the
+ * internal loopback Next sees behind nginx (`Host: localhost:3000`). That
+ * mis-detection was sending dig OAuth successes to http://localhost:3000.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-
-const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -21,48 +19,79 @@ function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
-function configuredLoopbackOrigin(): string | null {
+function originFromUrl(raw: string): string | null {
+  try {
+    return new URL(raw.trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+function originFromForwardedHeaders(headers: Headers): string | null {
+  const xfHost = headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+  if (!xfHost) return null;
+  const xfProto = headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || 'https';
+  try {
+    return new URL(`${xfProto}://${xfHost}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+function configuredAppOrigin(): string | null {
   for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL'] as const) {
-    const raw = (process.env[key] ?? '').trim();
-    if (!raw) continue;
-    try {
-      const url = new URL(raw);
-      if (isLoopbackHostname(url.hostname)) {
-        url.protocol = 'http:';
-        url.pathname = '';
-        url.search = '';
-        url.hash = '';
-        return url.origin;
-      }
-    } catch {
-      // ignore
-    }
+    const origin = originFromUrl(process.env[key] ?? '');
+    if (origin) return origin;
   }
   return null;
 }
 
-/** Build an in-app absolute URL that stays on http for loopback hosts. */
+/**
+ * Canonical browser origin for post-OAuth in-app redirects.
+ * Public hosts always win over internal loopback.
+ */
+export function resolveAppRedirectOrigin(request: NextRequest): string {
+  const forwarded = originFromForwardedHeaders(request.headers);
+  const configured = configuredAppOrigin();
+  const requestOrigin = request.nextUrl.origin;
+
+  const candidates = [forwarded, configured, requestOrigin].filter(
+    (value): value is string => Boolean(value),
+  );
+
+  const publicOrigin = candidates.find((origin) => {
+    try {
+      return !isLoopbackHostname(new URL(origin).hostname);
+    } catch {
+      return false;
+    }
+  });
+  if (publicOrigin) return publicOrigin;
+
+  // Local-only: prefer configured loopback http, else request (forced http).
+  for (const origin of candidates) {
+    try {
+      const url = new URL(origin);
+      if (isLoopbackHostname(url.hostname)) {
+        url.protocol = 'http:';
+        return url.origin;
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  return 'http://localhost:3000';
+}
+
+/** Build an in-app absolute URL on the browser-facing origin. */
 export function appPathUrl(
   request: NextRequest,
   pathname: string,
   query?: Record<string, string | null | undefined>,
 ): URL {
-  const loopbackOrigin = configuredLoopbackOrigin();
-  const requestHost = request.nextUrl.hostname;
-
-  let url: URL;
-  if (isLoopbackHostname(requestHost) || loopbackOrigin) {
-    const origin = loopbackOrigin || `http://${request.nextUrl.host}`;
-    url = new URL(pathname, origin.endsWith('/') ? origin : `${origin}/`);
-    // Preserve non-default local port from the live request when env omits it.
-    if (isLoopbackHostname(requestHost) && request.nextUrl.port) {
-      url.port = request.nextUrl.port;
-    }
-  } else {
-    url = new URL(pathname, request.url);
-  }
-
-  url.protocol = isLoopbackHostname(url.hostname) ? 'http:' : url.protocol;
+  const origin = resolveAppRedirectOrigin(request);
+  const url = new URL(pathname, origin.endsWith('/') ? origin : `${origin}/`);
 
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -81,7 +110,6 @@ export function redirectToAppPath(
   const url = appPathUrl(request, pathname, query);
   const response = NextResponse.redirect(url, 302);
   response.headers.set('Cache-Control', 'no-store');
-  // Help clear a previously sticky HSTS pin on localhost from older builds.
   if (isLoopbackHostname(url.hostname)) {
     response.headers.set('Strict-Transport-Security', 'max-age=0');
   }

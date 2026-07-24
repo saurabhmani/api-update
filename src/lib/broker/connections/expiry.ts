@@ -64,3 +64,45 @@ function fromNumericExpiry(n: number, nowMs: number): Date | null {
 export function toMysqlUtcDateTime(date: Date): string {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 }
+
+/**
+ * Convert a MySQL DATETIME (UTC wall clock we wrote) to epoch ms.
+ * mysql2 returns naive DATETIME as a local Date — recover wall components as UTC.
+ */
+export function mysqlUtcDateTimeToMs(value: unknown): number | null {
+  if (value == null || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return Date.UTC(
+      value.getFullYear(),
+      value.getMonth(),
+      value.getDate(),
+      value.getHours(),
+      value.getMinutes(),
+      value.getSeconds(),
+    );
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(trimmed)) {
+      const core = trimmed.slice(0, 19).replace(' ', 'T');
+      const ms = new Date(`${core}Z`).getTime();
+      return Number.isNaN(ms) ? null : ms;
+    }
+    const ms = new Date(trimmed).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+
+  return null;
+}
+
+export function isBrokerTokenExpired(
+  expiresAt: unknown,
+  nowMs: number = Date.now(),
+): boolean {
+  const t = mysqlUtcDateTimeToMs(expiresAt);
+  if (t == null) return false;
+  return t <= nowMs;
+}

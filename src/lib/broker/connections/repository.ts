@@ -3,7 +3,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '@/lib/db';
 import { encryptBrokerCredential, decryptBrokerCredential } from './encryption';
-import { toMysqlUtcDateTime } from './expiry';
+import { toMysqlUtcDateTime, mysqlUtcDateTimeToMs } from './expiry';
 import type {
   BrokerConnectionRecord,
   BrokerConnectionStatus,
@@ -11,6 +11,12 @@ import type {
 } from './types';
 
 let ensured = false;
+
+function datetimeFieldToIso(value: unknown): string | null {
+  const ms = mysqlUtcDateTimeToMs(value);
+  if (ms == null) return value != null && String(value).trim() ? String(value) : null;
+  return new Date(ms).toISOString();
+}
 
 export async function ensureBrokerConnectionTables(): Promise<void> {
   if (ensured) return;
@@ -123,14 +129,14 @@ function rowToRecord(r: Record<string, unknown>): BrokerConnectionRecord {
     brokerUserName: r.broker_user_name ? String(r.broker_user_name) : null,
     accessTokenEncrypted: r.access_token_encrypted ? String(r.access_token_encrypted) : null,
     refreshTokenEncrypted: r.refresh_token_encrypted ? String(r.refresh_token_encrypted) : null,
-    tokenExpiresAt: r.token_expires_at ? String(r.token_expires_at) : null,
-    lastAuthenticatedAt: r.last_authenticated_at ? String(r.last_authenticated_at) : null,
-    lastUsedAt: r.last_used_at ? String(r.last_used_at) : null,
+    tokenExpiresAt: datetimeFieldToIso(r.token_expires_at),
+    lastAuthenticatedAt: datetimeFieldToIso(r.last_authenticated_at),
+    lastUsedAt: datetimeFieldToIso(r.last_used_at),
     status: String(r.status) as BrokerConnectionStatus,
     isPrimary: Boolean(Number(r.is_primary)),
     metadata,
-    createdAt: String(r.created_at),
-    updatedAt: String(r.updated_at),
+    createdAt: datetimeFieldToIso(r.created_at) ?? String(r.created_at ?? ''),
+    updatedAt: datetimeFieldToIso(r.updated_at) ?? String(r.updated_at ?? ''),
   };
 }
 

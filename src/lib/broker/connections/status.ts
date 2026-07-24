@@ -8,6 +8,7 @@ import {
   upsertBrokerConnectionRecord,
 } from './repository';
 import { migrateLegacyBrokerDataForUser } from './migrate';
+import { isBrokerTokenExpired } from './expiry';
 import {
   BROKER_DISPLAY_NAMES,
   type BrokerConnectionRecord,
@@ -16,10 +17,7 @@ import {
 } from './types';
 
 function isExpired(expiresAt: string | null): boolean {
-  if (!expiresAt) return false;
-  const t = new Date(expiresAt).getTime();
-  if (Number.isNaN(t)) return false;
-  return t <= Date.now();
+  return isBrokerTokenExpired(expiresAt);
 }
 
 function maskAccountId(accountId: string | null): string | null {
