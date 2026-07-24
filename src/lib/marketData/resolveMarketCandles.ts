@@ -20,6 +20,7 @@ import {
   getLiveSessionCandle,
 } from '@/lib/marketData/liveSessionBarStore';
 import {
+  candleInstrumentKeysForSymbol,
   fetchDailyCandlesWithFallback,
   type CandleFetchResult,
 } from '@/lib/marketData/candleFallbackChain';
@@ -39,16 +40,21 @@ export interface MarketCandleResult {
 const DB_BARS_LIMIT = 300;
 
 async function loadWarehouseDailyBars(symbol: string): Promise<Candle[]> {
+  const keys = candleInstrumentKeysForSymbol(symbol);
+  if (keys.length === 0) return [];
+  const placeholders = keys.map(() => '?').join(',');
   const { rows } = await db.query(
     `SELECT ts, open, high, low, close, volume FROM (
        SELECT ts, open, high, low, close, volume
-         FROM market_data_daily
-        WHERE symbol = ?
+         FROM candles
+        WHERE instrument_key IN (${placeholders})
+          AND candle_type = 'eod'
+          AND interval_unit = '1day'
         ORDER BY ts DESC
         LIMIT ?
      ) t
      ORDER BY ts ASC`,
-    [symbol, DB_BARS_LIMIT],
+    [...keys, DB_BARS_LIMIT],
   );
   return (rows as any[]).map((r) => ({
     ts:     String(r.ts),

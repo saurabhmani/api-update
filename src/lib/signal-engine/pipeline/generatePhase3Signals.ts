@@ -414,12 +414,18 @@ export async function generatePhase3Signals(
   let benchmarkCandles: Candle[] = [];
   let regime: EnhancedMarketRegime;
   try {
+    const benchT0 = Date.now();
+    console.log(`[PHASE3] fetching benchmark=${p1Config.benchmarkSymbol}`);
     benchmarkCandles = await provider.fetchDailyCandles(p1Config.benchmarkSymbol);
     const benchValid = validateCandleSeries(benchmarkCandles, p1Config.minCandleCount);
     if (!benchValid.valid) {
       throw new Error(`Benchmark invalid: ${benchValid.reason}`);
     }
     regime = detectEnhancedRegime(benchmarkCandles);
+    console.log(
+      `[PHASE3] benchmark ok bars=${benchmarkCandles.length} ` +
+      `regime=${regime.label} elapsed_ms=${Date.now() - benchT0}`,
+    );
     try {
       await persistRegimeChange(regime);
     } catch (persistErr) {
@@ -510,7 +516,12 @@ export async function generatePhase3Signals(
   const candleErrorCache = new Map<string, Error>();
   const prefetchStart = Date.now();
   let prefetchCursor = 0;
+  let prefetchDone = 0;
   const universeArr = p1Config.universe;
+  const PREFETCH_PROGRESS_EVERY = Math.max(
+    50,
+    Math.min(250, Math.floor(universeArr.length / 10) || 50),
+  );
   async function prefetchWorker(): Promise<void> {
     while (true) {
       const i = prefetchCursor++;
@@ -521,6 +532,22 @@ export async function generatePhase3Signals(
         candleCache.set(sym, c);
       } catch (err) {
         candleErrorCache.set(sym, err instanceof Error ? err : new Error(String(err)));
+      }
+      prefetchDone++;
+      if (
+        prefetchDone === 1
+        || prefetchDone % PREFETCH_PROGRESS_EVERY === 0
+        || prefetchDone === universeArr.length
+      ) {
+        const elapsed = Date.now() - prefetchStart;
+        const rate = prefetchDone / Math.max(1, elapsed / 1000);
+        const remaining = universeArr.length - prefetchDone;
+        const etaMs = rate > 0 ? Math.round((remaining / rate) * 1000) : null;
+        console.log(
+          `[PHASE3 PREFETCH_PROGRESS] done=${prefetchDone}/${universeArr.length} ` +
+          `cached=${candleCache.size} errors=${candleErrorCache.size} ` +
+          `elapsed_ms=${elapsed} eta_ms=${etaMs ?? 'n/a'}`,
+        );
       }
     }
   }

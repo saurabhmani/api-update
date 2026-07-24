@@ -49,6 +49,36 @@ export const SUFFICIENT_BAR_DEPTH = () =>
 
 const DB_BARS_LIMIT = 300;
 
+/** Index / special symbols → canonical `candles.instrument_key` values. */
+const INDEX_INSTRUMENT_KEYS: Record<string, string[]> = {
+  'NIFTY 50':          ['NSE_INDEX|NIFTY 50'],
+  'NIFTY50':           ['NSE_INDEX|NIFTY 50'],
+  'NIFTY BANK':        ['NSE_INDEX|NIFTY BANK'],
+  'BANKNIFTY':         ['NSE_INDEX|NIFTY BANK'],
+  'NIFTY FIN SERVICE': ['NSE_INDEX|NIFTY FIN SERVICE'],
+  'FINNIFTY':          ['NSE_INDEX|NIFTY FIN SERVICE'],
+  'NIFTY MID SELECT':  ['NSE_INDEX|NIFTY MID SELECT'],
+  'MIDCPNIFTY':        ['NSE_INDEX|NIFTY MID SELECT'],
+  'NIFTY IT':          ['NSE_INDEX|NIFTY IT'],
+};
+
+/**
+ * Build sargable `candles.instrument_key` candidates for a bare symbol.
+ * Prefer these over `market_data_daily.symbol` — that column is a VIEW
+ * expression (`SUBSTRING_INDEX(instrument_key,'|',-1)`), so
+ * `WHERE symbol = ?` cannot use `idx_candles_key_ts` and full-scans
+ * the candles table (Phase 3 hangs at "🔥 Phase3 START" on large DBs).
+ */
+export function candleInstrumentKeysForSymbol(symbol: string): string[] {
+  const raw = String(symbol ?? '').trim();
+  if (!raw) return [];
+  if (raw.includes('|')) return [raw];
+  const sym = raw.toUpperCase();
+  const indexKeys = INDEX_INSTRUMENT_KEYS[sym];
+  if (indexKeys) return indexKeys;
+  return [`NSE_EQ|${sym}`, `BSE_EQ|${sym}`, `NSE|${sym}`];
+}
+
 // ── Per-run source counters ────────────────────────────────────────
 
 let _nseUsed = 0;
@@ -146,16 +176,22 @@ export interface UpstreamCandleFetchResult {
 // ── DB helpers ─────────────────────────────────────────────────────
 
 export async function readDailyCandlesFromDb(symbol: string): Promise<Candle[]> {
+  const keys = candleInstrumentKeysForSymbol(symbol);
+  if (keys.length === 0) return [];
+
+  const placeholders = keys.map(() => '?').join(',');
   const result = await db.query(
     `SELECT ts, open, high, low, close, volume FROM (
        SELECT ts, open, high, low, close, volume
-       FROM market_data_daily
-       WHERE symbol = ?
-       ORDER BY ts DESC
-       LIMIT ?
+         FROM candles
+        WHERE instrument_key IN (${placeholders})
+          AND candle_type = 'eod'
+          AND interval_unit = '1day'
+        ORDER BY ts DESC
+        LIMIT ?
      ) t
      ORDER BY ts ASC`,
-    [symbol.toUpperCase(), DB_BARS_LIMIT],
+    [...keys, DB_BARS_LIMIT],
   );
   return (result.rows as any[]).map((r) => ({
     ts: r.ts,
@@ -169,9 +205,16 @@ export async function readDailyCandlesFromDb(symbol: string): Promise<Candle[]> 
 
 export async function getDbBarCount(symbol: string): Promise<number> {
   try {
+    const keys = candleInstrumentKeysForSymbol(symbol);
+    if (keys.length === 0) return 0;
+    const placeholders = keys.map(() => '?').join(',');
     const { rows } = await db.query<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM market_data_daily WHERE symbol = ?`,
-      [symbol.toUpperCase()],
+      `SELECT COUNT(*) AS cnt
+         FROM candles
+        WHERE instrument_key IN (${placeholders})
+          AND candle_type = 'eod'
+          AND interval_unit = '1day'`,
+      keys,
     );
     return Number((rows[0] as any)?.cnt) || 0;
   } catch {
@@ -368,15 +411,31 @@ export async function fetchUpstreamDailyCandles(
 
 async function upsertToDb(symbol: string, candles: Candle[]): Promise<void> {
   if (candles.length === 0) return;
+  const instrumentKey = candleInstrumentKeysForSymbol(symbol)[0];
+  if (!instrumentKey) return;
   try {
     const values: unknown[] = [];
     const placeholders: string[] = [];
     for (const c of candles) {
-      placeholders.push('(?, ?, ?, ?, ?, ?, ?)');
-      values.push(symbol.toUpperCase(), c.ts, c.open, c.high, c.low, c.close, c.volume);
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      values.push(
+        instrumentKey,
+        'eod',
+        '1day',
+        c.ts,
+        c.open,
+        c.high,
+        c.low,
+        c.close,
+        c.volume,
+        0,
+      );
     }
+    // Write the real warehouse (`candles`). `market_data_daily` is a VIEW
+    // over this table — INSERT INTO the view fails on production.
     await db.query(
-      `INSERT INTO market_data_daily (symbol, ts, open, high, low, close, volume)
+      `INSERT INTO candles
+         (instrument_key, candle_type, interval_unit, ts, open, high, low, close, volume, oi)
        VALUES ${placeholders.join(',')}
        ON DUPLICATE KEY UPDATE
          open=VALUES(open), high=VALUES(high), low=VALUES(low),
@@ -412,14 +471,17 @@ export async function fetchDailyCandlesWithFallback(
   const sym = symbol.toUpperCase();
   const dbOnly = shouldUseDbOnly({ ...opts, evaluationRead: true });
 
-  // Market-open: warehouse history + in-memory live session bar (no upstream).
-  if (isMarketOpen()) {
+  // Market-open live merge — skip when dbOnly (evening/cron scans).
+  // resolveMarketCandles → fetchDailyCandlesWithFallback recursion on thin
+  // warehouse rows can hang the event loop; scans must stay on indexed
+  // `candles` reads only.
+  if (!dbOnly && isMarketOpen()) {
     try {
       const live = await resolveMarketCandles(sym, {
         forceDaily: false,
         quiet: true,
       });
-      if (live.candles.length >= (dbOnly ? 1 : min)) {
+      if (live.candles.length >= min) {
         _dbUsed++;
         console.log(
           `[CANDLE SOURCE] symbol=${sym} mode=live_session ` +

@@ -173,14 +173,17 @@ export async function ensureSignalEngineSchemas(): Promise<void> {
   // Rather than touch every query site, we expose a VIEW that projects
   // the legacy `market_data_daily(symbol, ts, open, high, low, close,
   // volume)` shape over the real candle store. `CREATE OR REPLACE VIEW`
-  // is idempotent, the view is read-only, and MySQL plans it cheaply
-  // because the underlying indexes on `(instrument_key, ts)` still apply.
+  // is idempotent and the view is read-only.
+  //
+  // IMPORTANT: `WHERE symbol = ?` on this VIEW is NOT index-friendly —
+  // `symbol` is `SUBSTRING_INDEX(instrument_key,'|',-1)`, so MySQL
+  // full-scans `candles`. Hot paths (Phase 3 candle reads) MUST query
+  // `candles` by `instrument_key` directly (see
+  // `candleInstrumentKeysForSymbol` / `readDailyCandlesFromDb`).
   //
   // Symbol extraction: `SUBSTRING_INDEX(instrument_key, '|', -1)` strips
   // the `NSE_EQ|` prefix and works for both `NSE_EQ|SYM` and
-  // `NSE_INDEX|SYM` layouts. Querying `WHERE symbol = ?` still hits the
-  // composite index via the function predicate because MySQL pushes
-  // the derived filter down to the base table.
+  // `NSE_INDEX|SYM` layouts.
   // If `market_data_daily` already exists as a BASE TABLE (legacy
   // installs created it before we switched to a VIEW), MySQL will
   // refuse `CREATE OR REPLACE VIEW` with "is not VIEW". Detect and
