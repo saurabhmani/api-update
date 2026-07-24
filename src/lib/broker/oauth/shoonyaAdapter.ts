@@ -53,7 +53,9 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
     const tx = await consumeBrokerAuthTransaction({
       userId,
       broker: 'shoonya',
-      state: params.state?.trim() || null,
+      // Authorize URL does not send state; Shoonya may still echo one. Pending
+      // rows are bound to the signed-in user only (state_hash NULL).
+      state: null,
     });
 
     if (!tx) {

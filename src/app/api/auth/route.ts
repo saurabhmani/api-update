@@ -121,9 +121,23 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (err) {
-    console.error('[auth POST]', (err as Error)?.message ?? err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[auth POST]', message);
+
+    const dbDenied =
+      /access denied for user/i.test(message)
+      || /ECONNREFUSED/i.test(message)
+      || /ENOTFOUND/i.test(message)
+      || /connect ETIMEDOUT/i.test(message)
+      || /unknown database/i.test(message);
+
     return NextResponse.json(
-      { error: 'Authentication service unavailable' },
+      {
+        error: dbDenied
+          ? 'Database unavailable. Check MYSQL_HOST / MYSQL_USER / MYSQL_PASSWORD on the server.'
+          : 'Authentication service unavailable',
+        code: dbDenied ? 'database_unavailable' : 'auth_unavailable',
+      },
       { status: 503 },
     );
   }

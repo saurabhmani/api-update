@@ -18,9 +18,16 @@ type BrokerKey = 'zerodha' | 'shoonya';
 
 const ERROR_MESSAGES: Record<string, string> = {
   authentication_failed: 'Broker authentication failed. Please try again.',
+  oauth_incomplete: 'Zerodha did not return a complete login response. Please try connecting again.',
+  kite_token_exchange:
+    'Zerodha rejected the login token. Confirm KITE_API_KEY / KITE_API_SECRET match the app on developers.kite.trade, and that the Redirect URL is exactly the same as KITE_REDIRECT_URL.',
+  redirect_url_mismatch:
+    'Zerodha Redirect URL is wrong for this host. On developers.kite.trade set Redirect URL to https://<this-host>/api/kite/auth/callback, set the same value as KITE_REDIRECT_URL on the server, restart, then connect again. Do not edit localhost in the browser address bar.',
+  redis_unavailable: 'Temporary session store unavailable. Ensure Redis is running and try again.',
   missing_code: 'Authorization was incomplete. Please try connecting again.',
   invalid_state: 'Your authentication session expired. Please try again.',
-  invalid_transaction: 'Your authentication session expired. Please try again.',
+  invalid_transaction:
+    'Your broker login session expired or was not found. Start Connect again from this page (do not reuse an old callback URL).',
   cancelled: 'Broker authorization was cancelled.',
   not_configured: 'This broker is not configured on the server yet.',
   session_expired: 'Your broker session expired. Please reconnect to continue.',

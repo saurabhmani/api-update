@@ -6,6 +6,7 @@ import { getKiteConfig } from '@/lib/kite/config';
 import { createKiteAuthState } from '@/lib/kite/auth-state';
 import { KiteConfigError } from '@/lib/kite/errors';
 import { dataSourceErrorRedirect } from '@/lib/broker/oauth/appRedirects';
+import { isKiteRedirectHostMismatch } from '@/lib/kite/redirect-host';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,11 +36,25 @@ export async function GET(request: NextRequest) {
     const user = await requireSession();
     const quantorusUserId = String(user.id);
 
-    await createBrokerAuthTransaction({
-      userId: user.id,
-      broker: 'zerodha',
-      state: null,
-    });
+    // Zerodha always returns to the Redirect URL on developers.kite.trade.
+    // If that env still points at localhost while the user is on dig/prod,
+    // fail closed before sending them into a broken OAuth round-trip.
+    if (isKiteRedirectHostMismatch(request)) {
+      return dataSourceErrorRedirect(request, 'zerodha', 'redirect_url_mismatch');
+    }
+
+    // Best-effort durable TX row — Redis CSRF state is what the callback needs.
+    try {
+      await createBrokerAuthTransaction({
+        userId: user.id,
+        broker: 'zerodha',
+        state: null,
+      });
+    } catch (txErr) {
+      console.error('[zerodha/connect] broker_auth_transactions unavailable', {
+        reason: txErr instanceof Error ? txErr.name : 'unknown',
+      });
+    }
 
     const { apiKey } = getKiteConfig();
     const state = await createKiteAuthState(quantorusUserId);
@@ -56,6 +71,13 @@ export async function GET(request: NextRequest) {
       return dataSourceErrorRedirect(request, 'zerodha', 'not_configured');
     }
 
+    if (err instanceof Error && err.message === 'Kite auth state store unavailable') {
+      return dataSourceErrorRedirect(request, 'zerodha', 'redis_unavailable');
+    }
+
+    console.error('[zerodha/connect] failed to start OAuth', {
+      reason: err instanceof Error ? err.name : 'unknown',
+    });
     return dataSourceErrorRedirect(request, 'zerodha', 'authentication_failed');
   }
 }

@@ -204,6 +204,9 @@ describe('broker credential encryption', () => {
       process.env.APP_BASE_URL = 'http://insecure.example.com';
       expect(validateEnv().errors.some((e) => e.includes('https://'))).toBe(true);
 
+      process.env.APP_BASE_URL = 'http://localhost:3000';
+      expect(validateEnv().errors.some((e) => e.includes('APP_BASE_URL'))).toBe(false);
+
       process.env.APP_BASE_URL = 'https://example.com';
       process.env.SHOONYA_ENABLED = '1';
       delete process.env.SHOONYA_CLIENT_ID;

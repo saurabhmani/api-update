@@ -120,6 +120,12 @@ describe('GET /api/kite/auth/callback redirect', () => {
     const response = await GET(
       new NextRequest(
         'https://localhost:5000/api/kite/auth/callback?status=success&request_token=req-token&state=csrf-state',
+        {
+          headers: {
+            'x-forwarded-host': 'quantorus.in',
+            'x-forwarded-proto': 'https',
+          },
+        },
       ),
     );
 

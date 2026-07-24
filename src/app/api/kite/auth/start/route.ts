@@ -1,9 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { AuthenticationError } from '@/lib/errors';
 import { getKiteConfig } from '@/lib/kite/config';
 import { createKiteAuthState } from '@/lib/kite/auth-state';
 import { KiteConfigError } from '@/lib/kite/errors';
+import { dataSourceErrorRedirect } from '@/lib/broker/oauth/appRedirects';
+import { isKiteRedirectHostMismatch } from '@/lib/kite/redirect-host';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,10 +27,14 @@ function redirectWithNoStore(url: string): NextResponse {
 }
 
 /** GET /api/kite/auth/start — begin Zerodha Kite Connect login for the signed-in user */
-export async function GET() {
+export async function GET(request?: NextRequest) {
   try {
     const user = await requireSession();
     const quantorusUserId = String(user.id);
+
+    if (request && isKiteRedirectHostMismatch(request)) {
+      return dataSourceErrorRedirect(request, 'zerodha', 'redirect_url_mismatch');
+    }
 
     const { apiKey } = getKiteConfig();
     const state = await createKiteAuthState(quantorusUserId);

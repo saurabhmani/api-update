@@ -102,9 +102,9 @@ export interface ResolveAuthCompleteOriginOptions {
  * Canonical browser origin for post-login redirects.
  *
  * Prefer a public origin from (in order):
- *   1. APP_URL / NEXT_PUBLIC_APP_URL / KITE_REDIRECT_URL (runtime env)
- *   2. X-Forwarded-Host from the reverse proxy
- *   3. Non-loopback request origin
+ *   1. X-Forwarded-Host / non-loopback request origin (the host that handled
+ *      the OAuth callback — keeps dig/prod users on the same host)
+ *   2. APP_BASE_URL / APP_URL / NEXT_PUBLIC_APP_URL / KITE_REDIRECT_URL
  *
  * Loopback origins (localhost / 127.0.0.1) are skipped whenever any public
  * candidate exists — this is what was sending live users to
@@ -114,22 +114,24 @@ export function resolveAuthCompleteOrigin(
   fallbackOrigin: string,
   options: ResolveAuthCompleteOriginOptions = {},
 ): string {
-  const candidates: string[] = [];
+  const liveCandidates: string[] = [];
+  const forwarded = originFromForwardedHeaders(options.headers);
+  if (forwarded) liveCandidates.push(forwarded);
+  if (fallbackOrigin) liveCandidates.push(fallbackOrigin);
 
-  for (const key of ['APP_URL', 'NEXT_PUBLIC_APP_URL', 'KITE_REDIRECT_URL'] as const) {
+  const livePublic = liveCandidates.find((origin) => !isLoopbackOrigin(origin));
+  if (livePublic) return livePublic;
+
+  const envCandidates: string[] = [];
+  for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL', 'KITE_REDIRECT_URL'] as const) {
     const origin = originFromConfiguredUrl(readRuntimeEnv(key));
-    if (origin) candidates.push(origin);
+    if (origin) envCandidates.push(origin);
   }
 
-  const forwarded = originFromForwardedHeaders(options.headers);
-  if (forwarded) candidates.push(forwarded);
+  const envPublic = envCandidates.find((origin) => !isLoopbackOrigin(origin));
+  if (envPublic) return envPublic;
 
-  if (fallbackOrigin) candidates.push(fallbackOrigin);
-
-  const publicOrigin = candidates.find((origin) => !isLoopbackOrigin(origin));
-  if (publicOrigin) return publicOrigin;
-
-  return fallbackOrigin || candidates[0] || 'http://localhost:3000';
+  return fallbackOrigin || envCandidates[0] || liveCandidates[0] || 'http://localhost:3000';
 }
 
 export function buildAuthCompleteRedirectUrl(origin: string, code: string): string {

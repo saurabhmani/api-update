@@ -574,7 +574,8 @@ describe('Kite auth lifecycle integration', () => {
     const callback = await routes.callback.GET(
       new NextRequest('http://localhost/api/kite/auth/callback?status=success&request_token=r&state=s'),
     );
-    expect(callback.status).toBe(401);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get('location')).toContain('/login');
 
     const complete = await routes.complete.POST(
       new NextRequest('http://localhost/api/kite/auth/complete', {
@@ -762,7 +763,7 @@ describe('Kite auth lifecycle integration', () => {
     );
     expect(failedExchange.status).toBe(302);
     expect(failedExchange.headers.get('location')).toContain('/data-source');
-    expect(failedExchange.headers.get('location')).toContain('error=authentication_failed');
+    expect(failedExchange.headers.get('location')).toContain('error=kite_token_exchange');
     expect(fakeRedis.completionCount()).toBe(0);
     assertNoSecrets(failedExchange.headers.get('location') ?? '');
 
@@ -783,7 +784,7 @@ describe('Kite auth lifecycle integration', () => {
       ),
     );
     expect(failedCompletion.status).toBe(302);
-    expect(failedCompletion.headers.get('location')).toContain('/data-source');
+    expect(failedCompletion.headers.get('location')).toContain('/dashboard');
     expect(fakeRedis.completionCount()).toBe(0);
     assertNoSecrets(failedCompletion.headers.get('location') ?? '');
   });

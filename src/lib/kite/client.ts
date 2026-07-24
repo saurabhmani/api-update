@@ -119,18 +119,57 @@ export class KiteClient {
 
   /**
    * Load access token from the Redis active session when memory is empty.
-   * No-op if already set. Returns whether a usable token is present after.
+   * Falls back to an active encrypted Zerodha row in broker_connections
+   * (local seed / OAuth persistence) and re-hydrates Redis when possible.
+   * Returns whether a usable token is present after.
    */
   async hydrateAccessTokenFromSession(): Promise<boolean> {
     if (this.cfg.accessToken.trim()) return true;
 
     // Dynamic import keeps `server-only` off the static client graph for tests.
-    const { getActiveKiteAccessToken } = await import('./active-session-store');
+    const { getActiveKiteAccessToken, saveActiveKiteSession } = await import(
+      './active-session-store'
+    );
     const token = await getActiveKiteAccessToken();
-    if (!token) return false;
+    if (token) {
+      this.setAccessToken(token);
+      return true;
+    }
 
-    this.setAccessToken(token);
-    return true;
+    try {
+      const { getDecryptedAccessTokenForUser } = await import('@/lib/broker/connections');
+      const { db } = await import('@/lib/db');
+      const { rows } = await db.query(
+        `SELECT user_id, broker_account_id, last_authenticated_at
+         FROM broker_connections
+         WHERE broker = 'zerodha' AND status = 'active'
+           AND access_token_encrypted IS NOT NULL AND access_token_encrypted <> ''
+         ORDER BY is_primary DESC, last_authenticated_at DESC
+         LIMIT 1`,
+      );
+      const row = rows[0] as
+        | { user_id?: number; broker_account_id?: string; last_authenticated_at?: string }
+        | undefined;
+      if (!row?.user_id) return false;
+
+      const decrypted = await getDecryptedAccessTokenForUser(Number(row.user_id), 'zerodha');
+      if (!decrypted) return false;
+
+      this.setAccessToken(decrypted);
+      const kiteUserId = String(row.broker_account_id ?? 'unknown').trim() || 'unknown';
+      const authenticatedAt = row.last_authenticated_at
+        ? new Date(row.last_authenticated_at).toISOString()
+        : new Date().toISOString();
+      await saveActiveKiteSession({
+        accessToken: decrypted,
+        kiteUserId,
+        quantorusUserId: String(row.user_id),
+        authenticatedAt,
+      }).catch(() => undefined);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   getApiSecret(): string {

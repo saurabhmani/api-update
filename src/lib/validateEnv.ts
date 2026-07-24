@@ -29,6 +29,22 @@ function isAbsoluteHttpsUrl(value: string): boolean {
   }
 }
 
+/** Local `next start` / loopback testing — http://localhost is allowed even when NODE_ENV=production. */
+function isLocalLoopbackAppBaseUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+function isValidProductionAppBaseUrl(value: string): boolean {
+  return isAbsoluteHttpsUrl(value) || isLocalLoopbackAppBaseUrl(value);
+}
+
 export function validateEnv(): { valid: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -110,8 +126,11 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
   if (isProd) {
     if (!appBase) {
       errors.push('APP_BASE_URL (or APP_URL / NEXT_PUBLIC_APP_URL) is required in production.');
-    } else if (!isAbsoluteHttpsUrl(appBase)) {
-      errors.push('APP_BASE_URL must be an absolute https:// URL in production.');
+    } else if (!isValidProductionAppBaseUrl(appBase)) {
+      errors.push(
+        'APP_BASE_URL must be an absolute https:// URL in production '
+        + '(http://localhost and http://127.0.0.1 are allowed for local next start).',
+      );
     }
 
     if (process.env.SEED_ADMIN_PASSWORD) {

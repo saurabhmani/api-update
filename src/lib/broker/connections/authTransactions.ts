@@ -16,6 +16,26 @@ function hashState(state: string): string {
   return crypto.createHash('sha256').update(state).digest('hex');
 }
 
+/** Format a Date as a MySQL DATETIME string in UTC (no timezone suffix). */
+export function toMysqlUtcDatetime(date: Date): string {
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * Parse a MySQL DATETIME that we wrote via toMysqlUtcDatetime (UTC wall clock).
+ * Without a trailing Z, `new Date('YYYY-MM-DD HH:mm:ss')` is treated as local
+ * time and immediately "expires" transactions in IST / other positive offsets.
+ */
+export function parseMysqlUtcDatetime(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) return Number.NaN;
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    return new Date(trimmed).getTime();
+  }
+  const normalized = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
+  return new Date(`${normalized}Z`).getTime();
+}
+
 function rowToTx(r: Record<string, unknown>): BrokerAuthTransaction {
   return {
     id: String(r.id),
@@ -45,8 +65,7 @@ export async function createBrokerAuthTransaction(opts: {
   const state = opts.state === undefined ? createBrokerOAuthState() : opts.state;
   const stateHash = state ? hashState(state) : null;
   const ttl = opts.ttlMs ?? DEFAULT_TTL_MS;
-  const expiresAt = new Date(Date.now() + ttl);
-  const expiresSql = expiresAt.toISOString().slice(0, 19).replace('T', ' ');
+  const expiresSql = toMysqlUtcDatetime(new Date(Date.now() + ttl));
 
   // Invalidate any other pending transactions for this user+broker
   await db.query(
@@ -97,6 +116,18 @@ export async function consumeBrokerAuthTransaction(opts: {
       [opts.userId, opts.broker, stateHash],
     );
     rows = result.rows as Record<string, unknown>[];
+
+    // Shoonya (and similar) may echo an unrelated state while our pending row
+    // was created with state_hash NULL — fall back to user+broker pending.
+    if (!rows.length) {
+      const fallback = await db.query(
+        `SELECT * FROM broker_auth_transactions
+         WHERE user_id = ? AND broker = ? AND status = 'pending' AND state_hash IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [opts.userId, opts.broker],
+      );
+      rows = fallback.rows as Record<string, unknown>[];
+    }
   } else {
     const result = await db.query(
       `SELECT * FROM broker_auth_transactions
@@ -110,7 +141,7 @@ export async function consumeBrokerAuthTransaction(opts: {
   if (!rows.length) return null;
 
   const tx = rowToTx(rows[0]);
-  const expiresAt = new Date(tx.expiresAt).getTime();
+  const expiresAt = parseMysqlUtcDatetime(tx.expiresAt);
   if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
     await db.query(
       `UPDATE broker_auth_transactions SET status = 'expired' WHERE id = ? AND status = 'pending'`,
@@ -164,7 +195,7 @@ export async function findRecentCompletedAuthTransaction(opts: {
 }): Promise<BrokerAuthTransaction | null> {
   await ensureBrokerConnectionTables();
   const withinMs = opts.withinMs ?? 5 * 60 * 1000;
-  const since = new Date(Date.now() - withinMs).toISOString().slice(0, 19).replace('T', ' ');
+  const since = toMysqlUtcDatetime(new Date(Date.now() - withinMs));
   const { rows } = await db.query(
     `SELECT * FROM broker_auth_transactions
      WHERE user_id = ? AND broker = ? AND status = 'completed'
