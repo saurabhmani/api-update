@@ -12,18 +12,23 @@ export class ShoonyaConfigError extends Error {
 
 export class ShoonyaExchangeError extends Error {
   readonly status: number;
-  constructor(message: string, status = 502) {
+  /** Sanitized broker message (emsg) — never contains tokens/codes. */
+  readonly brokerMessage: string | null;
+
+  constructor(message: string, status = 502, brokerMessage: string | null = null) {
     super(message);
     this.name = 'ShoonyaExchangeError';
     this.status = status;
+    this.brokerMessage = brokerMessage;
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
 export interface ShoonyaConfig {
   clientId: string;
   secretCode: string;
-  /** Optional Noren uid required by live GenAcsTok for some accounts. */
-  uid: string | null;
+  /** Noren uid required by live GenAcsTok (usually client id without `_U`). */
+  uid: string;
   redirectUrl: string;
   authorizeUrl: string;
   tokenUrl: string;
@@ -53,10 +58,28 @@ function assertTrustedHttpsUrl(url: string, envName: string): string {
   return url;
 }
 
+/**
+ * GenAcsTok `uid` is the trading user id (e.g. FN213349), NOT the OAuth
+ * app client id (FN213349_U). If SHOONYA_UID is unset or accidentally set
+ * to the client id, derive by stripping a trailing `_U`.
+ */
+export function resolveShoonyaUid(clientId: string, configuredUid?: string | null): string {
+  const explicit = (configuredUid ?? '').trim();
+  if (explicit && explicit !== clientId) return explicit;
+
+  const stripped = clientId.replace(/_U$/i, '').trim();
+  if (stripped && stripped !== clientId) return stripped;
+
+  if (explicit) return explicit;
+  throw new ShoonyaConfigError(
+    'SHOONYA_UID is required (trading user id, usually CLIENT_ID without the _U suffix)',
+  );
+}
+
 export function getShoonyaConfig(): ShoonyaConfig {
   const clientId = readRequired('SHOONYA_CLIENT_ID');
   const secretCode = readRequired('SHOONYA_SECRET_CODE');
-  const uid = process.env.SHOONYA_UID?.trim() || null;
+  const uid = resolveShoonyaUid(clientId, process.env.SHOONYA_UID);
   const redirectUrl =
     process.env.SHOONYA_REDIRECT_URL?.trim()
     || `${resolveAppBaseUrl()}/api/brokers/shoonya/callback`;
@@ -146,6 +169,16 @@ function pickString(obj: Record<string, unknown>, keys: string[]): string | unde
   return undefined;
 }
 
+function sanitizeBrokerMessage(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().slice(0, 200);
+  // Drop anything that looks like a token/code fragment.
+  if (/[a-f0-9]{32,}/i.test(trimmed) && /token|code|checksum/i.test(trimmed)) {
+    return trimmed.replace(/[a-f0-9]{16,}/gi, '[redacted]');
+  }
+  return trimmed || null;
+}
+
 function pickExpiryField(obj: Record<string, unknown>): {
   parsed: Date | null;
   raw: string | number | null;
@@ -171,7 +204,7 @@ function pickExpiryField(obj: Record<string, unknown>): {
 
 /**
  * Exchange authorization code for access token.
- * Body must be application/x-www-form-urlencoded with a single `jData` field.
+ * Body must be `jData=<json>` (Finvasia / OpenAlgo use text/plain).
  */
 export async function exchangeShoonyaAuthorizationCode(
   authorizationCode: string,
@@ -184,26 +217,23 @@ export async function exchangeShoonyaAuthorizationCode(
     authorizationCode,
   );
 
-  const payload: Record<string, string> = {
+  const payload = {
     code: authorizationCode,
     checksum,
+    uid: config.uid,
   };
-  // Live Finvasia GenAcsTok often requires uid; omit when unset (per original spec).
-  if (config.uid) {
-    payload.uid = config.uid;
-  }
 
-  const jData = JSON.stringify(payload);
-  const body = new URLSearchParams({ jData });
+  // Match Finvasia NorenRestApiOAuth / OpenAlgo: text/plain body `jData={...}`
+  const body = `jData=${JSON.stringify(payload)}`;
 
   let response: Response;
   try {
     response = await fetchImpl(config.tokenUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'text/plain',
       },
-      body: body.toString(),
+      body,
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err) {
@@ -221,12 +251,20 @@ export async function exchangeShoonyaAuthorizationCode(
     throw new ShoonyaExchangeError('Invalid response from Shoonya API', 502);
   }
 
-  if (!response.ok) {
-    throw new ShoonyaExchangeError('Shoonya token exchange failed', response.status >= 400 ? response.status : 502);
-  }
-
   if (!isRecord(parsed)) {
     throw new ShoonyaExchangeError('Unexpected Shoonya token response', 502);
+  }
+
+  const brokerMessage = sanitizeBrokerMessage(
+    pickString(parsed, ['emsg', 'message', 'error', 'Error']),
+  );
+
+  if (!response.ok) {
+    throw new ShoonyaExchangeError(
+      'Shoonya token exchange failed',
+      response.status >= 400 ? response.status : 502,
+      brokerMessage,
+    );
   }
 
   // Success is keyed on access_token presence (stat may be absent).
@@ -242,9 +280,17 @@ export async function exchangeShoonyaAuthorizationCode(
   if (!accessToken) {
     const status = pickString(parsed, ['stat', 'status', 'Status']);
     if (status && /not_?ok|error|fail/i.test(status)) {
-      throw new ShoonyaExchangeError('Shoonya rejected the authorization code', 401);
+      throw new ShoonyaExchangeError(
+        'Shoonya rejected the authorization code',
+        401,
+        brokerMessage,
+      );
     }
-    throw new ShoonyaExchangeError('Shoonya response missing access token', 502);
+    throw new ShoonyaExchangeError(
+      'Shoonya response missing access token',
+      502,
+      brokerMessage,
+    );
   }
 
   const expiry = pickExpiryField(nested);

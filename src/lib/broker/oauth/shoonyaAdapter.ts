@@ -123,13 +123,37 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
         };
       }
       if (err instanceof ShoonyaExchangeError) {
+        console.error('[shoonya/callback] token exchange failed', {
+          status: err.status,
+          brokerMessage: err.brokerMessage,
+        });
+        const msg = (err.brokerMessage ?? '').toLowerCase();
+        if (msg.includes('invalid_verifier') || msg.includes('invalid verifier')) {
+          return {
+            ok: false,
+            broker: 'shoonya',
+            error: 'Invalid verifier',
+            errorCode: 'shoonya_invalid_verifier',
+          };
+        }
+        if (msg.includes('whitelist') || msg.includes('ip')) {
+          return {
+            ok: false,
+            broker: 'shoonya',
+            error: 'IP not whitelisted',
+            errorCode: 'shoonya_ip_whitelist',
+          };
+        }
         return {
           ok: false,
           broker: 'shoonya',
           error: 'Authentication failed',
-          errorCode: 'authentication_failed',
+          errorCode: 'shoonya_token_exchange',
         };
       }
+      console.error('[shoonya/callback] unexpected failure', {
+        reason: err instanceof Error ? err.name : 'unknown',
+      });
       return {
         ok: false,
         broker: 'shoonya',

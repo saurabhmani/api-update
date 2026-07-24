@@ -21,6 +21,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   oauth_incomplete: 'Zerodha did not return a complete login response. Please try connecting again.',
   kite_token_exchange:
     'Zerodha rejected the login token. Confirm KITE_API_KEY / KITE_API_SECRET match the app on developers.kite.trade, and that the Redirect URL is exactly the same as KITE_REDIRECT_URL.',
+  shoonya_token_exchange:
+    'Shoonya rejected the login token. Confirm SHOONYA_CLIENT_ID / SECRET_CODE / UID (UID is usually CLIENT_ID without _U), and that this machine’s public IP is whitelisted in the Shoonya API console.',
+  shoonya_invalid_verifier:
+    'Shoonya INVALID_VERIFIER — check SHOONYA_UID (trading id, e.g. FN213349, not FN213349_U) and SECRET_CODE.',
+  shoonya_ip_whitelist:
+    'Shoonya blocked token exchange from this IP. Whitelist your public IP in the Shoonya developer console, then try again.',
   redirect_url_mismatch:
     'Zerodha Redirect URL is wrong for this host. On developers.kite.trade set Redirect URL to https://<this-host>/api/kite/auth/callback, set the same value as KITE_REDIRECT_URL on the server, restart, then connect again. Do not edit localhost in the browser address bar.',
   redis_unavailable: 'Temporary session store unavailable. Ensure Redis is running and try again.',

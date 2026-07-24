@@ -37,20 +37,21 @@ describe('Shoonya OAuth helpers', () => {
     ).toBe('https://example.test/oauth?client_id=client-abc');
   });
 
-  it('token exchange posts a single form-urlencoded jData field', async () => {
-    process.env.SHOONYA_UID = 'FV1234';
+  it('token exchange posts text/plain jData with derived uid', async () => {
+    process.env.SHOONYA_CLIENT_ID = 'FN213349_U';
+    process.env.SHOONYA_UID = 'FN213349_U'; // same as client id — should strip _U
     const { exchangeShoonyaAuthorizationCode, generateShoonyaChecksum, getShoonyaConfig } =
       await import('@/lib/broker/oauth/shoonya');
 
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ 'Content-Type': 'text/plain' });
       const body = String(init?.body ?? '');
-      const params = new URLSearchParams(body);
-      expect([...params.keys()]).toEqual(['jData']);
-      const jData = JSON.parse(params.get('jData') ?? '{}') as Record<string, string>;
+      expect(body.startsWith('jData=')).toBe(true);
+      const jData = JSON.parse(body.slice('jData='.length)) as Record<string, string>;
       expect(jData.code).toBe('AUTHCODE');
-      expect(jData.uid).toBe('FV1234');
+      expect(jData.uid).toBe('FN213349');
       expect(jData.checksum).toBe(
-        generateShoonyaChecksum('client-abc', 'secret-xyz', 'AUTHCODE'),
+        generateShoonyaChecksum('FN213349_U', 'secret-xyz', 'AUTHCODE'),
       );
 
       return new Response(
@@ -77,7 +78,15 @@ describe('Shoonya OAuth helpers', () => {
     expect(expiresMs).toBeGreaterThan(Date.now() + 60_000);
   });
 
+  it('resolveShoonyaUid strips _U when UID equals client id', async () => {
+    const { resolveShoonyaUid } = await import('@/lib/broker/oauth/shoonya');
+    expect(resolveShoonyaUid('FN213349_U', 'FN213349_U')).toBe('FN213349');
+    expect(resolveShoonyaUid('FN213349_U', 'FN213349')).toBe('FN213349');
+    expect(resolveShoonyaUid('FN213349_U', null)).toBe('FN213349');
+  });
+
   it('parses expires_in as unix seconds when value looks like an epoch', async () => {
+    process.env.SHOONYA_UID = 'client-abc';
     const { exchangeShoonyaAuthorizationCode, getShoonyaConfig } =
       await import('@/lib/broker/oauth/shoonya');
     const epochSec = 1893456000; // 2030-01-01-ish
