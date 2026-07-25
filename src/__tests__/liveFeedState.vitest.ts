@@ -63,6 +63,30 @@ describe('liveFeedState', () => {
     expect(liveFeedBlocksApprovals()).toBe(false);
   });
 
+  it('prefers a newer tick over an older poll success', () => {
+    recordLiveFeedPollStart(10);
+    const now = Date.now();
+    // Simulate an old poll then a fresh tick (order: success first, then tick).
+    recordLiveFeedPollSuccess();
+    // Manually age success by recording an older tick as the only recent signal:
+    // use a mid-age tick that is still "fresh" and confirm classifier uses max.
+    recordLiveFeedTick(now - 10_000);
+    expect(classifyLiveFeedQuality(now)).toBe('fresh');
+  });
+
+  it('classifies delayed between 45s and 120s', () => {
+    recordLiveFeedPollStart(10);
+    recordLiveFeedTick(Date.now() - 60_000);
+    expect(classifyLiveFeedQuality()).toBe('delayed');
+    expect(liveFeedBlocksApprovals()).toBe(false);
+  });
+
+  it('treats a future timestamp as fresh (clamped age)', () => {
+    recordLiveFeedPollStart(10);
+    recordLiveFeedTick(Date.now() + 30_000);
+    expect(classifyLiveFeedQuality()).toBe('fresh');
+  });
+
   it('returns closed_market off-hours', () => {
     vi.mocked(isMarketOpen).mockReturnValue(false);
     expect(classifyLiveFeedQuality()).toBe('closed_market');

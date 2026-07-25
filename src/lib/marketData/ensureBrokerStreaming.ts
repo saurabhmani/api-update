@@ -123,6 +123,22 @@ export async function ensureStreamingAfterBrokerConnect(
           instrumentCount: result.baselineSymbols,
         });
       }
+
+      // Stack may be up, but without a usable Kite session the live WS path
+      // is not active — do not report overall ok for a loginRequired feed.
+      // `connecting` is success: kiteconnect opens the socket asynchronously.
+      if (status.loginRequired) {
+        result.ok = false;
+        result.error = 'kite_login_required';
+        log.warn('market_data_status_changed', {
+          userId: input.userId,
+          broker: input.broker,
+          ok: false,
+          error: result.error,
+          tickerState: status.state,
+        });
+        return result;
+      }
     } else {
       log.info('market_data_stream_connected', {
         userId: input.userId,

@@ -393,33 +393,39 @@ export function setWsSymbolUnion(symbolsRaw: string[]): void {
 }
 
 export function startLiveMarketFeed(): void {
+  const store = feed();
   syncPollLoop();
   
   if (getLiveFeedProvider() === 'kite') {
     const ticker = getTicker();
     ticker.connect().catch(err => log.error('Failed to connect kite ticker', { error: err }));
-    
-    ticker.on('ticks', (ticks: KiteTick[]) => {
-      for (const t of ticks) {
-        if (!t.symbol) continue;
-        const snap: MarketSnapshot = {
-          symbol: t.symbol,
-          price: t.lastPrice,
-          ltp: t.lastPrice,
-          change: t.change ?? 0,
-          changePercent: t.pChange ?? 0,
-          volume: t.volume ?? 0,
-          open: t.open ?? t.lastPrice,
-          high: t.high ?? t.lastPrice,
-          low: t.low ?? t.lastPrice,
-          prevClose: t.close ?? t.lastPrice,
-          timestamp: t.ts,
-        };
-        const streamTick = snapshotToStreamTick(snap, 'kite-ws');
-        publishTick(streamTick);
-        void propagateTick(snap);
-      }
-    });
+
+    // Attach the fan-out listener once per process — repeated startLiveMarketFeed
+    // calls (or ensureStreaming + instrumentation) must not stack handlers.
+    if (!(store as { __ticksListenerInstalled?: boolean }).__ticksListenerInstalled) {
+      (store as { __ticksListenerInstalled?: boolean }).__ticksListenerInstalled = true;
+      ticker.on('ticks', (ticks: KiteTick[]) => {
+        for (const t of ticks) {
+          if (!t.symbol) continue;
+          const snap: MarketSnapshot = {
+            symbol: t.symbol,
+            price: t.lastPrice,
+            ltp: t.lastPrice,
+            change: t.change ?? 0,
+            changePercent: t.pChange ?? 0,
+            volume: t.volume ?? 0,
+            open: t.open ?? t.lastPrice,
+            high: t.high ?? t.lastPrice,
+            low: t.low ?? t.lastPrice,
+            prevClose: t.close ?? t.lastPrice,
+            timestamp: t.ts,
+          };
+          const streamTick = snapshotToStreamTick(snap, 'kite-ws');
+          publishTick(streamTick);
+          void propagateTick(snap);
+        }
+      });
+    }
   }
 
   if (isMarketOpen()) {

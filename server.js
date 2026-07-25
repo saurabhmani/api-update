@@ -48,11 +48,25 @@ function resolveEnvFilePath() {
 }
 
 require('dotenv').config({ path: resolveEnvFilePath() });
+
+// server.js is the production custom entry (`start:server` / PM2). Local
+// `.env.local` often sets NODE_ENV=development for `next dev` — if we keep
+// that here, Next boots in *dev* mode through the custom server (turbopack
+// lock, Edge instrumentation noise, "Another next dev server is already
+// running", and absolute URLs built from hostname 0.0.0.0). That diverges
+// from working `next start` and breaks login/OAuth/session round-trips.
+// Opt into custom-server development only with Q365_CUSTOM_SERVER_DEV=1.
+if (process.env.Q365_CUSTOM_SERVER_DEV === '1') {
+  if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
+} else {
+  process.env.NODE_ENV = 'production';
+}
+
 // Also load .env.production as a secondary source so the committed
 // production baseline ships keys missing from a VPS .env. dotenv
 // does NOT override existing process.env values, so an operator's
-// .env entries still win. This closes the silent-drift hole where
-// .env.production looked authoritative but was never actually loaded
+// .env / .env.local entries still win. This closes the silent-drift hole
+// where .env.production looked authoritative but was never actually loaded
 // (PM2's ecosystem.config.js points DOTENV_CONFIG_PATH at .env).
 if (process.env.NODE_ENV === 'production') {
   try {
@@ -66,24 +80,37 @@ if (process.env.NODE_ENV === 'production') {
 // worker below (registerWorker('scheduler', ...)). That worker registers
 // rescore + regen crons in its own Node process. Without this line the
 // Next.js process ALSO registers the same crons via bootInProcScheduler
-// (gated on Q365_INPROC_REGEN=1, which production sets) — so every
-// rescore + regen tick fires TWICE, doubling removed vendor burn and racing
-// on q365_signals writes (DB lock saves correctness but leaves wasted
-// quota + non-deterministic ordering). Forcing Q365_INPROC_SCHEDULER=0
-// here makes bootInProc.shouldBoot() return false in the Next process
-// while leaving the worker process untouched. Respects operator overrides.
-if (!process.env.Q365_INPROC_SCHEDULER) {
-  process.env.Q365_INPROC_SCHEDULER = '0';
-}
+// (gated on Q365_INPROC_REGEN=1 / Q365_INPROC_SCHEDULER=1, which local
+// .env files often set for `next dev`) — so every rescore + regen tick
+// fires TWICE. Always force OFF here: this entrypoint owns the child.
+process.env.Q365_INPROC_SCHEDULER = '0';
 
 const http = require('http');
+const { parse } = require('url');
 const next = require('next');
 const { spawn } = require('child_process');
 const cron = require('node-cron');
 
 const NEXT_PORT = Number(process.env.PORT || process.env.NEXT_PORT) || 5000;
-const HOSTNAME  = process.env.HOST || '0.0.0.0';
-const DEV       = process.env.NODE_ENV !== 'production';
+// Bind on all interfaces for Docker/PM2, but never pass 0.0.0.0 into
+// next({ hostname }) — that poisons nextUrl.origin / redirects / OAuth.
+const BIND_HOST = process.env.HOST || '0.0.0.0';
+
+function resolveNextHostname() {
+  if (process.env.NEXT_HOSTNAME) return process.env.NEXT_HOSTNAME;
+  for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL']) {
+    const raw = (process.env[key] || '').trim();
+    if (!raw) continue;
+    try {
+      const host = new URL(raw).hostname;
+      if (host && host !== '0.0.0.0') return host;
+    } catch { /* ignore invalid */ }
+  }
+  return 'localhost';
+}
+
+const NEXT_HOSTNAME = resolveNextHostname();
+const DEV = process.env.NODE_ENV !== 'production';
 
 // Kite WebSocket stream server removed — live ticks are served by
 // removed vendor polling + WebSocket fan-out (see instrumentation.ts).
@@ -255,12 +282,20 @@ function shutdown(signal, httpServer) {
 
 // ── Main ─────────────────────────────────────────────────────────
 async function main() {
-  const app = next({ dev: DEV, hostname: HOSTNAME, port: NEXT_PORT });
+  console.log(
+    `[server] boot mode NODE_ENV=${process.env.NODE_ENV} next.dev=${DEV}`
+    + ` bind=${BIND_HOST}:${NEXT_PORT} next.hostname=${NEXT_HOSTNAME}`,
+  );
+
+  const app = next({ dev: DEV, hostname: NEXT_HOSTNAME, port: NEXT_PORT });
   const handle = app.getRequestHandler();
   await app.prepare();
 
   const httpServer = http.createServer((req, res) => {
-    handle(req, res).catch((err) => {
+    // Pass parsedUrl so query strings (OAuth code/state, auth callbacks)
+    // reach Next the same way `next start` does.
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl).catch((err) => {
       console.error('[server] request error:', err);
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -269,9 +304,17 @@ async function main() {
     });
   });
 
-  httpServer.listen(NEXT_PORT, HOSTNAME, () => {
-    console.log(`[server] Next.js ready on http://${HOSTNAME}:${NEXT_PORT}`);
-    console.log(`[server] Live market WS feed boots via Next instrumentation (STREAM_WS_PORT)`);
+  // Bind first; only then spawn workers. Spawning before listen succeeds
+  // would leave supervised children running if the port is taken
+  // (EADDRINUSE) or the bind otherwise fails.
+  await new Promise((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(NEXT_PORT, BIND_HOST, () => {
+      httpServer.removeListener('error', reject);
+      console.log(`[server] Next.js ready on http://${BIND_HOST}:${NEXT_PORT} (hostname=${NEXT_HOSTNAME})`);
+      console.log(`[server] Live market WS feed boots via Next instrumentation (STREAM_WS_PORT)`);
+      resolve();
+    });
   });
 
   startAllWorkers();

@@ -128,12 +128,18 @@ class KiteTickerImpl extends EventEmitter {
 
     this.loginRequired = false;
 
-    this.ticker = new KiteConnectTicker({
+    // Tear down any prior wire client before replacing — otherwise its
+    // reconnect timers can still mutate this.state after a token refresh.
+    await this.teardownWireTicker();
+
+    const wire = new KiteConnectTicker({
       api_key: config.apiKey,
       access_token: config.accessToken,
     });
+    this.ticker = wire;
 
-    this.ticker.on('connect', () => {
+    wire.on('connect', () => {
+      if (this.ticker !== wire) return;
       this.state = 'open';
       this.lastConnectedAt = Date.now();
       this.loginRequired = false;
@@ -143,7 +149,8 @@ class KiteTickerImpl extends EventEmitter {
       }
     });
 
-    this.ticker.on('ticks', (wireTicks: any[]) => {
+    wire.on('ticks', (wireTicks: any[]) => {
+      if (this.ticker !== wire) return;
       this.packetsReceived += 1;
       this.lastTickAt = Date.now();
       
@@ -181,36 +188,53 @@ class KiteTickerImpl extends EventEmitter {
       this.emit('ticks', parsedTicks);
     });
 
-    this.ticker.on('disconnect', () => {
+    wire.on('disconnect', () => {
+      if (this.ticker !== wire) return;
       this.state = 'closed';
       log.warn('Kite WebSocket disconnected');
     });
 
-    this.ticker.on('error', (err: any) => {
+    wire.on('error', (err: any) => {
+      if (this.ticker !== wire) return;
       this.lastError = err?.message || String(err);
       this.bridgeErrorCount += 1;
       log.error('Kite WebSocket error', { error: err });
     });
 
-    this.ticker.on('reconnecting', (attempt: number) => {
+    // kiteconnect emits 'reconnect' (not 'reconnecting'); signature is
+    // (reconnect_count, reconnect_interval).
+    wire.on('reconnect', (attempt: number, _interval: number) => {
+      if (this.ticker !== wire) return;
       this.reconnectAttempts = attempt;
       this.state = 'connecting';
       log.warn(`Kite WebSocket reconnecting (attempt ${attempt})`);
     });
 
-    this.ticker.on('noreconnect', () => {
+    wire.on('noreconnect', () => {
+      if (this.ticker !== wire) return;
       this.state = 'closed';
       log.error('Kite WebSocket max reconnects reached');
     });
 
-    this.ticker.connect();
+    wire.connect();
+  }
+
+  /** Stop and drop the underlying kiteconnect client so it cannot reconnect. */
+  private async teardownWireTicker(): Promise<void> {
+    const wire = this.ticker;
+    this.ticker = null;
+    if (!wire) return;
+    try {
+      wire.removeAllListeners?.();
+    } catch { /* optional API */ }
+    try {
+      wire.disconnect();
+    } catch { /* already down */ }
   }
 
   async disconnect(): Promise<void> {
-    if (this.ticker) {
-      this.ticker.disconnect();
-      this.state = 'closed';
-    }
+    await this.teardownWireTicker();
+    this.state = 'closed';
   }
 
   private async resolveSymbols(symbols: string[]): Promise<{ tokens: number[], unknown: string[] }> {

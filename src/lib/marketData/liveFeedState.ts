@@ -175,7 +175,7 @@ export function classifyLiveFeedQuality(now = Date.now()): LiveFeedQuality {
     return 'delayed';
   }
 
-  const age = now - receivedRef;
+  const age = Math.max(0, now - receivedRef);
   if (age <= DELAYED_MS) return 'fresh';
   if (age <= STALE_MS)   return 'delayed';
   return 'stale';
