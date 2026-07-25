@@ -40,6 +40,25 @@ describe('appRedirects public host preference', () => {
     expect(resolveAppRedirectOrigin(req)).toBe('https://dev.quantorus.in');
   });
 
+  it('uses nginx Host when APP_* is localhost and X-Forwarded-Host is absent', async () => {
+    process.env.APP_BASE_URL = 'http://localhost:3000';
+    process.env.APP_URL = 'http://localhost:3000';
+    process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
+    const { resolveAppRedirectOrigin, appPathUrl } = await import(
+      '@/lib/broker/oauth/appRedirects'
+    );
+    const req = new NextRequest('http://localhost:5000/api/brokers/shoonya/callback?code=x', {
+      headers: {
+        host: 'dev.quantorus.in',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    expect(resolveAppRedirectOrigin(req)).toBe('https://dev.quantorus.in');
+    expect(appPathUrl(req, '/dashboard').toString()).toBe(
+      'https://dev.quantorus.in/dashboard',
+    );
+  });
+
   it('uses http loopback for genuine local requests', async () => {
     process.env.APP_BASE_URL = 'http://localhost:3000';
     const { resolveAppRedirectOrigin } = await import('@/lib/broker/oauth/appRedirects');

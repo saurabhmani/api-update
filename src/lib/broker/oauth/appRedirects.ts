@@ -38,6 +38,18 @@ function originFromForwardedHeaders(headers: Headers): string | null {
   }
 }
 
+/** nginx `proxy_set_header Host $host` — public even when X-Forwarded-Host is missing. */
+function originFromHostHeader(headers: Headers): string | null {
+  const host = headers.get('host')?.split(',')[0]?.trim();
+  if (!host) return null;
+  const xfProto = headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || 'https';
+  try {
+    return new URL(`${xfProto}://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
 function configuredAppOrigin(): string | null {
   for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL'] as const) {
     const origin = originFromUrl(process.env[key] ?? '');
@@ -46,27 +58,42 @@ function configuredAppOrigin(): string | null {
   return null;
 }
 
+function isPublicOrigin(origin: string): boolean {
+  try {
+    return !isLoopbackHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Canonical browser origin for post-OAuth in-app redirects.
  * Public hosts always win over internal loopback.
  */
 export function resolveAppRedirectOrigin(request: NextRequest): string {
   const forwarded = originFromForwardedHeaders(request.headers);
+  const hostHeader = originFromHostHeader(request.headers);
   const configured = configuredAppOrigin();
   const requestOrigin = request.nextUrl.origin;
 
-  const candidates = [forwarded, configured, requestOrigin].filter(
+  // Prefer proxy/public Host before configured APP_* so a leftover
+  // localhost APP_BASE_URL on dig cannot bounce OAuth to loopback.
+  const candidates = [forwarded, hostHeader, configured, requestOrigin].filter(
     (value): value is string => Boolean(value),
   );
 
-  const publicOrigin = candidates.find((origin) => {
-    try {
-      return !isLoopbackHostname(new URL(origin).hostname);
-    } catch {
-      return false;
-    }
-  });
+  const publicOrigin = candidates.find(isPublicOrigin);
   if (publicOrigin) return publicOrigin;
+
+  // Production must never send users to loopback after broker OAuth.
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[appRedirects] no public origin for OAuth redirect', {
+      forwarded,
+      hostHeader,
+      configured,
+      requestOrigin,
+    });
+  }
 
   // Local-only: prefer configured loopback http, else request (forced http).
   for (const origin of candidates) {
