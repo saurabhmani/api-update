@@ -50,6 +50,34 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    console.log('[shoonya/callback] broker_connection_saved', {
+      userId: user.id,
+      broker: 'shoonya',
+    });
+
+    // Ensure live stack / poll baseline. Live WS ticks remain Kite/Yahoo
+    // (getLiveFeedProvider); Shoonya does not open a second ticker.
+    try {
+      const { ensureStreamingAfterBrokerConnect } = await import(
+        '@/lib/marketData/ensureBrokerStreaming'
+      );
+      const stream = await ensureStreamingAfterBrokerConnect({
+        userId: user.id,
+        broker: 'shoonya',
+      });
+      console.log('[shoonya/callback] market_data_start_requested', {
+        userId: user.id,
+        ok: stream.ok,
+        provider: stream.provider,
+        wsRunning: stream.wsRunning,
+        baselineSymbols: stream.baselineSymbols,
+      });
+    } catch (streamErr) {
+      console.error('[shoonya/callback] market_data_stream_failed', {
+        reason: streamErr instanceof Error ? streamErr.name : 'unknown',
+      });
+    }
+
     console.log('[shoonya/callback] auth ok — redirecting to dashboard', {
       userId: user.id,
       requestHost: request.headers.get('host'),

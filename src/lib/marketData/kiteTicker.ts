@@ -106,6 +106,17 @@ class KiteTickerImpl extends EventEmitter {
     if (this.state === 'open' || this.state === 'connecting') return;
     this.state = 'connecting';
     const client = getKiteClient();
+
+    // Boot may run before OAuth; hydrate Redis / broker_connections so a
+    // late connect (post-login) does not bail with loginRequired.
+    if (!client.getConfig().accessToken) {
+      try {
+        await client.hydrateAccessTokenFromSession();
+      } catch {
+        /* hydrate is best-effort */
+      }
+    }
+
     const config = client.getConfig();
 
     if (!config.apiKey || !config.accessToken) {
@@ -114,6 +125,8 @@ class KiteTickerImpl extends EventEmitter {
       log.warn('Cannot connect KiteTicker: Missing apiKey or accessToken');
       return;
     }
+
+    this.loginRequired = false;
 
     this.ticker = new KiteConnectTicker({
       api_key: config.apiKey,

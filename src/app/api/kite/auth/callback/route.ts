@@ -124,11 +124,39 @@ export async function GET(request: NextRequest) {
         userName: session.userName ?? null,
         authenticatedAt,
       });
+      console.log('[kite/callback] broker_connection_saved', {
+        userId: user.id,
+        broker: 'zerodha',
+      });
     } catch (persistErr) {
       console.error('[kite/callback] failed to persist broker connection', {
         reason: persistErr instanceof Error ? persistErr.name : 'unknown',
       });
       return dataSourceError(request, 'persistence_failed');
+    }
+
+    // Activate process-global live feed now that a token exists (boot often
+    // started the ticker without credentials and left it closed).
+    try {
+      const { ensureStreamingAfterBrokerConnect } = await import(
+        '@/lib/marketData/ensureBrokerStreaming'
+      );
+      const stream = await ensureStreamingAfterBrokerConnect({
+        userId: user.id,
+        broker: 'zerodha',
+        accessToken: session.accessToken,
+      });
+      console.log('[kite/callback] market_data_start_requested', {
+        userId: user.id,
+        ok: stream.ok,
+        tickerReconnected: stream.tickerReconnected,
+        wsRunning: stream.wsRunning,
+        baselineSymbols: stream.baselineSymbols,
+      });
+    } catch (streamErr) {
+      console.error('[kite/callback] market_data_stream_failed', {
+        reason: streamErr instanceof Error ? streamErr.name : 'unknown',
+      });
     }
 
     // Opaque completion handoff is UX-only (tokens already server-side).

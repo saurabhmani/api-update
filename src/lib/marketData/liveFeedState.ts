@@ -162,8 +162,14 @@ export function classifyLiveFeedQuality(now = Date.now()): LiveFeedQuality {
   const s = state();
   if (s.consecutiveErrors >= DISCONNECT_ERROR_THRESHOLD) return 'disconnected';
 
-  // Freshness = ingestion / poll success, not vendor quote timestamp.
-  const receivedRef = s.lastReceivedAt ?? s.lastSuccessAt;
+  // Freshness = most recent of tick receipt OR successful poll heartbeat.
+  // Preferring only lastReceivedAt left the feed "stale" when WS was down
+  // but REST polls were healthy (or when an old tick timestamp outlived
+  // newer poll successes after OAuth reconnect).
+  const receivedRef =
+    s.lastReceivedAt != null && s.lastSuccessAt != null
+      ? Math.max(s.lastReceivedAt, s.lastSuccessAt)
+      : (s.lastReceivedAt ?? s.lastSuccessAt);
   if (receivedRef == null) {
     if (s.pollRunning || s.subscribedSymbols > 0) return 'delayed';
     return 'delayed';
@@ -202,7 +208,10 @@ export function getLiveFeedState(now = Date.now()): LiveFeedStateSnapshot {
   const s = state();
   const marketOpen = isMarketOpen();
   const quality = classifyLiveFeedQuality(now);
-  const receivedRef = s.lastReceivedAt ?? s.lastSuccessAt;
+  const receivedRef =
+    s.lastReceivedAt != null && s.lastSuccessAt != null
+      ? Math.max(s.lastReceivedAt, s.lastSuccessAt)
+      : (s.lastReceivedAt ?? s.lastSuccessAt);
   const receivedAge = receivedRef != null ? now - receivedRef : null;
   const marketDataAge = s.lastMarketDataAt != null ? now - s.lastMarketDataAt : null;
 

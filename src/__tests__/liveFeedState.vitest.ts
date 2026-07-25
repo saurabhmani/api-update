@@ -33,7 +33,7 @@ describe('liveFeedState', () => {
 
   it('classifies stale and blocks approvals after threshold', () => {
     recordLiveFeedPollStart(10);
-    recordLiveFeedPollSuccess();
+    // Aged tick with no recent poll heartbeat → stale.
     recordLiveFeedTick(Date.now() - 130_000);
     expect(classifyLiveFeedQuality()).toBe('stale');
     expect(liveFeedBlocksApprovals()).toBe(true);
@@ -53,6 +53,14 @@ describe('liveFeedState', () => {
     recordLiveFeedPollStart(10);
     recordLiveFeedPollSuccess();
     expect(classifyLiveFeedQuality()).toBe('fresh');
+  });
+
+  it('prefers recent poll success over an aged lastReceivedAt (post-reconnect)', () => {
+    recordLiveFeedPollStart(10);
+    recordLiveFeedTick(Date.now() - 300_000); // old tick from before reconnect
+    recordLiveFeedPollSuccess(); // fresh REST poll after OAuth
+    expect(classifyLiveFeedQuality()).toBe('fresh');
+    expect(liveFeedBlocksApprovals()).toBe(false);
   });
 
   it('returns closed_market off-hours', () => {

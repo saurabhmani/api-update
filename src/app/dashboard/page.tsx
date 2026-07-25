@@ -609,12 +609,24 @@ export default function DashboardPage() {
     setRefreshing(false);
   }, [load]);
 
-  // Auto-refresh every 60s while the tab is visible.
+  // Auto-refresh: faster while feed/data looks stale so post-OAuth
+  // reconnect surfaces without a manual reload; slow down when healthy.
   useEffect(() => {
+    const stale = Boolean(data?.riskSummary?.staleData);
+    const intervalMs = stale ? 5_000 : 30_000;
     const id = window.setInterval(() => {
       if (document.visibilityState === 'visible') void load();
-    }, 60_000);
+    }, intervalMs);
     return () => window.clearInterval(id);
+  }, [load, data?.riskSummary?.staleData]);
+
+  // Immediate refresh when the tab becomes visible again (e.g. return from OAuth).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, [load]);
 
   // ── Derived display values (defensive defaults so we never crash on a partial payload) ──
