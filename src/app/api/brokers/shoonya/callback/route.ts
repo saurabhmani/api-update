@@ -39,6 +39,10 @@ export async function GET(request: NextRequest) {
     });
 
     if (!result.ok) {
+      console.log('[shoonya/callback] auth failed — redirecting to data-source', {
+        userId: user.id,
+        errorCode: result.errorCode ?? 'authentication_failed',
+      });
       return dataSourceErrorRedirect(
         request,
         'shoonya',
@@ -46,9 +50,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    console.log('[shoonya/callback] auth ok — redirecting to dashboard', {
+      userId: user.id,
+      requestHost: request.headers.get('host'),
+      xForwardedHost: request.headers.get('x-forwarded-host'),
+      nextOrigin: request.nextUrl.origin,
+    });
     return redirectToAppPath(request, '/dashboard');
   } catch (err) {
     if (err instanceof AuthenticationError) {
+      console.log('[shoonya/callback] no session — redirecting to login');
       return redirectToAppPath(request, '/login', { from: '/data-source' });
     }
 

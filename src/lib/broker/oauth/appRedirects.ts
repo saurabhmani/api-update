@@ -83,32 +83,51 @@ export function resolveAppRedirectOrigin(request: NextRequest): string {
   );
 
   const publicOrigin = candidates.find(isPublicOrigin);
-  if (publicOrigin) return publicOrigin;
+  const resolved = (() => {
+    if (publicOrigin) return publicOrigin;
 
-  // Production must never send users to loopback after broker OAuth.
-  if (process.env.NODE_ENV === 'production') {
-    console.error('[appRedirects] no public origin for OAuth redirect', {
-      forwarded,
-      hostHeader,
-      configured,
-      requestOrigin,
-    });
-  }
-
-  // Local-only: prefer configured loopback http, else request (forced http).
-  for (const origin of candidates) {
-    try {
-      const url = new URL(origin);
-      if (isLoopbackHostname(url.hostname)) {
-        url.protocol = 'http:';
-        return url.origin;
-      }
-    } catch {
-      // continue
+    // Production must never send users to loopback after broker OAuth.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[appRedirects] no public origin for OAuth redirect', {
+        forwarded,
+        hostHeader,
+        configured,
+        requestOrigin,
+      });
     }
-  }
 
-  return 'http://localhost:3000';
+    // Local-only: prefer configured loopback http, else request (forced http).
+    for (const origin of candidates) {
+      try {
+        const url = new URL(origin);
+        if (isLoopbackHostname(url.hostname)) {
+          url.protocol = 'http:';
+          return url.origin;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    return 'http://localhost:3000';
+  })();
+
+  console.log('[appRedirects] resolveAppRedirectOrigin', {
+    nextUrl: request.nextUrl.href,
+    host: request.headers.get('host'),
+    xForwardedHost: request.headers.get('x-forwarded-host'),
+    xForwardedProto: request.headers.get('x-forwarded-proto'),
+    forwarded,
+    hostHeader,
+    configured,
+    requestOrigin,
+    candidates,
+    publicOrigin: publicOrigin ?? null,
+    resolved,
+    isLoopback: isLoopbackHostname(new URL(resolved).hostname),
+  });
+
+  return resolved;
 }
 
 /** Build an in-app absolute URL on the browser-facing origin. */
@@ -135,9 +154,19 @@ export function redirectToAppPath(
   query?: Record<string, string | null | undefined>,
 ): NextResponse {
   const url = appPathUrl(request, pathname, query);
+  console.log('[appRedirects] redirectToAppPath', {
+    pathname,
+    query: query ?? null,
+    location: url.toString(),
+    hostname: url.hostname,
+    isLoopback: isLoopbackHostname(url.hostname),
+  });
   const response = NextResponse.redirect(url, 302);
   response.headers.set('Cache-Control', 'no-store');
   if (isLoopbackHostname(url.hostname)) {
+    console.warn('[appRedirects] WARNING: redirecting to loopback — expected public host on dig', {
+      location: url.toString(),
+    });
     response.headers.set('Strict-Transport-Security', 'max-age=0');
   }
   return response;
