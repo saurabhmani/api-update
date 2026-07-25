@@ -109,8 +109,14 @@ function istIso(d: Date, h: number, m: number): string {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}:00+05:30`;
 }
 
-export function getMarketStatus(): MarketStatus {
-  const ist      = nowInIst();
+/**
+ * @param at Optional wall-clock instant (UTC Date). When omitted, uses now.
+ *           Converted to Asia/Kolkata the same way as `nowInIst()`.
+ */
+export function getMarketStatus(at?: Date): MarketStatus {
+  const ist = at
+    ? new Date(at.getTime() + 5.5 * 3_600_000)
+    : nowInIst();
   const weekday  = ist.getUTCDay(); // 0 = Sun, 6 = Sat (interpreted in IST)
   const hour     = ist.getUTCHours();
   const minute   = ist.getUTCMinutes();

@@ -176,8 +176,8 @@ export interface UseSignalsPollingOptions {
 }
 
 /** Market-closed envelope surfaced by /api/signals when the NSE
- *  cash session is closed. The page renders `market_data` instead
- *  of the (empty) signals list whenever `mode === 'market_closed'`. */
+ *  cash session is closed. The page keeps showing last-session
+ *  signals with a non-blocking stale/historical notice. */
 export interface MarketClosedEnvelope {
   mode:         'market_closed';
   /** `last_close_signals` is what the route sets when the closed-market
@@ -201,6 +201,19 @@ export interface MarketClosedEnvelope {
     prev_close:     number | null;
     timestamp:      string;
   }>;
+  /** Explicit provenance for stale / historical closed-market responses. */
+  source?: {
+    broker?: string | null;
+    mode?: 'live' | 'historical' | 'stale' | 'none';
+    marketStatus?: string;
+    dataSource?: 'live' | 'cache' | 'persisted' | 'historical' | 'none';
+    isStale?: boolean;
+    lastTickAt?: string | null;
+    signalGeneratedAt?: string | null;
+    tradingDate?: string | null;
+    ageMs?: number | null;
+    emptyReason?: string | null;
+  } | null;
   /** Spec MAIN-TABLE-STRICT §4 — scanner candidates that didn't clear
    *  the maturity gate. Surfaced separately so the dashboard can
    *  render a "Scanner Candidates (Not Yet Tradable)" panel without
@@ -874,6 +887,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
           market_state: data.market_state ?? 'closed',
           market_label: data.market_label ?? 'Market Closed',
           market_data:  Array.isArray(data.market_data) ? data.market_data : [],
+          source:       data.source && typeof data.source === 'object' ? data.source : null,
           scanner_candidates: Array.isArray(data.scanner_candidates)
             ? (data.scanner_candidates as SignalRow[])
             : [],
@@ -1316,6 +1330,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
         market_state: sseEnv.market_state ?? 'closed',
         market_label: sseEnv.market_label ?? 'Market Closed',
         market_data:  Array.isArray(sseEnv.market_data) ? sseEnv.market_data : [],
+        source:       sseEnv.source && typeof sseEnv.source === 'object' ? sseEnv.source : null,
         scanner_candidates: Array.isArray(sseEnv.scanner_candidates)
           ? (sseEnv.scanner_candidates as SignalRow[])
           : [],

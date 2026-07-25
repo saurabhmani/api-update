@@ -62,6 +62,11 @@ export async function ensureStreamingAfterBrokerConnect(
   });
 
   try {
+    const { getStatus: getMarketSession } = await import(
+      '@/lib/marketData/marketSessionService'
+    );
+    const session = await getMarketSession({ exchange: 'NSE' });
+
     const { getKiteClient } = await import('@/lib/kite/client');
     const client = getKiteClient();
 
@@ -72,11 +77,20 @@ export async function ensureStreamingAfterBrokerConnect(
       result.hydrated = await client.hydrateAccessTokenFromSession();
     }
 
+    log.info('market_session_resolved', {
+      userId: input.userId,
+      broker: input.broker,
+      marketStatus: session.status,
+      isOpen: session.isOpen,
+      tradingDate: session.tradingDate,
+    });
+
     log.info('market_data_stream_connecting', {
       userId: input.userId,
       broker: input.broker,
       hydrated: result.hydrated,
       provider,
+      marketStatus: session.status,
     });
 
     const { ensureLiveMarketStack } = await import(
@@ -86,6 +100,25 @@ export async function ensureStreamingAfterBrokerConnect(
     result.stackEnsured = true;
     result.wsRunning = stack.wsRunning;
     result.baselineSymbols = stack.baselineSymbols;
+
+    // Market closed / weekend / holiday: keep tokens + WS fan-out warm
+    // but do NOT force a ticker reconnect loop. Absence of ticks is
+    // expected — not a broker failure.
+    if (!session.isOpen) {
+      result.ok = true;
+      result.tickerReconnected = false;
+      log.info('market_data_status_changed', {
+        userId: input.userId,
+        broker: input.broker,
+        ok: true,
+        provider,
+        marketStatus: session.status,
+        note: 'closed_market_skip_ticker_reconnect',
+        wsRunning: result.wsRunning,
+        baselineSymbols: result.baselineSymbols,
+      });
+      return result;
+    }
 
     if (provider === 'kite') {
       const { getTicker } = await import('@/lib/marketData/kiteTicker');

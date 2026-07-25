@@ -979,8 +979,12 @@ export default function SignalsPage() {
     developing.length + scannerCandidates.length + watchlist.length;
   const rejectedTotal = rejected.length + riskRestricted.length;
   const approvedTabCount = useMemo(
-    () => filterDisplayableApproved(signals as unknown as Record<string, unknown>[], signalQuality).length,
-    [signals, signalQuality],
+    () => filterDisplayableApproved(
+      signals as unknown as Record<string, unknown>[],
+      signalQuality,
+      { allowHistorical: Boolean(marketClosed) },
+    ).length,
+    [signals, signalQuality, marketClosed],
   );
 
   // ── Tab auto-selection (continued) ──────────────────────────────
@@ -1517,6 +1521,9 @@ export default function SignalsPage() {
     const reasons = getDisplayableApprovedVetoReasons(
       r as unknown as Record<string, unknown>,
       signalQuality,
+      // Off-hours: server already selected best available historical
+      // rows (incl. relaxed / conditional). Do not elite-veto them off.
+      { allowHistorical: Boolean(marketClosed) },
     );
     if (reasons.length > 0) {
       return { passed: false, reasons };
@@ -1665,12 +1672,9 @@ export default function SignalsPage() {
 
   return (
     <AppShell title="Signal Engine">
-      {/* Market-closed banner + last-close price table. When the API
-          returns `mode: 'market_closed'` the signals card is empty by
-          design (gate hasn't approved anything off-hours), so we
-          render the static last-close data from
-          q365_market_close_snapshot above the (empty) signals view.
-          Hides itself instantly when the next poll returns mode='live'. */}
+      {/* Market-closed banner — show last-session provenance; do NOT
+          imply the signals card must be empty. Stale / historical rows
+          remain visible with this non-blocking notice. */}
       {marketClosed && (
         <div style={{
           margin: '0 0 16px 0', padding: '12px 16px',
@@ -1678,11 +1682,23 @@ export default function SignalsPage() {
           border: '1px solid rgba(245, 158, 11, 0.5)',
           borderRadius: 8, color: '#92400e',
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <strong>{marketClosed.market_label}</strong>
             <span style={{ fontSize: 12, opacity: 0.85 }}>
-              {marketClosed.message} — {marketClosed.market_data.length} symbols
+              {marketClosed.message}
+              {marketClosed.market_data.length > 0
+                ? ` — last-close prices for ${marketClosed.market_data.length} symbols`
+                : ''}
             </span>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
+            Market closed. Showing the latest available signals
+            {marketClosed.source?.tradingDate
+              ? ` for ${marketClosed.source.tradingDate}`
+              : ''}
+            {marketClosed.source?.isStale !== false
+              ? ' (historical / stale — not live ticks).'
+              : '.'}
           </div>
           {marketClosed.market_data.length > 0 && (
             <div style={{ marginTop: 10, maxHeight: 280, overflow: 'auto' }}>
@@ -3182,14 +3198,14 @@ export default function SignalsPage() {
               // misleading: the snapshot table above is the correct view
               // and a fresh scan WILL run automatically at 09:15 IST.
               if (marketClosed && !eliteFilteredOut) {
-                // Spec EMPTY-UI — when the main signals array is empty
-                // off-hours and no elite-grade rows survive, the
-                // dashboard surfaces a clear empty state. Scanner-
-                // candidate references are intentionally NOT mentioned
-                // here per ELITE-2026-05 (no fallback candidates
-                // visible).
-                title    = 'No elite setup currently meets Quantorus quality standards.';
-                subtitle = 'Market is closed. The next pre-open scan will refresh when setups meet quality standards.';
+                // Off-hours empty APPROVED tab: still prefer honest closed
+                // copy. When primary signals[] was filled via historical
+                // fallback, the table should not be empty — this branch
+                // only runs when validRows.length === 0.
+                title = 'No confirmed signals for the latest session';
+                subtitle = marketClosed.source?.tradingDate
+                  ? `Market closed. Latest trading session ${marketClosed.source.tradingDate} has no displayable confirmed rows — check High Potential / Watchlist tabs.`
+                  : 'Market closed. Check High Potential / Watchlist for last-session candidates, or wait for the next pre-open scan.';
                 if (marketClosed.market_data.length > 0) {
                   subtitle += ` Last-close prices for ${marketClosed.market_data.length} symbols are shown above.`;
                 }

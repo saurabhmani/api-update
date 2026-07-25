@@ -60,6 +60,7 @@ export type ClosedSignalsSource =
   | 'confirmed_snapshots'
   | 'q365_signals_strict'
   | 'q365_signals_relaxed'
+  | 'q365_signals_last_session'
   | 'none';
 
 export type SignalQuality = 'STRICT' | 'RELAXED' | 'NONE';
@@ -941,7 +942,84 @@ export function getRelaxedSignalFloors(): {
   };
 }
 
-export async function loadQ365SignalsRelaxed(limit: number): Promise<ConfirmedSignalRow[]> {
+export async function loadQ365SignalsLastSession(limit: number): Promise<ConfirmedSignalRow[]> {
+  // Closed-market last resort: recent session often only has NO_TRADE /
+  // watchlist lifecycle rows (engine marked everything non-executable
+  // after hours). Strict/relaxed SQL exclude those — without this path
+  // /api/signals returns signals=[] even though q365_signals has the
+  // latest scanner output. Soft floors: keep rows with trade geometry.
+  const sql = `${Q365_SIGNALS_SELECT}
+    WHERE s.direction IN ('BUY','SELL')
+      AND COALESCE(s.invalidation_reason, '') = ''
+      AND COALESCE(s.signal_type, '') <> 'force_seed'
+      AND COALESCE(s.batch_id, '') NOT LIKE 'force_seed%'
+      AND s.generated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+      AND COALESCE(s.entry_price, 0) > 0
+      AND COALESCE(s.stop_loss, 0) > 0
+      AND COALESCE(s.target1, 0) > 0
+    ORDER BY COALESCE(s.composite_final_score, s.confidence_score, s.final_score, 0) DESC,
+             s.confidence_score DESC, s.generated_at DESC
+    LIMIT ?`;
+  try {
+    const { rows } = await db.query<RawSignalRow>(sql, [
+      resolveClosedSignalsMaxAgeHours(),
+      Math.max(1, Math.min(limit, 200)),
+    ]);
+    console.log(
+      `[closedMarketSignals] last_session_fallback sql_in=${(rows as RawSignalRow[]).length}`,
+    );
+    return (rows as RawSignalRow[]).map(shapeQ365Row).map(tagAsEarly).map((r) => ({
+      ...r,
+      is_relaxed: true,
+      is_conditional: true,
+      is_stale: true,
+    } as ConfirmedSignalRow));
+  } catch (err) {
+    console.warn(
+      '[closedMarketSignals] last_session query failed:',
+      (err as Error).message,
+    );
+    return [];
+  }
+}
+
+/**
+ * Soft finalize for last-session historical rows — score floors would
+ * wipe NO_TRADE/watchlist output (typical avg confidence ~20). Only
+ * require valid trade geometry + dedupe/cap.
+ */
+function finalizeHistoricalBundle(
+  rows: ConfirmedSignalRow[],
+  scannedRowCount: number,
+): ClosedSignalsBundle {
+  const geometric = rows.filter((r) => {
+    const entry = Number((r as { entry_price?: unknown }).entry_price ?? 0);
+    const stop  = Number((r as { stop_loss?: unknown }).stop_loss ?? 0);
+    const tgt1  = Number((r as { target1?: unknown }).target1 ?? 0);
+    return entry > 0 && stop > 0 && tgt1 > 0;
+  });
+  const uniqByPair = dedupeLatestPerSymbolDirection(geometric);
+  const uniqBySymbol = dedupeOneSymbolOneSignal(uniqByPair);
+  const sorted = uniqBySymbol.sort(confirmedSnapshotCmp);
+  const capped = applyConfirmedCap(sorted);
+  const { rows: clean } = backfillBlankFields(capped);
+  const buyCount  = clean.filter((r) => String(r.direction ?? '').toUpperCase() === 'BUY').length;
+  const sellCount = clean.filter((r) => String(r.direction ?? '').toUpperCase() === 'SELL').length;
+  return {
+    signals: clean,
+    source: 'q365_signals_last_session',
+    signalQuality: 'RELAXED',
+    strictCount: 0,
+    relaxedUsed: true,
+    buyCount,
+    sellCount,
+    scannedRowCount: scannedRowCount + rows.length,
+    approvedRowCount: clean.length,
+    scannerCandidates: [],
+  };
+}
+
+async function loadQ365SignalsRelaxed(limit: number): Promise<ConfirmedSignalRow[]> {
   // Spec "FIX FINAL SIGNAL VISIBILITY" §2 — defaults pinned to the
   // spec band (55 / 60 / 1.2) so the relaxed q365_signals fallback
   // surfaces real Phase-4 output that landed below the strict 60/55/1.2
@@ -1418,8 +1496,39 @@ export async function loadClosedMarketSignals(
   ];
   const candidatesUniq   = dedupeLatestPerSymbolDirection(candidates);
   const candidatesSorted = candidatesUniq.sort(confirmedSnapshotCmp);
-  const candidatesCapped = applyConfirmedCap(candidatesSorted)
+  let candidatesCapped = applyConfirmedCap(candidatesSorted)
     .map(asScannerCandidate);
+
+  // Last-session historical path — when maturity/strict/relaxed all
+  // miss (common weekend: only NO_TRADE + status=watchlist rows), still
+  // return the latest scanner output so the UI is not empty while
+  // market_close_snapshot prices exist.
+  if (candidatesCapped.length === 0) {
+    const lastSession = await loadQ365SignalsLastSession(limit);
+    scannedRowCount += lastSession.length;
+    if (lastSession.length > 0) {
+      const hist = finalizeHistoricalBundle(lastSession, scannedRowCount);
+      const shippedKeys = new Set(
+        hist.signals.map(
+          (r) =>
+            `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`,
+        ),
+      );
+      hist.scannerCandidates = lastSession
+        .filter((r) => {
+          const k = `${String(r.symbol ?? '').toUpperCase()}|${String(r.direction ?? '').toUpperCase()}`;
+          return !shippedKeys.has(k);
+        })
+        .slice(0, limit)
+        .map(asScannerCandidate);
+      console.log(
+        `[closedMarketSignals] last_session_fallback shipped=${hist.signals.length} ` +
+        `scanned=${lastSession.length}`,
+      );
+      return hist;
+    }
+  }
+
   return {
     signals: [], source: 'none',
     signalQuality: 'NONE',

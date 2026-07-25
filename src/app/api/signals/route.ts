@@ -63,6 +63,12 @@ import {
   resolveClosedSignalsMaxAgeHours,
   getRelaxedSignalFloors,
 }                                     from '@/lib/signals/closedMarketSignals';
+import {
+  buildSignalResponseSource,
+  hasUsableClosedSignalTiers,
+  selectPrimaryClosedSignals,
+}                                     from '@/lib/signals/signalResponseSource';
+import { marketSessionService }       from '@/lib/marketData/marketSessionService';
 import { getTrackerCounts, getInProgressTrackersLenient } from '@/lib/signal-engine/repository/maturityTracker';
 import {
   buildSignalsResponsePayload,
@@ -1714,9 +1720,28 @@ export async function GET(req: NextRequest) {
         console.log('[MARKET OVERRIDE] forcing pipeline run');
       }
       if (!forceLive && !overrideMarket) {
-        const { isMarketOpen, getMarketStatus } = await import('@/lib/marketData/marketHours');
-        if (!isMarketOpen()) {
-          const status = getMarketStatus();
+        const session = await marketSessionService.getStatus({ exchange: 'NSE' });
+        console.log(
+          JSON.stringify({
+            event: 'market_session_resolved',
+            marketStatus: session.status,
+            isOpen: session.isOpen,
+            tradingDate: session.tradingDate,
+            latestCompletedTradingDay: session.latestCompletedTradingDay,
+          }),
+        );
+        if (!session.isOpen) {
+          const status = session.raw;
+          console.log(
+            JSON.stringify({
+              event: 'signal_request_started',
+              mode: 'market_closed',
+              marketStatus: session.status,
+              limit,
+              request_id: requestId,
+            }),
+          );
+          console.log(JSON.stringify({ event: 'persisted_signal_lookup_started', request_id: requestId }));
           const { rows: snapRows } = await db.query<{
             symbol: string; price: string | number;
             change_abs: string | number | null;
@@ -2003,11 +2028,11 @@ export async function GET(req: NextRequest) {
           
           const approvedZero = closedTieredApproved.length === 0;
           const messageField = (approvedZero && (closedTieredWatchlist.length > 0 || closedTieredScanner.length > 0 || closedHighPotential.length > 0))
-            ? 'Market Closed — Showing last-close watchlist candidates' :
-            closedSignalQuality === 'STRICT'  ? 'Market closed — showing matured confirmed signals' :
-            closedSignalQuality === 'RELAXED' ? 'Market closed — showing relaxed-quality signals (strict filter empty)' :
-            scannerCandidates.length > 0      ? 'Market closed — no matured confirmed snapshots; see scanner candidates below'
-                                              : 'No matured confirmed signals available — try again next session';
+            ? `Market closed — showing latest available signals from ${session.latestCompletedTradingDay}` :
+            closedSignalQuality === 'STRICT'  ? `Market closed — showing matured confirmed signals for ${session.latestCompletedTradingDay}` :
+            closedSignalQuality === 'RELAXED' ? `Market closed — showing relaxed-quality signals from ${session.latestCompletedTradingDay}` :
+            scannerCandidates.length > 0      ? `Market closed — showing scanner candidates from ${session.latestCompletedTradingDay}`
+                                              : `No stored signals for ${session.latestCompletedTradingDay} — try again next session`;
           const reasonSummaryField = approvedZero
             ? 'No approved live signals. Candidates are under monitoring and awaiting fresh confirmation.'
             : null;
@@ -2111,9 +2136,25 @@ export async function GET(req: NextRequest) {
           const closedApprovedOutcome = countClosedOutcome(closedEnrichedApproved as Array<{ performanceReview?: PerformanceReview }>);
           const closedHpOutcome       = countClosedOutcome(closedEnrichedHighPotential as Array<{ performanceReview?: PerformanceReview }>);
           const { filterDisplayableApproved: filterClosedDisplayable } = await import('@/lib/signals/filterDisplayableApproved');
+          const closedPrimary = selectPrimaryClosedSignals({
+            approved: closedEnrichedApproved,
+            highPotential: closedEnrichedHighPotential,
+            developing: closedEnrichedDeveloping,
+            scanner: closedEnrichedScanner,
+            watchlist: closedEnrichedWatchlist,
+          });
+          const closedPrimaryTagged = closedPrimary.rows.map((r) => ({
+            ...r,
+            is_stale: true,
+            historical_fallback: closedPrimary.from !== 'approved',
+            closed_primary_from: closedPrimary.from,
+          }));
           const closedDisplayableApproved = filterClosedDisplayable(
-            closedEnrichedApproved as Array<Record<string, unknown>>,
+            (closedPrimary.from === 'approved'
+              ? closedEnrichedApproved
+              : closedPrimaryTagged) as Array<Record<string, unknown>>,
             closedSignalQuality,
+            { allowHistorical: true },
           );
           const closedDisplayableBuy = closedDisplayableApproved.filter(
             (r) => String(r.direction ?? '').toUpperCase() === 'BUY',
@@ -2121,6 +2162,54 @@ export async function GET(req: NextRequest) {
           const closedDisplayableSell = closedDisplayableApproved.filter(
             (r) => String(r.direction ?? '').toUpperCase() === 'SELL',
           ).length;
+          const closedHasUsableTiers = hasUsableClosedSignalTiers({
+            approved: closedEnrichedApproved,
+            highPotential: closedEnrichedHighPotential,
+            developing: closedEnrichedDeveloping,
+            scanner: closedEnrichedScanner,
+            watchlist: closedEnrichedWatchlist,
+          });
+          const closedSignalSourceMeta = buildSignalResponseSource({
+            marketStatus: session.status,
+            marketOpen: false,
+            broker: null,
+            closedSignalSource,
+            hasPersistedSignals: closedHasUsableTiers || closedSignalRows.length > 0,
+            hasMarketCloseSnapshot: has_data,
+            servedFromCache: false,
+            lastTickAt: null,
+            signalGeneratedAt: latestSnapshotIso,
+            tradingDate: session.latestCompletedTradingDay,
+            emptyReason: closedHasUsableTiers
+              ? null
+              : (has_data
+                ? 'market_close_prices_only_no_signals'
+                : 'no_usable_market_data'),
+          });
+          console.log(
+            JSON.stringify({
+              event: 'signal_response_source_selected',
+              request_id: requestId,
+              dataSource: closedSignalSourceMeta.dataSource,
+              mode: closedSignalSourceMeta.mode,
+              marketStatus: closedSignalSourceMeta.marketStatus,
+              primaryFrom: closedPrimary.from,
+              signalCount: closedPrimaryTagged.length,
+              isStale: closedSignalSourceMeta.isStale,
+              tradingDate: closedSignalSourceMeta.tradingDate,
+            }),
+          );
+          if (closedPrimaryTagged.length === 0) {
+            console.log(
+              JSON.stringify({
+                event: 'signal_response_empty',
+                request_id: requestId,
+                emptyReason: closedSignalSourceMeta.emptyReason,
+                marketStatus: session.status,
+                has_market_data: has_data,
+              }),
+            );
+          }
           const closedDailyReportPreview = buildLightweightDailyReportPreview({
             approvedTotal:          closedDisplayableApproved.length,
             approvedSuccess:        closedApprovedOutcome.success,
@@ -2156,11 +2245,16 @@ export async function GET(req: NextRequest) {
             // ── New market-aware fields ────────────────────────────
             mode:        'market_closed' as const,
             data_source: dataSourceField,
+            source:      closedSignalSourceMeta,
             // ── STRUCTURED_SIGNALS_2026-05 ──
             // PHASE_1_RANKING + PHASE_2_DUE_DILIGENCE — each tier is
             // sorted by highest final score first and enriched with
             // per-row dueDiligence + performanceReview.
-            signals:             closedEnrichedApproved as typeof closedTieredApproved,
+            // Primary `signals[]` falls back to high_potential /
+            // developing / scanner when approved is empty so the UI
+            // never treats "market closed" as "no data" when last-
+            // session rows still exist.
+            signals:             closedPrimaryTagged as typeof closedTieredApproved,
             approved:            closedEnrichedApproved as typeof closedTieredApproved,
             developing:          closedEnrichedDeveloping as typeof closedTieredDeveloping,
             scanner_candidates:  closedEnrichedScanner as typeof closedTieredScanner,
@@ -2169,7 +2263,7 @@ export async function GET(req: NextRequest) {
             high_potential:      closedEnrichedHighPotential as typeof closedHighPotential,
             high_potential_buy:       closedConditionalBuy,
             high_potential_sell:      closedConditionalSell,
-            conditional_mode_active:  closedConditionalActive,
+            conditional_mode_active:  closedConditionalActive || closedPrimary.from !== 'approved',
             conditional_floors: {
               confidence: CONDITIONAL_CONFIDENCE_FLOOR,
               rr:         CONDITIONAL_RR_FLOOR,
@@ -2212,10 +2306,10 @@ export async function GET(req: NextRequest) {
             signal_quality:      closedSignalQuality,
             strict_count:        closedStrictCount,
             relaxed_used:        closedRelaxedUsed,
-            final_returned:      closedSignalRows.length,
+            final_returned:      closedPrimaryTagged.length,
             // ── Validation report fields per spec section 10 ───────
             scanned:             closedSignals?.scannedRowCount  ?? 0,
-            returned:            closedSignalRows.length,
+            returned:            closedPrimaryTagged.length,
             api_blocked:         true,
             closed_signal_source: closedSignalSource,
             // ── Legacy fields kept populated for back-compat ───────
@@ -2225,11 +2319,13 @@ export async function GET(req: NextRequest) {
             // for the per-tier numbers and these legacy fields are
             // recomputed from the post-partition approved set.
             request_id:           requestId,
-            main_signals_count:   closedTieredApproved.length,
+            main_signals_count:   closedPrimaryTagged.length,
             buy_count:            closedTieredBuy,
             sell_count:           closedTieredSell,
             direction_breakdown:  { BUY: closedTieredBuy, SELL: closedTieredSell },
-            empty_confirmed:      closedTieredApproved.length === 0,
+            // Only "truly empty" when no tier has usable last-session rows.
+            // Market-closed + high_potential/scanner must NOT wipe LKG.
+            empty_confirmed:      !closedHasUsableTiers,
             validation_status:    'MARKET_CLOSED',
             developing_count:     0,
             in_progress:          [] as any[],
@@ -2301,14 +2397,17 @@ export async function GET(req: NextRequest) {
               state:  status.state,
             },
             dataFreshness: {
-              isStale:    closedCandleFreshness.freshness_quality === 'stale'
-                       || closedCandleFreshness.freshness_quality === 'frozen',
-              ageMinutes: candleAgeMinutes,
+              isStale:    true,
+              ageMinutes: candleAgeMinutes ?? ageMinutes,
               label:      closedCandleFreshness.freshness_quality,
+              tradingDate: session.latestCompletedTradingDay,
+              dataSource: closedSignalSourceMeta.dataSource,
             },
-            provider:             'market_close_snapshot',
+            provider:             closedSignalSourceMeta.dataSource === 'persisted'
+              ? 'last_close_signals'
+              : 'market_close_snapshot',
             isBootstrap:          bootstrap,
-            isFallback:           false,
+            isFallback:           closedPrimary.from !== 'approved' && closedPrimary.from !== 'none',
             lastApiRequestAt:     new Date().toISOString(),
             lastSuccessAt:        new Date().toISOString(),
             lastPipelineRunAt:    latestSnapshotIso,
