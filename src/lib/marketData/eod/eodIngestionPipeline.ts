@@ -44,49 +44,30 @@ const log = logger.child({ component: 'eod-ingestion' });
 //   affectedRows = 1  → inserted
 //   affectedRows = 2  → updated
 //   affectedRows = 0  → row matched but no column changed
-async function upsertCandleRow(rec: EodCandleRecord): Promise<'inserted' | 'updated' | 'duplicate'> {
+async function upsertCandleRow(rec: EodCandleRecord): Promise<'inserted' | 'updated' | 'duplicate' | 'skipped'> {
   if (rec.close == null) return 'duplicate';
 
-  // instrument_key follows the project's canonical "NSE_EQ|SYMBOL"
-  // convention — the manipulation engine's loadDailyBars uses
-  // `instrument_key LIKE '%SYMBOL%'`, so we keep the exchange prefix
-  // stable. BSE will use 'BSE_EQ|SYMBOL'.
   const segmentPrefix = rec.exchange === 'NSE' ? 'NSE_EQ' : 'BSE_EQ';
   const instrumentKey = `${segmentPrefix}|${rec.symbol}`;
-
-  // Candle timestamp: store the trade date at 00:00:00 UTC. The
-  // manipulation loader reads with `ts <= asOf` and strips to date,
-  // so the exact intraday timestamp doesn't matter for scanning.
   const ts = new Date(`${rec.tradeDate}T00:00:00Z`);
 
-  const result: any = await db.query(
-    `INSERT INTO candles
-       (instrument_key, candle_type, interval_unit, ts, open, high, low, close, volume, oi)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       open   = VALUES(open),
-       high   = VALUES(high),
-       low    = VALUES(low),
-       close  = VALUES(close),
-       volume = VALUES(volume),
-       oi     = VALUES(oi)`,
-    [
-      instrumentKey,
-      'eod',
-      '1day',
-      ts,
-      rec.open  ?? rec.close,
-      rec.high  ?? rec.close,
-      rec.low   ?? rec.close,
-      rec.close,
-      rec.volume ?? 0,
-      0,
-    ],
-  );
-
-  const affected = Number(result?.affectedRows ?? 0);
-  if (affected === 1) return 'inserted';
-  if (affected === 2) return 'updated';
+  const { upsertWarehouseCandle } = await import('@/lib/marketData/jobs/candleWarehouseUpsert');
+  const outcome = await upsertWarehouseCandle({
+    instrumentKey,
+    candleType: 'eod',
+    intervalUnit: '1day',
+    ts,
+    open: rec.open ?? rec.close,
+    high: rec.high ?? rec.close,
+    low: rec.low ?? rec.close,
+    close: rec.close,
+    volume: rec.volume ?? 0,
+    oi: 0,
+    source: 'nse_bhavcopy',
+  });
+  if (outcome === 'inserted') return 'inserted';
+  if (outcome === 'updated') return 'updated';
+  if (outcome === 'skipped') return 'skipped';
   return 'duplicate';
 }
 
@@ -109,7 +90,7 @@ async function persistSource(fetched: EodFetchResult): Promise<EodSourceSummary>
       const outcome = await upsertCandleRow(rec);
       if      (outcome === 'inserted')  summary.inserted++;
       else if (outcome === 'updated')   summary.updated++;
-      else                              summary.duplicates++;
+      else                              summary.duplicates++; // includes skipped-by-precedence
     } catch (err) {
       // Individual row failures shouldn't fail the whole source —
       // log and continue. The summary's `fetched` vs (inserted +

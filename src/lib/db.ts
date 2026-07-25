@@ -187,6 +187,10 @@ export function getDb(): mysql.Pool {
       user:             cfg.user,
       password:         cfg.password,
       database:         cfg.database,
+      // Match project canonical collation (q365_* / ticker joins).
+      // Without this, literal/parameter comparisons can disagree with
+      // column collations on MySQL 8+ servers whose default is 0900_ai_ci.
+      charset:          'utf8mb4',
       waitForConnections: true,
       connectionLimit:  poolSize,
       // Cap the queue so a sudden burst fails fast with a clear error
@@ -200,6 +204,19 @@ export function getDb(): mysql.Pool {
       idleTimeout:      60_000,
       // Fail fast on slow connect rather than hanging the whole route.
       connectTimeout:   10_000,
+    });
+    // Pin session collation for every pooled connection (idempotent).
+    // The 'connection' event yields the callback-style connection even
+    // when the pool was created via mysql2/promise — do not .then() it.
+    g.__mysqlPool.on('connection', (connection: any) => {
+      connection.query(
+        'SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci',
+        (err: Error | null) => {
+          if (err) {
+            console.warn('[db] SET NAMES collation failed:', err.message);
+          }
+        },
+      );
     });
   }
   return g.__mysqlPool;

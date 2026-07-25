@@ -78,13 +78,15 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    console.log('[shoonya/callback] auth ok — redirecting to dashboard', {
+    console.log('[shoonya/callback] auth ok — redirecting to data-source', {
       userId: user.id,
       requestHost: request.headers.get('host'),
       xForwardedHost: request.headers.get('x-forwarded-host'),
       nextOrigin: request.nextUrl.origin,
     });
-    return redirectToAppPath(request, '/dashboard');
+    // Land on /data-source so the user sees status + active selection.
+    // Active provider is NOT switched when another broker was already active.
+    return redirectToAppPath(request, '/data-source', { connected: '1', broker: 'shoonya' });
   } catch (err) {
     if (err instanceof AuthenticationError) {
       console.log('[shoonya/callback] no session — redirecting to login');

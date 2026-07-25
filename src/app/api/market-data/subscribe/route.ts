@@ -17,6 +17,30 @@ export async function POST(req: NextRequest) {
   const { ensureLiveMarketStack } = await import('@/lib/marketData/ensureLiveMarketStack');
   await ensureLiveMarketStack();
 
+  // Prefer the authenticated user's connected broker stream over the
+  // system MARKET_DATA_PROVIDER fan-out (often still kite).
+  let userProvider: string | null = null;
+  try {
+    const { getSession } = await import('@/lib/session');
+    const { getUserActiveDataSource } = await import(
+      '@/lib/broker/connections/activeDataSource'
+    );
+    const session = await getSession();
+    if (session?.id) {
+      const active = await getUserActiveDataSource(Number(session.id));
+      if (active.provider && active.isConnected) {
+        userProvider = active.provider;
+        const { ensureStreamingAfterBrokerConnect } = await import(
+          '@/lib/marketData/ensureBrokerStreaming'
+        );
+        await ensureStreamingAfterBrokerConnect({
+          userId: Number(session.id),
+          broker: active.provider,
+        });
+      }
+    }
+  } catch { /* anonymous subscribe still registers system demand */ }
+
   let body: { symbols?: unknown } = {};
   try { body = await req.json(); } catch { /* empty body is fine */ }
 
@@ -40,7 +64,8 @@ export async function POST(req: NextRequest) {
     unknown: symbols.filter((s) => !resolved.includes(s)),
     subscribed: feed.subscribedCount,
     tickSnapshot: {},
-    source: 'websocket',
+    source: userProvider ?? 'websocket',
+    provider: userProvider,
     ws: {
       running: ws.running,
       port: ws.port,

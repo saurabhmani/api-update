@@ -153,6 +153,18 @@ export async function getBrokerConnectionByUserAndBroker(
   return rowToRecord(rows[0] as Record<string, unknown>);
 }
 
+export async function getBrokerConnectionById(
+  id: string,
+): Promise<BrokerConnectionRecord | null> {
+  await ensureBrokerConnectionTables();
+  const { rows } = await db.query(
+    `SELECT * FROM broker_connections WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  if (!rows.length) return null;
+  return rowToRecord(rows[0] as Record<string, unknown>);
+}
+
 export async function listBrokerConnectionsForUser(
   userId: number,
 ): Promise<BrokerConnectionRecord[]> {
@@ -283,6 +295,96 @@ export async function markBrokerConnectionStatus(
      WHERE user_id = ? AND broker = ?`,
     [status, userId, broker],
   );
+}
+
+/**
+ * Persist the user's explicit active data source (`is_primary`).
+ * Demotes every other connection for the user.
+ */
+export async function setPrimaryDataSourceBroker(
+  userId: number,
+  broker: DataSourceBroker,
+): Promise<BrokerConnectionRecord | null> {
+  await ensureBrokerConnectionTables();
+  const target = await getBrokerConnectionByUserAndBroker(userId, broker);
+  if (!target || target.userId !== userId) return null;
+
+  await db.query(
+    `UPDATE broker_connections SET is_primary = 0, updated_at = NOW()
+     WHERE user_id = ?`,
+    [userId],
+  );
+
+  // Clear pending-selection flag when user picks explicitly.
+  const metadata = {
+    ...(target.metadata ?? {}),
+    pendingActiveSelection: false,
+  };
+  await db.query(
+    `UPDATE broker_connections
+     SET is_primary = 1, metadata = ?, updated_at = NOW()
+     WHERE user_id = ? AND broker = ?`,
+    [JSON.stringify(metadata), userId, broker],
+  );
+
+  // Clear pending flag on siblings too.
+  const siblings = await listBrokerConnectionsForUser(userId);
+  for (const row of siblings) {
+    if (row.broker === broker) continue;
+    if (!row.metadata || row.metadata.pendingActiveSelection !== true) continue;
+    const nextMeta = { ...row.metadata, pendingActiveSelection: false };
+    await db.query(
+      `UPDATE broker_connections SET metadata = ?, updated_at = NOW()
+       WHERE id = ? AND user_id = ?`,
+      [JSON.stringify(nextMeta), row.id, userId],
+    );
+  }
+
+  return getBrokerConnectionByUserAndBroker(userId, broker);
+}
+
+export async function mergeBrokerConnectionMetadata(
+  userId: number,
+  broker: DataSourceBroker,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await ensureBrokerConnectionTables();
+  const row = await getBrokerConnectionByUserAndBroker(userId, broker);
+  if (!row) return;
+  const metadata = { ...(row.metadata ?? {}), ...patch };
+  await db.query(
+    `UPDATE broker_connections SET metadata = ?, updated_at = NOW()
+     WHERE user_id = ? AND broker = ?`,
+    [JSON.stringify(metadata), userId, broker],
+  );
+}
+
+/**
+ * After disconnecting the active data source: flag remaining connected
+ * brokers so resolution will not silently promote one of them.
+ */
+export async function markRemainingConnectionsNeedSelection(
+  userId: number,
+): Promise<number> {
+  await ensureBrokerConnectionTables();
+  const rows = await listBrokerConnectionsForUser(userId);
+  let marked = 0;
+  for (const row of rows) {
+    if (row.status !== 'active') continue;
+    if (!row.accessTokenEncrypted) continue;
+    const metadata = {
+      ...(row.metadata ?? {}),
+      pendingActiveSelection: true,
+    };
+    await db.query(
+      `UPDATE broker_connections
+       SET is_primary = 0, metadata = ?, updated_at = NOW()
+       WHERE id = ? AND user_id = ?`,
+      [JSON.stringify(metadata), row.id, userId],
+    );
+    marked += 1;
+  }
+  return marked;
 }
 
 export async function touchBrokerConnectionUsed(

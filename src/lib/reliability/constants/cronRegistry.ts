@@ -7,6 +7,11 @@ export interface CronJobDefinition {
   source: 'learning' | 'sync' | 'scheduler' | 'worker';
   /** DB job_name or label to match against run logs */
   matchKeys: string[];
+  /**
+   * Phase 13 — broker relation for this job.
+   * system_owned_ingestion requires SYSTEM_MARKET_DATA_USER_ID.
+   */
+  brokerClass?: 'broker_neutral_db' | 'system_owned_ingestion' | 'user_specific_broker';
 }
 
 export const CRON_REGISTRY: CronJobDefinition[] = [
@@ -16,6 +21,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '09:20 IST weekdays',
     source: 'scheduler',
     matchKeys: ['warmup', 'market-warmup'],
+    brokerClass: 'system_owned_ingestion',
   },
   {
     id: 'intraday-refresh',
@@ -23,6 +29,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: 'Every 10m (market hours)',
     source: 'scheduler',
     matchKeys: ['intraday', 'candle-refresh'],
+    brokerClass: 'system_owned_ingestion',
   },
   {
     id: 'post-close',
@@ -30,6 +37,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '15:35 IST weekdays',
     source: 'scheduler',
     matchKeys: ['post-close', 'post_close'],
+    brokerClass: 'system_owned_ingestion',
   },
   {
     id: 'daily-scan-am',
@@ -37,6 +45,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '08:30 IST',
     source: 'scheduler',
     matchKeys: ['daily-scan', 'signal-scan'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'daily-scan-pm',
@@ -44,6 +53,23 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '16:30 IST',
     source: 'scheduler',
     matchKeys: ['daily-scan-pm', 'signal-scan-pm'],
+    brokerClass: 'broker_neutral_db',
+  },
+  {
+    id: 'candle-daily-update',
+    label: 'Evening Candle Update (Kite)',
+    schedule: '~16:00 IST',
+    source: 'scheduler',
+    matchKeys: ['candle-daily', 'evening-update'],
+    brokerClass: 'system_owned_ingestion',
+  },
+  {
+    id: 'eod-bhavcopy',
+    label: 'NSE Bhavcopy EOD',
+    schedule: '19:30 IST',
+    source: 'scheduler',
+    matchKeys: ['eod', 'bhavcopy'],
+    brokerClass: 'system_owned_ingestion',
   },
   {
     id: 'nightly-backtest',
@@ -51,6 +77,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '19:00 IST',
     source: 'scheduler',
     matchKeys: ['nightly-backtest', 'backtest'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'midnight-maintenance',
@@ -58,6 +85,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '00:00 IST',
     source: 'scheduler',
     matchKeys: ['midnight', 'maintenance'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'feed-health-retention',
@@ -65,6 +93,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '02:30 IST daily',
     source: 'worker',
     matchKeys: ['feed-health', 'retention'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'news-ingestion',
@@ -72,6 +101,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: 'Continuous / scheduled',
     source: 'worker',
     matchKeys: ['news', 'news-ingestion', 'news_pipeline'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'manipulation-scan',
@@ -79,6 +109,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '18:30 IST daily',
     source: 'learning',
     matchKeys: ['manipulation', 'manipulation-scan'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'learning-scheduler',
@@ -86,6 +117,7 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: '20:30 IST daily',
     source: 'learning',
     matchKeys: ['calibration', 'learning', 'evaluate', 'feedback'],
+    brokerClass: 'broker_neutral_db',
   },
   {
     id: 'rescore',
@@ -93,5 +125,6 @@ export const CRON_REGISTRY: CronJobDefinition[] = [
     schedule: 'On schedule',
     source: 'scheduler',
     matchKeys: ['rescore', 're-score'],
+    brokerClass: 'system_owned_ingestion',
   },
 ];

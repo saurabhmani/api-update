@@ -14,6 +14,12 @@
 import { NextRequest, NextResponse }  from 'next/server';
 import { requireSession }             from '@/lib/session';
 import { ensureLiveMarketStack }      from '@/lib/marketData/ensureLiveMarketStack';
+import { resolveUserFeedMeta, withProviderMeta } from '@/lib/broker/connections';
+import {
+  buildSignalProvenance,
+  isSignalLiveFallbackEnabled,
+  type DataOrigin,
+} from '@/lib/signals/dataOrigin';
 import { db }                         from '@/lib/db';
 // Legacy q365_signals readers (getActiveSignals, getTopSignals,
 // getSignalStats, getStrategyBreakdownsBatch, getDevelopingSetupBackfill)
@@ -1545,16 +1551,18 @@ function logEnvStampOnce(): void {
   const kiteConfigured = Boolean(kiteKey && kiteToken);
   if (!kiteConfigured) {
     console.error(
-      '[ENV STAMP] KITE_API_KEY / KITE_ACCESS_TOKEN not fully loaded. ' +
-      'Live quotes will fall back to Yahoo/NSE/DB until Kite is configured.',
+      '[ENV STAMP] KITE_API_KEY / KITE_ACCESS_TOKEN not fully loaded for SYSTEM feed. ' +
+      'User live quotes use resolveUserLiveProvider (active Zerodha/Shoonya) — not MARKET_DATA_PROVIDER defaults.',
     );
   }
   console.log('[ENV STAMP]', {
     NODE_ENV:              process.env.NODE_ENV ?? 'unknown',
     MYSQL_HOST:            process.env.MYSQL_HOST ?? 'unset',
     MYSQL_DATABASE:        process.env.MYSQL_DATABASE ?? 'unset',
-    MARKET_DATA_PROVIDER:  process.env.MARKET_DATA_PROVIDER ?? 'kite(default)',
+    MARKET_DATA_PROVIDER:  process.env.MARKET_DATA_PROVIDER ?? 'none(unset)',
     KITE_CONFIGURED:       kiteConfigured,
+    YAHOO_EMERGENCY_FALLBACK_ENABLED: process.env.YAHOO_EMERGENCY_FALLBACK_ENABLED ?? 'false(default)',
+    SIGNALS_LIVE_FALLBACK: process.env.SIGNALS_LIVE_FALLBACK ?? 'unset',
     REDIS_DISABLED:        process.env.REDIS_DISABLED ?? 'unset',
     CUSTOM_UNIVERSE_PATH:  process.env.CUSTOM_UNIVERSE_PATH ?? 'unset',
     Q365_INPROC_SCHEDULER: process.env.Q365_INPROC_SCHEDULER ?? 'unset',
@@ -1567,8 +1575,34 @@ function logEnvStampOnce(): void {
 }
 
 export async function GET(req: NextRequest) {
-  try { await requireSession(); }
-  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+  let sessionUserId: number;
+  try {
+    const user = await requireSession();
+    sessionUserId = user.id;
+  } catch {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const feedMeta = await resolveUserFeedMeta(sessionUserId).catch(() => ({
+    provider: null as null,
+    status: 'not_connected' as const,
+  }));
+
+  // Warm THIS user's active broker stream so live ticks + quote enrich
+  // use the same connected source shown on /data-source (not system Kite).
+  if (feedMeta.provider) {
+    try {
+      const { ensureStreamingAfterBrokerConnect } = await import(
+        '@/lib/marketData/ensureBrokerStreaming'
+      );
+      await ensureStreamingAfterBrokerConnect({
+        userId: sessionUserId,
+        broker: feedMeta.provider,
+      });
+    } catch {
+      /* enrichment still runs via REST quote path */
+    }
+  }
 
   // Boot live feed stack so freshness + engine-health preview see the
   // same WS poll state as /api/market-data/live-feed-status.
@@ -2517,9 +2551,23 @@ export async function GET(req: NextRequest) {
             };
             closedPayload.nearestSignals = closestRows;
           }
-          return NextResponse.json(closedPayload, {
-            headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
-          });
+          return NextResponse.json(
+            withProviderMeta(closedPayload as Record<string, unknown>, {
+              provider: feedMeta.provider,
+              status: feedMeta.status,
+              dataOrigin: 'database',
+              liveEnrichmentOrigin: null,
+              fallbackUsed: false,
+              provenanceNote: buildSignalProvenance({
+                generation: 'database',
+                liveEnrichment: null,
+                marketOpen: false,
+              }).note,
+            }),
+            {
+              headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+            },
+          );
         }
       }
 
@@ -2549,7 +2597,10 @@ export async function GET(req: NextRequest) {
       // the whole point is to land new data on this single request.
       if (fresh && !cachedIsEmpty && !bootstrap) {
         return NextResponse.json(
-          { ...fresh.payload, request_id: requestId, served_from_cache: true },
+          withProviderMeta(
+            { ...fresh.payload, request_id: requestId, served_from_cache: true } as Record<string, unknown>,
+            { provider: feedMeta.provider, status: feedMeta.status },
+          ),
           { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
         );
       }
@@ -2579,7 +2630,7 @@ export async function GET(req: NextRequest) {
           return null;
         },
       );
-      let bundle = await loadConfirmedSignalsBundle({ limit });
+      let bundle = await loadConfirmedSignalsBundle({ limit, userId: sessionUserId });
       let enriched           = bundle.enriched;
       let finalRows          = bundle.finalRows;
       let belowFloorDemoted  = bundle.belowFloorDemoted;
@@ -2590,6 +2641,9 @@ export async function GET(req: NextRequest) {
       // read .approval_bottleneck.cause / .suggested_env directly.
       let approvalBottleneck = bundle.approvalBottleneck;
       let trackerCounts      = bundle.trackerCounts;
+      let liveEnrichmentOrigin: DataOrigin | null = bundle.liveEnrichmentOrigin;
+      let liveFallbackUsed = bundle.fallbackUsed;
+      let generationOrigin: DataOrigin = bundle.dataOrigin;
 
       // ── Maturity-layer warm-up fallback ─────────────────────────
       // Hard-empty steady state: confirmed snapshots are empty AND
@@ -2680,11 +2734,14 @@ export async function GET(req: NextRequest) {
       // along with auto_recovery.last_error explaining why.
       if (bootstrap && autoScanState.status === 'completed') {
         console.log('[BOOTSTRAP] reloading confirmed-signals bundle after synchronous recovery');
-        bundle = await loadConfirmedSignalsBundle({ limit });
+        bundle = await loadConfirmedSignalsBundle({ limit, userId: sessionUserId });
         enriched           = bundle.enriched;
         finalRows          = bundle.finalRows;
         belowFloorDemoted  = bundle.belowFloorDemoted;
         inProgressEnriched = bundle.inProgressEnriched;
+        liveEnrichmentOrigin = bundle.liveEnrichmentOrigin;
+        liveFallbackUsed = bundle.fallbackUsed;
+        generationOrigin = bundle.dataOrigin;
         freshnessRaw       = bundle.freshnessRaw;
         trackerCounts      = bundle.trackerCounts;
         approvalBottleneck = bundle.approvalBottleneck;
@@ -3228,6 +3285,14 @@ export async function GET(req: NextRequest) {
           );
         } else if (scanInFlight) {
           // Already logged above — fall through to the snapshot fallback.
+        } else if (!isSignalLiveFallbackEnabled()) {
+          // Phase 11 — no silent kite/Yahoo live cascade for user-facing
+          // signals. Opt-in via SIGNALS_LIVE_FALLBACK=1; otherwise use
+          // stored snapshot only (labeled as database / fallback).
+          console.log(
+            `[DATA] live-empty resolveBatch SKIPPED — SIGNALS_LIVE_FALLBACK not enabled; ` +
+            `serving snapshot table only (user provider=${feedMeta.provider ?? 'none'})`,
+          );
         } else if (upstreamVendor().state === 'open') {
           // ── 1b. removed vendor 429 breaker is FULLY open — short-circuit ──
           //
@@ -4397,15 +4462,39 @@ export async function GET(req: NextRequest) {
         freezeDrop(cacheKey);
       }
 
+      if (usedRelaxedSignals) {
+        generationOrigin = 'database';
+        liveEnrichmentOrigin = null;
+      }
+
+      const provenance = buildSignalProvenance({
+        generation: generationOrigin,
+        liveEnrichment: liveEnrichmentOrigin,
+        fallbackUsed: liveFallbackUsed,
+        marketOpen: getMarketStatus().isOpen,
+      });
+
       return NextResponse.json(
-        responsePayload,
+        withProviderMeta(responsePayload as Record<string, unknown>, {
+          provider: feedMeta.provider,
+          status: feedMeta.status,
+          dataOrigin: provenance.liveEnrichment ?? provenance.generation,
+          liveEnrichmentOrigin: provenance.liveEnrichment,
+          fallbackUsed: provenance.fallbackUsed,
+          provenanceNote: provenance.note,
+        }),
         { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
       );
     }
 
     if (action === 'stats') {
       const stats = await getConfirmedSnapshotStats();
-      return NextResponse.json(stats);
+      return NextResponse.json(
+        withProviderMeta(stats as Record<string, unknown>, {
+          provider: feedMeta.provider,
+          status: feedMeta.status,
+        }),
+      );
     }
 
     // ── Single instrument — stored signal + live revalidation ─────
@@ -4461,7 +4550,18 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      return NextResponse.json(result);
+      return NextResponse.json(
+        withProviderMeta(result as unknown as Record<string, unknown>, {
+          provider: feedMeta.provider,
+          status: feedMeta.status,
+          dataOrigin: 'database',
+          liveEnrichmentOrigin: feedMeta.provider
+            ? (feedMeta.provider === 'shoonya' ? 'shoonya_live' : 'zerodha_live')
+            : null,
+          provenanceNote:
+            'Stored signal from warehouse; live revalidation uses market candles / broker when available.',
+        }),
+      );
     }
 
     // Dead `if (action === 'top')` legacy q365_signals branch removed.

@@ -39,8 +39,8 @@ import { NextRequest } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import { getActiveConfirmedSnapshots } from '@/lib/signal-engine/repository/readConfirmedSnapshots';
-import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
+import { enrichWithLiveLtp } from '@/lib/signals/confirmedSignalsService';
 import {
   applyConfirmedCap,
   confirmedSnapshotCmp,
@@ -112,60 +112,26 @@ type CachedSignalsResult = StreamCacheResult<unknown>;
  * confirmed-snapshot pool is empty, SSE pushes signals: [] and the
  * dashboard correctly renders the empty state.
  */
-async function enrichLivePricesForStream(rows: any[]): Promise<any[]> {
-  // Per-tick enrichment via the central resolver. One batch call to
-  // removed vendor (with cache-fan-out) replaces the previous per-symbol
-  // Yahoo fan-out. The resolver also writes the per-symbol cache so // @deprecated marker
-  // the next tick is served from cache without an upstream call.
-  const targets = rows.map((r) => ({
-    row: r,
-    sym: String(r.tradingsymbol ?? r.symbol ?? '').toUpperCase(),
-  })).filter((t) => t.sym);
-
-  if (targets.length === 0) return rows;
-
-  const symbols = targets.map((t) => t.sym);
-  const TIMEOUT_MS = 4_000;
-
-  const resolvePromise = resolveBatch(symbols, { quiet: true });
-  const timeout = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), TIMEOUT_MS),
-  );
-  const result = await Promise.race([resolvePromise, timeout]);
-  if (result === 'timeout') return rows;
-
-  for (const { row, sym } of targets) {
-    const snap = result.snapshots.get(sym);
-    if (snap && Number.isFinite(snap.price) && snap.price > 0) {
-      row.livePrice   = snap.price;
-      row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
-      row.liveSource  = result.provider === 'yahoo_emergency' ? 'yahoo' : 'kite'; // @deprecated marker
-      row.liveTickTs  = snap.timestamp || Date.now();
-    }
-  }
-  return rows;
+/**
+ * Live enrichment for SSE — user's active broker when available.
+ * Never stamps zerodha_live/shoonya_live for Yahoo/Kite cascade.
+ */
+async function enrichLivePricesForStream(
+  rows: any[],
+  userId?: number,
+): Promise<any[]> {
+  return enrichWithLiveLtp(rows, { userId });
 }
 
-// computeFallbackUiFields removed: SSE no longer surfaces q365_signals
-// fallback rows, so there are no "raw scanner" rows to retrofit
-// confirmed-snapshot UI columns onto.
-
 async function readConfirmedSnapshotsOnly(): Promise<any[]> {
-  // Pull a wider window from the reader (200) so the strict gate +
-  // cap have material to work with even when most snapshots fail
-  // the 75/70 floor. Cap is applied AFTER the gate.
+  // Cache ONLY warehouse/snapshot rows — live prices are per-user and
+  // must not be shared across SSE subscribers via the process cache.
   const snaps = await getActiveConfirmedSnapshots({ limit: 200 });
   if (snaps.length === 0) return [];
-  // Apply the same institutional gate + sort + cap as the HTTP route.
-  // This is what guarantees SSE and HTTP frames agree row-for-row.
   const gated: ConfirmedSignalRow[] = (snaps as ConfirmedSignalRow[])
     .filter(strictApproved)
     .sort((a: SortableSnapshotRow, b: SortableSnapshotRow) => confirmedSnapshotCmp(a, b));
-  const capped = applyConfirmedCap(gated);
-  // Live-price enrichment so SSE pushes fresh livePrice every cycle —
-  // not the static frozen entry. Cached so subsequent ticks within the
-  // 8s TTL hit the cache.
-  return enrichLivePricesForStream(capped);
+  return applyConfirmedCap(gated);
 }
 
 async function getConfirmedSnapshotsCached(): Promise<CachedSignalsResult> {
@@ -193,13 +159,15 @@ async function getConfirmedSnapshotsCached(): Promise<CachedSignalsResult> {
 // SIGNAL LIST mutating — not for per-tick prices.
 
 export async function GET(req: NextRequest) {
-  try { await requireSession(); }
-  catch { return new Response('Unauthorized', { status: 401 }); }
+  let userId: number | undefined;
+  try {
+    const user = await requireSession();
+    userId = user.id;
+  } catch {
+    return new Response('Unauthorized', { status: 401 });
+  }
 
-  // Universe init guard — resolveBatch calls isInNifty500() (sync getter;
-  // throws when the cache isn't hydrated). Without this, the first SSE
-  // connection on a cold instrumentation boot crashes the stream before
-  // the first snapshot frame is sent.
+  // Universe init guard — broker enrich / Nifty universe need warm cache.
   const universeReady = await ensureUniverseReady();
   if (!universeReady.ok) {
     return new Response(
@@ -347,9 +315,11 @@ export async function GET(req: NextRequest) {
           // than hanging in CONNECTING for 20+ seconds while the DB chews.
           const cached = await getConfirmedSnapshotsCached();
           // Confirmed snapshots are ALREADY gate-validated and locked.
-          // No per-push re-gating — the lifecycle worker is the only
-          // mutation source, and it only changes the status field.
-          const mainTable = cached.data as any[];
+          // Live prices are enriched per-user after the shared cache hit.
+          const mainTable = await enrichLivePricesForStream(
+            cached.data as any[],
+            userId,
+          );
           const emerging: any[] = [];
           // No staged fallback — SSE reads confirmed snapshots only.
 

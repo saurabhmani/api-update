@@ -230,7 +230,13 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
     getTopRankings(LIMIT, 1, undefined, market.isOpen),
     new Promise<null>((_, reject) => setTimeout(() => reject(new Error('DB_TIMEOUT')), 5000))
   ]).catch(err => {
-    console.error('[TICKER_DB_ERROR]', err.message);
+    console.error(
+      '[TICKER_DB_ERROR]',
+      err?.code ?? 'NO_CODE',
+      err?.errno ?? '',
+      err?.sqlState ?? '',
+      err?.message ?? err,
+    );
     return [];
   }) as Awaited<ReturnType<typeof getTopRankings>>;
     const deduped = (ranked.data ?? []).slice(0, LIMIT).map((r) => ({

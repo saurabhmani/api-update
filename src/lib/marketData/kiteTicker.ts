@@ -26,7 +26,7 @@ export interface Tick {
   change?: number;
   pChange?: number;
   ts: number;
-  source?: 'kite' | 'yahoo';
+  source?: 'kite' | 'yahoo' | 'zerodha' | 'shoonya' | string;
 }
 
 export function isFresh(tick: Tick | null | undefined, maxAgeMs = 3_000): boolean {

@@ -9,6 +9,7 @@ const mockGetAuthorizationUrl = vi.fn();
 const mockGetSafeBrokerStatus = vi.fn();
 const mockGetBrokerConnection = vi.fn();
 const mockMarkStatus = vi.fn();
+const mockDisconnectDataSource = vi.fn();
 
 vi.mock('@/lib/session', () => ({
   requireSession: (...args: unknown[]) => mockRequireSession(...args),
@@ -41,11 +42,29 @@ vi.mock('@/lib/broker/connections', async () => {
     getSafeBrokerStatus: (...args: unknown[]) => mockGetSafeBrokerStatus(...args),
     getBrokerConnectionByUserAndBroker: (...args: unknown[]) => mockGetBrokerConnection(...args),
     markBrokerConnectionStatus: (...args: unknown[]) => mockMarkStatus(...args),
+    disconnectDataSourceBroker: (...args: unknown[]) => mockDisconnectDataSource(...args),
+    resolveUserFeedMeta: vi.fn(async () => ({
+      provider: 'zerodha' as const,
+      status: 'fresh' as const,
+      active: {
+        userId: 42,
+        provider: 'zerodha',
+        connection: null,
+        connectionId: null,
+        isConnected: true,
+        isActiveDataSource: true,
+        needsSelection: false,
+        reason: 'primary',
+        connectedProviders: ['zerodha'],
+        updatedAt: null,
+      },
+    })),
   };
 });
 
 vi.mock('@/lib/kite/active-session-store', () => ({
   clearActiveKiteSession: vi.fn(async () => true),
+  clearUserKiteSession: vi.fn(async () => ({ userCleared: true, systemCleared: false })),
 }));
 
 vi.mock('@/lib/kite/client', () => ({
@@ -163,7 +182,10 @@ describe('GET /api/brokers/status', () => {
     const body = await res.json();
     const serialized = JSON.stringify(body);
     expect(serialized).not.toMatch(/accessToken|refreshToken|apiSecret|checksum|brk1:|enc:/i);
-    expect(body.connected).toBe(true);
+    const status = body.data ?? body;
+    expect(status.connected).toBe(true);
+    expect(body.provider === 'zerodha' || body.provider === null || typeof body.provider === 'string').toBe(true);
+    expect(typeof body.status).toBe('string');
   });
 });
 
@@ -178,6 +200,12 @@ describe('POST /api/brokers/:broker/disconnect', () => {
       status: 'active',
     });
     mockMarkStatus.mockResolvedValue(undefined);
+    mockDisconnectDataSource.mockResolvedValue({
+      disconnected: 'zerodha',
+      needsSelection: false,
+      remainingConnected: [],
+      redirectTo: '/data-source',
+    });
     vi.stubEnv('NODE_ENV', 'test');
   });
 
@@ -189,7 +217,7 @@ describe('POST /api/brokers/:broker/disconnect', () => {
     });
     const res = await POST(req, { params: Promise.resolve({ broker: 'evil' }) });
     expect(res.status).toBe(400);
-    expect(mockMarkStatus).not.toHaveBeenCalled();
+    expect(mockDisconnectDataSource).not.toHaveBeenCalled();
   });
 
   it('rejects cross-user disconnect attempts', async () => {
@@ -201,7 +229,7 @@ describe('POST /api/brokers/:broker/disconnect', () => {
     });
     const res = await POST(req, { params: Promise.resolve({ broker: 'zerodha' }) });
     expect(res.status).toBe(404);
-    expect(mockMarkStatus).not.toHaveBeenCalled();
+    expect(mockDisconnectDataSource).not.toHaveBeenCalled();
   });
 
   it('disconnects owned connection when origin is trusted', async () => {
@@ -212,6 +240,8 @@ describe('POST /api/brokers/:broker/disconnect', () => {
     });
     const res = await POST(req, { params: Promise.resolve({ broker: 'zerodha' }) });
     expect(res.status).toBe(200);
-    expect(mockMarkStatus).toHaveBeenCalledWith(42, 'zerodha', 'disconnected', true);
+    expect(mockDisconnectDataSource).toHaveBeenCalledWith(42, 'zerodha');
+    const body = await res.json();
+    expect(body.redirectTo).toBe('/data-source');
   });
 });

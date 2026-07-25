@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft,
   Database,
@@ -10,25 +10,45 @@ import {
   LogOut,
   RefreshCw,
   AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 import styles from './data-sources.module.scss';
 
+type BrokerKey = 'zerodha' | 'shoonya';
+
+type ConnectionSummary = {
+  broker: BrokerKey;
+  status: string;
+  connected: boolean;
+  isActiveDataSource: boolean;
+  displayName: string;
+  accountId: string | null;
+  expiresAt: string | null;
+  updatedAt: string;
+};
+
 type SafeStatus = {
   connected: boolean;
-  broker: 'zerodha' | 'shoonya' | null;
+  broker: BrokerKey | null;
   status: string;
   displayName: string | null;
   accountId: string | null;
   expiresAt: string | null;
+  needsSelection?: boolean;
+  activeDataSource?: BrokerKey | null;
+  connections?: ConnectionSummary[];
 };
 
 export default function DataSourcesSettingsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [status, setStatus] = useState<SafeStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState<BrokerKey | null>(null);
   const [error, setError] = useState('');
+  const needsSelection =
+    searchParams.get('reason') === 'select_data_source' || status?.needsSelection === true;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,7 +60,8 @@ export default function DataSourcesSettingsPage() {
         return;
       }
       if (!res.ok) throw new Error('Failed to load status');
-      setStatus(await res.json());
+      const body = await res.json();
+      setStatus(body?.data && typeof body.data === 'object' ? body.data : body);
     } catch {
       setError('Unable to load data source status.');
     } finally {
@@ -52,26 +73,54 @@ export default function DataSourcesSettingsPage() {
     void load();
   }, [load]);
 
-  async function handleDisconnect() {
-    if (!status?.broker) return;
-    if (!confirmDisconnect) {
-      setConfirmDisconnect(true);
+  async function setActive(broker: BrokerKey) {
+    setBusy(true);
+    setError('');
+    try {
+      const res = await fetch('/api/brokers/active', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ broker }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || 'Unable to switch data source');
+      await load();
+      router.replace('/dashboard');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to switch data source.');
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect(broker: BrokerKey) {
+    if (confirmDisconnect !== broker) {
+      setConfirmDisconnect(broker);
       return;
     }
 
     setBusy(true);
     setError('');
     try {
-      const res = await fetch(`/api/brokers/${status.broker}/disconnect`, {
+      const res = await fetch(`/api/brokers/${broker}/disconnect`, {
         method: 'POST',
         credentials: 'include',
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error('Disconnect failed');
-      router.replace('/data-source');
+      const redirectTo = typeof body.redirectTo === 'string' ? body.redirectTo : '/data-source';
+      if (body.needsSelection) {
+        await load();
+        setBusy(false);
+        setConfirmDisconnect(null);
+        router.replace('/data-source?reason=select_data_source');
+        return;
+      }
+      router.replace(redirectTo);
     } catch {
       setError('Unable to disconnect. Please try again.');
       setBusy(false);
-      setConfirmDisconnect(false);
+      setConfirmDisconnect(null);
     }
   }
 
@@ -80,25 +129,12 @@ export default function DataSourcesSettingsPage() {
     window.location.href = '/data-source?reason=reconnect';
   }
 
-  function changeBroker() {
-    if (!window.confirm('Change data source? You will disconnect the current broker and choose a new one.')) {
-      return;
-    }
-    void (async () => {
-      if (status?.broker) {
-        setBusy(true);
-        try {
-          await fetch(`/api/brokers/${status.broker}/disconnect`, {
-            method: 'POST',
-            credentials: 'include',
-          });
-        } catch {
-          // still navigate
-        }
-      }
-      window.location.href = '/data-source';
-    })();
+  function connectAnother() {
+    window.location.href = '/data-source';
   }
+
+  const connections = status?.connections ?? [];
+  const connected = connections.filter((c) => c.connected);
 
   return (
     <div className={styles.page}>
@@ -121,6 +157,13 @@ export default function DataSourcesSettingsPage() {
           </div>
         )}
 
+        {needsSelection && (
+          <div className={styles.alert} role="status">
+            <AlertTriangle size={14} />
+            Select which connected broker should be your active data source. We will not switch automatically.
+          </div>
+        )}
+
         <section className={styles.card}>
           {loading && <p className={styles.muted}>Loading connection status…</p>}
 
@@ -128,26 +171,71 @@ export default function DataSourcesSettingsPage() {
             <>
               <dl className={styles.details}>
                 <div>
-                  <dt>Broker</dt>
-                  <dd>{status.displayName ?? status.broker ?? 'None'}</dd>
+                  <dt>Active source</dt>
+                  <dd>
+                    {status.activeDataSource
+                      ? (status.displayName ?? status.activeDataSource)
+                      : needsSelection
+                        ? 'Not selected'
+                        : 'None'}
+                  </dd>
                 </div>
                 <div>
                   <dt>Status</dt>
-                  <dd>{status.connected ? 'Connected' : status.status}</dd>
+                  <dd>
+                    {status.connected && status.activeDataSource
+                      ? 'Connected'
+                      : needsSelection
+                        ? 'Selection required'
+                        : status.status}
+                  </dd>
                 </div>
-                {status.accountId && (
-                  <div>
-                    <dt>Account</dt>
-                    <dd>{status.accountId}</dd>
-                  </div>
-                )}
-                {status.expiresAt && (
-                  <div>
-                    <dt>Expires</dt>
-                    <dd>{new Date(status.expiresAt).toLocaleString()}</dd>
-                  </div>
-                )}
               </dl>
+
+              {connections.length > 0 && (
+                <ul className={styles.connList}>
+                  {connections.map((c) => (
+                    <li key={c.broker} className={styles.connRow}>
+                      <div>
+                        <strong>{c.displayName}</strong>
+                        <span className={styles.muted}>
+                          {c.connected ? 'Connected' : c.status}
+                          {c.isActiveDataSource ? ' · Active data source' : ''}
+                          {c.accountId ? ` · ${c.accountId}` : ''}
+                        </span>
+                      </div>
+                      <div className={styles.actions}>
+                        {c.connected && !c.isActiveDataSource && (
+                          <button
+                            type="button"
+                            className={styles.btnPrimary}
+                            onClick={() => void setActive(c.broker)}
+                            disabled={busy}
+                          >
+                            <CheckCircle2 size={14} />
+                            Use as active
+                          </button>
+                        )}
+                        {c.connected && (
+                          <button
+                            type="button"
+                            className={styles.btnDanger}
+                            onClick={() => void handleDisconnect(c.broker)}
+                            disabled={busy}
+                          >
+                            <LogOut size={14} />
+                            {confirmDisconnect === c.broker ? 'Confirm disconnect' : 'Disconnect'}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {connections.length === 0 && (
+                <p className={styles.muted}>No broker connections yet.</p>
+              )}
 
               <div className={styles.actions}>
                 <button
@@ -157,33 +245,25 @@ export default function DataSourcesSettingsPage() {
                   disabled={busy}
                 >
                   <RefreshCw size={14} />
-                  Reconnect
+                  Reconnect / add broker
                 </button>
                 <button
                   type="button"
                   className={styles.btnSecondary}
-                  onClick={changeBroker}
+                  onClick={connectAnother}
                   disabled={busy}
                 >
                   <Link2 size={14} />
-                  Change broker
+                  Connect another
                 </button>
-                {status.connected && (
-                  <button
-                    type="button"
-                    className={styles.btnDanger}
-                    onClick={handleDisconnect}
-                    disabled={busy}
-                  >
-                    <LogOut size={14} />
-                    {confirmDisconnect ? 'Confirm disconnect' : 'Disconnect'}
-                  </button>
-                )}
               </div>
 
               {confirmDisconnect && (
                 <p className={styles.confirmHint}>
-                  Click Confirm disconnect again to revoke stored credentials and return to data source login.
+                  Click Confirm disconnect again to revoke stored credentials.
+                  {connected.length > 1
+                    ? ' Your other connected broker will stay linked, but you must choose the active data source explicitly.'
+                    : ''}
                 </p>
               )}
             </>

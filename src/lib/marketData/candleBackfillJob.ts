@@ -390,7 +390,7 @@ function shouldSkipSymbol(
   return stats.ageDays <= maxAgeDays;
 }
 
-// ── Upsert with insert/update tracking ────────────────────────────
+// ── Upsert with insert/update tracking (source-aware, Phase 13) ───
 
 async function upsertDailyCandle(
   symbol: string,
@@ -400,29 +400,31 @@ async function upsertDailyCandle(
   low: number,
   close: number,
   volume: number,
-): Promise<'inserted' | 'updated' | 'unchanged'> {
-  const key = instrumentKey(symbol);
-  const result = await db.query(
-    `INSERT INTO candles
-       (instrument_key, candle_type, interval_unit, ts, open, high, low, close, volume, oi)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-     ON DUPLICATE KEY UPDATE
-       open=VALUES(open), high=VALUES(high), low=VALUES(low),
-       close=VALUES(close), volume=VALUES(volume), oi=VALUES(oi)`,
-    [key, CANDLE_TYPE, INTERVAL_UNIT, ts, open, high, low, close, volume],
-  );
-  const affected = result.affectedRows ?? 0;
-  if (affected === 1) return 'inserted';
-  if (affected === 2) return 'updated';
-  return 'unchanged';
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' = 'kite',
+): Promise<'inserted' | 'updated' | 'unchanged' | 'skipped'> {
+  const { upsertWarehouseCandle } = await import('@/lib/marketData/jobs/candleWarehouseUpsert');
+  return upsertWarehouseCandle({
+    instrumentKey: instrumentKey(symbol),
+    candleType: CANDLE_TYPE,
+    intervalUnit: INTERVAL_UNIT,
+    ts,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    source,
+  });
 }
 
 export async function persistBarsForSymbol(
   symbol: string,
   bars: Array<{ ts: string | Date; open: number; high: number; low: number; close: number; volume: number }>,
-): Promise<{ inserted: number; updated: number }> {
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' = 'kite',
+): Promise<{ inserted: number; updated: number; skipped: number }> {
   let inserted = 0;
   let updated = 0;
+  let skipped = 0;
   for (const bar of bars) {
     const ts = bar.ts instanceof Date ? bar.ts : new Date(bar.ts);
     if (Number.isNaN(ts.getTime())) continue;
@@ -439,11 +441,13 @@ export async function persistBarsForSymbol(
       bar.low,
       bar.close,
       Number.isFinite(bar.volume) ? bar.volume : 0,
+      source,
     );
     if (outcome === 'inserted') inserted++;
     else if (outcome === 'updated') updated++;
+    else if (outcome === 'skipped') skipped++;
   }
-  return { inserted, updated };
+  return { inserted, updated, skipped };
 }
 
 // ── Per-symbol backfill ───────────────────────────────────────────
@@ -512,7 +516,11 @@ async function backfillOneSymbol(
     if (isNseHistoricalFetchEnabled()) {
       const nse = await fetchNseHistoricalCandles(symbol);
       if (nse.ok && nse.candles.length > 0) {
-        const { inserted, updated } = await persistBarsForSymbol(symbol, nse.candles);
+        const { inserted, updated } = await persistBarsForSymbol(
+          symbol,
+          nse.candles,
+          'nse_bhavcopy',
+        );
         if (inserted > 0 || updated > 0) {
           console.log(
             `[CANDLE BACKFILL] ${symbol} nse_fallback bars=${nse.candles.length} ` +
@@ -592,9 +600,16 @@ export async function runCandleBackfillJob(
 
   if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
     throw new Error(
-      'No active Kite session — connect Zerodha from the dashboard '
-      + '(requires Redis) before running backfill',
+      'System Kite session unavailable — set SYSTEM_MARKET_DATA_USER_ID and connect '
+      + 'that service account\'s Zerodha on /data-source before running backfill',
     );
+  }
+
+  if (!dryRun) {
+    const { requireSystemOwnedBrokerConnection } = await import(
+      '@/lib/marketData/jobs/jobClassification'
+    );
+    await requireSystemOwnedBrokerConnection('zerodha');
   }
 
   const jobId = `candle-backfill_${Date.now()}`;

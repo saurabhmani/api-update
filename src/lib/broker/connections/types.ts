@@ -29,6 +29,19 @@ export interface BrokerConnectionRecord {
 }
 
 /** Safe fields returned to the frontend — never includes tokens. */
+export interface SafeBrokerConnectionSummary {
+  broker: DataSourceBroker;
+  status: BrokerConnectionStatus;
+  connected: boolean;
+  isActiveDataSource: boolean;
+  accountId: string | null;
+  userName: string | null;
+  expiresAt: string | null;
+  displayName: string;
+  updatedAt: string;
+}
+
+/** Safe fields returned to the frontend — never includes tokens. */
 export interface SafeBrokerStatus {
   connected: boolean;
   broker: DataSourceBroker | null;
@@ -37,6 +50,17 @@ export interface SafeBrokerStatus {
   userName: string | null;
   expiresAt: string | null;
   displayName: string | null;
+  /** True when connected brokers exist but none is the explicit active data source. */
+  needsSelection?: boolean;
+  /** All known connections for this user (safe). */
+  connections?: SafeBrokerConnectionSummary[];
+  /** Explicit active data-source broker when resolved. */
+  activeDataSource?: DataSourceBroker | null;
+  /** Live-feed freshness for the active source (Phase 12). */
+  feedStatus?: string;
+  lastLiveDataAt?: number | null;
+  lastLiveDataAtIso?: string | null;
+  feedError?: string | null;
 }
 
 export type BrokerAuthTransactionStatus =

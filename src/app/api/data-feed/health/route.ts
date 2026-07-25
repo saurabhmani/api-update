@@ -23,11 +23,19 @@ import {
 } from '@/lib/marketData/feedHealthLog';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
 import { getProviderFlagsSummary, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
-import { getLiveFeedState } from '@/lib/marketData/liveFeedState';
+import { getLiveFeedState, getLiveFeedStateFor } from '@/lib/marketData/liveFeedState';
 import { getManualRunStatus } from '@/lib/pipeline/runLockRepo';
+import { getSession } from '@/lib/session';
+import { getUserActiveDataSource } from '@/lib/broker/connections/activeDataSource';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+function labelForUserProvider(provider: string | null | undefined): string | null {
+  if (provider === 'shoonya') return 'Shoonya';
+  if (provider === 'zerodha') return 'Zerodha';
+  return null;
+}
 
 type Freshness = 'Fresh' | 'Stale' | 'Degraded' | 'Offline' | 'Market Closed';
 
@@ -81,9 +89,31 @@ export async function GET(req: NextRequest): Promise<Response> {
   const coarse = getMarketDataHealth();
   const manual = await getManualRunStatus().catch(() => null);
 
-  // Determine the active provider label. Configured primary wins on cold
-  // boot; last successful/attempted hop from the feed-health ring otherwise.
-  const dataSource =
+  // Prefer the authenticated user's active data source over system
+  // MARKET_DATA_PROVIDER (often still "kite" for jobs only).
+  let userProviderLabel: string | null = null;
+  let userFeedFresh: boolean | null = null;
+  try {
+    const session = await getSession();
+    if (session?.id) {
+      const active = await getUserActiveDataSource(Number(session.id));
+      userProviderLabel = labelForUserProvider(active.provider);
+      if (active.provider && active.isConnected) {
+        const keyed = getLiveFeedStateFor({
+          userId: String(session.id),
+          provider: active.provider,
+        });
+        userFeedFresh =
+          keyed.status === 'fresh' || keyed.status === 'delayed';
+      }
+    }
+  } catch {
+    // Unauthenticated health still works for ops panels.
+  }
+
+  // System-job / ring-buffer label — never overrides an explicit
+  // user active broker on the signals UI.
+  const systemDataSource =
     lastReq?.provider === 'kite' ? 'Kite' :
     lastReq?.provider === 'cache' ? 'Cache' :
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
@@ -91,7 +121,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     lastReq?.provider === 'snapshot' ? 'DB Snapshot' :
     flags.marketDataProvider === 'kite' ? 'Kite' :
     flags.marketDataProvider === 'yahoo' ? 'Yahoo' :
-    String(flags.marketDataProvider ?? 'Kite');
+    flags.marketDataProvider === 'none' ? 'None' :
+    String(flags.marketDataProvider ?? 'None');
+
+  const dataSource = userProviderLabel ?? systemDataSource;
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
@@ -119,14 +152,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     freshness = 'Market Closed';
   }
 
-  // Live WS poll loop (Yahoo + removed vendor dual-source) is the operator-
-  // visible feed. When it is ingesting ticks, do not mark the header
-  // "Stale" just because the resolver ring buffer logged MEDIUM/LOW
-  // quality on the last removed vendor batch.
+  // Prefer per-user keyed freshness when the session has an active broker.
   const liveFeed = getLiveFeedState();
-  if (coarse.market.isOpen
-      && (liveFeed.quality === 'fresh' || liveFeed.quality === 'delayed')) {
-    freshness = 'Fresh';
+  if (coarse.market.isOpen) {
+    if (userFeedFresh) {
+      freshness = 'Fresh';
+    } else if (liveFeed.quality === 'fresh' || liveFeed.quality === 'delayed') {
+      freshness = 'Fresh';
+    }
   }
 
   // Manual run last timestamp — the dashboard renders these next to
@@ -152,6 +185,8 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const summary = {
     dataSource,
+    userProvider:                userProviderLabel,
+    systemDataSource,
     lastApiRequestAt:            lastReq?.request_started_at   ?? null,
     lastApiResponseAt:           lastReq?.response_received_at ?? null,
     lastSuccessAt:               lastSuc?.response_received_at ?? null,

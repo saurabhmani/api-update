@@ -1,14 +1,19 @@
-// ════════════════════════════════════════════════════════════════
-//  ensureBrokerStreaming — post-OAuth live-feed activation
-//
-//  OAuth callbacks persist tokens but historically left the
-//  process-global Kite ticker in `closed` / `loginRequired` from
-//  boot-without-token. This helper is the single idempotent entry
-//  that rehydrates credentials and (re)connects the live stack.
-// ════════════════════════════════════════════════════════════════
+/**
+ * ensureBrokerStreaming — post-OAuth live-feed activation (Phase 5).
+ *
+ * Interactive streams are owned by ConnectionKey { userId, provider }.
+ * The process-global Kite ticker is updated ONLY when the connecting
+ * user is SYSTEM_MARKET_DATA_USER_ID (system feed owner).
+ *
+ * Shoonya OAuth never writes a Kite access token.
+ */
 
 import { logger } from '@/lib/logger';
-import { getLiveFeedProvider } from '@/lib/marketData/providerFlags';
+import { getSystemLiveFeedProvider } from '@/lib/marketData/providerFlags';
+import {
+  shouldUpdateSystemKiteFeed,
+  upsertUserBrokerSession,
+} from '@/lib/marketData/connectionManager';
 
 const log = logger.child({ component: 'ensureBrokerStreaming' });
 
@@ -17,8 +22,9 @@ export type BrokerStreamingBroker = 'zerodha' | 'shoonya' | 'kite';
 export interface EnsureBrokerStreamingInput {
   userId: number;
   broker: BrokerStreamingBroker;
-  /** When set, apply to the in-process Kite client before reconnect. */
+  /** This user's token only — applied to their ConnectionKey instance. */
   accessToken?: string | null;
+  accountId?: string | null;
 }
 
 export interface EnsureBrokerStreamingResult {
@@ -29,36 +35,37 @@ export interface EnsureBrokerStreamingResult {
   hydrated: boolean;
   wsRunning: boolean;
   baselineSymbols: number;
+  userConnectionKey?: string;
+  systemFeedUpdated?: boolean;
   error?: string;
 }
 
-/**
- * After broker OAuth succeeds: hydrate tokens, ensure the process-global
- * live market stack, and reconnect the Kite ticker when it is the live
- * provider. Safe to call repeatedly (idempotent).
- *
- * Streaming is process-global (one Kite session / one ticker), not per-user.
- * Shoonya connections still trigger stack + baseline refresh so Yahoo/poll
- * paths and WS fan-out stay warm; they do not open a second ticker.
- */
+function normalizeBroker(
+  broker: BrokerStreamingBroker,
+): 'zerodha' | 'shoonya' {
+  return broker === 'kite' ? 'zerodha' : broker;
+}
+
 export async function ensureStreamingAfterBrokerConnect(
   input: EnsureBrokerStreamingInput,
 ): Promise<EnsureBrokerStreamingResult> {
-  const provider = getLiveFeedProvider();
+  const systemProvider = getSystemLiveFeedProvider();
+  const broker = normalizeBroker(input.broker);
   const result: EnsureBrokerStreamingResult = {
     ok: false,
-    provider,
+    provider: systemProvider,
     stackEnsured: false,
     tickerReconnected: false,
     hydrated: false,
     wsRunning: false,
     baselineSymbols: 0,
+    systemFeedUpdated: false,
   };
 
   log.info('market_data_start_requested', {
     userId: input.userId,
-    broker: input.broker,
-    provider,
+    broker,
+    systemProvider,
   });
 
   try {
@@ -67,32 +74,33 @@ export async function ensureStreamingAfterBrokerConnect(
     );
     const session = await getMarketSession({ exchange: 'NSE' });
 
-    const { getKiteClient } = await import('@/lib/kite/client');
-    const client = getKiteClient();
+    // 1) Always upsert THIS user's connection instance (tenant-safe).
+    // Rehydrate from stored credentials when the caller did not pass a token
+    // (e.g. visiting /signals after a process restart).
+    let accessToken = input.accessToken?.trim() || null;
+    let accountId = input.accountId ?? null;
 
-    if (input.accessToken?.trim()) {
-      client.setAccessToken(input.accessToken.trim());
-      result.hydrated = true;
-    } else {
-      result.hydrated = await client.hydrateAccessTokenFromSession();
+    if (!accessToken) {
+      const { getDecryptedAccessTokenForUser, getBrokerConnectionByUserAndBroker } =
+        await import('@/lib/broker/connections');
+      const row = await getBrokerConnectionByUserAndBroker(input.userId, broker);
+      accessToken = await getDecryptedAccessTokenForUser(input.userId, broker);
+      if (accountId == null) accountId = row?.brokerAccountId ?? null;
     }
 
-    log.info('market_session_resolved', {
-      userId: input.userId,
-      broker: input.broker,
-      marketStatus: session.status,
-      isOpen: session.isOpen,
-      tradingDate: session.tradingDate,
-    });
+    if (accessToken) {
+      const snap = await upsertUserBrokerSession({
+        userId: input.userId,
+        provider: broker,
+        accessToken,
+        accountId,
+        connectStream: session.isOpen,
+      });
+      result.hydrated = snap.hasAuthenticatedSession;
+      result.userConnectionKey = snap.keyString;
+    }
 
-    log.info('market_data_stream_connecting', {
-      userId: input.userId,
-      broker: input.broker,
-      hydrated: result.hydrated,
-      provider,
-      marketStatus: session.status,
-    });
-
+    // 2) Warm shared WS fan-out / baseline (broker-neutral stack).
     const { ensureLiveMarketStack } = await import(
       '@/lib/marketData/ensureLiveMarketStack'
     );
@@ -101,95 +109,68 @@ export async function ensureStreamingAfterBrokerConnect(
     result.wsRunning = stack.wsRunning;
     result.baselineSymbols = stack.baselineSymbols;
 
-    // Market closed / weekend / holiday: keep tokens + WS fan-out warm
-    // but do NOT force a ticker reconnect loop. Absence of ticks is
-    // expected — not a broker failure.
     if (!session.isOpen) {
       result.ok = true;
-      result.tickerReconnected = false;
       log.info('market_data_status_changed', {
         userId: input.userId,
-        broker: input.broker,
+        broker,
         ok: true,
-        provider,
-        marketStatus: session.status,
         note: 'closed_market_skip_ticker_reconnect',
-        wsRunning: result.wsRunning,
-        baselineSymbols: result.baselineSymbols,
+        userConnectionKey: result.userConnectionKey,
       });
       return result;
     }
 
-    if (provider === 'kite') {
+    // 3) System feed: only the designated owner may replace the global Kite token/ticker.
+    const updateSystem =
+      broker === 'zerodha'
+      && shouldUpdateSystemKiteFeed(input.userId)
+      && systemProvider === 'kite'
+      && Boolean(input.accessToken?.trim() || result.hydrated);
+
+    if (updateSystem) {
+      const { getKiteClient } = await import('@/lib/kite/client');
+      const client = getKiteClient();
+      if (input.accessToken?.trim()) {
+        client.setAccessToken(input.accessToken.trim());
+      } else {
+        await client.hydrateAccessTokenFromSession();
+      }
+
       const { getTicker } = await import('@/lib/marketData/kiteTicker');
       const ticker = getTicker();
       ticker.clearLoginRequired();
-
-      // Force a clean reconnect — boot often left the ticker closed with
-      // loginRequired after connecting without a token.
       try {
         await ticker.disconnect();
-      } catch {
-        /* already down */
-      }
-
+      } catch { /* already down */ }
       await ticker.connect();
       const status = ticker.getStatus();
       result.tickerReconnected =
         status.state === 'open'
         || status.state === 'connecting'
         || !status.loginRequired;
+      result.systemFeedUpdated = true;
 
-      log.info('market_data_stream_connected', {
-        userId: input.userId,
-        broker: input.broker,
-        tickerState: status.state,
-        loginRequired: status.loginRequired,
-        subscribed: status.subscribedCount,
-        baselineSymbols: result.baselineSymbols,
-      });
-
-      if (result.baselineSymbols > 0) {
-        log.info('market_data_subscription_created', {
-          userId: input.userId,
-          broker: input.broker,
-          instrumentCount: result.baselineSymbols,
-        });
-      }
-
-      // Stack may be up, but without a usable Kite session the live WS path
-      // is not active — do not report overall ok for a loginRequired feed.
-      // `connecting` is success: kiteconnect opens the socket asynchronously.
       if (status.loginRequired) {
         result.ok = false;
         result.error = 'kite_login_required';
-        log.warn('market_data_status_changed', {
-          userId: input.userId,
-          broker: input.broker,
-          ok: false,
-          error: result.error,
-          tickerState: status.state,
-        });
         return result;
       }
-    } else {
-      log.info('market_data_stream_connected', {
+    } else if (broker === 'zerodha' && systemProvider === 'kite') {
+      log.info('system_kite_feed_unchanged', {
         userId: input.userId,
-        broker: input.broker,
-        provider,
-        note: 'non-kite live provider — poll/yahoo path only',
-        baselineSymbols: result.baselineSymbols,
+        note: 'user is not SYSTEM_MARKET_DATA_USER_ID — per-user connection only',
       });
     }
 
     result.ok = true;
     log.info('market_data_status_changed', {
       userId: input.userId,
-      broker: input.broker,
+      broker,
       ok: true,
-      provider,
+      userConnectionKey: result.userConnectionKey,
+      systemFeedUpdated: result.systemFeedUpdated,
       tickerReconnected: result.tickerReconnected,
-      wsRunning: result.wsRunning,
     });
     return result;
   } catch (err) {
@@ -197,7 +178,7 @@ export async function ensureStreamingAfterBrokerConnect(
     result.error = message;
     log.error('market_data_stream_failed', {
       userId: input.userId,
-      broker: input.broker,
+      broker,
       error: message,
     });
     return result;

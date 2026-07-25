@@ -22,6 +22,16 @@
 
 import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus }            from '@/lib/marketData/marketHours';
+import { getUserActiveDataSource }    from '@/lib/broker/connections/activeDataSource';
+import { getBrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
+import { normalizeInstrument }        from '@/lib/marketData/brokerProvider/instruments/normalize';
+import { recordLiveFeedTick }         from '@/lib/marketData/liveFeedState';
+import {
+  dominantLiveOrigin,
+  isSignalLiveFallbackEnabled,
+  liveOriginForBroker,
+  type DataOrigin,
+}                                     from '@/lib/signals/dataOrigin';
 
 import {
   getActiveConfirmedSnapshots,
@@ -66,11 +76,24 @@ import {
 //    q365_signals.ltp = IMMUTABLE entry-time snapshot. Never overwrite.
 //    row.livePrice    = current market price; populated per request.
 //    row.livePChange  = current % change.
+//    row.liveSource   = DataOrigin-ish tag (zerodha_live|shoonya_live|fallback|none)
 //
-//  The UI renders ENTRY from `ltp` (frozen) and CURRENT from
-//  `livePrice` (fresh). Mutating `row.ltp` with a live quote made
-//  "entry price" drift in the UI — the bug this separation prevents.
+//  Phase 10: when userId is provided, quotes come from that user's
+//  active broker adapter. System resolveBatch is ONLY used when
+//  SIGNALS_LIVE_FALLBACK is explicitly enabled — never silently claim
+//  Zerodha/Shoonya live from Yahoo/Kite cascade.
 // ────────────────────────────────────────────────────────────────
+export interface EnrichLiveLtpOpts {
+  /** Authenticated user — routes quotes through their active broker. */
+  userId?: number;
+}
+
+export interface EnrichLiveLtpResult<T> {
+  rows: T[];
+  liveOrigin: DataOrigin | null;
+  fallbackUsed: boolean;
+}
+
 export async function enrichWithLiveLtp<
   T extends {
     tradingsymbol?: string;
@@ -82,14 +105,28 @@ export async function enrichWithLiveLtp<
     liveSource?:    string | null;
     liveTickTs?:    number | null;
   }
->(rows: T[]): Promise<T[]> {
-  if (rows.length === 0) return rows;
+>(rows: T[], opts: EnrichLiveLtpOpts = {}): Promise<T[]> {
+  const result = await enrichWithLiveLtpDetailed(rows, opts);
+  return result.rows;
+}
+
+export async function enrichWithLiveLtpDetailed<
+  T extends {
+    tradingsymbol?: string;
+    symbol?:        string;
+    ltp?:           number | null;
+    pct_change?:    number | null;
+    livePrice?:     number | null;
+    livePChange?:   number | null;
+    liveSource?:    string | null;
+    liveTickTs?:    number | null;
+  }
+>(rows: T[], opts: EnrichLiveLtpOpts = {}): Promise<EnrichLiveLtpResult<T>> {
+  if (rows.length === 0) {
+    return { rows, liveOrigin: null, fallbackUsed: false };
+  }
 
   const t0 = Date.now();
-
-  // Phase 0.5 — signal-path live enrichment uses marketDataResolver only.
-  // Cascade (kite → yahoo → nse → db) lives inside resolveBatch. Do not
-  // reintroduce parallel fetchQuote / Yahoo-direct chains here.
   type Target = { row: T; sym: string };
   const targets: Target[] = [];
   for (const row of rows) {
@@ -104,57 +141,36 @@ export async function enrichWithLiveLtp<
     targets.push({ row, sym });
   }
 
-  if (targets.length > 0) {
-    const symbols = targets.map((t) => t.sym);
-    console.log(
-      `[DEBUG] calling marketDataResolver for symbols: [${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? `, +${symbols.length - 10} more` : ''}]`,
-    );
-    // Hard wall-clock cap so a stalled upstream cannot dominate /api/signals.
-    // On timeout: leave livePrice null (UI handles missing live tick).
-    const ENRICH_TIMEOUT_MS = Math.max(
-      1_000,
-      Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
-    );
-    const enrichStart = Date.now();
-    let timedOut = false;
-    const resolved = await Promise.race([
-      resolveBatch(symbols, { quiet: true }),
-      new Promise<null>((resolve) =>
-        setTimeout(() => { timedOut = true; resolve(null); }, ENRICH_TIMEOUT_MS),
-      ),
-    ]);
-    const enrichElapsed = Date.now() - enrichStart;
-    if (timedOut || !resolved) {
-      console.warn(
-        `[DEBUG] enrichWithLiveLtp timeout after ${enrichElapsed}ms ` +
-        `(symbols=${symbols.length}, cap=${ENRICH_TIMEOUT_MS}ms) — ` +
-        `shipping rows without live prices (resolver-only; no parallel quote chain)`,
-      );
-    } else {
-      console.log(
-        `[DEBUG] marketDataResolver response (${enrichElapsed}ms): provider=${resolved.provider} returned=${resolved.symbolsReturned}/${resolved.symbolsRequested} fallbackUsed=${resolved.fallbackUsed} errorCode=${resolved.errorCode ?? 'none'}`,
-      );
-      for (const { row, sym } of targets) {
-        const snap = resolved.snapshots.get(sym);
-        if (snap && Number.isFinite(snap.price) && snap.price > 0) {
-          row.livePrice   = snap.price;
-          row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
-          row.liveSource  = resolved.provider === 'yahoo_emergency' ? 'yahoo' : 'kite';
-          row.liveTickTs  = snap.timestamp || Date.now();
-        }
-      }
-    }
+  let fallbackUsed = false;
+  let brokerFilled = 0;
 
-    for (const { row } of targets) {
-      if (row.livePrice == null || (row.livePrice ?? 0) <= 0) {
-        row.livePrice   = null;
-        row.livePChange = null;
-        row.liveSource  = 'none';
-        row.liveTickTs  = null;
-      }
+  if (targets.length > 0 && opts.userId != null) {
+    brokerFilled = await enrichFromUserBroker(targets, opts.userId);
+  }
+
+  const stillMissing = targets.filter(
+    (t) => t.row.livePrice == null || !(t.row.livePrice! > 0),
+  );
+
+  if (stillMissing.length > 0 && isSignalLiveFallbackEnabled()) {
+    fallbackUsed = true;
+    await enrichFromSystemResolver(stillMissing);
+  } else if (stillMissing.length > 0 && opts.userId == null && isSignalLiveFallbackEnabled()) {
+    // Jobs without a user may use explicit fallback only.
+    fallbackUsed = true;
+    await enrichFromSystemResolver(stillMissing);
+  }
+
+  for (const { row } of targets) {
+    if (row.livePrice == null || (row.livePrice ?? 0) <= 0) {
+      row.livePrice   = null;
+      row.livePChange = null;
+      row.liveSource  = 'none';
+      row.liveTickTs  = null;
     }
   }
 
+  const liveOrigin = dominantLiveOrigin(rows);
   const bySource: Record<string, number> = {};
   let totalLive = 0;
   for (const r of rows) {
@@ -162,42 +178,122 @@ export async function enrichWithLiveLtp<
     bySource[src] = (bySource[src] ?? 0) + 1;
     if (r.livePrice != null) totalLive++;
   }
-  const indianCount = bySource.legacy_vendor ?? 0;
-  const yahooCount  = bySource.yahoo     ?? 0; // @deprecated marker
-  const noneCount   = bySource.none      ?? 0;
-  const liveRatio = rows.length > 0
-    ? Math.round(((indianCount + yahooCount) / rows.length) * 100) // @deprecated marker
-    : 0;
 
-  let freshnessLabel: string;
   const marketOpen = getMarketStatus().isOpen;
-  if (indianCount > 0 && marketOpen)           freshnessLabel = 'NEAR_LIVE (legacy_vendor)';
-  else if (indianCount > 0)                    freshnessLabel = 'LAST_CLOSE (market closed — legacy_vendor)';
-  else if (yahooCount > 0)                     freshnessLabel = 'EMERGENCY_YAHOO (delayed)'; // @deprecated marker
-  else if (noneCount === rows.length)          freshnessLabel = 'NO_DATA (provider chain failed)';
-  else                                         freshnessLabel = 'PARTIAL';
-
-  // Always-on per spec ("FIX legacy_vendor NOT BEING CALLED" §3 + §9). The
-  // VERBOSE_SIGNALS gate was hiding every live-enrichment hop, which
-  // made it impossible to confirm from console alone whether removed vendor
-  // was being called. The lines are 2 per request — cheap.
   console.log(
-    `[DATA SOURCE] path=LIVE  channel=RESOLVER  rows=${rows.length}  ` +
-    `live=${totalLive}  indian=${indianCount}  yahoo=${yahooCount}  none=${noneCount}  ` + // @deprecated marker
-    `status=${freshnessLabel}  elapsed=${Date.now() - t0}ms`,
-  );
-  console.log(
-    `[DATA] live_ratio=${liveRatio}%  market=${marketOpen ? 'OPEN' : 'CLOSED'}`,
+    `[DATA SOURCE] path=LIVE  channel=${brokerFilled > 0 ? 'USER_BROKER' : fallbackUsed ? 'FALLBACK' : 'NONE'}  ` +
+    `rows=${rows.length} live=${totalLive} brokerFilled=${brokerFilled} ` +
+    `fallbackUsed=${fallbackUsed} origin=${liveOrigin ?? 'none'} ` +
+    `market=${marketOpen ? 'OPEN' : 'CLOSED'} elapsed=${Date.now() - t0}ms ` +
+    `sources=${JSON.stringify(bySource)}`,
   );
 
-  return rows;
+  return { rows, liveOrigin, fallbackUsed };
+}
+
+async function enrichFromUserBroker<
+  T extends {
+    livePrice?: number | null;
+    livePChange?: number | null;
+    liveSource?: string | null;
+    liveTickTs?: number | null;
+  },
+>(targets: Array<{ row: T; sym: string }>, userId: number): Promise<number> {
+  try {
+    const active = await getUserActiveDataSource(userId);
+    if (!active.provider || active.needsSelection || !active.isConnected) {
+      return 0;
+    }
+    const provider = getBrokerMarketDataProvider(active.provider);
+    const ctx = {
+      userId,
+      connectionId: active.connectionId ?? undefined,
+    };
+    await provider.connect(ctx);
+    const instruments = targets.map(({ sym }) =>
+      normalizeInstrument({ exchange: 'NSE', symbol: sym, instrumentType: 'EQ' }),
+    );
+
+    const ENRICH_TIMEOUT_MS = Math.max(
+      1_000,
+      Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
+    );
+    const quotes = await Promise.race([
+      provider.fetchQuote(ctx, instruments),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), ENRICH_TIMEOUT_MS)),
+    ]);
+    if (!quotes) {
+      console.warn(
+        `[DATA SOURCE] user broker quote timeout userId=${userId} provider=${active.provider}`,
+      );
+      return 0;
+    }
+
+    const bySym = new Map(quotes.map((q) => [q.symbol.toUpperCase(), q]));
+    const originTag = liveOriginForBroker(active.provider);
+    let filled = 0;
+    for (const { row, sym } of targets) {
+      const q = bySym.get(sym);
+      if (q && Number.isFinite(q.ltp) && q.ltp > 0) {
+        row.livePrice = q.ltp;
+        row.livePChange = q.changePercent;
+        row.liveSource = originTag;
+        row.liveTickTs = q.asOfMs || Date.now();
+        filled += 1;
+      }
+    }
+    if (filled > 0) {
+      recordLiveFeedTick(Date.now(), undefined, {
+        userId: String(userId),
+        provider: active.provider,
+      });
+    }
+    return filled;
+  } catch (err) {
+    console.warn(
+      `[DATA SOURCE] user broker enrich failed userId=${userId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return 0;
+  }
+}
+
+async function enrichFromSystemResolver<
+  T extends {
+    livePrice?: number | null;
+    livePChange?: number | null;
+    liveSource?: string | null;
+    liveTickTs?: number | null;
+  },
+>(targets: Array<{ row: T; sym: string }>): Promise<void> {
+  const symbols = targets.map((t) => t.sym);
+  const ENRICH_TIMEOUT_MS = Math.max(
+    1_000,
+    Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
+  );
+  const resolved = await Promise.race([
+    resolveBatch(symbols, { quiet: true }),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ENRICH_TIMEOUT_MS)),
+  ]);
+  if (!resolved) return;
+
+  for (const { row, sym } of targets) {
+    const snap = resolved.snapshots.get(sym);
+    if (snap && Number.isFinite(snap.price) && snap.price > 0) {
+      row.livePrice = snap.price;
+      row.livePChange = Number.isFinite(snap.changePercent) ? snap.changePercent : null;
+      // Explicitly tag as fallback — never as zerodha_live / shoonya_live.
+      row.liveSource = 'fallback';
+      row.liveTickTs = snap.timestamp || Date.now();
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
 //  Bundle returned to the route handler
 // ────────────────────────────────────────────────────────────────
 export interface ConfirmedSignalsBundle {
-  /** Snapshot rows after Yahoo enrichment (no gating yet). Used by // @deprecated marker
+  /** Snapshot rows after live enrichment (no gating yet). Used by
    *  the route's stale-batch auto-recovery probe and freshness
    *  envelope (`enriched.length`). */
   enriched:           ConfirmedSignalRow[];
@@ -206,12 +302,16 @@ export interface ConfirmedSignalsBundle {
   finalRows:          ConfirmedSignalRow[];
   /** Below-score-floor candidates demoted to Emerging / Developing. */
   belowFloorDemoted:  ConfirmedSignalRow[];
-  /** Tracker rows + Yahoo livePrice for the Emerging panel. */ // @deprecated marker
+  /** Tracker rows + livePrice for the Emerging panel. */
   inProgressEnriched: ConfirmedSignalRow[];
   /** Pass-through from the snapshot freshness probe. */
   freshnessRaw:       SnapshotFreshnessRaw;
   /** Tracker counts pass-through (used by funnel + freshness). */
   trackerCounts:      TrackerCounts;
+  /** Phase 10 — where signal rows vs live prices came from. */
+  dataOrigin:         DataOrigin;
+  liveEnrichmentOrigin: DataOrigin | null;
+  fallbackUsed:       boolean;
   /** MATURATION_AUDIT_2026-05 — single-line bottleneck diagnosis the
    *  route surfaces on the wire as `approval_bottleneck`. Operators
    *  can inspect it via `curl /api/signals | jq .approval_bottleneck`
@@ -233,6 +333,8 @@ export interface LoadConfirmedSignalsOpts {
    *  The cap is applied AFTER the strict gate, so a wider window
    *  gives the gate more material when most snapshots fail floors. */
   limit: number;
+  /** Authenticated user — live LTP via their active broker (Phase 10). */
+  userId?: number;
 }
 
 /**
@@ -278,31 +380,29 @@ export async function loadConfirmedSignalsBundle(
   );
 
   // Live-price enrichment for snapshots AND in-progress trackers.
-  // Spec "FIX SLOW /api/signals" — these two calls are independent
-  // (different row sets) and each races a 5s wall-clock cap against
-  // resolveBatch. Running them sequentially made the worst case 10s
-  // when removed vendor was slow; firing them in parallel halves that.
-  // The synchronous gating below only reads `enriched` (the snapshot
-  // result), so promoting `inProgressEnriched` up here is safe.
-  //
-  // PERF-2026-07 — when confirmed snapshots are empty the live route
-  // falls through to loadClosedMarketSignals for the main table. Live
-  // LTP enrichment on 50+ in-progress trackers (5s resolveBatch cap ×
-  // 2) was pure overhead on that path and dominated poll latency.
+  // Phase 10: prefer the authenticated user's active broker quotes.
+  // System resolveBatch is only used when SIGNALS_LIVE_FALLBACK=1.
   const shouldEnrichLive = snapshots.length > 0;
-  const [enrichedRaw, inProgressEnriched] = shouldEnrichLive
+  const enrichOpts = { userId: opts.userId };
+  const [snapEnrich, progEnrich] = shouldEnrichLive
     ? await Promise.all([
-        enrichWithLiveLtp(snapshots as ConfirmedSignalRow[]),
-        enrichWithLiveLtp(inProgress as ConfirmedSignalRow[]),
+        enrichWithLiveLtpDetailed(snapshots as ConfirmedSignalRow[], enrichOpts),
+        enrichWithLiveLtpDetailed(inProgress as ConfirmedSignalRow[], enrichOpts),
       ])
-    : [snapshots as ConfirmedSignalRow[], inProgress as ConfirmedSignalRow[]];
+    : [
+        { rows: snapshots as ConfirmedSignalRow[], liveOrigin: null as DataOrigin | null, fallbackUsed: false },
+        { rows: inProgress as ConfirmedSignalRow[], liveOrigin: null as DataOrigin | null, fallbackUsed: false },
+      ];
   if (!shouldEnrichLive && inProgress.length > 0) {
     console.log(
       `[PERF] enrichWithLiveLtp skipped — confirmed_snapshots=0 ` +
       `in_progress=${inProgress.length} (relaxed/closed loader owns the main table)`,
     );
   }
-  const enriched: ConfirmedSignalRow[] = enrichedRaw;
+  const enriched: ConfirmedSignalRow[] = snapEnrich.rows;
+  const inProgressEnriched: ConfirmedSignalRow[] = progEnrich.rows;
+  const liveEnrichmentOrigin = snapEnrich.liveOrigin ?? progEnrich.liveOrigin;
+  const fallbackUsed = snapEnrich.fallbackUsed || progEnrich.fallbackUsed;
   // Market state — drives the freshness cap (6h open / 24h closed).
   const marketIsOpen = getMarketStatus().isOpen;
 
@@ -652,5 +752,8 @@ export async function loadConfirmedSignalsBundle(
     freshnessRaw: freshnessRaw as SnapshotFreshnessRaw,
     trackerCounts,
     approvalBottleneck,
+    dataOrigin: 'database',
+    liveEnrichmentOrigin,
+    fallbackUsed,
   };
 }

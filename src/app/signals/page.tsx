@@ -117,15 +117,20 @@ function LiveCell({
       ? 'no tick yet'
       : `last tick ${(ageMs / 1000).toFixed(1)}s ago`;
 
-  // K = green = Kite WebSocket (sub-second). // @deprecated marker
-  // R = blue  = Kite REST quote (one-shot, ~1s). // @deprecated marker
+  // Z = Zerodha live. S = Shoonya live. K/R = legacy Kite labels.
+  // Y = delayed Yahoo / fallback. Never invent a default provider badge.
   const sourceMap: Record<string, [string, string, string, string]> = {
-    kite:      ['#10B981', '#fff', 'K', 'Kite • Live'],
-    kite_ws:   ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'],
-    kite_rest: ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'],
-    yahoo:     ['#7C3AED', '#fff', 'Y', 'Yahoo • Delayed'],
-    cache:     ['#64748B', '#fff', 'C', 'Cache'],
-    nse_direct:['#F59E0B', '#fff', 'N', 'NSE Direct'],
+    zerodha:       ['#0F766E', '#fff', 'Z', 'Zerodha • Live'],
+    zerodha_live:  ['#0F766E', '#fff', 'Z', 'Zerodha • Live'],
+    shoonya:       ['#1D4ED8', '#fff', 'S', 'Shoonya • Live'],
+    shoonya_live:  ['#1D4ED8', '#fff', 'S', 'Shoonya • Live'],
+    kite:          ['#10B981', '#fff', 'K', 'Kite • Live'],
+    kite_ws:       ['#10B981', '#fff', 'K', 'Kite WebSocket • Live'],
+    kite_rest:     ['#3B82F6', '#fff', 'R', 'Kite REST • Quote'],
+    yahoo:         ['#7C3AED', '#fff', 'Y', 'Yahoo • Delayed'],
+    fallback:      ['#7C3AED', '#fff', 'F', 'Fallback • Delayed'],
+    cache:         ['#64748B', '#fff', 'C', 'Cache'],
+    nse_direct:    ['#F59E0B', '#fff', 'N', 'NSE Direct'],
   };
   const srcCfg = source ? sourceMap[source] : null;
 
@@ -966,6 +971,7 @@ export default function SignalsPage() {
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
+    dataProvider,
     wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load,
     lkgBatchIdRef,
@@ -1328,27 +1334,17 @@ export default function SignalsPage() {
     }
   }
 
-  // Live-price binding — WebSocket is the ONLY source.
+  // Live-price binding — prefer the user's connected data source.
   //
-  //   1. Lookup `wsPrices.get(normalizedSymbol)`. The streamServer
-  //      publishes Kite-sourced frames (and never lets Yahoo clobber // @deprecated marker
-  //      a Kite entry — see streamServer.ts), so a hit here is the // @deprecated marker
-  //      authoritative LTP.
+  //   System MARKET_DATA_PROVIDER (often kite) still fans out on the
+  //   shared WS. When the user selected Shoonya/Zerodha on /data-source,
+  //   we must NOT paint those system Kite frames as their Live column.
   //
-  //   2. Freshness gate:
-  //        market OPEN  → require tick age ≤ 30s. Otherwise the feed
-  //                       has stalled for this symbol; render '—'
-  //                       rather than a value old enough to mislead.
-  //        market CLOSED → no age check. The WS snapshot IS the last
-  //                       traded price; that's exactly what we want
-  //                       to display off-hours (matches Google).
-  //
-  //   3. Miss → livePrice = null. The UI renders '—'. We DELIBERATELY
-  //      do NOT fall back to `sig.livePrice` (server Yahoo enrichment) // @deprecated marker
-  //      or `sig.ltp` / `sig.entry_price` (frozen entry snapshot) —
-  //      both would make the Live column collapse onto the Entry
-  //      column whenever Yahoo's value happens to equal the frozen // @deprecated marker
-  //      entry price, which is the symptom operators have been hitting.
+  //   Priority:
+  //     1. Fresh WS tick whose source matches dataProvider
+  //     2. Server-enriched livePrice stamped for that same broker
+  //        (shoonya_live / zerodha_live) or an explicit labeled fallback
+  //     3. Otherwise '—' — never invent kite defaults
   //
   // Symbol normalisation: the WS payload uses bare tradingsymbols
   // ("LUPIN"). Some server paths pass through "NSE:LUPIN". We strip
@@ -1359,6 +1355,23 @@ export default function SignalsPage() {
   const normaliseSym = (raw: string): string =>
     raw.trim().toUpperCase().replace(/^(NSE|BSE|NFO|MCX):/, '');
 
+  const sourceMatchesActiveProvider = (
+    source: string | null | undefined,
+    provider: 'zerodha' | 'shoonya' | null,
+  ): boolean => {
+    if (!provider) return true;
+    const s = String(source ?? '').toLowerCase();
+    if (!s || s === 'none') return false;
+    if (provider === 'shoonya') {
+      return s === 'shoonya' || s === 'shoonya_live' || s.startsWith('shoonya');
+    }
+    // Zerodha active → accept zerodha_* and legacy kite_* from same stack.
+    return (
+      s === 'zerodha' || s === 'zerodha_live' || s.startsWith('zerodha')
+      || s === 'kite' || s === 'kite_ws' || s === 'kite_rest' || s.startsWith('kite')
+    );
+  };
+
   // Once-per-render sanity log for the first row — proves the Map
   // lookup is finding an entry. If this logs `live=undefined` but
   // `wsPrices.size > 0`, the symbol keys don't match.
@@ -1367,7 +1380,7 @@ export default function SignalsPage() {
     if (firstSig) {
       const sym = normaliseSym(firstSig.tradingsymbol);
       const live = wsPrices.get(sym) ?? null;
-      const sigKey = `${sym}|${wsPrices.size}|${live?.ts ?? 0}`;
+      const sigKey = `${sym}|${wsPrices.size}|${live?.ts ?? 0}|${dataProvider ?? '-'}`;
       if ((window as any).__Q365_LIVE_PROBE__ !== sigKey) {
         (window as any).__Q365_LIVE_PROBE__ = sigKey;
         // eslint-disable-next-line no-console
@@ -1377,6 +1390,7 @@ export default function SignalsPage() {
           live ?? 'no-tick',
           'mapSize=', wsPrices.size,
           'marketOpen=', wsMarketOpen,
+          'dataProvider=', dataProvider,
         );
       }
     }
@@ -1386,38 +1400,23 @@ export default function SignalsPage() {
     const sym  = normaliseSym(sig.tradingsymbol);
     const live = wsPrices.get(sym) ?? null;
 
-    // Accept the WS frame if market is closed (last traded price is
-    // exactly what we want off-hours) OR if it's within WS_FRESH_MS.
+    // Accept the WS frame only when it belongs to the connected source
+    // (or no provider is selected yet).
     const wsAge  = live?.ts ? nowMs - live.ts : null;
-    const accept =
+    const wsMatchesProvider = sourceMatchesActiveProvider(live?.source, dataProvider);
+    const acceptWs =
       live != null &&
       live.price != null &&
       live.price > 0 &&
+      wsMatchesProvider &&
       (!wsMarketOpen || (wsAge != null && wsAge <= WS_FRESH_MS));
 
-    if (accept && live) {
+    if (acceptWs && live) {
       // Day-change percent is derived in priority order:
       //
       //   1. (price - previous_close) / previous_close × 100
-      //      The authoritative formula. Uses Kite's ohlc.close which // @deprecated marker
-      //      is the previous trading day's close — same reference
-      //      Google / Zerodha Kite / Groww all display against. Guard // @deprecated marker
-      //      against close==price (can happen on the very last tick
-      //      of a session where Kite echoes today's close into the // @deprecated marker
-      //      close field) so we don't publish a bogus 0.00%.
-      //
-      //   2. Fall back to the frame's own pChange when the formula
-      //      is unusable (no close, or close==price edge case) AND
-      //      the frame's pChange is a real non-zero number.
-      //
-      //   3. When market is closed and we still have nothing, fall
-      //      back to sig.pct_change — the day-change snapshot at
-      //      signal generation. For a Friday-afternoon signal this
-      //      is within minutes of Google's "previous close" reference
-      //      and keeps the column from displaying a misleading 0.00%
-      //      over the weekend.
-      //
-      //   4. Otherwise null → LiveCell renders no percent row at all.
+      //   2. The tick's own pChange when (1) can't be computed
+      //   3. sig.pct_change off-hours as last resort
       const prevClose = live.close ?? null;
       const priceOk   = live.price != null && live.price > 0;
       let livePChange: number | null = null;
@@ -1432,50 +1431,37 @@ export default function SignalsPage() {
         ...sig,
         livePrice:   live.price,
         livePChange,
-        // Honour the per-frame source from the stream server. Default
-        // to 'kite_rest' when absent — the WS frame would have set // @deprecated marker
-        // 'kite_ws' explicitly, so an unset source means the row was // @deprecated marker
-        // enriched via the REST quote path.
-        liveSource:  live.source ?? 'kite_rest', // @deprecated marker
+        // Honour stream source. Never invent 'kite_rest'.
+        liveSource:  live.source
+          ?? (sig as { liveSource?: string | null }).liveSource
+          ?? null,
         liveTickTs:  live.ts ?? null,
       };
     }
 
-    // No WS entry for this symbol — but the server may have enriched
-    // sig.livePrice via Yahoo (see enrichWithLiveLtp in the signals // @deprecated marker
-    // API). Fall back to it ONLY when the server has marked the source
-    // explicitly as 'yahoo' (or 'kite' for the EOD-bar path). This is // @deprecated marker
-    // the safe version of the fallback that used to be blanket-banned:
-    //
-    //   Historical bug: blindly rendering sig.livePrice would make the
-    //   Live column collapse onto Entry when Yahoo's delayed value // @deprecated marker
-    //   coincidentally matched entry_price. Operators reported this
-    //   as "Live always equals Entry — column is broken".
-    //
-    //   Guardrails here:
-    //     1. Require liveSource ∈ {'yahoo', 'kite'}. A null/undefined // @deprecated marker
-    //        source means the server didn't confidently resolve a
-    //        price — don't render stale junk.
-    //     2. Require livePrice > 0.
-    //     3. Require livePrice !== entry_price. If the server's best
-    //        guess coincides with the frozen entry, we'd still show
-    //        the "broken column" symptom — rendering '—' is more
-    //        honest in that specific case.
-    //
-    // The result: when WS is dead (Kite loginRequired), operators see // @deprecated marker
-    // a delayed Yahoo price with a visible 'yahoo' source badge // @deprecated marker
-    // instead of staring at a column of '—'.
+    // No matching WS entry — use server enrichment from the user's
+    // active broker (or labeled fallback). Never accept a mismatched
+    // kite stamp when dataProvider is shoonya.
     const serverLive   = typeof sig.livePrice === 'number' ? sig.livePrice : null;
     const serverSource = (sig as any).liveSource ?? null;
     const entry        = typeof sig.entry_price === 'number' ? sig.entry_price : null;
     const trustedLiveSources = new Set([
-      'kite_ws', 'kite_rest', 'kite', // @deprecated marker
-      'kite', 'yahoo',
+      'zerodha', 'zerodha_live',
+      'shoonya', 'shoonya_live',
+      'kite_ws', 'kite_rest', 'kite',
+      'yahoo', 'fallback',
     ]);
+    const serverMatchesProvider =
+      dataProvider == null
+        ? true
+        : sourceMatchesActiveProvider(serverSource, dataProvider)
+          || serverSource === 'fallback'
+          || serverSource === 'yahoo';
     const serverPriceAcceptable =
       serverLive != null &&
       serverLive > 0 &&
-      (serverSource == null || trustedLiveSources.has(serverSource)) &&
+      serverMatchesProvider &&
+      (serverSource == null || trustedLiveSources.has(String(serverSource))) &&
       (entry == null || Math.abs(serverLive - entry) > 0.01);
 
     if (serverPriceAcceptable) {
@@ -1491,14 +1477,11 @@ export default function SignalsPage() {
         ...sig,
         livePrice:   serverLive,
         livePChange,
-        liveSource:  serverSource ?? 'kite',
+        liveSource:  serverSource,
         liveTickTs:  (sig as any).liveTickTs ?? null,
       };
     }
 
-    // Still nothing usable → render '—'. Never leak sig.ltp or
-    // sig.entry_price into the Live column — that's the original
-    // "Live == Entry" bug this branch exists to prevent.
     return {
       ...sig,
       livePrice:   null,
@@ -1961,7 +1944,13 @@ export default function SignalsPage() {
                   color: '#334155',
                 }}
               >
-                <span><strong>Data Source:</strong> {feedHealth.dataSource ?? '—'}</span>
+                <span><strong>Data Source:</strong>{' '}
+                  {dataProvider === 'shoonya'
+                    ? 'Shoonya'
+                    : dataProvider === 'zerodha'
+                      ? 'Zerodha'
+                      : (feedHealth.dataSource ?? '—')}
+                </span>
                 <span><strong>Last API Request:</strong> {fmtIst(feedHealth.lastApiRequestAt)}</span>
                 <span><strong>Last Success:</strong> {fmtIst(feedHealth.lastSuccessAt)}</span>
                 <span><strong>Last Pipeline Run:</strong> {fmtIst(feedHealth.lastPipelineRunAt)}</span>
@@ -2245,10 +2234,20 @@ export default function SignalsPage() {
             // SIGNAL-ENGINE-COPY-2026-05 — use the unified
             // providerInFallback so the banner can't read "Live Mode"
             // while the badge above reads Fallback: Yes (or vice versa).
-            headline = providerInFallback ? 'Live Engine (Fallback Mode)' : 'Live Engine (Live Mode)';
+            const providerLabel =
+              dataProvider === 'shoonya' ? 'Shoonya'
+              : dataProvider === 'zerodha' ? 'Zerodha'
+              : null;
+            headline = providerInFallback
+              ? 'Live Engine (Fallback Mode)'
+              : providerLabel
+                ? `Live Engine (${providerLabel})`
+                : 'Live Engine (Live Mode)';
             sub = providerInFallback
               ? 'Provider operating in fallback mode. Signal approval is restricted until live data health is restored.'
-              : 'Primary feed active. All institutional gates clear.';
+              : providerLabel
+                ? `Active data source: ${providerLabel}. Institutional gates use this broker's live quotes.`
+                : 'Primary feed active. All institutional gates clear.';
           }
 
           return (

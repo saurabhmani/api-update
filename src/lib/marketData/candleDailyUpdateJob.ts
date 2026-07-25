@@ -270,9 +270,17 @@ async function runCandleDailyUpdateJobInner(
 
   if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
     throw new Error(
-      'No active Kite session — connect Zerodha from the dashboard '
-      + '(requires Redis) before running daily update',
+      'System Kite session unavailable — set SYSTEM_MARKET_DATA_USER_ID and connect '
+      + 'that service account\'s Zerodha on /data-source before running daily candle update',
     );
+  }
+
+  // Fail closed: never ingest with an arbitrary customer connection.
+  if (!dryRun) {
+    const { requireSystemOwnedBrokerConnection } = await import(
+      '@/lib/marketData/jobs/jobClassification'
+    );
+    await requireSystemOwnedBrokerConnection('zerodha');
   }
 
   resetCandleSourceCounters();

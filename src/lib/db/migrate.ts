@@ -124,7 +124,7 @@ async function migrate() {
         INDEX idx_instruments_symbol   (tradingsymbol),
         INDEX idx_instruments_exchange (exchange),
         INDEX idx_instruments_type     (instrument_type)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     log.info('Created table', { table: 'instruments' });
 
@@ -305,7 +305,7 @@ async function migrate() {
         updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_rankings_sym   (tradingsymbol),
         INDEX idx_rankings_score (score)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     console.log('✓ rankings');
 

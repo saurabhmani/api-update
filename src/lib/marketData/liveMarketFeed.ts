@@ -9,7 +9,7 @@
 
 import { logger } from '@/lib/logger';
 import { resolveBatch } from '@/lib/marketData/resolver/marketDataResolver';
-import { getLiveFeedProvider, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
+import { getLiveFeedProvider, isDualSourceEnabled, mayUseYahoo } from '@/lib/marketData/providerFlags';
 import { normalizedToMarketSnapshot } from '@/lib/marketData/dualSource/feedNormalizer';
 import { fetchYahooPublicQuotesBatch, type YahooPublicQuote } from '@/lib/marketData/yahooChartPublic';
 import { propagateTick } from '@/lib/marketData/tickPropagator';
@@ -24,6 +24,7 @@ import {
   recordLiveFeedPollStopped,
   recordLiveFeedTick,
   setLiveFeedReconnecting,
+  getSystemLiveFeedKey,
 } from '@/lib/marketData/liveFeedState';
 import type { MarketSnapshot } from '@/types/market';
 import {
@@ -32,6 +33,11 @@ import {
 } from '@/lib/marketData/marketStreamTypes';
 
 const log = logger.child({ component: 'liveMarketFeed' });
+
+/** System poll loop mutates only the system feed key — never interactive users. */
+function systemKey() {
+  return getSystemLiveFeedKey();
+}
 
 const POLL_MS = Math.max(
   500,
@@ -179,7 +185,7 @@ function publishTick(tick: MarketStreamTick): void {
   const receivedAt = Date.now();
   store.lastTickTs = receivedAt;
   store.ticksEmitted += 1;
-  recordLiveFeedTick(receivedAt, tick.ts);
+  recordLiveFeedTick(receivedAt, tick.ts, systemKey());
   tickBus.emit(MARKET_TICK_EVENT, tick);
 }
 
@@ -259,17 +265,17 @@ async function pollOnce(): Promise<void> {
 
   store.pollInFlight = true;
   store.lastPollAt = Date.now();
-  recordLiveFeedPollStart(symbols.length);
+  const key = systemKey();
+  recordLiveFeedPollStart(symbols.length, key);
   try {
     const provider = getLiveFeedProvider();
     const marketOpen = isMarketOpen();
     let published = 0;
     if (!marketOpen) {
-      // Off-hours: daily bars are frozen, so never spend removed vendor
-      // quota here — Yahoo's public chart API alone keeps last-close
-      // prices flowing to the UI. This also protects the 16:00 IST
-      // EOD candle cron from being starved by live-poll 429s.
-      published = await pollYahooBatch(symbols);
+      // Off-hours: Yahoo last-close only when product explicitly allows it.
+      if (mayUseYahoo()) {
+        published = await pollYahooBatch(symbols);
+      }
     } else if (isDualSourceEnabled()) {
       published = await pollDualSourceBatch(symbols);
     } else if (provider === 'yahoo') {
@@ -278,23 +284,25 @@ async function pollOnce(): Promise<void> {
       const ticker = getTicker();
       if (ticker.getStatus().state !== 'open') {
         published = await polllegacy_vendorBatch(symbols);
-      } else {
-        published = symbols.length; // WS is active, ticks are streaming
       }
+      // WS open: ticks update freshness via recordLiveFeedTick — do not
+      // fake a poll success (auth/connect alone must not mark fresh).
     } else {
-      published = await polllegacy_vendorBatch(symbols);
-      if (published === 0) published = await pollYahooBatch(symbols);
+      // provider === 'none' — no silent Yahoo/kite cascade
+      store.lastError = 'no_system_live_provider';
+      published = 0;
     }
     if (published === 0) {
       store.lastError = `no_ticks_${provider}`;
     } else {
       store.lastError = null;
+      // Successful data poll only — never OAuth / socket auth.
+      recordLiveFeedPollSuccess(key);
+      setLiveFeedReconnecting(false, key);
     }
-    recordLiveFeedPollSuccess();
-    setLiveFeedReconnecting(false);
   } catch (err) {
     store.lastError = err instanceof Error ? err.message : String(err);
-    recordLiveFeedPollError(store.lastError);
+    recordLiveFeedPollError(store.lastError, key);
     log.warn('poll cycle failed', { error: store.lastError, symbols: symbols.length });
   } finally {
     store.pollInFlight = false;
@@ -321,7 +329,7 @@ function ensurePollLoop(): void {
     return;
   }
   const tick = () => { void pollOnce(); };
-  recordLiveFeedPollStart(activeSymbols().length);
+  recordLiveFeedPollStart(activeSymbols().length, systemKey());
   tick();
   store.pollTimer = setInterval(tick, interval);
   store.pollIntervalMs = interval;
@@ -334,7 +342,7 @@ function stopPollLoop(): void {
   clearInterval(store.pollTimer);
   store.pollTimer = null;
   store.pollIntervalMs = 0;
-  recordLiveFeedPollStopped();
+  recordLiveFeedPollStopped(systemKey());
   log.info('poll loop stopped');
 }
 

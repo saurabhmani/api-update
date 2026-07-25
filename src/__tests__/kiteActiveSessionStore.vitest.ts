@@ -78,24 +78,49 @@ vi.mock('@/lib/redis', () => ({
 
 import {
   clearActiveKiteSession,
+  clearUserKiteSession,
   getActiveKiteAccessToken,
   getActiveKiteSession,
+  getUserKiteSession,
   saveActiveKiteSession,
+  saveUserKiteSession,
 } from '@/lib/kite/active-session-store';
 
 describe('active Kite session store', () => {
   beforeEach(() => {
     fakeRedis.clear();
     redisClientRef.current = fakeRedis;
+    delete process.env.SYSTEM_MARKET_DATA_USER_ID;
   });
 
   afterEach(() => {
     fakeRedis.clear();
   });
 
-  it('saves and reads an active session', async () => {
-    await saveActiveKiteSession({
+  it('saves per-user sessions without overwriting another user', async () => {
+    await saveUserKiteSession(1, {
       accessToken: 'tok-1',
+      kiteUserId: 'KK1',
+      quantorusUserId: '1',
+      authenticatedAt: '2026-07-22T12:00:00.000Z',
+    });
+    await saveUserKiteSession(2, {
+      accessToken: 'tok-2',
+      kiteUserId: 'KK2',
+      quantorusUserId: '2',
+      authenticatedAt: '2026-07-22T12:00:00.000Z',
+    });
+
+    expect(await getUserKiteSession(1)).toMatchObject({ accessToken: 'tok-1' });
+    expect(await getUserKiteSession(2)).toMatchObject({ accessToken: 'tok-2' });
+    // Non-owner must not become the system feed session
+    expect(await getActiveKiteAccessToken()).toBeNull();
+  });
+
+  it('system feed owner also updates system/legacy keys', async () => {
+    process.env.SYSTEM_MARKET_DATA_USER_ID = '42';
+    await saveActiveKiteSession({
+      accessToken: 'tok-sys',
       kiteUserId: 'KK9999',
       quantorusUserId: '42',
       authenticatedAt: '2026-07-22T12:00:00.000Z',
@@ -103,18 +128,19 @@ describe('active Kite session store', () => {
 
     const session = await getActiveKiteSession();
     expect(session).toEqual({
-      accessToken: 'tok-1',
+      accessToken: 'tok-sys',
       kiteUserId: 'KK9999',
       quantorusUserId: '42',
       authenticatedAt: '2026-07-22T12:00:00.000Z',
     });
-    expect(await getActiveKiteAccessToken()).toBe('tok-1');
+    expect(await getActiveKiteAccessToken()).toBe('tok-sys');
     expect(await fakeRedis.hkeys(ACTIVE_SESSION_KEY)).toEqual(
       expect.arrayContaining(['accessToken', 'kiteUserId', 'quantorusUserId', 'authenticatedAt']),
     );
   });
 
-  it('clears only when access token matches', async () => {
+  it('clears only when access token matches (system)', async () => {
+    process.env.SYSTEM_MARKET_DATA_USER_ID = '42';
     await saveActiveKiteSession({
       accessToken: 'tok-1',
       kiteUserId: 'KK9999',
@@ -127,6 +153,24 @@ describe('active Kite session store', () => {
 
     expect(await clearActiveKiteSession('tok-1')).toBe(true);
     expect(await getActiveKiteAccessToken()).toBeNull();
+  });
+
+  it('clearUserKiteSession does not wipe another user', async () => {
+    await saveUserKiteSession(1, {
+      accessToken: 'tok-1',
+      kiteUserId: 'KK1',
+      quantorusUserId: '1',
+      authenticatedAt: '2026-07-22T12:00:00.000Z',
+    });
+    await saveUserKiteSession(2, {
+      accessToken: 'tok-2',
+      kiteUserId: 'KK2',
+      quantorusUserId: '2',
+      authenticatedAt: '2026-07-22T12:00:00.000Z',
+    });
+    await clearUserKiteSession(1);
+    expect(await getUserKiteSession(1)).toBeNull();
+    expect(await getUserKiteSession(2)).toMatchObject({ accessToken: 'tok-2' });
   });
 
   it('fails closed when Redis is unavailable', async () => {

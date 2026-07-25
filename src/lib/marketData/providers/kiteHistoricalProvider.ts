@@ -52,10 +52,18 @@ export function isKiteHistoricalConfigured(): boolean {
   return Boolean(cfg.apiKey && getKiteClient().getAccessToken());
 }
 
-/** Hydrate session token from Redis, then check readiness. */
+/** Hydrate session token from the system feed owner only, then check readiness. */
 export async function ensureKiteHistoricalConfigured(): Promise<boolean> {
   const cfg = loadKiteConfig();
   if (!cfg.apiKey) return false;
+
+  const { isSystemOwnedIngestionConfigured } = await import(
+    '@/lib/marketData/jobs/jobClassification'
+  );
+  if (!isSystemOwnedIngestionConfigured()) {
+    return false;
+  }
+
   await getKiteClient().hydrateAccessTokenFromSession();
   return Boolean(getKiteClient().getAccessToken());
 }

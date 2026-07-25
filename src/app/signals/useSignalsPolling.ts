@@ -543,6 +543,9 @@ export interface UseSignalsPollingResult {
    *  an overall-status chip + a link to /signals/engine-health. */
   healthPreview:          EngineHealthPreview | null;
 
+  /** Active broker from /api/signals `provider` stamp (user selection). */
+  dataProvider:           'zerodha' | 'shoonya' | null;
+
   // ── Live transports passed through ──
   wsPrices:     ReturnType<typeof useLivePrices>['prices'];
   wsConnected:  boolean;
@@ -636,6 +639,8 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
   const [dailyReportPreview,    setDailyReportPreview]    = useState<DailyReportPreview | null>(null);
   // PHASE_5_HEALTH_OBSERVABILITY_2026-05
   const [healthPreview,         setHealthPreview]         = useState<EngineHealthPreview | null>(null);
+  // Active broker for this user (from /api/signals provider stamp).
+  const [dataProvider,          setDataProvider]          = useState<'zerodha' | 'shoonya' | null>(null);
   // Kite status polling removed — Yahoo-only mode. Market-hours info // @deprecated marker
   // now comes exclusively from the /api/signals freshness block.
   const kiteStatus: null | KiteStatusShape = null; // @deprecated marker
@@ -879,6 +884,11 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
       // so the page can render market_data immediately on this poll.
       // Update BEFORE the LKG accept-guard so that even a refused
       // response can still flip the UI between live ↔ market_closed.
+      if (data.provider === 'zerodha' || data.provider === 'shoonya') {
+        setDataProvider(data.provider);
+      } else if (data.provider === null) {
+        setDataProvider(null);
+      }
       if (data.mode === 'market_closed') {
         setMarketClosed({
           mode:         'market_closed',
@@ -1715,6 +1725,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     dailyReportPreview,
     // PHASE_5_HEALTH_OBSERVABILITY_2026-05
     healthPreview,
+    dataProvider,
     wsPrices, wsConnected, wsLastAt, wsMarketOpen, wsStreamStatus, kiteStatus, stream, // @deprecated marker
     pushLog, load, triggerAutoRebuild,
     lkgBatchIdRef,

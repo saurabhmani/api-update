@@ -11,7 +11,6 @@
 import { tickBus } from '@/lib/marketData/tickBus';
 import { MARKET_TICK_EVENT, type MarketStreamTick } from '@/lib/marketData/marketStreamTypes';
 import { isMarketOpen, getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
-import { recordLiveFeedTick } from '@/lib/marketData/liveFeedState';
 import type { Candle } from '@/lib/signal-engine';
 
 export interface SessionBar {
@@ -56,7 +55,8 @@ class LiveSessionBarStore {
       if (!isMarketOpen()) return;
       if (!tick?.symbol || !Number.isFinite(tick.price) || tick.price <= 0) return;
       this.ingestTick(tick);
-      recordLiveFeedTick(Date.now(), tick.ts ?? undefined);
+      // Freshness is recorded by the keyed tick pipeline / system poll —
+      // do not double-write a global counter here.
     };
     tickBus.on(MARKET_TICK_EVENT, this.listener);
   }

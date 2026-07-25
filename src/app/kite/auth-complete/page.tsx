@@ -51,8 +51,8 @@ export default function KiteAuthCompletePage() {
       }
 
       setState('success');
-      setMessage('Kite connected successfully. Redirecting to dashboard…');
-      routerRef.current.replace('/dashboard');
+      setMessage('Kite connected successfully. Redirecting to data sources…');
+      routerRef.current.replace('/data-source?connected=1&broker=zerodha');
     }
 
     void complete();

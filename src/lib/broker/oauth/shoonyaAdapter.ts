@@ -10,6 +10,7 @@ import {
   markBrokerConnectionStatus,
   upsertBrokerConnectionRecord,
 } from '../connections/repository';
+import { resolvePrimaryFlagOnConnect } from '../connections/activeDataSource';
 import { parseBrokerTokenExpiry } from '../connections/expiry';
 import type { BrokerConnectionRecord } from '../connections/types';
 import {
@@ -77,6 +78,9 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
       const SHOONYA_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
       const expiresAt = parsedExpiry ?? new Date(Date.now() + SHOONYA_TOKEN_TTL_MS);
 
+      // Phase 12: first broker → active; never steal another active source.
+      const isPrimary = await resolvePrimaryFlagOnConnect(userId, 'shoonya');
+
       const connection = await upsertBrokerConnectionRecord({
         userId,
         broker: 'shoonya',
@@ -86,7 +90,7 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
         brokerUserName: tokens.userName ?? null,
         tokenExpiresAt: expiresAt,
         status: 'active',
-        isPrimary: true,
+        isPrimary,
         metadata: {
           source: 'shoonya_oauth',
           responseKeys: tokens.rawKeys,
@@ -94,6 +98,7 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
           rawExpiresIn: tokens.rawExpiresIn ?? null,
           expiryParsed: Boolean(parsedExpiry),
           expiryFallbackApplied: !parsedExpiry,
+          activatedOnConnect: isPrimary,
         },
       });
 

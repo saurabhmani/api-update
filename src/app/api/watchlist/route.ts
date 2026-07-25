@@ -2,28 +2,31 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
 import type { WatchlistItem } from '@/types';
+import {
+  instrumentFromQuery,
+  providerDataJson,
+  resolveUserFeedMeta,
+  resolveUserMarketDataContext,
+  isMarketApiGateResponse,
+} from '@/lib/broker/connections';
+import { recordLiveFeedTick } from '@/lib/marketData/liveFeedState';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// PROD-STALE-FIX 2026-05 — the GET response used to ship without an
-// explicit Cache-Control, so browsers / nginx applied heuristic caching
-// and operators occasionally saw a stale watchlist after add/remove on
-// production behind the proxy. Match the explicit no-store the signals
-// API uses; identical contract across the two dashboard surfaces.
 const NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, no-cache, must-revalidate',
 } as const;
 
 async function getOrCreateWatchlist(userId: number): Promise<number> {
   const { rows } = await db.query(`SELECT id FROM watchlists WHERE user_id=? LIMIT 1`, [userId]);
-  if (rows.length) return (rows[0] as any).id;
+  if (rows.length) return (rows[0] as { id: number }).id;
   await db.query(`INSERT INTO watchlists (user_id, name) VALUES (?, 'Default')`, [userId]);
   const { rows: rows2 } = await db.query(`SELECT id FROM watchlists WHERE user_id=? LIMIT 1`, [userId]);
-  return (rows2[0] as any).id;
+  return (rows2[0] as { id: number }).id;
 }
 
-// GET /api/watchlist
+// GET /api/watchlist — items + optional live quotes from active provider
 export async function GET() {
   try {
     const user = await requireSession();
@@ -31,9 +34,52 @@ export async function GET() {
     const { rows } = await db.query<WatchlistItem>(
       `SELECT wi.id, wi.watchlist_id, wi.instrument_key, wi.tradingsymbol, wi.exchange, wi.name, wi.added_at
        FROM watchlist_items wi WHERE wi.watchlist_id=? ORDER BY wi.added_at DESC`,
-      [watchlistId]
+      [watchlistId],
     );
-    return NextResponse.json({ items: rows, watchlist_id: watchlistId }, { headers: NO_STORE_HEADERS });
+
+    const feedMeta = await resolveUserFeedMeta(user.id);
+    let quotes: Array<{
+      symbol: string;
+      instrumentKey: string;
+      ltp: number | null;
+      changePercent: number | null;
+    }> = [];
+
+    if (feedMeta.provider && rows.length > 0) {
+      const resolved = await resolveUserMarketDataContext();
+      if (!isMarketApiGateResponse(resolved)) {
+        try {
+          await resolved.provider.connect(resolved.ctx);
+          const instruments = rows.slice(0, 40).map((r) =>
+            instrumentFromQuery(
+              r.instrument_key || `${r.exchange || 'NSE'}:${r.tradingsymbol}`,
+            ),
+          );
+          const fetched = await resolved.provider.fetchQuote(resolved.ctx, instruments);
+          quotes = fetched.map((q) => ({
+            symbol: q.symbol,
+            instrumentKey: `${q.exchange}_EQ|${q.symbol}`,
+            ltp: q.ltp,
+            changePercent: q.changePercent,
+          }));
+          const anyLive = fetched.some((q) => Number.isFinite(q.ltp) && q.ltp > 0);
+          if (anyLive) {
+            recordLiveFeedTick(Date.now(), undefined, {
+              userId: String(user.id),
+              provider: resolved.providerName,
+            });
+          }
+        } catch {
+          // Watchlist CRUD must still succeed without live quotes.
+        }
+      }
+    }
+
+    return providerDataJson(feedMeta.provider, feedMeta.status, {
+      items: rows,
+      watchlist_id: watchlistId,
+      quotes,
+    });
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
   }

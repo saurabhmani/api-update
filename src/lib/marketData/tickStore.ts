@@ -58,17 +58,19 @@ class TickStore {
     if (this.busHandler) return;
     this.installedAt = Date.now();
 
-    // Source-aware write: Yahoo frames can never overwrite a Kite // @deprecated marker
-    // entry. The ticker emits real frames without a `source` field,
-    // so we treat "absent" as Kite (the only producer that does this). // @deprecated marker
+    // Source-aware write: Yahoo/fallback frames never overwrite a
+    // broker-live entry (zerodha / shoonya / kite). Absent source is
+    // treated as broker-live (legacy kite ticker frames omit source).
     this.busHandler = (tick: TickData): void => {
       if (!tick.symbol) return;
       const key = tick.symbol.toUpperCase();
-      const isYahoo = tick.source === 'yahoo'; // @deprecated marker
-      if (isYahoo) { // @deprecated marker
-        this.yahooStore.set(key, tick); // @deprecated marker
+      const src = String(tick.source ?? '').toLowerCase();
+      const isDelayedFallback =
+        src === 'yahoo' || src === 'fallback' || src === 'nse_direct' || src === 'cache';
+      if (isDelayedFallback) {
+        this.yahooStore.set(key, tick);
       } else {
-        this.kiteStore.set(key, tick); // @deprecated marker
+        this.kiteStore.set(key, tick);
       }
       this.totalTicks += 1;
       this.lastUpdatedTs = Date.now();

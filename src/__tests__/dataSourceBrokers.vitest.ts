@@ -271,30 +271,32 @@ describe('post-login destination helpers', () => {
   });
 
   it('routes to /dashboard when an active broker exists', async () => {
+    const activeConn = {
+      id: 'bc_1',
+      userId: 7,
+      broker: 'zerodha',
+      brokerAccountId: 'AB1234',
+      brokerUserName: 'Nik',
+      accessTokenEncrypted: 'brk1:x',
+      refreshTokenEncrypted: null,
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      lastAuthenticatedAt: new Date().toISOString(),
+      lastUsedAt: null,
+      status: 'active',
+      isPrimary: true,
+      metadata: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
     vi.doMock('@/lib/broker/connections/migrate', () => ({
       migrateLegacyBrokerDataForUser: vi.fn(async () => 0),
     }));
     vi.doMock('@/lib/broker/connections/repository', () => ({
-      getPrimaryActiveBrokerConnection: vi.fn(async () => ({
-        id: 'bc_1',
-        userId: 7,
-        broker: 'zerodha',
-        brokerAccountId: 'AB1234',
-        brokerUserName: 'Nik',
-        accessTokenEncrypted: 'brk1:x',
-        refreshTokenEncrypted: null,
-        tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        lastAuthenticatedAt: new Date().toISOString(),
-        lastUsedAt: null,
-        status: 'active',
-        isPrimary: true,
-        metadata: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })),
-      listBrokerConnectionsForUser: vi.fn(async () => []),
+      getPrimaryActiveBrokerConnection: vi.fn(async () => activeConn),
+      listBrokerConnectionsForUser: vi.fn(async () => [activeConn]),
       markBrokerConnectionStatus: vi.fn(),
       upsertBrokerConnectionRecord: vi.fn(),
+      setPrimaryDataSourceBroker: vi.fn(),
     }));
     vi.doMock('@/lib/kite/active-session-store', () => ({
       getActiveKiteSession: vi.fn(async () => null),
@@ -302,6 +304,46 @@ describe('post-login destination helpers', () => {
 
     const { resolvePostLoginDestination } = await import('@/lib/broker/connections/status');
     await expect(resolvePostLoginDestination(7)).resolves.toEqual({ path: '/dashboard' });
+  });
+
+  it('routes to /data-source for needsSelection', async () => {
+    const z = {
+      id: 'bc_z',
+      userId: 7,
+      broker: 'zerodha',
+      brokerAccountId: 'AB',
+      brokerUserName: null,
+      accessTokenEncrypted: 'enc',
+      refreshTokenEncrypted: null,
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      lastAuthenticatedAt: new Date().toISOString(),
+      lastUsedAt: null,
+      status: 'active',
+      isPrimary: false,
+      metadata: { pendingActiveSelection: true },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const s = { ...z, id: 'bc_s', broker: 'shoonya', isPrimary: false };
+    vi.doMock('@/lib/broker/connections/migrate', () => ({
+      migrateLegacyBrokerDataForUser: vi.fn(async () => 0),
+    }));
+    vi.doMock('@/lib/broker/connections/repository', () => ({
+      getPrimaryActiveBrokerConnection: vi.fn(async () => null),
+      listBrokerConnectionsForUser: vi.fn(async () => [z, s]),
+      markBrokerConnectionStatus: vi.fn(),
+      upsertBrokerConnectionRecord: vi.fn(),
+      setPrimaryDataSourceBroker: vi.fn(),
+    }));
+    vi.doMock('@/lib/kite/active-session-store', () => ({
+      getActiveKiteSession: vi.fn(async () => null),
+    }));
+
+    const { resolvePostLoginDestination } = await import('@/lib/broker/connections/status');
+    await expect(resolvePostLoginDestination(7)).resolves.toEqual({
+      path: '/data-source',
+      reason: 'select_data_source',
+    });
   });
 
   it('does not throw into a redirect loop when storage fails', async () => {

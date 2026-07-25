@@ -21,7 +21,10 @@ export default function WatchlistPage() {
 
   async function load() {
     setLoading(true);
-    try { const d = await watchlistApi.get() as any; setItems(d.items || []); }
+    try {
+      const d = await watchlistApi.get() as { items?: WatchlistItem[]; data?: { items?: WatchlistItem[] } };
+      setItems(d.data?.items || d.items || []);
+    }
     finally { setLoading(false); }
   }
 

@@ -2,6 +2,7 @@
 
 import { upsertBrokerConnection as upsertLegacyBrokerConnection } from '../repository/brokerRepository';
 import { upsertBrokerConnectionRecord } from '../connections/repository';
+import { resolvePrimaryFlagOnConnect } from '../connections/activeDataSource';
 import { completeBrokerAuthTransaction } from '../connections/authTransactions';
 import { db } from '@/lib/db';
 
@@ -27,6 +28,9 @@ export async function persistZerodhaBrokerConnection(
     : new Date();
   const expiresAt = new Date(authenticatedAt.getTime() + KITE_TOKEN_TTL_MS);
 
+  // Phase 12: first broker → active; never steal another active source.
+  const isPrimary = await resolvePrimaryFlagOnConnect(input.userId, 'zerodha');
+
   await upsertBrokerConnectionRecord({
     userId: input.userId,
     broker: 'zerodha',
@@ -35,10 +39,11 @@ export async function persistZerodhaBrokerConnection(
     brokerUserName: input.userName ?? null,
     tokenExpiresAt: expiresAt,
     status: 'active',
-    isPrimary: true,
+    isPrimary,
     metadata: {
       source: 'kite_oauth',
       kiteUserId: input.kiteUserId,
+      activatedOnConnect: isPrimary,
     },
   });
 

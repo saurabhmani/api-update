@@ -28,7 +28,11 @@ export default function BrokerStatusBar() {
       })
       .then((data) => {
         if (cancelled) return;
-        setStatus(data);
+        const status =
+          data && typeof data === 'object' && 'data' in data && (data as { data?: SafeStatus }).data
+            ? (data as { data: SafeStatus }).data
+            : (data as SafeStatus);
+        setStatus(status);
         setLoadState('ready');
       })
       .catch(() => {
@@ -55,7 +59,7 @@ export default function BrokerStatusBar() {
           {loadState === 'error' ? <AlertTriangle size={14} /> : <Database size={14} />}
           <span>{label}</span>
         </div>
-        <Link href="/settings/data-sources" className={styles.panelLink}>
+        <Link href="/data-source" className={styles.panelLink}>
           <Settings2 size={12} />
           Manage Data Source
         </Link>

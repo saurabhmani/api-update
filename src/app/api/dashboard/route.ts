@@ -37,6 +37,7 @@ import {
   internalFetch,
   type InternalFetchResult,
 }                                    from '@/lib/api/internalFetch';
+import { resolveUserFeedMeta }       from '@/lib/broker/connections';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -167,8 +168,18 @@ function classifyTransport(
 // ── GET ────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
-  try { await requireSession(); }
-  catch { return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }); }
+  let userId: number;
+  try {
+    const user = await requireSession();
+    userId = user.id;
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const feedMeta = await resolveUserFeedMeta(userId).catch(() => ({
+    provider: null as null,
+    status: 'not_connected' as const,
+  }));
 
   const cookieHeader  = req.headers.get('cookie') ?? '';
   const warnings: string[] = [];
@@ -1065,6 +1076,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(
     {
       ok:                true,
+      provider:          feedMeta.provider,
+      status:            feedMeta.status,
       generatedAt:       new Date().toISOString(),
       marketStatus,
       trustScore,

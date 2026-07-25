@@ -102,7 +102,8 @@ export async function GET(request: NextRequest) {
 
     const authenticatedAt = new Date().toISOString();
 
-    // Persist session for market-data / CLI and apply to this process's client.
+    // Persist THIS user's Redis session. System feed keys update only when
+    // userId === SYSTEM_MARKET_DATA_USER_ID (see saveUserKiteSession).
     try {
       await saveActiveKiteSession({
         accessToken: session.accessToken,
@@ -110,7 +111,12 @@ export async function GET(request: NextRequest) {
         quantorusUserId,
         authenticatedAt,
       });
-      getKiteClient().setAccessToken(session.accessToken);
+      const { shouldUpdateSystemKiteFeed } = await import(
+        '@/lib/marketData/connectionManager'
+      );
+      if (shouldUpdateSystemKiteFeed(user.id)) {
+        getKiteClient().setAccessToken(session.accessToken);
+      }
     } catch {
       // Non-fatal — broker_connections is the durable source of truth.
     }
@@ -172,7 +178,10 @@ export async function GET(request: NextRequest) {
       console.error('[kite/callback] completion code unavailable; redirecting to dashboard', {
         reason: completionErr instanceof Error ? completionErr.name : 'unknown',
       });
-      return redirectToAppPath(request, '/dashboard');
+      return redirectToAppPath(request, '/data-source', {
+        connected: '1',
+        broker: 'zerodha',
+      });
     }
   } catch (err) {
     if (err instanceof AuthenticationError) {

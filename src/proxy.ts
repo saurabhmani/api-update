@@ -18,7 +18,6 @@ const PUBLIC_PATHS = [
   '/api/engine-health/status',
   '/api/events',
   '/api/market-data/health',
-  '/api/market-data/live-feed-status',
   '/api/market-data/dual-source/status',
   '/api/market-data/subscribe',
   '/api/market-data/reseed',

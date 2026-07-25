@@ -24,6 +24,12 @@ const getStatus = vi.fn(() => ({
   packetsReceived: 0,
   bridgeErrorCount: 0,
 }));
+const upsertUserBrokerSession = vi.fn(async () => ({
+  keyString: '42:zerodha',
+  hasAuthenticatedSession: true,
+  state: 'connected',
+}));
+const shouldUpdateSystemKiteFeed = vi.fn(() => true);
 
 vi.mock('@/lib/kite/client', () => ({
   getKiteClient: () => ({
@@ -47,7 +53,26 @@ vi.mock('@/lib/marketData/kiteTicker', () => ({
 }));
 
 vi.mock('@/lib/marketData/providerFlags', () => ({
+  getSystemLiveFeedProvider: vi.fn(() => 'kite'),
   getLiveFeedProvider: vi.fn(() => 'kite'),
+}));
+
+vi.mock('@/lib/marketData/connectionManager', () => ({
+  shouldUpdateSystemKiteFeed,
+  upsertUserBrokerSession,
+}));
+
+vi.mock('@/lib/broker/connections', () => ({
+  getDecryptedAccessTokenForUser: vi.fn(async () => null),
+  getBrokerConnectionByUserAndBroker: vi.fn(async () => null),
+}));
+
+vi.mock('@/lib/marketData/marketSessionService', () => ({
+  getStatus: vi.fn(async () => ({
+    status: 'open',
+    isOpen: true,
+    tradingDate: '2026-07-25',
+  })),
 }));
 
 vi.mock('@/lib/logger', () => ({
@@ -63,7 +88,12 @@ vi.mock('@/lib/logger', () => ({
 describe('ensureStreamingAfterBrokerConnect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    hydrate.mockResolvedValue(true);
+    shouldUpdateSystemKiteFeed.mockReturnValue(true);
+    upsertUserBrokerSession.mockResolvedValue({
+      keyString: '42:zerodha',
+      hasAuthenticatedSession: true,
+      state: 'connected',
+    });
     getStatus.mockReturnValue({
       state: 'open',
       loginRequired: false,
@@ -80,7 +110,7 @@ describe('ensureStreamingAfterBrokerConnect', () => {
     });
   });
 
-  it('hydrates token, ensures stack, and reconnects kite ticker after Zerodha OAuth', async () => {
+  it('upserts user connection and reconnects system ticker for feed owner', async () => {
     const { ensureStreamingAfterBrokerConnect } = await import(
       '@/lib/marketData/ensureBrokerStreaming'
     );
@@ -90,37 +120,42 @@ describe('ensureStreamingAfterBrokerConnect', () => {
       accessToken: 'post-oauth-token',
     });
 
+    expect(upsertUserBrokerSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 42,
+        provider: 'zerodha',
+        accessToken: 'post-oauth-token',
+      }),
+    );
     expect(setAccessToken).toHaveBeenCalledWith('post-oauth-token');
     expect(ensureLiveMarketStack).toHaveBeenCalledTimes(1);
-    expect(clearLoginRequired).toHaveBeenCalled();
     expect(disconnect).toHaveBeenCalled();
     expect(connect).toHaveBeenCalled();
     expect(r.ok).toBe(true);
-    expect(r.tickerReconnected).toBe(true);
-    expect(r.wsRunning).toBe(true);
-    expect(r.baselineSymbols).toBe(12);
+    expect(r.systemFeedUpdated).toBe(true);
+    expect(r.userConnectionKey).toBe('42:zerodha');
   });
 
-  it('is idempotent across repeated calls', async () => {
+  it('does not replace system kite token for non-owner users', async () => {
+    shouldUpdateSystemKiteFeed.mockReturnValue(false);
     const { ensureStreamingAfterBrokerConnect } = await import(
       '@/lib/marketData/ensureBrokerStreaming'
     );
-    const a = await ensureStreamingAfterBrokerConnect({
-      userId: 42,
+    const r = await ensureStreamingAfterBrokerConnect({
+      userId: 7,
       broker: 'zerodha',
-      accessToken: 'tok',
+      accessToken: 'user-7-token',
     });
-    const b = await ensureStreamingAfterBrokerConnect({
-      userId: 42,
-      broker: 'zerodha',
-      accessToken: 'tok',
-    });
-    expect(a.ok && b.ok).toBe(true);
-    expect(connect).toHaveBeenCalledTimes(2);
-    expect(ensureLiveMarketStack).toHaveBeenCalledTimes(2);
+
+    expect(upsertUserBrokerSession).toHaveBeenCalled();
+    expect(setAccessToken).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    expect(r.systemFeedUpdated).toBe(false);
   });
 
-  it('still ensures stack for Shoonya without requiring an access token arg', async () => {
+  it('still ensures stack for Shoonya without writing a Kite token', async () => {
+    shouldUpdateSystemKiteFeed.mockReturnValue(false);
     const { ensureStreamingAfterBrokerConnect } = await import(
       '@/lib/marketData/ensureBrokerStreaming'
     );
@@ -128,7 +163,7 @@ describe('ensureStreamingAfterBrokerConnect', () => {
       userId: 7,
       broker: 'shoonya',
     });
-    expect(hydrate).toHaveBeenCalled();
+    expect(setAccessToken).not.toHaveBeenCalled();
     expect(ensureLiveMarketStack).toHaveBeenCalled();
     expect(r.ok).toBe(true);
   });

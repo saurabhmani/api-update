@@ -15,7 +15,7 @@
 }
 
 .shell {
-  width: min(520px, 100%);
+  width: min(640px, 100%);
   background: #ffffff;
   border-radius: 18px;
   box-shadow: 0 24px 64px rgba(7, 23, 46, 0.35);
@@ -215,8 +215,179 @@
   line-height: 1.5;
 }
 
+.activePanel {
+  border: 1px solid #d7e3f5;
+  background: #f8fbff;
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.activeHead {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #0B1F3A;
+  font-size: 0.85rem;
+}
+
+.activeMeta {
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
+
+  div {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 0.5rem;
+    align-items: baseline;
+  }
+
+  dt {
+    margin: 0;
+    font-size: 0.75rem;
+    color: #94a3b8;
+  }
+
+  dd {
+    margin: 0;
+    font-size: 0.88rem;
+    font-weight: 650;
+    color: #0f172a;
+    text-transform: capitalize;
+  }
+}
+
+.dashboardLink {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+.brokerGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.brokerCard {
+  border: 1px solid #d7e3f5;
+  border-radius: 14px;
+  padding: 1rem 1.1rem;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.brokerCardActive {
+  border-color: #93b4ef;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
+.brokerCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+
+  h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: #0B1F3A;
+  }
+}
+
+.activeBadge {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+  background: #e8f0ff;
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+}
+
+.brokerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.btnPrimary,
+.btnSecondary,
+.btnDanger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+
+  &:disabled {
+    opacity: 0.65;
+    cursor: wait;
+  }
+}
+
+.btnPrimary {
+  background: #0B1F3A;
+  color: #fff;
+}
+
+.btnSecondary {
+  background: #fff;
+  border-color: #d0dbea;
+  color: #334155;
+}
+
+.btnDanger {
+  background: #fff5f5;
+  border-color: #f3c1c1;
+  color: #9b1c1c;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.confirmHint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #9b1c1c;
+}
+
+.muted {
+  margin: 0.15rem 0 0;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
 .footer {
   padding: 0 1.5rem 1.35rem;
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .footerLink {
@@ -238,5 +409,11 @@
   .shell {
     min-height: 100vh;
     border-radius: 0;
+    width: 100%;
+  }
+
+  .activeMeta div {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
   }
 }

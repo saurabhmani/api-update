@@ -5,10 +5,8 @@ import { resolvePostLoginDestination } from '@/lib/broker/connections';
 export const dynamic = 'force-dynamic';
 
 /**
- * Dashboard requires Quant auth + an active broker connection.
- * Users without a broker are sent to /data-source (no redirect loop).
- * Database outages fail open to the dashboard shell to avoid
- * /dashboard ↔ /data-source loops when status cannot be resolved.
+ * Dashboard requires Quant auth + an explicit active data source.
+ * needsSelection / none → /data-source.
  */
 export default async function DashboardLayout({
   children,

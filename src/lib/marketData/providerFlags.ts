@@ -1,17 +1,15 @@
-// ════════════════════════════════════════════════════════════════
-//  providerFlags — single source of truth for market-data feature
-//  flags. Read these (NEVER process.env directly) when deciding
-//  which provider may serve a request.
-//
-//  Hard contract (removed vendor decommission):
-//    • MARKET_DATA_PROVIDER = 'yahoo' | 'kite' | 'none' | 'legacy'
-//      Production DEFAULT is 'kite' when the env var is unset.
-//    • Fallback chain: Kite → Yahoo → NSE → Database.
-//    • YAHOO_EMERGENCY_FALLBACK_ENABLED — when true, Yahoo may serve
-//      live quotes after Kite miss. Default TRUE after decommission
-//      so the cascade is usable without removed vendor.
-//    • NSE_DIRECT_FALLBACK_ENABLED — rare per-symbol NSE fetch.
-// ════════════════════════════════════════════════════════════════
+/**
+ * providerFlags — system-level market-data feature flags for
+ * background jobs, boot, and broker-neutral warehouse paths.
+ *
+ * USER-FACING requests must NOT call getMarketDataProvider /
+ * getLiveFeedProvider to pick Zerodha vs Shoonya. Resolve the
+ * authenticated user's preference via getUserActiveDataSource(userId)
+ * / resolveUserLiveProvider(userId).
+ *
+ * Env MARKET_DATA_PROVIDER is system-only. When unset it is `none` —
+ * there is no hidden default to kite for user selection.
+ */
 
 export type MarketDataProviderName =
   | 'yahoo'
@@ -34,24 +32,28 @@ function asInt(raw: string | undefined, fallback: number, min = 0): number {
 }
 
 /**
- * Primary provider.
- *   1. MARKET_DATA_PROVIDER=<name> → that name
- *   2. unset / unrecognized        → 'kite'
- *
- * Legacy env LEGACY_VENDOR_ENV / MARKET_DATA_PROVIDER=legacy_vendor are
- * ignored (map to kite) so decommissioned installs still boot.
+ * SYSTEM-LEVEL primary provider (background jobs / boot only).
+ * Never use this to choose a user's Zerodha vs Shoonya data source.
+ * Unset / unrecognized → `none` (no hidden kite default).
  */
-export function getMarketDataProvider(): MarketDataProviderName {
+export function getSystemMarketDataProvider(): MarketDataProviderName {
   const raw = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
   if (raw === 'yahoo' || raw === 'kite' || raw === 'none' || raw === 'legacy') {
     return raw;
   }
-  // Former "kite" pin → kite (vendor removed).
-  return 'kite';
+  return 'none';
+}
+
+/**
+ * @deprecated Prefer getSystemMarketDataProvider() for jobs, or
+ * getUserActiveDataSource(userId) for user-facing paths.
+ */
+export function getMarketDataProvider(): MarketDataProviderName {
+  return getSystemMarketDataProvider();
 }
 
 export function getPrimaryFallbackProvider(
-  selected: MarketDataProviderName = getMarketDataProvider(),
+  selected: MarketDataProviderName = getSystemMarketDataProvider(),
 ): string {
   switch (selected) {
     case 'kite':
@@ -63,7 +65,7 @@ export function getPrimaryFallbackProvider(
     case 'none':
       return 'none';
     default:
-      return 'yahoo|nse|db';
+      return 'none';
   }
 }
 
@@ -89,46 +91,62 @@ export function isKiteSupportedCapability(cap: ProviderCapabilityTag): boolean {
   return (KITE_SUPPORTED_CAPABILITIES as readonly string[]).includes(cap);
 }
 
-/** Yahoo may fill after Kite miss. Default true (decommission cascade). */
+/**
+ * Yahoo emergency cascade for SYSTEM resolver paths.
+ * Default OFF — must be explicitly enabled (Phase 11).
+ */
 export function isYahooEmergencyFallbackEnabled(): boolean {
-  return asBool(process.env.YAHOO_EMERGENCY_FALLBACK_ENABLED, true);
+  return asBool(process.env.YAHOO_EMERGENCY_FALLBACK_ENABLED, false);
 }
 
 export function isKiteEnabled(): boolean {
   return asBool(process.env.KITE_ENABLED, true);
 }
 
+/** NSE-direct cascade for SYSTEM resolver. Default OFF (Phase 11). */
 export function isNseDirectFallbackEnabled(): boolean {
-  return asBool(process.env.NSE_DIRECT_FALLBACK_ENABLED, true);
+  return asBool(process.env.NSE_DIRECT_FALLBACK_ENABLED, false);
 }
 
 export function isNseForceMode(): boolean {
   return asBool(process.env.FORCE_NSE_MODE, false);
 }
 
-/** @deprecated Always false — vendor removed. Kept for call-site compile until Phase 3. */
+/** @deprecated Always false — vendor removed. */
 export function isLegacyVendorPrimary(): boolean {
   return false;
 }
 
+/** System-level: is the process configured for Kite as primary feed? */
 export function isKitePrimary(): boolean {
-  return getMarketDataProvider() === 'kite';
+  return getSystemMarketDataProvider() === 'kite';
 }
 
 export function isLegacyRollbackActive(): boolean {
-  return getMarketDataProvider() === 'legacy';
+  return getSystemMarketDataProvider() === 'legacy';
 }
 
 export function mayUseYahoo(): boolean {
-  if (getMarketDataProvider() === 'yahoo') return true;
+  if (getSystemMarketDataProvider() === 'yahoo') return true;
   return isYahooEmergencyFallbackEnabled();
 }
 
-export type LiveFeedProvider = 'yahoo' | 'kite';
+export type LiveFeedProvider = 'yahoo' | 'kite' | 'none';
 
-/** Live WS poll upstream. */
+/**
+ * SYSTEM-LEVEL live WS/poll upstream for process-global feed bootstrap.
+ * Not a per-user Zerodha/Shoonya selector. No silent yahoo when kite unset.
+ */
+export function getSystemLiveFeedProvider(): LiveFeedProvider {
+  const selected = getSystemMarketDataProvider();
+  if (selected === 'kite' && isKiteEnabled()) return 'kite';
+  if (selected === 'yahoo') return 'yahoo';
+  return 'none';
+}
+
+/** @deprecated Prefer getSystemLiveFeedProvider() for jobs. */
 export function getLiveFeedProvider(): LiveFeedProvider {
-  return isKitePrimary() && isKiteEnabled() ? 'kite' : 'yahoo';
+  return getSystemLiveFeedProvider();
 }
 
 export function mayUseKite(): boolean {
@@ -136,23 +154,22 @@ export function mayUseKite(): boolean {
 }
 
 export interface NseDirectFallbackConfig {
-  enabled:           boolean;
-  triggerFailures:   number;
-  maxSymbolsPerDay:  number;
-  minDelayMs:        number;
+  enabled: boolean;
+  triggerFailures: number;
+  maxSymbolsPerDay: number;
+  minDelayMs: number;
 }
 
 export function getNseDirectFallbackConfig(): NseDirectFallbackConfig {
   return {
-    enabled:          isNseDirectFallbackEnabled(),
-    triggerFailures:  asInt(process.env.NSE_DIRECT_FALLBACK_TRIGGER_FAILURES, 1, 1),
+    enabled: isNseDirectFallbackEnabled(),
+    triggerFailures: asInt(process.env.NSE_DIRECT_FALLBACK_TRIGGER_FAILURES, 1, 1),
     maxSymbolsPerDay: asInt(process.env.NSE_DIRECT_FALLBACK_MAX_SYMBOLS_PER_DAY, 50, 0),
-    minDelayMs:       asInt(process.env.NSE_DIRECT_FALLBACK_MIN_DELAY_MS, 500, 250),
+    minDelayMs: asInt(process.env.NSE_DIRECT_FALLBACK_MIN_DELAY_MS, 500, 250),
   };
 }
 
 export function isDualSourceEnabled(): boolean {
-  // Dual-source required the removed vendor; force off.
   return false;
 }
 
@@ -165,9 +182,10 @@ export function getDualSourceConfig(): import('@/lib/marketData/dualSource/types
     outlierSpikeBps: asInt(process.env.DUAL_SOURCE_OUTLIER_SPIKE_BPS, 200, 10),
     allowSingleSourceSignals: asBool(process.env.DUAL_SOURCE_ALLOW_SINGLE_SOURCE, false),
     authoritativeOnConflict: (() => {
-      const raw = (process.env.DUAL_SOURCE_AUTHORITATIVE ?? 'kite').trim().toLowerCase();
+      const raw = (process.env.DUAL_SOURCE_AUTHORITATIVE ?? '').trim().toLowerCase();
       if (raw === 'yahoo') return 'yahoo';
       if (raw === 'kite') return 'kite';
+      // No hidden kite default when unset.
       return 'kite';
     })(),
     minConfidenceForSignal: asInt(process.env.DUAL_SOURCE_MIN_CONFIDENCE, 80, 0),
@@ -179,18 +197,21 @@ export function getDualSourceConfig(): import('@/lib/marketData/dualSource/types
 export function getProviderFlagsSummary(): Record<string, unknown> {
   const nse = getNseDirectFallbackConfig();
   const dual = getDualSourceConfig();
-  const selected = getMarketDataProvider();
+  const selected = getSystemMarketDataProvider();
   return {
-    marketDataProvider:               selected,
-    kitePrimary:                      selected === 'kite',
-    primaryFallbackProvider:          getPrimaryFallbackProvider(selected),
-    liveFeedProvider:                 getLiveFeedProvider(),
-    dualSourceEnabled:                dual.enabled,
-    yahooEmergencyFallbackEnabled:    isYahooEmergencyFallbackEnabled(),
-    kiteEnabled:                      isKiteEnabled(),
-    nseDirectFallbackEnabled:         nse.enabled,
-    nseDirectTriggerFailures:         nse.triggerFailures,
-    nseDirectMaxSymbolsPerDay:        nse.maxSymbolsPerDay,
-    nseDirectMinDelayMs:              nse.minDelayMs,
+    marketDataProvider: selected,
+    systemMarketDataProvider: selected,
+    note: 'system-level only; user paths use resolveUserLiveProvider / getUserActiveDataSource',
+    kitePrimary: selected === 'kite',
+    primaryFallbackProvider: getPrimaryFallbackProvider(selected),
+    liveFeedProvider: getSystemLiveFeedProvider(),
+    dualSourceEnabled: dual.enabled,
+    yahooEmergencyFallbackEnabled: isYahooEmergencyFallbackEnabled(),
+    kiteEnabled: isKiteEnabled(),
+    nseDirectFallbackEnabled: nse.enabled,
+    nseDirectTriggerFailures: nse.triggerFailures,
+    nseDirectMaxSymbolsPerDay: nse.maxSymbolsPerDay,
+    nseDirectMinDelayMs: nse.minDelayMs,
+    hiddenDefaultsRemoved: true,
   };
 }

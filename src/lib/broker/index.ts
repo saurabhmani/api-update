@@ -20,7 +20,31 @@ export {
   hasActiveBrokerConnection,
   getSafeBrokerStatus,
   resolvePostLoginDestination,
+  getUserActiveDataSource,
+  setUserActiveDataSource,
+  disconnectDataSourceBroker,
+  getUserBrokerMarketDataProvider,
+  ActiveDataSourceError,
   encryptBrokerCredential,
   decryptBrokerCredential,
 } from './connections';
+export type { UserActiveDataSource } from './connections';
 export { getDataSourceBrokerAdapter } from './oauth/registry';
+
+// Broker-scoped market-data providers (Phase 2 contract)
+export {
+  getBrokerMarketDataProvider,
+  listBrokerMarketDataProviders,
+  BrokerMarketDataError,
+} from '@/lib/marketData/brokerProvider';
+export type {
+  BrokerMarketDataProvider,
+  BrokerProviderName,
+  BrokerConnectionContext,
+  NormalizedInstrument,
+  NormalizedInstrumentInput,
+  NormalizedQuote,
+  NormalizedCandle,
+  NormalizedTick,
+  ProviderConnectionStatus,
+} from '@/lib/marketData/brokerProvider';

@@ -118,53 +118,63 @@ export class KiteClient {
   }
 
   /**
-   * Load access token from the Redis active session when memory is empty.
-   * Falls back to an active encrypted Zerodha row in broker_connections
-   * (local seed / OAuth persistence) and re-hydrates Redis when possible.
-   * Returns whether a usable token is present after.
+   * Hydrate the PROCESS-GLOBAL Kite client from the SYSTEM feed session only.
+   * Requires SYSTEM_MARKET_DATA_USER_ID. Never picks an arbitrary user's
+   * broker_connections row. Interactive users must use the connection registry.
    */
   async hydrateAccessTokenFromSession(): Promise<boolean> {
     if (this.cfg.accessToken.trim()) return true;
 
-    // Dynamic import keeps `server-only` off the static client graph for tests.
-    const { getActiveKiteAccessToken, saveActiveKiteSession } = await import(
-      './active-session-store'
+    const { getSystemMarketDataUserId } = await import(
+      '@/lib/marketData/connectionManager/systemFeed'
     );
-    const token = await getActiveKiteAccessToken();
-    if (token) {
-      this.setAccessToken(token);
+    const { isValidSystemSessionOwner } = await import(
+      '@/lib/marketData/jobs/jobClassification'
+    );
+    const systemUserId = getSystemMarketDataUserId();
+    if (systemUserId == null) {
+      log.warn('system_kite_hydrate_skipped', {
+        reason: 'SYSTEM_MARKET_DATA_USER_ID unset — refusing cross-user token steal',
+      });
+      return false;
+    }
+
+    const { getSystemKiteSession } = await import('./active-session-store');
+    const systemSession = await getSystemKiteSession();
+    if (
+      systemSession?.accessToken
+      && isValidSystemSessionOwner(systemSession.quantorusUserId)
+    ) {
+      this.setAccessToken(systemSession.accessToken);
       return true;
+    }
+    if (systemSession?.accessToken) {
+      log.warn('system_kite_hydrate_skipped', {
+        reason: 'SYSTEM_SESSION_MISMATCH',
+        sessionUserId: systemSession.quantorusUserId,
+        systemUserId,
+      });
     }
 
     try {
-      const { getDecryptedAccessTokenForUser } = await import('@/lib/broker/connections');
-      const { db } = await import('@/lib/db');
-      const { rows } = await db.query(
-        `SELECT user_id, broker_account_id, last_authenticated_at
-         FROM broker_connections
-         WHERE broker = 'zerodha' AND status = 'active'
-           AND access_token_encrypted IS NOT NULL AND access_token_encrypted <> ''
-         ORDER BY is_primary DESC, last_authenticated_at DESC
-         LIMIT 1`,
+      const { getDecryptedAccessTokenForUser, getBrokerConnectionByUserAndBroker } = await import(
+        '@/lib/broker/connections'
       );
-      const row = rows[0] as
-        | { user_id?: number; broker_account_id?: string; last_authenticated_at?: string }
-        | undefined;
-      if (!row?.user_id) return false;
+      const row = await getBrokerConnectionByUserAndBroker(systemUserId, 'zerodha');
+      if (!row || row.status !== 'active') return false;
 
-      const decrypted = await getDecryptedAccessTokenForUser(Number(row.user_id), 'zerodha');
+      const decrypted = await getDecryptedAccessTokenForUser(systemUserId, 'zerodha');
       if (!decrypted) return false;
 
       this.setAccessToken(decrypted);
-      const kiteUserId = String(row.broker_account_id ?? 'unknown').trim() || 'unknown';
-      const authenticatedAt = row.last_authenticated_at
-        ? new Date(row.last_authenticated_at).toISOString()
-        : new Date().toISOString();
-      await saveActiveKiteSession({
+      const { saveUserKiteSession } = await import('./active-session-store');
+      await saveUserKiteSession(systemUserId, {
         accessToken: decrypted,
-        kiteUserId,
-        quantorusUserId: String(row.user_id),
-        authenticatedAt,
+        kiteUserId: String(row.brokerAccountId ?? 'unknown').trim() || 'unknown',
+        quantorusUserId: String(systemUserId),
+        authenticatedAt: row.lastAuthenticatedAt
+          ? new Date(row.lastAuthenticatedAt).toISOString()
+          : new Date().toISOString(),
       }).catch(() => undefined);
       return true;
     } catch {

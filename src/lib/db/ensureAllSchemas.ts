@@ -1112,6 +1112,16 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
     console.error('[ensureAllSchemas] migrateSignalEngine failed:', (err as Error).message);
   }
 
+  // Align rankings/instruments with q365_* unicode_ci so ticker JOINs
+  // on instrument_key / tradingsymbol do not hit errno 1267.
+  try {
+    const { normalizeTickerCollations } = await import('./normalizeTickerCollations');
+    await normalizeTickerCollations();
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] normalizeTickerCollations failed:', (err as Error).message);
+  }
+
   try {
     await migrateDualSource();
   } catch (err) {
