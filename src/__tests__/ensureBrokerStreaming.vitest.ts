@@ -60,6 +60,7 @@ vi.mock('@/lib/marketData/providerFlags', () => ({
 vi.mock('@/lib/marketData/connectionManager', () => ({
   shouldUpdateSystemKiteFeed,
   upsertUserBrokerSession,
+  getBrokerConnection: vi.fn(() => null),
 }));
 
 vi.mock('@/lib/broker/connections', () => ({

@@ -11,6 +11,7 @@
 import { logger } from '@/lib/logger';
 import { getSystemLiveFeedProvider } from '@/lib/marketData/providerFlags';
 import {
+  getBrokerConnection,
   shouldUpdateSystemKiteFeed,
   upsertUserBrokerSession,
 } from '@/lib/marketData/connectionManager';
@@ -37,6 +38,7 @@ export interface EnsureBrokerStreamingResult {
   baselineSymbols: number;
   userConnectionKey?: string;
   systemFeedUpdated?: boolean;
+  skippedAlreadyConnected?: boolean;
   error?: string;
 }
 
@@ -69,6 +71,33 @@ export async function ensureStreamingAfterBrokerConnect(
   });
 
   try {
+    // Fast path: already connected for this user+broker — do not
+    // re-authenticate / reconnect on every /api/signals poll (that
+    // was pushing dashboard past its 12s/18s budgets → PARTIAL mode).
+    const existing = getBrokerConnection({
+      userId: input.userId,
+      provider: broker,
+    });
+    if (existing) {
+      const snap = existing.getSnapshot();
+      if (snap.state === 'connected' && snap.hasAuthenticatedSession) {
+        result.ok = true;
+        result.hydrated = true;
+        result.userConnectionKey = snap.keyString;
+        result.skippedAlreadyConnected = true;
+        try {
+          const { ensureLiveMarketStack } = await import(
+            '@/lib/marketData/ensureLiveMarketStack'
+          );
+          const stack = await ensureLiveMarketStack();
+          result.stackEnsured = true;
+          result.wsRunning = stack.wsRunning;
+          result.baselineSymbols = stack.baselineSymbols;
+        } catch { /* non-fatal */ }
+        return result;
+      }
+    }
+
     const { getStatus: getMarketSession } = await import(
       '@/lib/marketData/marketSessionService'
     );

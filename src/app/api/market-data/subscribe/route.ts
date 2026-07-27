@@ -30,13 +30,15 @@ export async function POST(req: NextRequest) {
       const active = await getUserActiveDataSource(Number(session.id));
       if (active.provider && active.isConnected) {
         userProvider = active.provider;
-        const { ensureStreamingAfterBrokerConnect } = await import(
-          '@/lib/marketData/ensureBrokerStreaming'
-        );
-        await ensureStreamingAfterBrokerConnect({
-          userId: Number(session.id),
-          broker: active.provider,
-        });
+        // Background only — never block subscribe on reconnect.
+        void import('@/lib/marketData/ensureBrokerStreaming')
+          .then(({ ensureStreamingAfterBrokerConnect }) =>
+            ensureStreamingAfterBrokerConnect({
+              userId: Number(session.id),
+              broker: active.provider!,
+            }),
+          )
+          .catch(() => {});
       }
     }
   } catch { /* anonymous subscribe still registers system demand */ }

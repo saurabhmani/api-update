@@ -1588,20 +1588,19 @@ export async function GET(req: NextRequest) {
     status: 'not_connected' as const,
   }));
 
-  // Warm THIS user's active broker stream so live ticks + quote enrich
-  // use the same connected source shown on /data-source (not system Kite).
+  // Warm THIS user's active broker stream in the background.
+  // Never await on the request path — reconnecting Shoonya/Zerodha
+  // on every poll was pushing /api/dashboard past its 12s/18s budgets
+  // and flipping the UI into Partial Intelligence Mode.
   if (feedMeta.provider) {
-    try {
-      const { ensureStreamingAfterBrokerConnect } = await import(
-        '@/lib/marketData/ensureBrokerStreaming'
-      );
-      await ensureStreamingAfterBrokerConnect({
-        userId: sessionUserId,
-        broker: feedMeta.provider,
-      });
-    } catch {
-      /* enrichment still runs via REST quote path */
-    }
+    void import('@/lib/marketData/ensureBrokerStreaming')
+      .then(({ ensureStreamingAfterBrokerConnect }) =>
+        ensureStreamingAfterBrokerConnect({
+          userId: sessionUserId,
+          broker: feedMeta.provider!,
+        }),
+      )
+      .catch(() => { /* enrichment still runs via REST quote path */ });
   }
 
   // Boot live feed stack so freshness + engine-health preview see the

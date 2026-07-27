@@ -196,10 +196,10 @@ export async function GET(req: NextRequest) {
   // abort at the previous 8s default. Everything else is either a
   // lightweight summary or a pure DB read.
   const TIMEOUT = {
-    signals:       12_000, // primary signal engine — heavy aggregation
+    signals:       20_000, // primary signal engine — heavy aggregation
     // engine-health fans out to /api/signals + daily-report + backtest internally;
     // under dashboard parallel load it often exceeds 8s even when a solo call is ~5s.
-    engineHealth:  18_000, // pipeline readiness summary (nested upstream fan-out)
+    engineHealth:  25_000, // pipeline readiness summary (nested upstream fan-out)
     dailyReport:    8_000, // regime + executive summary
     backtestPrev:   5_000, // /signals/backtest?window=1D preview
     newsSummary:    5_000, // /news-engine?action=summary — DB read + env probe
