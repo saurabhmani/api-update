@@ -76,6 +76,38 @@ function normalizeCandlePayload(json: unknown): ShoonyaCandleRaw[] {
   return out;
 }
 
+/** Parse Shoonya bodies that are occasionally non-standard (NDJSON, empty). */
+function parseShoonyaResponseText(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Some deployments return one JSON object per line.
+    if (trimmed.includes('\n')) {
+      const rows: unknown[] = [];
+      for (const line of trimmed.split('\n')) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          rows.push(JSON.parse(s));
+        } catch {
+          // keep trying other lines
+        }
+      }
+      if (rows.length > 0) return rows;
+    }
+    throw new BrokerMarketDataError(
+      'shoonya',
+      'provider_error',
+      `Invalid JSON from Shoonya market-data API (${trimmed.slice(0, 80)}…)`,
+    );
+  }
+}
+
+type ShoonyaPostAuth = 'bearer' | 'jkey';
+
 export class ShoonyaRestClient {
   private readonly baseUrl: string;
 
@@ -185,26 +217,37 @@ export class ShoonyaRestClient {
     const tsym = /-(EQ|BE|BL)$/i.test(input.tsym)
       ? input.tsym.toUpperCase()
       : `${input.tsym.toUpperCase()}-EQ`;
-    // Official ShoonyaApi-py uses `NSE:RELIANCE-EQ` (no spaces).
+    // Official ShoonyaApi-py: sym=`NSE:RELIANCE-EQ`, fields `from`/`to` (not st/et).
     const trySyms = [`${exch}:${tsym}`, `${exch} : ${tsym}`];
+    const attempts: Array<{ path: string; auth: ShoonyaPostAuth }> = [
+      { path: '/NorenWClientAPI/EODChartData', auth: 'bearer' },
+      { path: '/NorenWClientTP/EODChartData', auth: 'jkey' },
+    ];
     let lastError: unknown;
     for (const sym of trySyms) {
-      try {
-        const json = await this.post(
-          '/NorenWClientAPI/EODChartData',
-          {
-            uid: this.session.uid,
+      const payload = {
+        uid: this.session.uid,
+        sym,
+        from: String(input.startUnix),
+        to: String(input.endUnix),
+      };
+      for (const attempt of attempts) {
+        try {
+          const json = await this.post(attempt.path, payload, {
+            timeoutMs: historicalTimeoutMs(),
+            auth: attempt.auth,
+          });
+          const rows = normalizeCandlePayload(json);
+          if (rows.length > 0) return rows;
+        } catch (err) {
+          lastError = err;
+          log.debug('EODChartData attempt failed', {
+            path: attempt.path,
             sym,
-            st: String(input.startUnix),
-            et: String(input.endUnix),
-          },
-          { timeoutMs: historicalTimeoutMs() },
-        );
-        const rows = normalizeCandlePayload(json);
-        if (rows.length > 0) return rows;
-        // Empty array — try alternate sym formatting once.
-      } catch (err) {
-        lastError = err;
+            auth: attempt.auth,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
     if (lastError) throw lastError;
@@ -214,18 +257,24 @@ export class ShoonyaRestClient {
   private async post(
     path: string,
     data: Record<string, unknown>,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; auth?: ShoonyaPostAuth },
   ): Promise<Record<string, unknown> | unknown[]> {
     const url = `${this.baseUrl}${path}`;
-    const body = `jData=${JSON.stringify(data)}`;
+    const auth = opts?.auth ?? 'bearer';
+    const body =
+      auth === 'jkey'
+        ? `jData=${JSON.stringify(data)}&jKey=${this.session.accessToken}`
+        : `jData=${JSON.stringify(data)}`;
     const timeoutMs = opts?.timeoutMs ?? 20_000;
     let response: Response;
     try {
       response = await fetch(url, {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain',
-          Authorization: `Bearer ${this.session.accessToken}`,
+          'Content-Type': auth === 'jkey' ? 'application/json; charset=utf-8' : 'text/plain',
+          ...(auth === 'bearer'
+            ? { Authorization: `Bearer ${this.session.accessToken}` }
+            : {}),
         },
         body,
         signal: AbortSignal.timeout(timeoutMs),
@@ -240,8 +289,9 @@ export class ShoonyaRestClient {
     const text = await response.text();
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
-    } catch {
+      parsed = parseShoonyaResponseText(text);
+    } catch (err) {
+      if (err instanceof BrokerMarketDataError) throw err;
       throw new BrokerMarketDataError(
         'shoonya',
         'provider_error',
