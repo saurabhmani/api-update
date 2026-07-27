@@ -28,10 +28,16 @@ interface ActiveStockRow {
 
 function parseArgs(argv: string[]): { dryRun: boolean; excludeInav: boolean } {
   let dryRun = false;
-  let excludeInav = false;
+  // Match boot sync (UNIVERSE_EXCLUDE_INAV default true). Opt out with --include-inav.
+  const envExclude = (() => {
+    const raw = String(process.env.UNIVERSE_EXCLUDE_INAV ?? 'true').trim().toLowerCase();
+    return raw !== 'false' && raw !== '0' && raw !== 'no' && raw !== 'off';
+  })();
+  let excludeInav = envExclude;
   for (const a of argv) {
     if (a === '--dry-run') dryRun = true;
     if (a === '--exclude-inav') excludeInav = true;
+    if (a === '--include-inav') excludeInav = false;
   }
   return { dryRun, excludeInav };
 }

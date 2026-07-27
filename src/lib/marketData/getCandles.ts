@@ -29,6 +29,8 @@ export interface GetCandlesOptions {
 
 const PERMANENT_SKIP = new Set<string>(['JUNCTION']);
 const INAV_PSEUDO_RE = /INAV$/;
+/** Non-EQ / illiquid series Shoonya EOD often 502s on. */
+const NON_EQ_SERIES_RE = /-(BE|BZ|BL|SM|ST|IL|P\d*|E\d+)$/;
 
 const NEGATIVE_TTL_MS = 15 * 60 * 1_000;
 const failedAt = new Map<string, number>();
@@ -66,6 +68,9 @@ export async function getCandles(
   }
   if (INAV_PSEUDO_RE.test(sym)) {
     return { ok: false, source: 'kite', reason: 'skip:inav_pseudo_symbol' };
+  }
+  if (NON_EQ_SERIES_RE.test(sym) || /[&]/.test(sym)) {
+    return { ok: false, source: 'kite', reason: 'skip:non_eq_series' };
   }
 
   const negAt = failedAt.get(sym);

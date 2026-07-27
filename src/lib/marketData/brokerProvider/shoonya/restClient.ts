@@ -81,6 +81,16 @@ function parseShoonyaResponseText(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) return [];
 
+  // Upstream gateway HTML (common for unsupported *INAV scrips).
+  if (/^<!DOCTYPE|^<html/i.test(trimmed) || /Bad Gateway|502|503|504/i.test(trimmed.slice(0, 200))) {
+    const code = /502/.test(trimmed) ? '502' : /503/.test(trimmed) ? '503' : /504/.test(trimmed) ? '504' : 'HTML';
+    throw new BrokerMarketDataError(
+      'shoonya',
+      'provider_error',
+      `Shoonya upstream ${code} (non-JSON) — often unsupported INAV/pseudo symbols`,
+    );
+  }
+
   try {
     return JSON.parse(trimmed);
   } catch {

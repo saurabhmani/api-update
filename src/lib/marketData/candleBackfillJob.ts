@@ -214,10 +214,14 @@ async function loadBackfillSymbolPool(
 }
 
 export async function loadActiveUniverseSymbols(limit: number): Promise<string[]> {
+  // Skip pseudo/non-EQ scrips Shoonya EOD routinely 502s on (*INAV, -BE/-BZ, etc.).
   const { rows } = await db.query<{ symbol: string }>(
     `SELECT symbol
        FROM q365_universe
       WHERE is_active = 1
+        AND symbol NOT REGEXP 'INAV$'
+        AND symbol NOT REGEXP '-(BE|BZ|BL|SM|ST|IL|P[0-9]*|E[0-9]*)$'
+        AND symbol NOT LIKE '%&%'
       ORDER BY symbol ASC
       LIMIT ?`,
     [limit],
@@ -250,6 +254,9 @@ export async function getUniverseBackfillStats(
     : `SELECT symbol
          FROM q365_universe
         WHERE is_active = 1
+          AND symbol NOT REGEXP 'INAV$'
+          AND symbol NOT REGEXP '-(BE|BZ|BL|SM|ST|IL|P[0-9]*|E[0-9]*)$'
+          AND symbol NOT LIKE '%&%'
         ORDER BY symbol ASC
         LIMIT ?`;
 
