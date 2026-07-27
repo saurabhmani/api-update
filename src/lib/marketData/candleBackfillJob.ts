@@ -20,7 +20,6 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
-import { ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 import {
@@ -400,7 +399,7 @@ async function upsertDailyCandle(
   low: number,
   close: number,
   volume: number,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
 ): Promise<'inserted' | 'updated' | 'unchanged' | 'skipped'> {
   const { upsertWarehouseCandle } = await import('@/lib/marketData/jobs/candleWarehouseUpsert');
   return upsertWarehouseCandle({
@@ -420,7 +419,7 @@ async function upsertDailyCandle(
 export async function persistBarsForSymbol(
   symbol: string,
   bars: Array<{ ts: string | Date; open: number; high: number; low: number; close: number; volume: number }>,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
   let inserted = 0;
   let updated = 0;
@@ -538,7 +537,13 @@ async function backfillOneSymbol(
     };
   }
 
-  const { inserted, updated } = await persistBarsForSymbol(symbol, fetch.candles);
+  const { inserted, updated } = await persistBarsForSymbol(
+    symbol,
+    fetch.candles,
+    (fetch as { warehouseSource?: 'kite' | 'shoonya' }).warehouseSource === 'shoonya'
+      ? 'shoonya'
+      : 'kite',
+  );
   if (inserted === 0 && updated === 0) {
     return {
       status: 'failed',
@@ -598,18 +603,18 @@ export async function runCandleBackfillJob(
     symbols: options.symbols,
   });
 
-  if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
-    throw new Error(
-      'System Kite session unavailable — set SYSTEM_MARKET_DATA_USER_ID and connect '
-      + 'that service account\'s Zerodha on /data-source before running backfill',
-    );
-  }
-
   if (!dryRun) {
-    const { requireSystemOwnedBrokerConnection } = await import(
-      '@/lib/marketData/jobs/jobClassification'
+    const { ensureCandleIngestConfigured } = await import(
+      '@/lib/marketData/jobs/candleIngestBroker'
     );
-    await requireSystemOwnedBrokerConnection('zerodha');
+    const gate = await ensureCandleIngestConfigured();
+    if (!gate.ok) {
+      throw new Error(
+        gate.message
+        || 'No connected broker for candle ingest — connect Shoonya or Zerodha on /data-source',
+      );
+    }
+    console.log(`[CANDLE BACKFILL] ingest=${gate.message}`);
   }
 
   const jobId = `candle-backfill_${Date.now()}`;

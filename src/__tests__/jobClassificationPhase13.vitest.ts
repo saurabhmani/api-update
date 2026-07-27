@@ -60,9 +60,18 @@ describe('requireSystemMarketDataUserId', () => {
 describe('candle source precedence', () => {
   beforeEach(() => {
     delete process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST;
+    delete process.env.CANDLE_INGEST_USE_CONNECTED_BROKER;
   });
 
-  it('blocks shoonya from shared warehouse by default', () => {
+  it('allows shoonya warehouse writes when connected-broker ingest is on (default)', () => {
+    expect(isWarehouseCandleSourceAllowed('shoonya')).toBe(true);
+    expect(
+      shouldApplyCandleUpsert({ incoming: 'shoonya', existing: null }).apply,
+    ).toBe(true);
+  });
+
+  it('blocks shoonya when connected-broker ingest is explicitly off', () => {
+    process.env.CANDLE_INGEST_USE_CONNECTED_BROKER = '0';
     expect(isWarehouseCandleSourceAllowed('shoonya')).toBe(false);
     expect(
       shouldApplyCandleUpsert({ incoming: 'shoonya', existing: null }).apply,

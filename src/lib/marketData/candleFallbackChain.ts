@@ -140,7 +140,7 @@ export interface UpstreamCandleFetchResult {
   rawBarCount: number;
   validBarCount: number;
   /** Which upstream filled this result (jobs/tests). */
-  provider?: 'kite' | null;
+  provider?: 'kite' | 'shoonya' | null;
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────
@@ -354,14 +354,25 @@ export async function fetchKiteDailyCandles(
 }
 
 /**
- * Upstream daily bars: Kite only. Preserves UpstreamCandleFetchResult
- * for jobs/scripts. On miss, returns the Kite error (no secondary vendor).
+ * Upstream daily bars for warehouse jobs.
+ * Prefers the connected active broker (Shoonya or Zerodha) when
+ * CANDLE_INGEST_USE_CONNECTED_BROKER is on (default); else classic Kite.
  */
 export async function fetchUpstreamDailyCandles(
   symbol: string,
   range: HistoricalRange = '1y',
-): Promise<UpstreamCandleFetchResult> {
-  return fetchKiteDailyCandles(symbol, range);
+): Promise<UpstreamCandleFetchResult & { warehouseSource?: 'kite' | 'shoonya' }> {
+  try {
+    const { isConnectedBrokerCandleIngestEnabled, fetchConnectedBrokerDailyCandles } =
+      await import('@/lib/marketData/jobs/candleIngestBroker');
+    if (isConnectedBrokerCandleIngestEnabled()) {
+      return fetchConnectedBrokerDailyCandles(symbol, range);
+    }
+  } catch {
+    /* fall through to classic Kite */
+  }
+  const kite = await fetchKiteDailyCandles(symbol, range);
+  return { ...kite, warehouseSource: 'kite' };
 }
 
 // ── DB upsert ──────────────────────────────────────────────────────

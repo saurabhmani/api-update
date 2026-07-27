@@ -15,6 +15,17 @@ export type {
 } from './jobClassification';
 
 export {
+  resolveCandleIngestBroker,
+  ensureCandleIngestConfigured,
+  fetchConnectedBrokerDailyCandles,
+  isConnectedBrokerCandleIngestEnabled,
+} from './candleIngestBroker';
+export type {
+  CandleIngestBroker,
+  CandleIngestFetchResult,
+} from './candleIngestBroker';
+
+export {
   candleSourcePrecedence,
   normalizeWarehouseCandleSource,
   isWarehouseCandleSourceAllowed,

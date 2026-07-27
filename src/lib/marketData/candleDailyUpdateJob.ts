@@ -28,7 +28,6 @@ import {
   loadActiveUniverseSymbols,
   persistBarsForSymbol,
 } from '@/lib/marketData/candleBackfillJob';
-import { ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import type { HistoricalRange } from '@/types/market';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
@@ -205,7 +204,13 @@ async function updateOneSymbol(
     };
   }
 
-  const { inserted, updated } = await persistBarsForSymbol(symbol, bars);
+  const { inserted, updated } = await persistBarsForSymbol(
+    symbol,
+    bars,
+    (fetch as { warehouseSource?: 'kite' | 'shoonya' }).warehouseSource === 'shoonya'
+      ? 'shoonya'
+      : 'kite',
+  );
   if (inserted === 0 && updated === 0) {
     return {
       status: 'failed',
@@ -268,19 +273,18 @@ async function runCandleDailyUpdateJobInner(
   const maxFetch = resolveDailyUpdateMaxFetch(options.maxFetch);
   const targetTradingDay = getLatestCompletedTradingDay();
 
-  if (!(await ensureKiteHistoricalConfigured()) && !dryRun) {
-    throw new Error(
-      'System Kite session unavailable — set SYSTEM_MARKET_DATA_USER_ID and connect '
-      + 'that service account\'s Zerodha on /data-source before running daily candle update',
-    );
-  }
-
-  // Fail closed: never ingest with an arbitrary customer connection.
   if (!dryRun) {
-    const { requireSystemOwnedBrokerConnection } = await import(
-      '@/lib/marketData/jobs/jobClassification'
+    const { ensureCandleIngestConfigured } = await import(
+      '@/lib/marketData/jobs/candleIngestBroker'
     );
-    await requireSystemOwnedBrokerConnection('zerodha');
+    const gate = await ensureCandleIngestConfigured();
+    if (!gate.ok) {
+      throw new Error(
+        gate.message
+        || 'No connected broker for candle ingest — connect Shoonya or Zerodha on /data-source',
+      );
+    }
+    console.log(`[CANDLE DAILY UPDATE] ingest=${gate.message}`);
   }
 
   resetCandleSourceCounters();

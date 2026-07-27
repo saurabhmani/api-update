@@ -17,7 +17,6 @@ dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
 dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
 
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
-import { getHistorical as getKiteHistorical, ensureKiteHistoricalConfigured } from '@/lib/marketData/providers/kiteHistoricalProvider';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
 import { DAILY_UPDATE_MAX_REQUESTS } from '@/lib/marketData/providerRequestPolicy';
 
@@ -65,20 +64,29 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  if (!(await ensureKiteHistoricalConfigured())) {
-    console.error(
-      '[CANDLE DAILY PREFLIGHT] No active Kite session — connect Zerodha from the dashboard (Redis required)',
-    );
+  const { ensureCandleIngestConfigured, fetchConnectedBrokerDailyCandles } = await import(
+    '@/lib/marketData/jobs/candleIngestBroker'
+  );
+  const gate = await ensureCandleIngestConfigured();
+  if (!gate.ok || !gate.ingest) {
+    console.error(`[CANDLE DAILY PREFLIGHT] ${gate.message}`);
     return false;
   }
-  console.log(`[CANDLE DAILY PREFLIGHT] probing ${symbol} via Kite ...`);
-  const kite = await getKiteHistorical(symbol, '1mo');
-  const bars = kite.data?.candles?.length ?? 0;
-  if (kite.status === 'success' || kite.status === 'partial') {
-    console.log(`[CANDLE DAILY PREFLIGHT] OK (kite) — ${bars} bars (1mo)`);
+  console.log(
+    `[CANDLE DAILY PREFLIGHT] probing ${symbol} via ${gate.ingest.broker} ` +
+    `(userId=${gate.ingest.userId}, ${gate.ingest.reason}) ...`,
+  );
+  const result = await fetchConnectedBrokerDailyCandles(symbol, '1mo', gate.ingest);
+  const bars = result.validBarCount;
+  if (result.ok) {
+    console.log(
+      `[CANDLE DAILY PREFLIGHT] OK (${result.warehouseSource}) — ${bars} bars (1mo)`,
+    );
     return true;
   }
-  console.error(`[CANDLE DAILY PREFLIGHT] FAIL — ${kite.errorCode}: ${kite.errorMessage}`);
+  console.error(
+    `[CANDLE DAILY PREFLIGHT] FAIL — ${result.errorCode}: ${result.errorMessage}`,
+  );
   return false;
 }
 

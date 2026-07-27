@@ -26,9 +26,10 @@ export type WarehouseCandleSource =
 const PRECEDENCE: Record<WarehouseCandleSource, number> = {
   nse_bhavcopy: 100,
   kite: 80,
+  /** Connected Shoonya ingest (enabled via CANDLE_INGEST_USE_CONNECTED_BROKER / SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST). */
+  shoonya: 70,
   yahoo: 20,
   unknown: 10,
-  shoonya: 0,
 };
 
 export function candleSourcePrecedence(source: WarehouseCandleSource): number {
@@ -51,8 +52,11 @@ export function isWarehouseCandleSourceAllowed(
   source: WarehouseCandleSource,
 ): boolean {
   if (source === 'shoonya') {
-    const raw = (process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST ?? '').trim().toLowerCase();
-    return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+    const allow = (process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST ?? '').trim().toLowerCase();
+    if (allow === '1' || allow === 'true' || allow === 'yes' || allow === 'on') return true;
+    // Single-tenant / connected-broker ingest path (default on).
+    const connected = (process.env.CANDLE_INGEST_USE_CONNECTED_BROKER ?? '1').trim().toLowerCase();
+    return connected === '1' || connected === 'true' || connected === 'yes' || connected === 'on';
   }
   return source === 'kite' || source === 'nse_bhavcopy' || source === 'yahoo' || source === 'unknown';
 }
