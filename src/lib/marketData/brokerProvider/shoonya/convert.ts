@@ -38,6 +38,8 @@ export interface ShoonyaCandleRaw {
   intc?: string | number;
   intv?: string | number;
   v?: string | number;
+  /** Unix seconds (EODChartData) */
+  ssboe?: string | number;
 }
 
 function num(value: unknown): number | null {
@@ -46,7 +48,10 @@ function num(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Shoonya TPSeries `intrv` (minutes or D). */
+/**
+ * Shoonya TPSeries `intrv` — minutes only.
+ * Daily/week/month must use EODChartData (see ShoonyaRestClient.getDailyPriceSeries).
+ */
 export function shoonyaIntervalFromBroker(interval: BrokerCandleInterval): string {
   switch (interval) {
     case '1minute':
@@ -62,36 +67,85 @@ export function shoonyaIntervalFromBroker(interval: BrokerCandleInterval): strin
     case 'day':
     case 'week':
     case 'month':
-      return 'D';
+      // Invalid for TPSeries; callers must route to EODChartData.
+      return '1';
     default:
-      return 'D';
+      return '1';
   }
 }
 
+export function isShoonyaDailyInterval(interval: BrokerCandleInterval): boolean {
+  return interval === 'day' || interval === 'week' || interval === 'month';
+}
+
 /**
- * Parse Shoonya chart time `DD/MM/YYYY HH:mm:ss` (IST wall clock) to ISO UTC.
- * Falls back to the raw string when unparseable.
+ * Parse Shoonya chart time to ISO UTC.
+ * Accepts:
+ *   - `DD/MM/YYYY HH:mm:ss` (TPSeries intraday)
+ *   - `DD-MMM-YYYY` / `DD-MMM-YYYY HH:mm:ss` (EODChartData)
+ *   - unix seconds via caller (ssboe)
  */
 export function parseShoonyaChartTime(raw: string | undefined): string {
   if (!raw) return new Date(0).toISOString();
-  const m = String(raw).trim().match(
-    /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/,
+  const s = String(raw).trim();
+
+  const dmY = s.match(
+    /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$/,
   );
-  if (!m) {
-    const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : raw;
+  if (dmY) {
+    const [, dd, mm, yyyy, hh = '00', mi = '00', ss = '00'] = dmY;
+    const utcMs = Date.UTC(
+      Number(yyyy),
+      Number(mm) - 1,
+      Number(dd),
+      Number(hh) - 5,
+      Number(mi) - 30,
+      Number(ss),
+    );
+    return new Date(utcMs).toISOString();
   }
-  const [, dd, mm, yyyy, hh, mi, ss] = m;
-  // Treat as IST (UTC+5:30)
-  const utcMs = Date.UTC(
-    Number(yyyy),
-    Number(mm) - 1,
-    Number(dd),
-    Number(hh) - 5,
-    Number(mi) - 30,
-    Number(ss),
+
+  const mon = s.match(
+    /^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{2}):(\d{2}):(\d{2}))?$/,
   );
-  return new Date(utcMs).toISOString();
+  if (mon) {
+    const months: Record<string, number> = {
+      JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+      JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
+    };
+    const [, dd, monStr, yyyy, hh = '00', mi = '00', ss = '00'] = mon;
+    const month = months[monStr.toUpperCase()];
+    if (month != null) {
+      const utcMs = Date.UTC(
+        Number(yyyy),
+        month,
+        Number(dd),
+        Number(hh) - 5,
+        Number(mi) - 30,
+        Number(ss),
+      );
+      return new Date(utcMs).toISOString();
+    }
+  }
+
+  const parsed = Date.parse(s);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : s;
+}
+
+export function shoonyaCandleToNormalized(raw: ShoonyaCandleRaw): NormalizedCandle {
+  const ssboe = num(raw.ssboe);
+  const ts =
+    ssboe != null && ssboe > 1_000_000_000
+      ? new Date(ssboe > 1e12 ? ssboe : ssboe * 1000).toISOString()
+      : parseShoonyaChartTime(raw.time);
+  return {
+    ts,
+    open: num(raw.into) ?? 0,
+    high: num(raw.inth) ?? 0,
+    low: num(raw.intl) ?? 0,
+    close: num(raw.intc) ?? 0,
+    volume: num(raw.intv ?? raw.v) ?? 0,
+  };
 }
 
 export function shoonyaQuoteToNormalized(
@@ -133,17 +187,6 @@ export function shoonyaQuoteToNormalized(
     changePercent,
     asOfMs,
     quality: 'live',
-  };
-}
-
-export function shoonyaCandleToNormalized(raw: ShoonyaCandleRaw): NormalizedCandle {
-  return {
-    ts: parseShoonyaChartTime(raw.time),
-    open: num(raw.into) ?? 0,
-    high: num(raw.inth) ?? 0,
-    low: num(raw.intl) ?? 0,
-    close: num(raw.intc) ?? 0,
-    volume: num(raw.intv ?? raw.v) ?? 0,
   };
 }
 

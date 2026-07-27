@@ -291,7 +291,7 @@ export async function fetchConnectedBrokerDailyCandles(
         userId: resolved.userId,
         connectionId: resolved.connectionId ?? undefined,
       };
-      await adapter.connect(ctx);
+      // Historical REST only — do not open the live WebSocket ticker.
       const { from, to } = historicalRangeToWindow(range);
       const bars = await adapter.fetchHistoricalCandles(ctx, {
         instrument: normalizeInstrument({
@@ -412,7 +412,7 @@ export async function fetchConnectedBrokerDailyCandles(
       userId: resolved.userId,
       connectionId: resolved.connectionId ?? undefined,
     };
-    await adapter.connect(ctx);
+    // Historical REST only — do not open the live WebSocket ticker.
     const { from, to } = historicalRangeToWindow(range);
     const bars = await adapter.fetchHistoricalCandles(ctx, {
       instrument: normalizeInstrument({

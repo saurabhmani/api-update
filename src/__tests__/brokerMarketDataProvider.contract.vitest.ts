@@ -131,6 +131,8 @@ describe('Normalized converters', () => {
     expect(quote.symbol).toBe('RELIANCE');
 
     expect(parseShoonyaChartTime('15/01/2024 10:15:00')).toMatch(/2024-01-15/);
+    // EOD date-only is IST midnight → previous calendar day in UTC.
+    expect(parseShoonyaChartTime('09-JAN-2023')).toBe('2023-01-08T18:30:00.000Z');
     const candle = shoonyaCandleToNormalized({
       time: '15/01/2024 10:15:00',
       into: '1',
@@ -141,6 +143,18 @@ describe('Normalized converters', () => {
     });
     expect(candle.close).toBe(1.5);
     expect(candle.volume).toBe(9);
+
+    const eod = shoonyaCandleToNormalized({
+      time: '09-JAN-2023',
+      into: '336.95',
+      inth: '341.30',
+      intl: '336.15',
+      intc: '338.05',
+      ssboe: '1673222400',
+      intv: '10618786.00',
+    });
+    expect(eod.close).toBe(338.05);
+    expect(eod.ts).toBe(new Date(1673222400 * 1000).toISOString());
 
     const tick = shoonyaTouchlineToNormalized({
       raw: { e: 'NSE', tk: '2885', lp: '2501', bp1: '2500', sp1: '2502', o: '2480' },

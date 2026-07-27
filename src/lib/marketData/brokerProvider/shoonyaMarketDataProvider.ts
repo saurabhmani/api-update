@@ -26,6 +26,7 @@ import type {
 } from './types';
 import { BrokerMarketDataError } from './types';
 import {
+  isShoonyaDailyInterval,
   shoonyaCandleToNormalized,
   shoonyaIntervalFromBroker,
   shoonyaQuoteToNormalized,
@@ -196,13 +197,23 @@ export class ShoonyaMarketDataProvider implements BrokerMarketDataProvider {
     }
 
     try {
-      const raw = await client.getTimePriceSeries({
-        exch: resolved.exchange,
-        token: resolved.token,
-        startUnix: Math.floor(fromMs / 1000),
-        endUnix: Math.floor(toMs / 1000),
-        intrv: shoonyaIntervalFromBroker(request.interval),
-      });
+      const startUnix = Math.floor(fromMs / 1000);
+      const endUnix = Math.floor(toMs / 1000);
+      // TPSeries only accepts minute intervals; daily uses EODChartData.
+      const raw = isShoonyaDailyInterval(request.interval)
+        ? await client.getDailyPriceSeries({
+            exch: resolved.exchange,
+            tsym: resolved.symbol,
+            startUnix,
+            endUnix,
+          })
+        : await client.getTimePriceSeries({
+            exch: resolved.exchange,
+            token: resolved.token,
+            startUnix,
+            endUnix,
+            intrv: shoonyaIntervalFromBroker(request.interval),
+          });
       let candles = raw.map(shoonyaCandleToNormalized);
       candles.sort((a, b) => a.ts.localeCompare(b.ts));
       if (request.limit && request.limit > 0 && candles.length > request.limit) {
