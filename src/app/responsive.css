@@ -1,0 +1,424 @@
+/* =============================================================================
+   Quantorus corporate site — responsive overrides
+   Breakpoints:
+     ≤1100px  tablet / compact laptop (hamburger nav, 2-col grids)
+     ≤720px   phone (1-col layouts)
+     ≤390px   small phone
+   Loaded after corporate.css / careers.css / hero-revert.css
+   ============================================================================= */
+
+/* Base overflow / grid safety (all viewports)
+   Do NOT put overflow:clip on .q-site — it traps position:fixed drawers. */
+.q-site {
+  width: 100%;
+  position: relative;
+}
+.q-site img,
+.q-site svg {
+  max-width: 100%;
+  height: auto;
+}
+.q-container,
+.q-hero-inner,
+.q-page-hero .q-container,
+.q-detail,
+.q-scheme,
+.q-form,
+.q-card,
+.q-intro,
+.q-detail-grid,
+.q-footer,
+.q-card-grid,
+.q-steps,
+.q-why,
+.q-capabilities,
+.q-service,
+.q-job > button {
+  min-width: 0;
+}
+.q-card h3,
+.q-service h3,
+.q-step h3,
+.q-capability h3,
+.q-hero h1,
+.q-page-hero h1,
+.q-section h2 {
+  overflow-wrap: anywhere;
+}
+
+/* ----- Tablet / compact laptop ----- */
+@media (max-width: 1100px) {
+  .q-desktop-nav,
+  .q-talk-desktop { display: none; }
+  .q-menu {
+    display: inline-flex;
+    color: #fff;
+    background: transparent;
+    border: 0;
+    padding: 10px;
+    min-width: 48px;
+    min-height: 48px;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    z-index: 55;
+  }
+  .q-drawer {
+    display: none;
+    position: fixed;
+    top: 78px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: auto;
+    z-index: 45;
+    background: #111113;
+    color: #fff;
+    padding: 8px 22px 32px;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .q-drawer.is-open {
+    display: flex;
+  }
+  .q-drawer-nav {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+  }
+  .q-drawer-cta {
+    margin-top: auto;
+    justify-content: center;
+    width: 100%;
+  }
+  .q-header {
+    z-index: 50;
+  }
+  .q-header-bar {
+    padding: 0 clamp(16px, 4vw, 40px);
+  }
+  .q-mobile-item { border-bottom: 1px solid #ffffff1f; }
+  .q-mobile-item > button,
+  .q-mobile-item > a {
+    width: 100%;
+    padding: 17px 0;
+    display: flex;
+    background: none;
+    border: 0;
+    color: #fff;
+    justify-content: space-between;
+    text-align: left;
+    font-weight: 700;
+    font-size: 17px;
+    min-height: 48px;
+    align-items: center;
+  }
+  .q-mobile-item > a.active { color: #ff7175; }
+  .q-mobile-item > div {
+    display: grid;
+    padding: 0 0 14px 15px;
+    gap: 4px;
+  }
+  .q-mobile-item > div a {
+    color: #cbc5c5;
+    padding: 10px 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .q-nav-open .q-header {
+    border-bottom-color: #ffffff14;
+  }
+  .q-hero,
+  .q-section,
+  .q-page-hero,
+  .q-footer {
+    padding-left: clamp(16px, 4vw, 40px);
+    padding-right: clamp(16px, 4vw, 40px);
+  }
+
+  .q-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .q-steps,
+  .q-why { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .q-capabilities { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Contact: stack copy + form so fields aren't crushed beside copy */
+  .q-detail-grid {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .q-intro {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+  .q-footer { grid-template-columns: 1fr; gap: 40px; }
+  .q-footer-links {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    max-width: none;
+  }
+  /* Full-width form can keep paired fields in 2 cols on tablet */
+  .q-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 720px;
+    width: 100%;
+  }
+  .q-form input:not([type='checkbox']):not([type='radio']),
+  .q-form select,
+  .q-form textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .q-form .full,
+  .q-form .q-consent,
+  .q-form > .q-talk,
+  .q-form > p[role='alert'] {
+    grid-column: 1 / -1;
+  }
+  .q-form > .q-talk {
+    width: 100%;
+    justify-content: center;
+  }
+  .q-resource-toolbar {
+    flex-wrap: wrap;
+  }
+  .q-resource-toolbar input,
+  .q-resource-toolbar select {
+    min-width: 0;
+    flex: 1 1 180px;
+  }
+  .q-scheme { padding: clamp(28px, 5vw, 44px); }
+  .q-card { min-height: 240px; }
+  .q-mega { display: none; } /* desktop mega only */
+}
+
+/* ----- Phone ----- */
+@media (max-width: 720px) {
+  .q-header { height: 68px; }
+  .q-drawer {
+    top: 68px;
+  }
+  .q-drawer-nav {
+    padding-bottom: 16px;
+  }
+
+  .q-hero {
+    min-height: calc(100svh - 68px);
+    padding: 64px 16px 72px;
+  }
+  .q-hero h1 {
+    font-size: clamp(2.6rem, 12vw, 4.2rem);
+    margin: 18px 0;
+    max-width: 100%;
+  }
+  .q-lede {
+    font-size: 1.02rem;
+    max-width: 100%;
+  }
+  .q-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin-top: 28px;
+  }
+  .q-actions .q-talk,
+  .q-actions .q-link {
+    justify-content: center;
+    width: 100%;
+  }
+  .q-dark-link {
+    border-bottom: 0;
+    padding: 12px 0;
+  }
+  .q-hero:after {
+    width: 140px;
+    height: 140px;
+    right: -30px;
+    bottom: 6%;
+  }
+
+  .q-section,
+  .q-page-hero {
+    padding: 56px 16px;
+  }
+  .q-page-hero h1 {
+    font-size: clamp(2.4rem, 11vw, 3.6rem);
+    max-width: 100%;
+  }
+  .q-page-hero p {
+    font-size: 16px;
+    max-width: 100%;
+  }
+  .q-intro h2,
+  .q-section h2 {
+    font-size: clamp(1.85rem, 8vw, 2.6rem);
+  }
+  .q-body { font-size: 16px; }
+
+  .q-card-grid,
+  .q-steps,
+  .q-why,
+  .q-capabilities,
+  .q-detail-grid,
+  .q-intro,
+  .q-form {
+    grid-template-columns: 1fr;
+  }
+  .q-form {
+    max-width: none;
+    padding: 20px 16px;
+    gap: 16px;
+  }
+  .q-form .full,
+  .q-form .q-consent,
+  .q-form > .q-talk,
+  .q-form > p[role='alert'] {
+    grid-column: 1 / -1;
+  }
+  .q-form label {
+    font-size: 13px;
+  }
+  .q-form input:not([type='checkbox']):not([type='radio']),
+  .q-form select,
+  .q-form textarea {
+    padding: 14px 12px;
+    font-size: 16px; /* avoid iOS zoom on focus */
+  }
+  .q-form .q-consent {
+    grid-template-columns: 1.125rem minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .q-form .q-consent label {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .q-card {
+    min-height: 0;
+    padding: 22px;
+  }
+  .q-card h3 { font-size: 22px; }
+  .q-step { padding: 18px 4px 18px 0; }
+  .q-step h3 { font-size: 22px; margin: 18px 0 8px; }
+  .q-capability { min-height: 0; padding: 18px; }
+
+  .q-service {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 12px;
+    padding: 20px 0;
+  }
+  .q-service > :nth-child(3) {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .q-service h3 { font-size: 1.2rem; }
+  .q-service p { grid-column: 2; }
+
+  .q-footer {
+    padding: 48px 16px 20px;
+    gap: 32px;
+  }
+  .q-footer-links {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+  .q-footer-bottom {
+    display: grid;
+    gap: 8px;
+  }
+
+  .q-resource-toolbar {
+    flex-direction: column;
+  }
+  .q-resource-toolbar input,
+  .q-resource-toolbar select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .q-scheme {
+    padding: 28px 20px;
+  }
+  .q-scheme h2 {
+    font-size: clamp(1.7rem, 7vw, 2.2rem);
+  }
+
+  .q-detail { padding: 48px 16px; }
+  .q-detail-grid h2 {
+    font-size: clamp(1.7rem, 7.5vw, 2.3rem);
+  }
+
+  /* Careers accordion */
+  .q-job > button {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 20px 0;
+  }
+  .q-job-detail {
+    padding: 0 0 24px 48px;
+  }
+  .q-job h2 {
+    font-size: clamp(1.15rem, 5vw, 1.45rem);
+    overflow-wrap: anywhere;
+  }
+
+  .q-notice {
+    margin-left: 0;
+    margin-right: 0;
+    max-width: none;
+  }
+
+  .q-tags { gap: 6px; }
+  .q-tag {
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+}
+
+/* ----- Small phone ----- */
+@media (max-width: 390px) {
+  .q-logo { font-size: 18px; }
+  .q-footer-links { grid-template-columns: 1fr; }
+  .q-talk { padding: 12px 14px; font-size: 13px; }
+  .q-actions { gap: 10px; }
+  .q-hero h1 { font-size: clamp(2.35rem, 11.5vw, 3.2rem); }
+  .q-page-hero h1 { font-size: clamp(2.2rem, 11vw, 3rem); }
+  .q-job-detail { padding-left: 0; }
+  .q-service { gap: 10px; }
+  .q-service h3 { font-size: 1.1rem; }
+  .q-header-bar { padding: 0 12px; }
+  .q-hero,
+  .q-section,
+  .q-page-hero,
+  .q-footer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* Landscape phones: keep hero usable */
+@media (max-height: 480px) and (orientation: landscape) {
+  .q-hero {
+    min-height: auto;
+    padding-top: 48px;
+    padding-bottom: 48px;
+  }
+  .q-hero:after { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .q-hero:after,
+  .q-orb,
+  .q-hero-art img,
+  .q-hero-art:after {
+    animation: none !important;
+  }
+  .q-card,
+  .q-talk,
+  .q-service,
+  .q-job svg {
+    transition: none !important;
+  }
+}

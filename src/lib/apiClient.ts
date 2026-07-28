@@ -1,5 +1,7 @@
 'use client';
 
+import { isPublicPath } from '@/lib/auth/publicRoutes';
+
 const BASE = '/api';
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -9,7 +11,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (res.status === 401 && typeof window !== 'undefined') {
-    if (!window.location.pathname.startsWith('/login')) {
+    const here = window.location.pathname;
+    // Public marketing pages mount AuthProvider, which probes /api/auth.
+    // A 401 there must NOT bounce visitors to /login.
+    if (!here.startsWith('/login') && !isPublicPath(here)) {
       window.location.href = '/login';
     }
   }

@@ -159,16 +159,29 @@ export async function POST(req: NextRequest) {
 }
 
 // GET /api/auth  → me
+// Unauthenticated callers receive 200 + { user: null } so the corporate
+// site (and AuthProvider) can probe session state without a 401→/login loop.
 export async function GET() {
   // Auto-create all DB tables on first call (cached per process)
   await ensureAllSchemas().catch(() => {});
 
   try {
     const user = await getSession();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return NextResponse.json({ user });
+    if (!user) {
+      return NextResponse.json(
+        { user: null },
+        { status: 200, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    return NextResponse.json(
+      { user },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
   } catch (err) {
     console.error('[auth GET]', (err as Error).message);
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json(
+      { user: null },
+      { status: 200, headers: { 'Cache-Control': 'no-store' } },
+    );
   }
 }

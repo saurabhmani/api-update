@@ -1,44 +1,12 @@
 // Auth proxy — Next.js 16 replacement for middleware.ts
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isPublicPath } from '@/lib/auth/publicRoutes';
 import {
   applySecurityHeaders,
   buildContentSecurityPolicy,
   createRequestNonce,
 } from '@/lib/security/csp';
-
-const PUBLIC_PATHS = [
-  '/',
-  '/login',
-  '/engines',
-  '/gateway',
-  '/register',
-  '/api/auth',
-  '/api/health',
-  '/api/engine-health/status',
-  '/api/events',
-  '/api/market-data/health',
-  '/api/market-data/dual-source/status',
-  '/api/market-data/subscribe',
-  '/api/market-data/reseed',
-  '/api/market-data/bot',
-  '/api/market-data/validate',
-];
-
-const PUBLIC_PREFIXES = [
-  '/_next',
-  '/favicon',
-  '/images',
-  '/fonts',
-];
-
-function isPublicPath(pathname: string) {
-  return (
-    pathname === '/'
-    || PUBLIC_PATHS.includes(pathname)
-    || PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
-  );
-}
 
 function isProduction(): boolean {
   return process.env.NODE_ENV === 'production';
@@ -119,6 +87,7 @@ export function proxy(req: NextRequest) {
     console.log('MIDDLEWARE PATH:', pathname);
   }
 
+  // Corporate + public API paths never enter the session gate.
   if (isPublicPath(pathname)) {
     return secureNext(req, nonce);
   }
@@ -149,6 +118,37 @@ export function proxy(req: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico).*)',
+    // Next 16's proxy only runs for genuinely private product surfaces and API
+    // requests. Public-facing corporate routes are omitted from this matcher so
+    // they never enter the auth flow (even before isPublicPath).
+    '/admin/:path*',
+    '/dashboard/:path*',
+    '/settings/:path*',
+    '/data-source/:path*',
+    '/trade-journal/:path*',
+    '/watchlist/:path*',
+    '/signals/:path*',
+    '/options/:path*',
+    '/quant/:path*',
+    '/portfolio/:path*',
+    '/paper/:path*',
+    '/strategies/:path*',
+    '/backtesting/:path*',
+    '/notifications/:path*',
+    '/market/:path*',
+    '/stocks/:path*',
+    '/rankings/:path*',
+    '/intelligence/:path*',
+    '/calibration/:path*',
+    '/manipulation/:path*',
+    '/surveillance/:path*',
+    '/news-intelligence/:path*',
+    '/news/:path*',
+    '/reports/:path*',
+    '/trust/:path*',
+    '/compliance/:path*',
+    '/dexter/:path*',
+    '/billing/:path*',
+    '/api/:path*',
   ],
 };
