@@ -1,10 +1,13 @@
 /**
  * GET /api/charts
  *
- * auth → active provider → chart candles (warehouse, broker fill on miss)
+ * Session required. Warehouse candles are always served when present.
+ * Active broker is only required to fill empty warehouse series.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getChartData, type ChartInterval, type OhlcvBar } from '@/services/chartService';
+import { requireSession } from '@/lib/session';
+import { AuthenticationError } from '@/lib/errors';
 import {
   instrumentFromQuery,
   isMarketApiGateResponse,
@@ -13,6 +16,7 @@ import {
   providerDataJson,
   refreshFeedStatus,
   resolveUserMarketDataContext,
+  resolveOptionalUserMarketMeta,
 } from '@/lib/broker/connections';
 import {
   BrokerMarketDataError,
@@ -46,8 +50,17 @@ function toBrokerInterval(interval: ChartInterval): BrokerCandleInterval {
 }
 
 export async function GET(req: NextRequest) {
-  const resolved = await resolveUserMarketDataContext();
-  if (isMarketApiGateResponse(resolved)) return resolved;
+  try {
+    await requireSession();
+  } catch (err) {
+    if (err instanceof AuthenticationError) {
+      return NextResponse.json(
+        { error: 'Unauthorized', code: 'unauthorized' },
+        { status: 401, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+    throw err;
+  }
 
   const { searchParams } = req.nextUrl;
   const instrumentKey = searchParams.get('instrumentKey') ?? '';
@@ -74,6 +87,7 @@ export async function GET(req: NextRequest) {
   const defaultLimit = interval === '1day' ? 120 : isIntraday ? 500 : 200;
   const limit = Math.min(parseInt(searchParams.get('limit') ?? String(defaultLimit), 10) || defaultLimit, 1000);
 
+  // Warehouse / Yahoo / Kite historical — does not require active live broker
   const warehouse = await getChartData(rawSymbol, interval, from, to, limit);
 
   let candles: OhlcvBar[] = warehouse.candles;
@@ -82,70 +96,70 @@ export async function GET(req: NextRequest) {
   let source: string = warehouse.source;
   let cached = warehouse.cached;
 
+  const meta = await resolveOptionalUserMarketMeta();
+  const metaOk = !isMarketApiGateResponse(meta);
+  const providerName = metaOk ? meta.provider : null;
+  const feedStatus = metaOk ? meta.status : 'not_connected';
+
+  // Broker fill only when warehouse is empty AND a live provider is available
   if (candles.length === 0) {
-    try {
-      await resolved.provider.connect(resolved.ctx);
-      const instrument = instrumentFromQuery(instrumentKey || rawSymbol);
-      const toDate = to ? new Date(to) : new Date();
-      const fromDate = from
-        ? new Date(from)
-        : new Date(toDate.getTime() - (isIntraday ? 2 : 120) * 86_400_000);
-      const brokerCandles = await resolved.provider.fetchHistoricalCandles(resolved.ctx, {
-        instrument,
-        interval: toBrokerInterval(interval),
-        from: fromDate,
-        to: toDate,
-        limit,
-      });
-      if (brokerCandles.length > 0) {
-        recordLiveFeedPollSuccess({
-          userId: String(resolved.user.id),
-          provider: resolved.providerName,
+    const resolved = await resolveUserMarketDataContext();
+    if (!isMarketApiGateResponse(resolved)) {
+      try {
+        await resolved.provider.connect(resolved.ctx);
+        const instrument = instrumentFromQuery(instrumentKey || rawSymbol);
+        const toDate = to ? new Date(to) : new Date();
+        const fromDate = from
+          ? new Date(from)
+          : new Date(toDate.getTime() - (isIntraday ? 2 : 120) * 86_400_000);
+        const brokerCandles = await resolved.provider.fetchHistoricalCandles(resolved.ctx, {
+          instrument,
+          interval: toBrokerInterval(interval),
+          from: fromDate,
+          to: toDate,
+          limit,
         });
-        candles = brokerCandles.map((c) => ({
-          ts: c.ts,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volume,
-          oi: 0,
-        }));
-        instrument_key = instrument.instrumentKey;
-        symbol = instrument.symbol;
-        source = resolved.providerName;
-        cached = false;
-      }
-    } catch (err) {
-      const mapped = mapBrokerFetchError(resolved.providerName, err);
-      if (
-        err instanceof BrokerMarketDataError &&
-        (err.code === 'session_expired' || mapped.code === 'login_required')
-      ) {
-        return providerDataJson(
-          resolved.providerName,
-          mapped.code,
-          { error: mapped.message, code: mapped.code },
-          { status: 401 },
-        );
-      }
-      // Warehouse empty and broker fill failed — surface broker error,
-      // never silently serve another provider's live candles.
-      if (candles.length === 0) {
-        return providerDataJson(
-          resolved.providerName,
-          mapped.code,
-          { error: mapped.message, code: mapped.code, candles: [], source: null },
-          { status: mapped.code === 'login_required' ? 401 : 502 },
-        );
+        if (brokerCandles.length > 0) {
+          recordLiveFeedPollSuccess({
+            userId: String(resolved.user.id),
+            provider: resolved.providerName,
+          });
+          candles = brokerCandles.map((c) => ({
+            ts: c.ts,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+            oi: 0,
+          }));
+          instrument_key = instrument.instrumentKey;
+          symbol = instrument.symbol;
+          source = resolved.providerName;
+          cached = false;
+        }
+      } catch (err) {
+        const mapped = mapBrokerFetchError(resolved.providerName, err);
+        if (
+          err instanceof BrokerMarketDataError &&
+          (err.code === 'session_expired' || mapped.code === 'login_required')
+        ) {
+          // Still return warehouse-shaped empty payload rather than blocking the page
+          console.warn('[/api/charts] broker fill login required:', mapped.message);
+        } else {
+          console.warn('[/api/charts] broker fill failed:', mapped.message);
+        }
       }
     }
   }
 
-  const status = refreshFeedStatus(resolved.user.id, resolved.providerName);
+  const status = metaOk && providerName
+    ? refreshFeedStatus(meta.user.id, providerName)
+    : feedStatus;
   const origin = labelCandleDataOrigin(source);
+
   return providerDataJson(
-    resolved.providerName,
+    providerName,
     status,
     {
       candles,
@@ -155,9 +169,11 @@ export async function GET(req: NextRequest) {
       count: candles.length,
       source,
       cached,
-      note: origin.fallbackUsed
-        ? `Candles from ${origin.fallbackSource ?? 'warehouse'}; not live ticks from active broker`
-        : undefined,
+      note: candles.length === 0
+        ? 'No candle data in warehouse. Connect a data source or wait for the candle job.'
+        : origin.fallbackUsed
+          ? `Candles from ${origin.fallbackSource ?? 'warehouse'}; not live ticks from active broker`
+          : undefined,
     },
     {
       dataOrigin: origin.dataOrigin,

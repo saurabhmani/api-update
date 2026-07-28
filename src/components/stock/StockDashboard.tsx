@@ -78,8 +78,9 @@ export default function StockDashboard({ symbol }: Props) {
         `/api/chart-data?symbol=${encodeURIComponent(symbol)}&interval=${iv}&limit=200`
       );
       const d = await res.json();
-      if (d.candles?.length) {
-        setCandles(d.candles);
+      const candles = d?.data?.candles ?? d?.candles;
+      if (candles?.length) {
+        setCandles(candles);
         fetchedChart.current.add(iv);
       }
     } catch {}

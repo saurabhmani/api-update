@@ -312,9 +312,28 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       else setInst({ tradingsymbol: symbol, exchange, instrument_type: 'EQ', name: symbol });
 
       if (cRes.status === 'fulfilled') {
-        const next = (cRes.value as any).candles || [];
+        const payload = (cRes.value as any)?.data?.candles
+          ? (cRes.value as any).data
+          : (cRes.value as any);
+        let next = payload?.candles || [];
+        let usedInterval = '1minute';
+
+        // Default load is 1m; fall back to daily warehouse when intraday is empty
+        if (!next.length) {
+          try {
+            const daily = await chartsApi.historical(instrumentKey, 'days', '1day', undefined, undefined, 180);
+            next = (daily as any)?.candles || [];
+            if (next.length) {
+              usedInterval = '1day';
+              setIv('1day');
+            }
+          } catch { /* keep empty */ }
+        }
+
         setCandles(next);
-        setChartBrush(next.length > 0 ? defaultChartBrushWindow('5minute', next.length) : null);
+        setChartBrush(next.length > 0 ? defaultChartBrushWindow(usedInterval, next.length) : null);
+      } else if (cRes.status === 'rejected') {
+        console.warn('[MarketDetail] chart load failed', cRes.reason);
       }
       if (qRes.status === 'fulfilled' && qRes.value?.quote) {
         setQuote(qRes.value.quote);

@@ -66,11 +66,51 @@ export const instrumentApi = {
 };
 
 // ── Charts ────────────────────────────────────────────────────────
+/** Dual-source APIs wrap payloads as `{ provider, status, data }`. */
+function unwrapProviderData<T extends Record<string, unknown>>(raw: unknown): T {
+  if (!raw || typeof raw !== 'object') return {} as T;
+  const obj = raw as Record<string, unknown>;
+  const nested = obj.data;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    const data = nested as Record<string, unknown>;
+    if ('candles' in data || 'error' in data || 'instrument_key' in data) {
+      return data as T;
+    }
+  }
+  return obj as T;
+}
+
+type ChartSeriesPayload = {
+  candles?: Array<Record<string, unknown>>;
+  instrument_key?: string;
+  symbol?: string;
+  interval?: string;
+  count?: number;
+  source?: string | null;
+  error?: string;
+  code?: string;
+};
+
 export const chartsApi = {
-  intraday:   (instrumentKey: string, interval = '1minute', limit = 500) =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}&limit=${limit}`),
-  historical: (instrumentKey: string, _unit = 'days', interval = '1day', from?: string, to?: string, limit = 120) =>
-    get(`/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}&limit=${limit}`),
+  intraday: async (instrumentKey: string, interval = '1minute', limit = 500) =>
+    unwrapProviderData<ChartSeriesPayload>(
+      await get(
+        `/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=intraday&interval=${interval}&limit=${limit}`,
+      ),
+    ),
+  historical: async (
+    instrumentKey: string,
+    _unit = 'days',
+    interval = '1day',
+    from?: string,
+    to?: string,
+    limit = 120,
+  ) =>
+    unwrapProviderData<ChartSeriesPayload>(
+      await get(
+        `/charts?instrumentKey=${encodeURIComponent(instrumentKey)}&type=historical&interval=${interval}${from ? `&from=${from}` : ''}${to ? `&to=${to}` : ''}&limit=${limit}`,
+      ),
+    ),
 };
 
 // ── Watchlist ─────────────────────────────────────────────────────
