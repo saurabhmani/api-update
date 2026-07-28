@@ -26,7 +26,7 @@ export default function ContactForm() {
       email: String(values.get('email') ?? ''),
       subject: String(values.get('subject') ?? ''),
       message: String(values.get('message') ?? ''),
-      // Obscure honeypot name — browsers autofill fields named "website"/"company"
+      // Honeypot — leave empty; obscure name + no “company/website” label avoids autofill
       q_hp: String(values.get('q_hp') ?? ''),
     };
 
@@ -36,10 +36,18 @@ export default function ContactForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = (await response.json()) as { error?: string };
+      const result = (await response.json()) as {
+        error?: string;
+        success?: boolean;
+        message?: string;
+        data?: unknown;
+      };
       if (!response.ok) throw new Error(result.error ?? 'Unable to send your message.');
       form.reset();
       setState('success');
+      if (process.env.NODE_ENV === 'development') {
+        console.info('[contact] API response', result);
+      }
     } catch (submissionError) {
       setError(
         submissionError instanceof Error ? submissionError.message : 'Unable to send your message.',
@@ -67,17 +75,17 @@ export default function ContactForm() {
         <textarea required name="message" rows={6} minLength={10} maxLength={5000} />
       </label>
 
+      {/* Hidden honeypot: no company/website wording (Chrome autofills those). */}
       <div className="q-honeypot" aria-hidden="true">
-        <label>
-          Company website
-          <input
-            name="q_hp"
-            type="text"
-            tabIndex={-1}
-            autoComplete="off"
-            defaultValue=""
-          />
-        </label>
+        <input
+          name="q_hp"
+          type="text"
+          tabIndex={-1}
+          autoComplete="new-password"
+          defaultValue=""
+          readOnly
+          onFocus={(event) => event.currentTarget.removeAttribute('readonly')}
+        />
       </div>
 
       <div className="q-consent full">

@@ -32,6 +32,7 @@ export async function POST(request: Request) {
 
     // Bots / autofilled honeypot: pretend success so scrapers get no signal
     if (honeypot) {
+      console.warn('[contact] honeypot filled — skipping Mailjet send');
       return NextResponse.json({ success: true });
     }
 
@@ -82,16 +83,48 @@ export async function POST(request: Request) {
       }),
     });
 
+    const mailjetBodyText = await mailjetResponse.text().catch(() => '');
+    let mailjetJson: {
+      Messages?: Array<{ Status?: string; Errors?: unknown[] }>;
+      ErrorMessage?: string;
+      ErrorCode?: string | number;
+    } | null = null;
+    try {
+      mailjetJson = mailjetBodyText
+        ? (JSON.parse(mailjetBodyText) as typeof mailjetJson)
+        : null;
+    } catch {
+      mailjetJson = null;
+    }
+
     if (!mailjetResponse.ok) {
-      const detail = await mailjetResponse.text().catch(() => '');
-      console.error('Mailjet rejected contact form submission:', mailjetResponse.status, detail);
+      console.error('Mailjet rejected contact form submission:', mailjetResponse.status, mailjetBodyText);
       return NextResponse.json(
         { error: 'We could not send your message. Please try again later.' },
         { status: 502 },
       );
     }
 
-    return NextResponse.json({ success: true });
+    const messages = mailjetJson?.Messages ?? [];
+    const hasMessageErrors = messages.some(
+      (m) =>
+        String(m.Status ?? '').toLowerCase() !== 'success' ||
+        (Array.isArray(m.Errors) && m.Errors.length > 0),
+    );
+
+    if (hasMessageErrors || messages.length === 0) {
+      console.error('Mailjet accepted HTTP but message failed:', mailjetBodyText);
+      return NextResponse.json(
+        { error: 'We could not send your message. Please try again later.' },
+        { status: 502 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Message sent successfully',
+      data: mailjetJson,
+    });
   } catch (error) {
     console.error('Contact form submission failed:', error);
     return NextResponse.json(
