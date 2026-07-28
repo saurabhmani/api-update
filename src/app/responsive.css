@@ -73,7 +73,7 @@
     width: 100%;
     height: auto;
     z-index: 45;
-    background: #111113;
+    background: #1A1A1A;
     color: #fff;
     padding: 8px 22px 32px;
     flex-direction: column;
@@ -116,7 +116,7 @@
     min-height: 48px;
     align-items: center;
   }
-  .q-mobile-item > a.active { color: #ff7175; }
+  .q-mobile-item > a.active { color: #FF5E4F; }
   .q-mobile-item > div {
     display: grid;
     padding: 0 0 14px 15px;
@@ -379,7 +379,8 @@
 
 /* ----- Small phone ----- */
 @media (max-width: 390px) {
-  .q-logo { font-size: 18px; }
+  .q-logo { font-size: 22px; }
+  .q-logo i { width: 11px; height: 11px; }
   .q-footer-links { grid-template-columns: 1fr; }
   .q-talk { padding: 12px 14px; font-size: 13px; }
   .q-actions { gap: 10px; }

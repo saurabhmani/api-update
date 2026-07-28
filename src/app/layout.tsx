@@ -3,10 +3,13 @@ import { AuthProvider } from '@/hooks/useAuth';
 import { QueryProvider } from '@/providers/QueryProvider';
 import '@/styles/globals.scss';
 import './corporate.css';
+import './logo-type.css';
 import './hero-revert.css';
 import './careers.css';
 import './responsive.css';
 import './contact-form.css';
+import './what-we-do-menu.css';
+import './footer.css';
 
 export const dynamic = 'force-dynamic';
 

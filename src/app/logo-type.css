@@ -1,0 +1,26 @@
+/* Logo typeface — place licensed Medium (500) files in /public/fonts */
+@font-face {
+  font-family: "ES Klarheit Grotesk";
+  src:
+    local("ES Klarheit Grotesk Medium"),
+    local("ESKlarheitGrotesk-Medium"),
+    url("/fonts/ESKlarheitGrotesk-Medium.woff2") format("woff2"),
+    url("/fonts/ESKlarheitGrotesk-Medium.woff") format("woff");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+.q-header .q-logo,
+.q-footer .q-logo {
+  font-family: "ES Klarheit Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 500;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+
+.q-header .q-logo i,
+.q-footer .q-logo i {
+  width: 14px;
+  height: 14px;
+}

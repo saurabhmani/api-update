@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ArrowUpRight, ChevronDown, Menu, X } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, Instagram, Linkedin, Menu, X, Youtube } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { brand, industries, navItems, services, technologies } from '@/content/corporate';
 
@@ -15,6 +15,48 @@ const menuItems = {
     { label: 'Case studies', href: '/case-studies' },
   ],
 } as const;
+
+const whatWeDoMenu = {
+  capabilities: [
+    {
+      title: 'iRun',
+      links: [
+        { label: 'Application Management Services', href: '/services/managed-services' },
+        { label: 'Cognitive Infrastructure Services', href: '/services/cloud-services' },
+        { label: 'Cybersecurity', href: '/services/cybersecurity' },
+      ],
+    },
+    {
+      title: 'iTransform',
+      links: [
+        { label: 'AI-led Engineering', href: '/services/artificial-intelligence' },
+        { label: 'Data and Analytics', href: '/services/data-analytics' },
+        { label: 'Enterprise Applications', href: '/services/enterprise-applications' },
+        { label: 'Interactive', href: '/services/digital-product-engineering' },
+        { label: 'Industry.NXT', href: '/services/technology-strategy' },
+      ],
+    },
+    {
+      title: 'Business AI',
+      links: [{ label: 'BlueVerse', href: '/services/ai-data-automation' }],
+    },
+  ],
+  offerings: [
+    { label: 'GCC-as-a-Service', href: '/services/technology-strategy' },
+    { label: 'Unitrax', href: '/services/business-process-automation' },
+    { label: 'Voicing AI', href: '/services/artificial-intelligence' },
+  ],
+} as const;
+
+const whatWeDoLinks: { label: string; href: string }[] = [
+  ...whatWeDoMenu.capabilities.flatMap<{ label: string; href: string }>((group) => group.links),
+  ...whatWeDoMenu.offerings,
+];
+
+const getMenuChildren = (label: string) =>
+  label === 'What we do'
+    ? whatWeDoLinks
+    : menuItems[label as keyof typeof menuItems];
 
 export default function SiteShell({ children }: { children: React.ReactNode }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -107,10 +149,15 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
 
           <nav aria-label="Primary navigation" className="q-desktop-nav">
             {navItems.map((item) => {
-              const children = menuItems[item.label as keyof typeof menuItems];
+              const children = getMenuChildren(item.label);
               const active = isActive(item.href);
               return (
-                <div className="q-nav-item" key={item.href}>
+                <div
+                  className="q-nav-item"
+                  key={item.href}
+                  onMouseEnter={() => children && setOpenMenu(item.label)}
+                  onMouseLeave={() => setOpenMenu(null)}
+                >
                   {children ? (
                     <>
                       <button
@@ -122,22 +169,42 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
                         {item.label}
                         <ChevronDown size={14} />
                       </button>
-                      {openMenu === item.label && (
-                        <div className="q-mega" role="menu">
-                          <Link className="q-mega-all" href={item.href} onClick={close}>
-                            Explore {item.label}
-                            <ArrowUpRight size={15} />
-                          </Link>
-                          <div>
+                      {openMenu === item.label && (item.label === 'What we do' ? (
+                        <div className="q-mega q-what-mega" role="menu" aria-label="What we do">
+                          <div className="q-what-capabilities">
+                            <p className="q-mega-heading">Capabilities</p>
+                            <div className="q-what-groups">
+                              {whatWeDoMenu.capabilities.map((group) => (
+                                <section className="q-what-group" key={group.title}>
+                                  <p>{group.title}</p>
+                                  {group.links.map((link) => (
+                                    <Link role="menuitem" key={link.label} href={link.href} onClick={close}>{link.label}</Link>
+                                  ))}
+                                </section>
+                              ))}
+                            </div>
+                          </div>
+                          <section className="q-what-offerings">
+                            <p className="q-mega-heading">Proprietary offerings</p>
+                            <div>
+                              {whatWeDoMenu.offerings.map((link) => (
+                                <Link role="menuitem" key={link.label} href={link.href} onClick={close}>{link.label}</Link>
+                              ))}
+                            </div>
+                          </section>
+                        </div>
+                      ) : (
+                        <div className={`q-mega q-list-mega q-list-mega--${Math.min(children.length, 3)}`} role="menu" aria-label={item.label}>
+                          <p className="q-mega-heading">{item.label}</p>
+                          <div className="q-list-mega-links">
                             {children.map((child) => (
                               <Link role="menuitem" key={child.href} href={child.href} onClick={close}>
                                 {child.label}
-                                <ArrowUpRight size={13} />
                               </Link>
                             ))}
                           </div>
                         </div>
-                      )}
+                      ))}
                     </>
                   ) : (
                     <Link className={active ? 'active' : ''} href={item.href}>
@@ -177,7 +244,7 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
       >
         <nav className="q-drawer-nav">
           {navItems.map((item) => {
-            const children = menuItems[item.label as keyof typeof menuItems];
+            const children = getMenuChildren(item.label);
             return (
               <div className="q-mobile-item" key={item.href}>
                 {children ? (
@@ -224,40 +291,49 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
       <main id="main">{children}</main>
 
       <footer className="q-footer">
-        <div>
-          <Link href="/" className="q-logo">
-            <i />
-            Quantorus
-          </Link>
-          <p>Technology, strategy, and delivery for meaningful business progress.</p>
-          <a className="q-footer-mail" href={`mailto:${brand.contactEmail}`}>
-            {brand.contactEmail}
-          </a>
-        </div>
-        <div className="q-footer-links">
-          <div>
-            <b>Explore</b>
-            <Link href="/services">Services</Link>
-            <Link href="/industries">Industries</Link>
-            <Link href="/technologies">Technologies</Link>
-            <Link href="/case-studies">Case studies</Link>
+        <div className="q-footer-panel">
+          <div className="q-footer-top">
+            <h2>It&apos;s time to make<br />meaningful progress.</h2>
+            <div className="q-footer-links">
+              <div>
+                <b>Explore</b>
+                <Link href="/services">What we do</Link>
+                <Link href="/industries">Industries</Link>
+                <Link href="/technologies">Technologies</Link>
+                <Link href="/resources">Case studies</Link>
+              </div>
+              <div>
+                <b>Company</b>
+                <Link href="/about">About us</Link>
+                <Link href="/insights">Insights</Link>
+                <Link href="/careers">Careers</Link>
+                <Link href="/contact">Contact</Link>
+              </div>
+              <div>
+                <b>Connect</b>
+                <a href={`mailto:${brand.contactEmail}`}>{brand.contactEmail}</a>
+                <Link href="/contact">Start a conversation</Link>
+              </div>
+            </div>
           </div>
-          <div>
-            <b>Company</b>
-            <Link href="/about">About</Link>
-            <Link href="/insights">Insights</Link>
-            <Link href="/careers">Careers</Link>
-            <Link href="/contact">Contact</Link>
+          <div className="q-footer-brand-row">
+            <Link href="/" className="q-footer-wordmark" aria-label="Quantorus home">
+              <i /> Quantorus
+            </Link>
+            <div className="q-footer-socials" aria-label="Social channels">
+              <span title="LinkedIn coming soon"><Linkedin size={15} aria-hidden="true" /></span>
+              <span title="YouTube coming soon"><Youtube size={16} aria-hidden="true" /></span>
+              <span className="q-social-x" title="X coming soon" aria-hidden="true">X</span>
+              <span title="Instagram coming soon"><Instagram size={15} aria-hidden="true" /></span>
+            </div>
           </div>
-          <div>
-            <b>Legal</b>
+          <div className="q-footer-bottom">
+            <span>© {new Date().getFullYear()} Quantorus. All rights reserved.</span>
             <Link href="/privacy">Privacy</Link>
             <Link href="/terms">Terms</Link>
+            <Link href="/contact">Accessibility</Link>
+            <a href={`mailto:${brand.contactEmail}`}>Contact</a>
           </div>
-        </div>
-        <div className="q-footer-bottom">
-          <span>© {new Date().getFullYear()} Quantorus. All rights reserved.</span>
-          <span>LinkedIn and X channels coming soon.</span>
         </div>
       </footer>
     </div>
