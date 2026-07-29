@@ -17,27 +17,27 @@ describe('appRedirects public host preference', () => {
   });
 
   it('keeps dig host when Next sees internal localhost behind a proxy', async () => {
-    process.env.APP_BASE_URL = 'https://dev.quantorus.in';
+    process.env.APP_BASE_URL = 'https://quantorus.in';
     const { resolveAppRedirectOrigin, appPathUrl } = await import(
       '@/lib/broker/oauth/appRedirects'
     );
     const req = new NextRequest('http://localhost:3000/api/brokers/shoonya/callback?code=x', {
       headers: {
-        'x-forwarded-host': 'dev.quantorus.in',
+        'x-forwarded-host': 'quantorus.in',
         'x-forwarded-proto': 'https',
       },
     });
-    expect(resolveAppRedirectOrigin(req)).toBe('https://dev.quantorus.in');
+    expect(resolveAppRedirectOrigin(req)).toBe('https://quantorus.in');
     expect(appPathUrl(req, '/dashboard').toString()).toBe(
-      'https://dev.quantorus.in/dashboard',
+      'https://quantorus.in/dashboard',
     );
   });
 
   it('does not let localhost APP_* override a public request host', async () => {
     process.env.APP_BASE_URL = 'http://localhost:3000';
     const { resolveAppRedirectOrigin } = await import('@/lib/broker/oauth/appRedirects');
-    const req = new NextRequest('https://dev.quantorus.in/api/brokers/shoonya/callback?code=x');
-    expect(resolveAppRedirectOrigin(req)).toBe('https://dev.quantorus.in');
+    const req = new NextRequest('https://quantorus.in/api/brokers/shoonya/callback?code=x');
+    expect(resolveAppRedirectOrigin(req)).toBe('https://quantorus.in');
   });
 
   it('uses nginx Host when APP_* is localhost and X-Forwarded-Host is absent', async () => {
@@ -49,13 +49,13 @@ describe('appRedirects public host preference', () => {
     );
     const req = new NextRequest('http://localhost:5000/api/brokers/shoonya/callback?code=x', {
       headers: {
-        host: 'dev.quantorus.in',
+        host: 'quantorus.in',
         'x-forwarded-proto': 'https',
       },
     });
-    expect(resolveAppRedirectOrigin(req)).toBe('https://dev.quantorus.in');
+    expect(resolveAppRedirectOrigin(req)).toBe('https://quantorus.in');
     expect(appPathUrl(req, '/dashboard').toString()).toBe(
-      'https://dev.quantorus.in/dashboard',
+      'https://quantorus.in/dashboard',
     );
   });
 

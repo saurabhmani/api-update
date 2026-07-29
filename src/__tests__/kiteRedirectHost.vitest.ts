@@ -33,14 +33,14 @@ describe('kite redirect-host helpers', () => {
   it('detects localhost KITE_REDIRECT_URL while the browser is on a public host', async () => {
     process.env.KITE_REDIRECT_URL = 'http://localhost:3000/api/kite/auth/callback';
     const { isKiteRedirectHostMismatch } = await import('@/lib/kite/redirect-host');
-    const req = new NextRequest('https://dev.quantorus.in/api/brokers/zerodha/connect');
+    const req = new NextRequest('https://quantorus.in/api/brokers/zerodha/connect');
     expect(isKiteRedirectHostMismatch(req)).toBe(true);
   });
 
   it('allows matching public redirect host', async () => {
-    process.env.KITE_REDIRECT_URL = 'https://dev.quantorus.in/api/kite/auth/callback';
+    process.env.KITE_REDIRECT_URL = 'https://quantorus.in/api/kite/auth/callback';
     const { isKiteRedirectHostMismatch } = await import('@/lib/kite/redirect-host');
-    const req = new NextRequest('https://dev.quantorus.in/api/brokers/zerodha/connect');
+    const req = new NextRequest('https://quantorus.in/api/brokers/zerodha/connect');
     expect(isKiteRedirectHostMismatch(req)).toBe(false);
   });
 
@@ -52,7 +52,7 @@ describe('kite redirect-host helpers', () => {
   });
 
   it('flags Zerodha callbacks that land on localhost when config is public', async () => {
-    process.env.KITE_REDIRECT_URL = 'https://dev.quantorus.in/api/kite/auth/callback';
+    process.env.KITE_REDIRECT_URL = 'https://quantorus.in/api/kite/auth/callback';
     const {
       isKiteCallbackOnWrongLoopbackHost,
       buildKiteRedirectMismatchUrl,
@@ -61,7 +61,7 @@ describe('kite redirect-host helpers', () => {
       'http://localhost:3000/api/kite/auth/callback?status=success&request_token=x&state=y',
     );
     expect(isKiteCallbackOnWrongLoopbackHost(req)).toBe(true);
-    expect(buildKiteRedirectMismatchUrl('https://dev.quantorus.in')).toContain(
+    expect(buildKiteRedirectMismatchUrl('https://quantorus.in')).toContain(
       'error=redirect_url_mismatch',
     );
   });

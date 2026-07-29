@@ -54,7 +54,7 @@ export interface InternalFetchOptions {
 /**
  * Resolve the absolute origin for server-to-server API calls within
  * this deployment. Never uses the inbound request URL — the public
- * HTTPS origin (e.g. https://dev.quantorus.in) is not reachable from
+ * HTTPS origin (e.g. https://quantorus.in) is not reachable from
  * Node behind nginx (hairpin NAT → fetch status 0).
  *
  * Order: INTERNAL_APP_URL → loopback APP_URL → http://127.0.0.1:PORT

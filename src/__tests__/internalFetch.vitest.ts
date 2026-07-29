@@ -21,7 +21,7 @@ describe('resolveInternalOrigin', () => {
     delete process.env.APP_URL;
     delete process.env.INTERNAL_APP_URL;
 
-    const fakeReq = { nextUrl: { origin: 'https://dev.quantorus.in' } } as never;
+    const fakeReq = { nextUrl: { origin: 'https://quantorus.in' } } as never;
     expect(resolveInternalOrigin(fakeReq)).toBe('http://127.0.0.1:5000');
   });
 
@@ -32,7 +32,7 @@ describe('resolveInternalOrigin', () => {
       INTERNAL_APP_URL: 'http://127.0.0.1:5000/',
     };
 
-    const fakeReq = { nextUrl: { origin: 'https://dev.quantorus.in' } } as never;
+    const fakeReq = { nextUrl: { origin: 'https://quantorus.in' } } as never;
     expect(resolveInternalOrigin(fakeReq)).toBe('http://127.0.0.1:5000');
   });
 
@@ -41,11 +41,11 @@ describe('resolveInternalOrigin', () => {
       ...ORIGINAL_ENV,
       NODE_ENV: 'production',
       PORT: '5000',
-      APP_URL: 'https://dev.quantorus.in',
+      APP_URL: 'https://quantorus.in',
     };
     delete process.env.INTERNAL_APP_URL;
 
-    const fakeReq = { nextUrl: { origin: 'https://dev.quantorus.in' } } as never;
+    const fakeReq = { nextUrl: { origin: 'https://quantorus.in' } } as never;
     expect(resolveInternalOrigin(fakeReq)).toBe('http://127.0.0.1:5000');
   });
 
