@@ -41,16 +41,10 @@ const whatWeDoMenu = {
       links: [{ label: 'BlueVerse', href: '/services/ai-data-automation' }],
     },
   ],
-  offerings: [
-    { label: 'GCC-as-a-Service', href: '/services/technology-strategy' },
-    { label: 'Unitrax', href: '/services/business-process-automation' },
-    { label: 'Voicing AI', href: '/services/artificial-intelligence' },
-  ],
 } as const;
 
 const whatWeDoLinks: { label: string; href: string }[] = [
   ...whatWeDoMenu.capabilities.flatMap<{ label: string; href: string }>((group) => group.links),
-  ...whatWeDoMenu.offerings,
 ];
 
 const getMenuChildren = (label: string) =>
@@ -184,17 +178,13 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
                               ))}
                             </div>
                           </div>
-                          <section className="q-what-offerings">
-                            <p className="q-mega-heading">Proprietary offerings</p>
-                            <div>
-                              {whatWeDoMenu.offerings.map((link) => (
-                                <Link role="menuitem" key={link.label} href={link.href} onClick={close}>{link.label}</Link>
-                              ))}
-                            </div>
-                          </section>
                         </div>
                       ) : (
-                        <div className={`q-mega q-list-mega q-list-mega--${Math.min(children.length, 3)}`} role="menu" aria-label={item.label}>
+                        <div
+                          className={`q-mega q-list-mega q-list-mega--${item.label.toLowerCase().replace(/\s+/g, '-')} q-list-mega--${Math.min(children.length, 3)}`}
+                          role="menu"
+                          aria-label={item.label}
+                        >
                           <p className="q-mega-heading">{item.label}</p>
                           <div className="q-list-mega-links">
                             {children.map((child) => (

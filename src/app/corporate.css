@@ -96,7 +96,8 @@
 .q-logo i {
     width: 14px;
     height: 14px;
-    background: var(--q-red);
+    background: var(--q-red-dark);
+    border-radius: 50%;
     display: block;
     transform: rotate(45deg);
     flex-shrink: 0
@@ -222,7 +223,7 @@
     background: var(--q-black);
     color: #fff;
     min-height: calc(100vh - 78px);
-    padding: clamp(75px, 10vw, 145px) clamp(20px, 7vw, 110px);
+    padding: clamp(12px, 2vw, 145px) clamp(20px, 7vw, 110px);
     position: relative;
     overflow: hidden
 }

@@ -34,11 +34,12 @@
   position: fixed;
   top: 78px;
   left: 50%;
-  width: min(1100px, calc(100vw - 48px));
+  /* Capabilities-only panel (3 groups); no offerings column in current data */
+  width: min(960px, calc(100vw - 48px));
   max-width: calc(100vw - 48px);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(200px, 0.32fr);
-  gap: clamp(30px, 5vw, 72px);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   padding: 36px clamp(32px, 5vw, 72px) 38px;
   color: #fff;
   background: var(--q-black);
@@ -136,14 +137,17 @@
   margin-top: 48px;
 }
 
-/* Shared compact mega panel for Industries, Technologies, and Insights. */
-.q-list-mega {
+/* Shared compact mega panel for Industries, Technologies, and Insights.
+   Width is sized to current menu data (see menu-specific rules below). */
+.q-mega.q-list-mega {
   position: fixed;
   top: 78px;
   left: 50%;
-  width: min(920px, calc(100vw - 48px));
+  width: min(720px, calc(100vw - 48px));
   max-width: calc(100vw - 48px);
-  padding: 36px 64px 40px;
+  padding: 32px 40px 36px;
+  display: block;
+  grid-template-columns: none;
   color: #fff;
   background: var(--q-black);
   border: 1px solid #303030;
@@ -154,17 +158,52 @@
   animation: q-list-menu-enter 200ms ease-out both;
 }
 
+/* Insights: 2 short links */
+.q-mega.q-list-mega--insights,
+.q-mega.q-list-mega--2 {
+  width: min(420px, calc(100vw - 48px));
+  padding: 28px 32px 32px;
+}
+
+/* Industries / Technologies: 9 links in 3 columns */
+.q-mega.q-list-mega--industries,
+.q-mega.q-list-mega--technologies,
+.q-mega.q-list-mega--3 {
+  width: min(760px, calc(100vw - 48px));
+  padding: 32px 40px 36px;
+}
+
+.q-mega.q-list-mega--1 {
+  width: min(320px, calc(100vw - 48px));
+  padding: 28px 32px 32px;
+}
+
 /* Beat legacy `.q-mega > div { gap: 2px }` from corporate.css */
 .q-mega.q-list-mega > .q-list-mega-links {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  row-gap: 18px;
-  column-gap: calc(40px + 1rem);
-  margin-top: 48px;
+  row-gap: 16px;
+  column-gap: 36px;
+  margin-top: 36px;
 }
 
-.q-list-mega--1 > .q-list-mega-links { grid-template-columns: minmax(0, 1fr); }
-.q-list-mega--2 > .q-list-mega-links { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.q-mega.q-list-mega--1 > .q-list-mega-links {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 24px;
+}
+
+.q-mega.q-list-mega--insights > .q-list-mega-links,
+.q-mega.q-list-mega--2 > .q-list-mega-links {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 24px;
+  column-gap: 28px;
+}
+
+.q-mega.q-list-mega--industries > .q-list-mega-links,
+.q-mega.q-list-mega--technologies > .q-list-mega-links {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 36px;
+}
 
 .q-list-mega .q-list-mega-links a {
   display: block;
@@ -197,26 +236,27 @@
 
 @media (max-width: 1240px) {
   .q-what-mega {
-    width: min(940px, calc(100vw - 48px));
+    width: min(860px, calc(100vw - 48px));
     padding: 32px 38px;
-    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.34fr);
   }
   .q-what-groups {
     row-gap: 20px;
     column-gap: calc(20px + 1rem);
   }
-  .q-list-mega { padding-right: 40px; padding-left: 40px; }
+  .q-mega.q-list-mega--industries,
+  .q-mega.q-list-mega--technologies,
+  .q-mega.q-list-mega--3 {
+    width: min(680px, calc(100vw - 48px));
+    padding-right: 32px;
+    padding-left: 32px;
+  }
   .q-mega.q-list-mega > .q-list-mega-links {
-    row-gap: 18px;
-    column-gap: calc(24px + 1rem);
+    row-gap: 14px;
+    column-gap: 24px;
   }
 }
 
 @media (max-width: 980px) {
-  .q-what-mega {
-    grid-template-columns: 1fr;
-    gap: 28px;
-  }
   .q-what-groups {
     grid-template-columns: 1fr;
     gap: 24px;

@@ -79,6 +79,14 @@ export async function POST(request: Request) {
             HTMLPart: `<h1>New Quantorus contact enquiry</h1><table><tr><th align="left">Name</th><td>${escapeHtml(name)}</td></tr><tr><th align="left">Email</th><td>${escapeHtml(email)}</td></tr><tr><th align="left">Subject</th><td>${escapeHtml(subject)}</td></tr></table><h2>Message</h2><p>${escapeHtml(message).replace(/\n/g, '<br />')}</p>`,
             TextPart: `Name: ${name}\nEmail: ${email}\nSubject: ${subject}\n\nMessage:\n${message}`,
           },
+          {
+            From: { Email: fromEmail, Name: 'Quantorus' },
+            To: [{ Email: email, Name: name }],
+            ReplyTo: { Email: recipientEmail, Name: 'Quantorus' },
+            Subject: 'We received your enquiry',
+            HTMLPart: `<h1>Got your enquiry</h1><p>Hi ${escapeHtml(name)},</p><p>Thank you for contacting Quantorus. We have received your enquiry about <strong>${escapeHtml(subject)}</strong> and a member of our team will get back to you shortly.</p><p>Best regards,<br />The Quantorus Team</p>`,
+            TextPart: `Hi ${name},\n\nThank you for contacting Quantorus. We have received your enquiry about "${subject}" and a member of our team will get back to you shortly.\n\nBest regards,\nThe Quantorus Team`,
+          },
         ],
       }),
     });
