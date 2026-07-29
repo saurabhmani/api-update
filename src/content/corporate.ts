@@ -5,7 +5,7 @@ export const brand = {
   url: 'https://quantorus.example',
   headline: 'Technology engineered for meaningful business progress.',
   description: 'Quantorus combines strategy, software engineering, cloud, data, automation, cybersecurity, and AI to help organisations modernise operations, improve digital experiences, and build scalable technology foundations.',
-  contactEmail: 'hello@quantorus.example',
+  contactEmail: 'saurabh@quantorus.in',
 };
 
 export const services = [
@@ -47,7 +47,7 @@ export const jobs = [
 ] as const;
 
 export const navItems = [
-  { label: 'What we do', href: '/services' }, { label: 'Industries', href: '/industries' }, { label: 'Technologies', href: '/technologies' }, { label: 'Case studies', href: '/case-studies' }, { label: 'Insights', href: '/insights' }, { label: 'About', href: '/about' }, { label: 'Careers', href: '/careers' }, { label: 'Contact', href: '/contact' },
+  { label: 'What we do', href: '/services' }, { label: 'Industries', href: '/industries' }, { label: 'Technologies', href: '/technologies' }, { label: 'Insights', href: '/insights' }, { label: 'About', href: '/about' }, { label: 'Careers', href: '/careers' }, { label: 'Contact', href: '/contact' },
 ];
 
 export const technologies = [

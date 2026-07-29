@@ -1,20 +1,36 @@
-/* Logo typeface — place licensed Medium (500) files in /public/fonts */
+/* Load ES Klarheit Grotesk Medium (500) for logo — CDN webfont */
 @font-face {
   font-family: "ES Klarheit Grotesk";
   src:
-    local("ES Klarheit Grotesk Medium"),
-    local("ESKlarheitGrotesk-Medium"),
-    url("/fonts/ESKlarheitGrotesk-Medium.woff2") format("woff2"),
-    url("/fonts/ESKlarheitGrotesk-Medium.woff") format("woff");
+    url("https://db.onlinewebfonts.com/t/28c003765efb2beb2ae20d3b86bc4cda.woff2") format("woff2"),
+    url("https://db.onlinewebfonts.com/t/28c003765efb2beb2ae20d3b86bc4cda.woff") format("woff");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Klarheit Grotesk";
+  src:
+    url("https://db.onlinewebfonts.com/t/28c003765efb2beb2ae20d3b86bc4cda.woff2") format("woff2"),
+    url("https://db.onlinewebfonts.com/t/28c003765efb2beb2ae20d3b86bc4cda.woff") format("woff");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
 
 .q-header .q-logo,
-.q-footer .q-logo {
-  font-family: "ES Klarheit Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+.q-footer .q-logo,
+.q-footer-wordmark {
+  font-family: "ES Klarheit Grotesk", "Klarheit Grotesk", "Helvetica Neue", Arial, sans-serif;
   font-weight: 500;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.q-header .q-logo,
+.q-footer .q-logo {
   font-size: 28px;
   letter-spacing: -0.02em;
 }

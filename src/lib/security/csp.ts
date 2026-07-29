@@ -56,8 +56,8 @@ export function buildContentSecurityPolicy(options: SecurityHeaderOptions): stri
   return normalizeDirectives([
     "default-src 'self'",
     `script-src ${scriptSrc}`,
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com data:",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://db.onlinewebfonts.com",
+    "font-src 'self' https://fonts.gstatic.com https://db.onlinewebfonts.com data:",
     "img-src 'self' data: blob:",
     `connect-src ${connectSrc}`,
     "object-src 'none'",

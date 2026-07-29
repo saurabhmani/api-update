@@ -26,6 +26,7 @@ describe('security headers', () => {
     expect(csp).toContain('upgrade-insecure-requests');
     expect(csp).toContain('https://fonts.googleapis.com');
     expect(csp).toContain('https://fonts.gstatic.com');
+    expect(csp).toContain('https://db.onlinewebfonts.com');
   });
 
   it('allows development websocket and eval requirements only in dev', () => {
