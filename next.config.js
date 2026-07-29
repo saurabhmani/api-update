@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+const path = require('path');
+
 const nextConfig = {
   // Trust the X-Forwarded-* headers set by nginx on the VPS.
   // Without this, req.headers.host inside API routes returns the
@@ -31,6 +33,10 @@ const nextConfig = {
   ],
 
   experimental: {
+  },
+
+  sassOptions: {
+    includePaths: [path.join(__dirname, 'src/styles')],
   },
 
   turbopack: {},

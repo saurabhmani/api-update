@@ -1,5 +1,5 @@
-@use '@/styles/variables' as *;
-@use '@/styles/mixins'    as *;
+@use '../../styles/variables' as *;
+@use '../../styles/mixins'    as *;
 
 .grid { display:grid; gap:$s4; grid-template-columns:1fr; @include xl { grid-template-columns:repeat(2,1fr); } }
 .grid3 { display:grid; gap:$s4; grid-template-columns:1fr; @include md { grid-template-columns:repeat(3,1fr); } }

@@ -1,5 +1,5 @@
-@use '@/styles/variables' as *;
-@use '@/styles/mixins'    as *;
+@use '../../styles/variables' as *;
+@use '../../styles/mixins'    as *;
 
 .pageHeader { @include flex-between; margin-bottom:$s6; }
 .pageTitle { font-size:$text-2xl; font-weight:800; @include gradient-text; }
