@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { recordDbOperation } from '@/lib/monitor/apiPerformanceMetrics';
 
 // Persist pool across Next.js hot reloads in dev
 const g = global as any;
@@ -224,6 +225,8 @@ export function getDb(): mysql.Pool {
 
 export const db = {
   query: async <T = any>(text: string, params?: any[]): Promise<{ rows: T[]; insertId?: number; affectedRows?: number }> => {
+    const queryStartedAt = Date.now();
+    try {
     const p = getDb();
 
     if (/INSERT\s+INTO[\s\S]*RETURNING/i.test(text)) {
@@ -244,5 +247,8 @@ export const db = {
 
     const { rows } = await executeQuery(p, text, params);
     return { rows: rows as T[] };
+    } finally {
+      recordDbOperation(Date.now() - queryStartedAt);
+    }
   },
 };

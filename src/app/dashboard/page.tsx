@@ -21,7 +21,7 @@
  * data, and degrades gracefully when any module is unavailable.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import AppShell from '@/components/layout/AppShell';
 import {
@@ -575,11 +575,18 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const requestControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setError(null);
     try {
-      const res = await fetch(`/api/dashboard?_=${Date.now()}`, { cache: 'no-store' });
+      const res = await fetch('/api/dashboard', {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
       const json = await res.json().catch(() => ({} as any));
       if (!res.ok) {
         setError((json && (json.error || json.message)) || `HTTP ${res.status}`);
@@ -591,9 +598,12 @@ export default function DashboardPage() {
       }
       setData(json as DashboardPayload);
     } catch (e) {
+      if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : 'Network error');
     }
   }, []);
+
+  useEffect(() => () => requestControllerRef.current?.abort(), []);
 
   useEffect(() => {
     (async () => {

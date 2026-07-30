@@ -403,6 +403,9 @@ async function setup() {
     await conn.execute(`
       CREATE TABLE IF NOT EXISTS trade_setups (
         id             INT AUTO_INCREMENT PRIMARY KEY,
+        user_id        INT NULL,
+        generation_identity VARCHAR(255) NULL,
+        strategy_id    VARCHAR(100) NULL,
         instrument_key VARCHAR(150),
         tradingsymbol  VARCHAR(50) NOT NULL,
         exchange       VARCHAR(20),
@@ -422,7 +425,9 @@ async function setup() {
         created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_ts_sym    (tradingsymbol),
-        INDEX idx_ts_status (status)
+        INDEX idx_ts_status (status),
+        INDEX idx_ts_user   (user_id),
+        UNIQUE KEY uq_ts_generation (generation_identity)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
     console.log('✓ trade_setups');
 

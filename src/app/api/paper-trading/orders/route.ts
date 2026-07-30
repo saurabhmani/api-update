@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { getOrderBook, placePaperOrder } from '@/lib/paper-trading';
 import type { PlaceOrderRequest } from '@/lib/paper-trading';
+import { invalidatePaperTradingCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
     }
     const result = await placePaperOrder(user.id, body);
     const status = result.ok ? 201 : result.code === 'NO_ACCOUNT' ? 404 : 422;
+    if (result.ok) await invalidatePaperTradingCaches(user.id);
     return NextResponse.json({ ok: result.ok, ...result }, { status: result.ok ? 201 : status });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Order failed';

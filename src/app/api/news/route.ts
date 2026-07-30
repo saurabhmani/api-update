@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, requireAdmin } from '@/lib/session';
 import { db } from '@/lib/db';
 import { cacheGet, cacheSet } from '@/lib/redis';
+import { CACHE_TTL } from '@/lib/cache/cachePolicy';
 import { fetchNews, fetchStockNews } from '@/services/newsService';
 import { getNewsForSymbol } from '@/lib/news-engine/repository/readNewsEvents';
 import { resolveInstrumentProfile } from '@/services/marketQuote';
@@ -159,7 +160,7 @@ async function fetchAllRssNews(limit = 40): Promise<RssItem[]> {
   });
 
   const news = deduped.slice(0, limit);
-  if (news.length > 0) await cacheSet(cacheKey, news, 300); // 5-min cache
+  if (news.length > 0) await cacheSet(cacheKey, news, CACHE_TTL.NEWS_FEED);
   return news;
 }
 
@@ -333,8 +334,12 @@ export async function GET(req: NextRequest) {
 
     const { news, sources } = await fetchSymbolNews(symbol, limit, companyHint);
     if (news.length > 0) {
-      await cacheSet(cacheKey, { news, sources }, 6 * 3600);
-      await cacheSet(symbolNewsCacheKey(symbol), { news, sources }, 7 * 24 * 3600);
+      await cacheSet(cacheKey, { news, sources }, CACHE_TTL.NEWS_SYMBOL_FRESH);
+      await cacheSet(
+        symbolNewsCacheKey(symbol),
+        { news, sources },
+        CACHE_TTL.NEWS_SYMBOL_STALE,
+      );
     } else {
       const stale = await cacheGet<{ news: StockNewsItem[]; sources: Record<string, number> }>(
         symbolNewsCacheKey(symbol),

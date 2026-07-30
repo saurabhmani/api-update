@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { closePaperPosition } from '@/lib/paper-trading';
+import { invalidatePaperTradingCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,7 @@ export async function POST(
     if (!result.ok) {
       return NextResponse.json({ ok: false, error: result.error }, { status: 422 });
     }
+    await invalidatePaperTradingCaches(user.id);
     return NextResponse.json({ ok: true, position: result.position });
   } catch {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });

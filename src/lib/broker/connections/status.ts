@@ -57,6 +57,8 @@ export async function resolvePostLoginDestination(
     const expiredPrimary = connections.find(
       (c) =>
         c.status === 'expired'
+        || c.status === 'reauth_required'
+        || c.status === 'revoked'
         || (c.status === 'active' && isBrokerTokenExpired(c.tokenExpiresAt)),
     );
     if (expiredPrimary || active.reason === 'expired') {

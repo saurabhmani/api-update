@@ -8,6 +8,7 @@ import {
 } from '@/lib/strategy-hub/services/modeManagementService';
 import { isValidStrategyMode } from '@/lib/strategy-hub/services/strategyModeOverrides';
 import type { StrategyMode } from '@/lib/signal-engine/types/signalEngine.types';
+import { invalidateStrategyCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -74,6 +75,7 @@ export async function POST(req: NextRequest) {
 
     // Final sync to ensure Signal Engine cache is fresh.
     const sync = result.sync ?? await syncStrategyModesForSignalEngine();
+    if (result.updated > 0) await invalidateStrategyCaches();
 
     return NextResponse.json({
       ok: result.ok,

@@ -23,10 +23,17 @@ export type StreamErrorKind = 'permanent_auth' | 'temporary_network' | 'unknown'
 
 export function classifyStreamError(message: string | null | undefined): StreamErrorKind {
   if (!message) return 'unknown';
+  // Narrow permanent-auth phrases only — never /fail|invalid|denied/i alone.
   if (
-    /session\s*(expired|invalid)|invalid\s*session|logged\s*out|not\s*logged|token\s*(expired|invalid)|authorization\s*failed|unauthori[sz]ed|login\s*required|invalid\s*api.?key|api.?key.*invalid|forbidden|access.?denied/i.test(
-      message,
-    )
+    /\binvalid\s+session\b/i.test(message)
+    || /\bsession\s+expired\b/i.test(message)
+    || /\binvalid\s+token\b/i.test(message)
+    || /\btoken\s+expired\b/i.test(message)
+    || /\binvalid\s+api.?key\b/i.test(message)
+    || /\bapi.?key.*invalid\b/i.test(message)
+    || /\bnot\s+logged\s+in\b/i.test(message)
+    || /\blogged\s+out\b/i.test(message)
+    || /\blogin\s+required\b/i.test(message)
   ) {
     return 'permanent_auth';
   }

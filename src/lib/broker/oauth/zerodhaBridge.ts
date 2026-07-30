@@ -44,6 +44,10 @@ export async function persistZerodhaBrokerConnection(
       source: 'kite_oauth',
       kiteUserId: input.kiteUserId,
       activatedOnConnect: isPrimary,
+      providerRejectionConfirmed: false,
+      repairedFromExpired: false,
+      lastCredentialStatusReason: 'oauth_success',
+      lastCredentialStatusAt: new Date().toISOString(),
     },
   });
 

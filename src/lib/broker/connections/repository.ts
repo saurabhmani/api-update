@@ -3,7 +3,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '@/lib/db';
 import { encryptBrokerCredential, decryptBrokerCredential } from './encryption';
-import { toMysqlUtcDateTime, mysqlUtcDateTimeToMs } from './expiry';
+import { toMysqlUtcDateTime, mysqlUtcDateTimeToMs, isBrokerTokenExpired } from './expiry';
 import type {
   BrokerConnectionRecord,
   BrokerConnectionStatus,
@@ -280,6 +280,20 @@ export async function markBrokerConnectionStatus(
   clearTokens = false,
 ): Promise<void> {
   await ensureBrokerConnectionTables();
+
+  // Guard: never persist `expired` unless token_expires_at is actually past.
+  // Prefer setCredentialStatus / expireCredentialIfPastExpiry for new call sites.
+  if (status === 'expired') {
+    const existing = await getBrokerConnectionByUserAndBroker(userId, broker);
+    if (!existing || !isBrokerTokenExpired(existing.tokenExpiresAt)) {
+      console.warn(
+        '[broker_connections] blocked status=expired write — token not past expiry',
+        { userId, broker, hasRow: Boolean(existing) },
+      );
+      return;
+    }
+  }
+
   if (clearTokens) {
     await db.query(
       `UPDATE broker_connections

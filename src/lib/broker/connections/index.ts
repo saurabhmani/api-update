@@ -25,7 +25,32 @@ export {
   decryptBrokerCredential,
   validateBrokerTokenEncryptionKey,
 } from './encryption';
-export { parseBrokerTokenExpiry, toMysqlUtcDateTime } from './expiry';
+export { parseBrokerTokenExpiry, toMysqlUtcDateTime, isBrokerTokenExpired } from './expiry';
+export {
+  classifyProviderFailure,
+  shouldPersistCredentialDemotion,
+  isConfirmedShoonyaCredentialInvalid,
+  isConfirmedKiteCredentialInvalid,
+  TEMPORARY_PROVIDER_FAILURES,
+  CREDENTIAL_PROVIDER_FAILURES,
+} from './providerFailure';
+export type {
+  ProviderFailureCategory,
+  ClassifyProviderFailureInput,
+} from './providerFailure';
+export {
+  setCredentialStatus,
+  expireCredentialIfPastExpiry,
+  applyProviderFailureToCredentialStatus,
+  repairMisclassifiedExpiredCredential,
+  isCredentialUsable,
+  effectiveCredentialStatus,
+} from './credentialStatus';
+export type {
+  SetCredentialStatusInput,
+  CredentialStatusChangeReason,
+  CredentialStatusChangeResult,
+} from './credentialStatus';
 export {
   getSafeBrokerStatus,
   hasActiveBrokerConnection,

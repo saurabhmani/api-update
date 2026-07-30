@@ -6,6 +6,7 @@ import type {
   DeploymentHistoryRow,
 } from '@/lib/strategy-hub/types';
 import type { DeploymentLifecycle } from '@/lib/strategy-hub/deploymentLifecycle';
+import { QUERY_GC_TIME, visibleRefetchInterval } from '@/lib/query/queryPolicy';
 
 export interface DeployedStrategySummary extends DeployedStrategyRow {
   displayName: string;
@@ -28,7 +29,7 @@ export interface StrategyDeploymentsResponse {
 export function useStrategyDeployments(opts?: { strategyId?: string; limit?: number }) {
   return useQuery({
     queryKey: ['strategy-deployments', opts?.strategyId ?? null, opts?.limit ?? 50],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.strategyId) params.set('strategyId', opts.strategyId);
       if (opts?.limit) params.set('limit', String(opts.limit));
@@ -36,12 +37,16 @@ export function useStrategyDeployments(opts?: { strategyId?: string; limit?: num
       const res = await fetch(`/api/strategies/deployments${qs ? `?${qs}` : ''}`, {
         cache: 'no-store',
         credentials: 'include',
+        signal,
       });
       if (!res.ok) throw new Error('Failed to load deployments');
       const body = await res.json();
       if (!body.ok) throw new Error(body.error ?? 'Failed to load deployments');
       return body as StrategyDeploymentsResponse;
     },
-    refetchInterval: 60_000,
+    staleTime: 30_000,
+    gcTime: QUERY_GC_TIME.DEFAULT,
+    refetchInterval: visibleRefetchInterval(60_000),
+    refetchOnWindowFocus: false,
   });
 }

@@ -71,7 +71,8 @@ export async function ensurePaperTradingTables(): Promise<void> {
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uq_paper_idem (account_id, idempotency_key),
         INDEX idx_paper_orders_account_status (account_id, status),
-        INDEX idx_paper_orders_symbol (symbol, status)
+        INDEX idx_paper_orders_symbol (symbol, status),
+        INDEX idx_paper_orders_account_created (account_id, created_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     await db.query(`

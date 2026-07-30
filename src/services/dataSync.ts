@@ -15,6 +15,7 @@ import { fetchYahooQuotesBatch } from '@/lib/marketData/yahooBatch';
 import { getMovers } from '@/providers/MarketDataProvider';
 import { StaleDataError } from '@/types/market';
 import type { MoversBucket } from '@/types/market';
+import { invalidateMarketReferenceCaches } from '@/lib/cache/cacheInvalidation';
 
 /** Max symbols written per sync — defaults to full NIFTY500 universe. */
 function rankingsSyncMaxSymbols(): number {
@@ -381,6 +382,7 @@ export async function syncInstrumentsFromCdn(ex: ExchangeKey): Promise<{ inserte
       throw e;
     }
   }
+  if (inserted > 0) await invalidateMarketReferenceCaches();
   return { inserted, message: `Synced ${inserted} ${ex} instruments.` };
 }
 

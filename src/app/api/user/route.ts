@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
 import { changePassword } from '@/services/auth';
+import { invalidateUserSettingsCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +43,7 @@ export async function PUT(req: NextRequest) {
          default_dashboard=?, timezone=?, alert_email=?, updated_at=NOW()`,
       [user.id, default_dashboard || 'overview', timezone || 'Asia/Kolkata', alert_email !== false]
     );
+    await invalidateUserSettingsCaches(user.id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

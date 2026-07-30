@@ -2,12 +2,13 @@
 
 import { useQuery } from '@tanstack/react-query';
 import type { TrustWatchlistItem } from '@/lib/trust-layer/types';
+import { QUERY_GC_TIME, visibleRefetchInterval } from '@/lib/query/queryPolicy';
 
 export function useTrustWatchlist() {
   return useQuery({
     queryKey: ['trust', 'watchlist'],
-    queryFn: async () => {
-      const res = await fetch('/api/trust/watchlist', { cache: 'no-store', credentials: 'include' });
+    queryFn: async ({ signal }) => {
+      const res = await fetch('/api/trust/watchlist', { cache: 'no-store', credentials: 'include', signal });
       if (!res.ok) throw new Error('Watchlist fetch failed');
       const body = await res.json();
       return {
@@ -16,6 +17,9 @@ export function useTrustWatchlist() {
         categories: body.categories as Record<string, number>,
       };
     },
-    refetchInterval: 90_000,
+    staleTime: 45_000,
+    gcTime: QUERY_GC_TIME.DEFAULT,
+    refetchInterval: visibleRefetchInterval(90_000),
+    refetchOnWindowFocus: false,
   });
 }

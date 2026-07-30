@@ -39,6 +39,39 @@ async function addColumn(conn: mysql.Connection, table: string, column: string, 
   }
 }
 
+async function addIndex(
+  conn: mysql.Connection,
+  table: string,
+  indexName: string,
+  columns: string[],
+): Promise<void> {
+  const [rows] = await conn.execute<mysql.RowDataPacket[]>(
+    `SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_csv
+       FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?
+      GROUP BY INDEX_NAME`,
+    [table],
+  );
+  const wanted = columns.join(',');
+  const duplicate = rows.find((row) => String(row.columns_csv) === wanted);
+  if (duplicate) {
+    log.info('Index already covered', {
+      table,
+      requestedIndex: indexName,
+      existingIndex: String(duplicate.INDEX_NAME),
+      columns: wanted,
+    });
+    return;
+  }
+  if (rows.some((row) => String(row.INDEX_NAME) === indexName)) {
+    throw new Error(`Index ${table}.${indexName} exists with different columns`);
+  }
+  await conn.execute(
+    `ALTER TABLE ${table} ADD INDEX ${indexName} (${columns.join(', ')})`,
+  );
+  log.info('Added index', { table, indexName, columns: wanted });
+}
+
 async function migrate() {
   const { getMysqlConnectionConfig } = await import('../db');
   const cfg = getMysqlConnectionConfig();
@@ -175,6 +208,50 @@ async function migrate() {
     await addColumn(conn, 'portfolio_positions', 'unrealized_pnl', 'DECIMAL(14,2)');
     await addColumn(conn, 'portfolio_positions', 'realized_pnl',   'DECIMAL(14,2) DEFAULT 0');
     await addColumn(conn, 'portfolio_positions', 'as_of',          'DATETIME');
+
+    // ── High-impact API read indexes ────────────────────────────
+    // Each index is checked by ordered column list before DDL, preventing
+    // duplicate indexes even when an equivalent index has a different name.
+    for (const index of [
+      {
+        table: 'user_sessions',
+        name: 'idx_sessions_user_expires',
+        columns: ['user_id', 'expires_at'],
+      },
+      {
+        table: 'portfolio_positions',
+        name: 'idx_pp_portfolio_added',
+        columns: ['portfolio_id', 'added_at'],
+      },
+      {
+        table: 'trade_setups',
+        name: 'idx_ts_user_status_created',
+        columns: ['user_id', 'status', 'created_at'],
+      },
+      {
+        table: 'news',
+        name: 'idx_news_published_category_date',
+        columns: ['is_published', 'category_id', 'published_at'],
+      },
+      {
+        table: 'paper_orders',
+        name: 'idx_paper_orders_account_created',
+        columns: ['account_id', 'created_at'],
+      },
+    ]) {
+      try {
+        await addIndex(conn, index.table, index.name, index.columns);
+      } catch (error: any) {
+        if (error?.code === 'ER_NO_SUCH_TABLE') {
+          log.warn('Index deferred because optional table is absent', {
+            table: index.table,
+            indexName: index.name,
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
 
     // ── Backfill: populate instrument_id from instruments table ────
     // Ensures JOINs can use instrument_id instead of tradingsymbol.

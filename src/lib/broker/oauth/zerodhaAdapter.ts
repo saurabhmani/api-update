@@ -3,8 +3,8 @@
 import { createBrokerAuthTransaction } from '../connections/authTransactions';
 import {
   getBrokerConnectionByUserAndBroker,
-  markBrokerConnectionStatus,
 } from '../connections/repository';
+import { setCredentialStatus, isCredentialUsable } from '../connections/credentialStatus';
 import type { BrokerConnectionRecord } from '../connections/types';
 import type { DataSourceBrokerAdapter, BrokerConnectionResult } from './types';
 
@@ -38,22 +38,18 @@ export const zerodhaBrokerAdapter: DataSourceBrokerAdapter = {
 
   async validateConnection(connection: BrokerConnectionRecord): Promise<boolean> {
     if (connection.broker !== 'zerodha') return false;
-    if (connection.status !== 'active') return false;
-    if (!connection.accessTokenEncrypted) return false;
-    if (connection.tokenExpiresAt) {
-      const t = new Date(connection.tokenExpiresAt).getTime();
-      if (!Number.isNaN(t) && t <= Date.now()) return false;
-    }
-    return true;
+    return isCredentialUsable(connection);
   },
 
   async disconnect(connection: BrokerConnectionRecord): Promise<void> {
-    await markBrokerConnectionStatus(
-      connection.userId,
-      'zerodha',
-      'disconnected',
-      true,
-    );
+    await setCredentialStatus({
+      userId: connection.userId,
+      broker: 'zerodha',
+      newStatus: 'disconnected',
+      reason: 'manual_disconnect',
+      source: 'zerodhaAdapter.disconnect',
+      clearTokens: true,
+    });
   },
 };
 

@@ -56,7 +56,8 @@ export async function refreshBrokerToken(
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Refresh failed';
     await logFailure({ userId, broker: name, operation: 'refresh_token', errorMessage: msg });
-    await upsertBrokerConnection(userId, name, conn.credentials, 'expired');
+    // Do NOT mark credentials expired on refresh network/outage failures.
+    // Explicit provider rejection is handled by adapters calling setCredentialStatus.
     return { ok: false, error: msg };
   }
 }

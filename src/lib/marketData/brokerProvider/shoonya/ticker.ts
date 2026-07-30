@@ -17,9 +17,10 @@ import {
 } from '@/lib/marketData/connectionManager/streamingLifecycle';
 import { publishNormalizedLiveTick } from '@/lib/marketData/connectionManager/tickPipeline';
 import {
+  applyProviderAuthFailure,
   isSessionExpiryMessage,
-  markProviderSessionExpired,
 } from '../connectionHelpers';
+import { isConfirmedShoonyaCredentialInvalid } from '@/lib/broker/connections/providerFailure';
 import { toShoonyaScripKey } from '../instrumentKey';
 import type { NormalizedTickBus } from '../tickBus';
 import {
@@ -84,7 +85,31 @@ export class ShoonyaTicker extends EventEmitter {
         onLoginRequired: (message) => {
           this.state = 'expired';
           this.lastError = message;
-          void markProviderSessionExpired('shoonya', this.session.userId);
+          // Persist credential demotion only when the message confirms invalid session/token.
+          // Streaming disconnects / generic auth handshake failures stay runtime-only.
+          if (isConfirmedShoonyaCredentialInvalid(message)) {
+            void applyProviderAuthFailure(
+              'shoonya',
+              this.session.userId,
+              {
+                providerErrorMessage: message,
+                confirmedCredentialInvalid: true,
+                transport: 'websocket',
+              },
+              'shoonya.ticker:onLoginRequired',
+            );
+          } else {
+            void applyProviderAuthFailure(
+              'shoonya',
+              this.session.userId,
+              {
+                providerErrorMessage: message,
+                confirmedCredentialInvalid: false,
+                transport: 'websocket',
+              },
+              'shoonya.ticker:onLoginRequired',
+            );
+          }
           this.emit('session_expired', message);
         },
         onState: (s) => {
@@ -248,12 +273,13 @@ export class ShoonyaTicker extends EventEmitter {
       }
       const emsg = typeof msg.emsg === 'string' ? msg.emsg : 'auth failed';
       this.lastError = emsg;
-      if (
-        isSessionExpiryMessage(emsg)
-        || classifyStreamError(emsg) === 'permanent_auth'
-        || /fail|invalid|denied/i.test(emsg)
-      ) {
+      // Only permanent credential failure when Shoonya explicitly confirms invalid session/token.
+      // Generic "fail|invalid|denied" must NOT demote persistent credentials.
+      if (isConfirmedShoonyaCredentialInvalid(emsg) || isSessionExpiryMessage(emsg)) {
         this.life.markPermanentAuthFailure(emsg);
+      } else if (classifyStreamError(emsg) === 'permanent_auth') {
+        // classifyStreamError may still match broad patterns — treat as runtime unless confirmed
+        this.life.handleWireClosed(generation, emsg);
       } else {
         this.life.handleWireClosed(generation, emsg);
       }

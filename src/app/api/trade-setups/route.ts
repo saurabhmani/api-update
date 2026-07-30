@@ -1,327 +1,498 @@
-/**
- * Trade Setups API — Quantorus365
- *
- * Live path: ranked universe → generateSignal → rejection engine.
- * Fallback: when the live scan produces zero rows, seed from q365_signals
- * only for symbols that pass Phase-12 main-table gates (same bar as /signals).
- */
-import { NextRequest, NextResponse }    from 'next/server';
+import { randomUUID } from 'node:crypto';
+import { NextRequest, NextResponse } from 'next/server';
+import { withApiHandler } from '@/lib/apiHandler';
+import { cacheKeys } from '@/lib/cache/cacheKeys';
+import { cacheService } from '@/lib/cache/cacheService';
+import { CACHE_POLICIES } from '@/lib/cache/cachePolicy';
+import {
+  cacheAcquireDistributedLock,
+  cacheReleaseLock,
+} from '@/lib/redis';
+import { db } from '@/lib/db';
+import { ENGINE_VERSION } from '@/lib/signal-engine/constants/engineVersion';
+import { generateSignal, type Signal } from '@/lib/signal-engine/live/analyzeInstrument';
+import { getRegistryEntry } from '@/lib/strategy-hub/registry';
 import { requireSession } from '@/lib/session';
-import { db }                           from '@/lib/db';
-import { generateSignal, logRejection } from '@/lib/signal-engine/live/analyzeInstrument';
-import { getActiveSignals }             from '@/lib/signal-engine/repository/readSignals';
-import { syncRankingsFromNse }          from '@/services/dataSync';
-import { MIN_SETUP_CONFIDENCE }         from '@/lib/constants/signals';
-import { belongsInMainTable } from '@/lib/signal-engine/pipeline/phase12Routing';
+import {
+  getLatestCompletedTradingDay,
+  getMarketStatus,
+} from '@/lib/marketData/marketHours';
+import { logger } from '@/lib/logger';
+import { resolvePrice } from '@/lib/marketData/resolver/marketDataResolver';
+import {
+  observeProvider,
+  observeRedis,
+  recordTradeSetupDeduplicated,
+  recordTradeSetupGeneration,
+} from '@/lib/monitor/apiPerformanceMetrics';
 
-export const dynamic   = 'force-dynamic';
+export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const SETUP_VALIDITY_MS = 24 * 3600 * 1000;
+const PROVIDER_TIMEOUT_MS = 20_000;
+const DATABASE_TIMEOUT_MS = 5_000;
+const LOCK_TTL_SECONDS = 45;
+const ALLOWED_TIMEFRAMES = new Set(['swing']);
+const SYMBOL_PATTERN = /^[A-Z0-9][A-Z0-9&.-]{0,29}$/;
+const inFlight = new Map<string, Promise<GenerationPayload>>();
+const log = logger.child({ component: 'tradeSetupApi' });
 
-function minSetupConfidence(): number {
-  const relaxed = String(process.env.SIGNAL_RELAX_MODE ?? '').trim().toLowerCase() === 'true';
-  return relaxed ? 55 : MIN_SETUP_CONFIDENCE;
+interface GenerationRequest {
+  symbol: string;
+  strategyId: string;
+  timeframe: 'swing';
+  force: boolean;
 }
 
-function hasValidSetupPrices(entry: number, stop: number, target: number): boolean {
-  return entry > 0 && stop > 0 && target > 0;
-}
-
-/** Phase-12 main-table gates — same bar as /signals BUY/SELL table. */
-function passesInstitutionalGates(row: {
-  classification?: string | null;
-  signal_status?: string | null;
-  live_valid?: boolean | number | null;
-  stress_survival_score?: number | null;
-  final_score?: number | null;
-}): boolean {
-  return belongsInMainTable(row);
-}
-
-async function loadSignalGateFields(sym: string): Promise<Record<string, unknown> | null> {
-  const { rows: sigRows } = await db.query(
-    `SELECT symbol, direction, confidence_score, signal_status, classification,
-            live_valid, stress_survival_score, rejection_reasons_json, final_score, status
-       FROM q365_signals
-      WHERE UPPER(symbol) = ?
-      ORDER BY generated_at DESC LIMIT 1`,
-    [sym.toUpperCase()],
-  );
-  return (sigRows[0] as Record<string, unknown>) ?? null;
-}
-
-async function expireStaleSetups(): Promise<void> {
-  await db.query(
-    `UPDATE trade_setups SET status = 'expired'
-      WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= NOW()`,
-  );
-}
-
-async function upsertTradeSetup(row: {
+interface InstrumentRef {
   instrument_key: string;
-  tradingsymbol:  string;
-  exchange:       string;
-  direction:      string;
-  entry_price:    number;
-  stop_loss:      number;
-  target1:        number;
-  target2:        number | null;
-  risk_reward:    number;
-  confidence:     number;
-  timeframe:      string;
-  reason:         string;
-  scenario_tag:   string;
-  regime:         string;
-  expires_at:     Date;
-}): Promise<boolean> {
-  await db.query(
-    `UPDATE trade_setups SET status = 'expired'
-      WHERE tradingsymbol = ? AND status = 'active'`,
-    [row.tradingsymbol],
-  );
-  await db.query(
-    `INSERT INTO trade_setups
-       (instrument_key, tradingsymbol, exchange, direction, entry_price,
-        stop_loss, target1, target2, risk_reward, confidence, timeframe,
-        reason, scenario_tag, regime, status, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-    [
-      row.instrument_key, row.tradingsymbol, row.exchange, row.direction,
-      row.entry_price, row.stop_loss, row.target1, row.target2, row.risk_reward,
-      row.confidence, row.timeframe, row.reason, row.scenario_tag, row.regime,
-      row.expires_at,
-    ],
-  );
-  return true;
+  tradingsymbol: string;
+  exchange: string;
 }
 
-export async function GET(req: NextRequest) {
-  try { await requireSession(); }
-  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+interface TradeSetup {
+  id?: number;
+  tradingsymbol: string;
+  exchange: string;
+  direction: string;
+  entry_price: number;
+  stop_loss: number;
+  target1: number;
+  target2: number | null;
+  risk_reward: number;
+  confidence: number;
+  timeframe: string;
+  reason: string;
+  scenario_tag: string;
+  regime: string;
+  expires_at: Date | string;
+  created_at?: Date | string;
+}
 
-  const action = req.nextUrl.searchParams.get('action') || 'active';
-  const limit  = Math.min(parseInt(req.nextUrl.searchParams.get('limit') || '20'), 100);
+interface GenerationPayload {
+  success: true;
+  setup: TradeSetup | null;
+  setups: TradeSetup[];
+  generationStatus: 'complete' | 'no_setup';
+  reused?: boolean;
+  note: string;
+}
+
+class TimeoutError extends Error {
+  constructor(readonly operation: 'database' | 'provider') {
+    super(`${operation}_timeout`);
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  operation: 'database' | 'provider',
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new TimeoutError(operation)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function validateBody(body: unknown): GenerationRequest | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const input = body as Record<string, unknown>;
+  const symbol = String(input.symbol ?? '').trim().toUpperCase();
+  const strategyId = String(input.strategyId ?? '').trim();
+  const timeframe = String(input.timeframe ?? '').trim().toLowerCase();
+  if (
+    !SYMBOL_PATTERN.test(symbol) ||
+    !strategyId ||
+    !ALLOWED_TIMEFRAMES.has(timeframe) ||
+    (strategyId !== 'auto' && !getRegistryEntry(strategyId))
+  ) return null;
+  return {
+    symbol,
+    strategyId,
+    timeframe: timeframe as 'swing',
+    force: input.force === true,
+  };
+}
+
+async function resolveAuthorizedInstrument(
+  userId: string | number,
+  symbol: string,
+): Promise<InstrumentRef | null> {
+  const { rows } = await withTimeout(
+    db.query<InstrumentRef>(
+      `SELECT candidate.instrument_key, candidate.tradingsymbol, candidate.exchange
+         FROM (
+           SELECT instrument_key, tradingsymbol, exchange
+             FROM rankings WHERE UPPER(tradingsymbol)=?
+           UNION
+           SELECT instrument_key, tradingsymbol, exchange
+             FROM watchlist_items wi
+             JOIN watchlists w ON w.id=wi.watchlist_id
+            WHERE w.user_id=? AND UPPER(wi.tradingsymbol)=?
+           UNION
+           SELECT pp.instrument_key, pp.tradingsymbol, pp.exchange
+             FROM portfolio_positions pp
+             JOIN portfolios p ON p.id=pp.portfolio_id
+            WHERE p.user_id=? AND UPPER(pp.tradingsymbol)=?
+         ) candidate
+        LIMIT 1`,
+      [symbol, userId, symbol, userId, symbol],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+  return rows[0] ?? null;
+}
+
+async function loadFreshnessVersion(symbol: string): Promise<string> {
+  const { rows } = await withTimeout(
+    db.query<{ latest: Date | string | null }>(
+      `SELECT MAX(ts) AS latest FROM market_data_daily WHERE UPPER(symbol)=?`,
+      [symbol],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+  const latest = rows[0]?.latest;
+  return latest ? new Date(latest).toISOString() : 'no-candle-version';
+}
+
+async function loadRecentSetup(
+  userId: string | number,
+  identity: string,
+): Promise<TradeSetup | null> {
+  const { rows } = await withTimeout(
+    db.query<TradeSetup>(
+      `SELECT id, tradingsymbol, exchange, direction, entry_price, stop_loss,
+              target1, target2, risk_reward, confidence, timeframe, reason,
+              scenario_tag, regime, expires_at, created_at
+         FROM trade_setups
+        WHERE user_id=? AND generation_identity=? AND status='active'
+          AND (expires_at IS NULL OR expires_at>NOW())
+        LIMIT 1`,
+      [userId, identity],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+  return rows[0] ?? null;
+}
+
+function signalToSetup(signal: Signal): TradeSetup {
+  return {
+    tradingsymbol: signal.tradingsymbol,
+    exchange: signal.exchange,
+    direction: signal.direction,
+    entry_price: signal.entry_price,
+    stop_loss: signal.stop_loss,
+    target1: signal.target1,
+    target2: signal.target2 || null,
+    risk_reward: signal.risk_reward,
+    confidence: signal.confidence,
+    timeframe: signal.timeframe,
+    reason: signal.reasons.slice(0, 3).map((reason) => reason.text).join('. '),
+    scenario_tag: signal.scenario_tag,
+    regime: signal.regime,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  };
+}
+
+async function persistSetup(
+  userId: string | number,
+  identity: string,
+  strategyId: string,
+  instrument: InstrumentRef,
+  setup: TradeSetup,
+): Promise<void> {
+  await withTimeout(
+    db.query(
+      `INSERT INTO trade_setups
+        (user_id, generation_identity, strategy_id, instrument_key,
+         tradingsymbol, exchange, direction, entry_price, stop_loss, target1,
+         target2, risk_reward, confidence, timeframe, reason, scenario_tag,
+         regime, status, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+       ON DUPLICATE KEY UPDATE
+         direction=VALUES(direction), entry_price=VALUES(entry_price),
+         stop_loss=VALUES(stop_loss), target1=VALUES(target1),
+         target2=VALUES(target2), risk_reward=VALUES(risk_reward),
+         confidence=VALUES(confidence), reason=VALUES(reason),
+         scenario_tag=VALUES(scenario_tag), regime=VALUES(regime),
+         status='active', expires_at=VALUES(expires_at), updated_at=NOW()`,
+      [
+        userId, identity, strategyId, instrument.instrument_key,
+        setup.tradingsymbol, setup.exchange, setup.direction,
+        setup.entry_price, setup.stop_loss, setup.target1, setup.target2,
+        setup.risk_reward, setup.confidence, setup.timeframe, setup.reason,
+        setup.scenario_tag, setup.regime, setup.expires_at,
+      ],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+}
+
+async function generateOne(
+  userId: string | number,
+  request: GenerationRequest,
+  instrument: InstrumentRef,
+  identity: string,
+): Promise<GenerationPayload> {
+  const providerStarted = Date.now();
+  const [resolvedPrice, signal] = await withTimeout(
+    observeProvider(() => Promise.all([
+      resolvePrice(instrument.tradingsymbol),
+      generateSignal(
+        instrument.instrument_key,
+        instrument.tradingsymbol,
+        instrument.exchange,
+      ),
+    ])),
+    PROVIDER_TIMEOUT_MS,
+    'provider',
+  );
+  log.info('Provider generation completed', {
+    symbol: request.symbol,
+    provider: resolvedPrice.source,
+    dataQuality: resolvedPrice.quality,
+    durationMs: Date.now() - providerStarted,
+  });
+
+  const generatedStrategy = signal?.strategy ?? null;
+  const eligible = Boolean(
+    resolvedPrice.price != null &&
+    signal &&
+    signal.direction !== 'HOLD' &&
+    signal.rejection_reasons.length === 0 &&
+    signal.entry_price > 0 &&
+    signal.stop_loss > 0 &&
+    signal.target1 > 0 &&
+    (request.strategyId === 'auto' || generatedStrategy === request.strategyId),
+  );
+  if (!signal || !eligible) {
+    recordTradeSetupGeneration(Date.now() - providerStarted);
+    return {
+      success: true,
+      setup: null,
+      setups: [],
+      generationStatus: 'no_setup',
+      note: request.strategyId !== 'auto' && generatedStrategy
+        ? `The current setup matched ${generatedStrategy}, not ${request.strategyId}.`
+        : 'No setup currently passes the generation and risk gates.',
+    };
+  }
+
+  const setup = signalToSetup(signal);
+  await persistSetup(userId, identity, request.strategyId, instrument, setup);
+  recordTradeSetupGeneration(Date.now() - providerStarted);
+  return {
+    success: true,
+    setup,
+    setups: [setup],
+    generationStatus: 'complete',
+    note: `${request.symbol} trade setup generated.`,
+  };
+}
+
+async function handleGet(req: NextRequest) {
+  const user = await requireSession();
+  const limitRaw = Number(req.nextUrl.searchParams.get('limit') ?? 20);
+  if (!Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > 100) {
+    return NextResponse.json({ error: 'limit must be an integer from 1 to 100' }, { status: 400 });
+  }
+  try {
+    const { rows } = await withTimeout(
+      db.query<TradeSetup>(
+        `SELECT id, tradingsymbol, exchange, direction, entry_price, stop_loss,
+                target1, target2, risk_reward, confidence, timeframe, reason,
+                scenario_tag, regime, expires_at, created_at
+           FROM trade_setups
+          WHERE user_id=? AND status='active'
+            AND (expires_at IS NULL OR expires_at>NOW())
+          ORDER BY confidence DESC, created_at DESC LIMIT ?`,
+        [user.id, limitRaw],
+      ),
+      DATABASE_TIMEOUT_MS,
+      'database',
+    );
+    return NextResponse.json({ setups: rows, count: rows.length });
+  } catch (error) {
+    if (error instanceof TimeoutError) {
+      return NextResponse.json({
+        error: 'Database operation timed out. Please retry.',
+        code: 'DATABASE_TIMEOUT',
+      }, { status: 504 });
+    }
+    throw error;
+  }
+}
+
+async function handlePost(req: NextRequest) {
+  const started = Date.now();
+  const user = await requireSession();
+  const request = validateBody(await req.json().catch(() => null));
+  if (!request) {
+    return NextResponse.json({
+      error: 'symbol, valid strategyId, and timeframe=swing are required',
+    }, { status: 400 });
+  }
 
   try {
-    if (action === 'active') {
-      // Read trade_setups only — the UI renders ts.* fields. A JOIN to
-      // q365_signals was removed: instrument_key collations differ
-      // (utf8mb4_unicode_ci vs utf8mb4_0900_ai_ci) and caused 500s.
-      const { rows } = await db.query(`
-        SELECT *
-        FROM trade_setups
-        WHERE status = 'active'
-          AND (expires_at IS NULL OR expires_at > NOW())
-        ORDER BY confidence DESC, created_at DESC
-        LIMIT ?
-      `, [limit]);
-      const confFloor = minSetupConfidence();
-      const gatedRows: typeof rows = [];
+    const [instrument, freshnessVersion] = await Promise.all([
+      resolveAuthorizedInstrument(user.id, request.symbol),
+      loadFreshnessVersion(request.symbol),
+    ]);
+    if (!instrument) {
+      return NextResponse.json({
+        error: 'Symbol is not available in your watchlist, portfolio, or the ranked universe',
+      }, { status: 403 });
+    }
 
-      for (const setup of rows as Array<Record<string, unknown>>) {
-        const sym = String(setup.tradingsymbol ?? '').toUpperCase();
-        if (!sym) continue;
-        const entry = Number(setup.entry_price ?? 0);
-        const stop = Number(setup.stop_loss ?? 0);
-        const target = Number(setup.target1 ?? 0);
-        if (!hasValidSetupPrices(entry, stop, target)) continue;
-        try {
-          const sig = await loadSignalGateFields(sym);
-          if (!sig) continue;
-          // Use the confidence stored on the setup row (validated at creation).
-          // Re-checking against the latest q365_signals score empties the UI when
-          // live signal confidence decays after the setup was written.
-          const conf = Number(setup.confidence ?? 0);
-          if (conf < confFloor) continue;
-          if (!passesInstitutionalGates({
-            classification: sig.classification as string | null,
-            signal_status: sig.signal_status as string | null,
-            live_valid: sig.live_valid as boolean | number | null,
-            stress_survival_score: sig.stress_survival_score != null ? Number(sig.stress_survival_score) : null,
-            final_score: sig.final_score != null ? Number(sig.final_score) : null,
-          })) continue;
-          gatedRows.push(setup);
-        } catch { /* skip rows we cannot validate */ }
+    const market = getMarketStatus();
+    const marketContext = `${getLatestCompletedTradingDay()}:${market.state}`;
+    const identity = [
+      user.id, request.symbol, request.strategyId, request.timeframe,
+      marketContext, ENGINE_VERSION, freshnessVersion,
+    ].join('|');
+    const resultKey = cacheKeys.tradeSetupGenerationResult(
+      user.id,
+      request.symbol,
+      request.strategyId,
+      request.timeframe,
+      marketContext,
+      ENGINE_VERSION,
+      freshnessVersion,
+    );
+
+    if (request.force) {
+      await cacheService.delete(resultKey);
+    } else {
+      const cached = await cacheService.get<GenerationPayload>(resultKey);
+      if (cached) {
+        return NextResponse.json({ ...cached, reused: true }, {
+          headers: { 'X-Cache': 'HIT' },
+        });
       }
-
-      return NextResponse.json({ setups: gatedRows, count: gatedRows.length });
+      const recent = await loadRecentSetup(user.id, identity);
+      if (recent) {
+        const payload: GenerationPayload = {
+          success: true,
+          setup: recent,
+          setups: [recent],
+          generationStatus: 'complete',
+          reused: true,
+          note: 'Recently generated setup reused.',
+        };
+        await cacheService.set(resultKey, payload, CACHE_POLICIES.tradeSetup);
+        return NextResponse.json(payload, { headers: { 'X-Cache': 'MISS-DB' } });
+      }
     }
 
-    if (action === 'top') {
-      const { rows } = await db.query(`
-        SELECT * FROM trade_setups
-        WHERE status='active' AND confidence >= 70
-        ORDER BY confidence DESC LIMIT 10
-      `);
-      return NextResponse.json({ setups: rows });
+    const existing = inFlight.get(identity);
+    if (existing) {
+      recordTradeSetupDeduplicated();
+      const payload = await existing;
+      return NextResponse.json({ ...payload, reused: true }, {
+        headers: { 'X-Request-Coalesced': 'true' },
+      });
     }
 
-    const { rows } = await db.query(
-      `SELECT * FROM trade_setups ORDER BY created_at DESC LIMIT ?`, [limit]
+    const lockKey = cacheKeys.tradeSetupRequestLock(
+      user.id,
+      request.symbol,
+      request.strategyId,
+      request.timeframe,
     );
-    return NextResponse.json({ setups: rows });
-
-  } catch (err: any) {
-    if (err?.code === 'ER_NO_SUCH_TABLE')
-      return NextResponse.json({ setups: [], note: 'Run migrations first' });
-    throw err;
-  }
-}
-
-export async function POST(req: NextRequest) {
-  try { await requireSession(); }
-  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
-
-  const body  = await req.json().catch(() => ({}));
-  const limit = parseInt(body.limit ?? '30');
-
-  let ranked: any[] = [];
-  try {
-    const { rows } = await db.query(
-      `SELECT instrument_key, tradingsymbol, exchange FROM rankings ORDER BY score DESC LIMIT ?`,
-      [Math.min(limit, 100)]
-    );
-    ranked = rows as any[];
-  } catch { return NextResponse.json({ error: 'Rankings table not found — run migrations.' }, { status: 503 }); }
-
-  // Auto-seed rankings from live movers / Yahoo when empty
-  if (ranked.length === 0) {
-    console.log('[TradeSetups] Rankings empty — auto-syncing...');
-    await syncRankingsFromNse();
-    const { rows: r2 } = await db.query(
-      `SELECT instrument_key, tradingsymbol, exchange FROM rankings ORDER BY score DESC LIMIT ?`,
-      [Math.min(limit, 100)]
-    );
-    ranked = r2 as any[];
-  }
-
-  await expireStaleSetups();
-
-  let created = 0, rejected = 0, skipped = 0, fallback = 0, gateFiltered = 0;
-  const expiresAt = new Date(Date.now() + SETUP_VALIDITY_MS);
-  const confFloor = minSetupConfidence();
-
-  for (const inst of ranked) {
-    const signal = await generateSignal(inst.instrument_key, inst.tradingsymbol, inst.exchange);
-    if (!signal) { skipped++; continue; }
-
-    if (signal.rejection_reasons.length > 0) {
-      rejected++;
-      await logRejection(inst.instrument_key, inst.tradingsymbol, signal.rejection_reasons);
-      continue;
+    const lockToken = randomUUID();
+    const lockState = await observeRedis(() => cacheAcquireDistributedLock(
+      lockKey,
+      lockToken,
+      LOCK_TTL_SECONDS,
+    ));
+    if (lockState === 'held') {
+      recordTradeSetupDeduplicated();
+      return NextResponse.json({
+        success: true,
+        generationStatus: 'in_progress',
+        setups: [],
+        note: 'An identical trade setup request is already running.',
+      }, { status: 202, headers: { 'Retry-After': '2' } });
     }
 
-    if (signal.direction === 'HOLD' || signal.confidence < confFloor) { skipped++; continue; }
-
-    if (!hasValidSetupPrices(signal.entry_price, signal.stop_loss, signal.target1)) {
-      gateFiltered++;
-      continue;
+    const concurrentAfterLock = inFlight.get(identity);
+    if (concurrentAfterLock) {
+      if (lockState === 'acquired') {
+        await observeRedis(() => cacheReleaseLock(lockKey, lockToken));
+      }
+      recordTradeSetupDeduplicated();
+      const payload = await concurrentAfterLock;
+      return NextResponse.json({ ...payload, reused: true }, {
+        headers: { 'X-Request-Coalesced': 'true' },
+      });
     }
 
-    if (!passesInstitutionalGates({
-      classification: signal.classification,
-      signal_status: signal.signal_status,
-      live_valid: null,
-      stress_survival_score: null,
-      final_score: signal.final_score,
-    })) {
-      gateFiltered++;
-      continue;
-    }
-
-    const reason = signal.reasons.slice(0, 3).map(r => r.text).join('. ');
+    const work = (async () => {
+      const afterLock = request.force
+        ? null
+        : await cacheService.get<GenerationPayload>(resultKey);
+      if (afterLock) return { ...afterLock, reused: true };
+      const payload = await generateOne(
+        user.id,
+        request,
+        instrument,
+        identity,
+      );
+      await cacheService.set(
+        resultKey,
+        payload,
+        market.isOpen
+          ? CACHE_POLICIES.tradeSetup
+          : { ttlSeconds: 60 * 60 },
+      );
+      return payload;
+    })();
+    inFlight.set(identity, work);
 
     try {
-      await upsertTradeSetup({
-        instrument_key: inst.instrument_key,
-        tradingsymbol:  inst.tradingsymbol,
-        exchange:       inst.exchange,
-        direction:      signal.direction,
-        entry_price:    signal.entry_price,
-        stop_loss:      signal.stop_loss,
-        target1:        signal.target1,
-        target2:        signal.target2,
-        risk_reward:    signal.risk_reward,
-        confidence:     signal.confidence,
-        timeframe:      signal.timeframe,
-        reason,
-        scenario_tag:   signal.scenario_tag,
-        regime:         signal.regime,
-        expires_at:     expiresAt,
+      const payload = await work;
+      log.info('Generation request completed', {
+        symbol: request.symbol,
+        strategyId: request.strategyId,
+        timeframe: request.timeframe,
+        marketContext,
+        durationMs: Date.now() - started,
+        cacheBypassed: request.force,
+        redisLock: lockState,
       });
-      created++;
-    } catch (err: any) {
-      console.warn('[TradeSetups] insert failed:', inst.tradingsymbol, err?.message);
-      skipped++;
-    }
-  }
-
-  // Fall back to scanner pool only when live scan produced zero rows.
-  // Apply the same Phase-12 main-table gates as /signals — no
-  // DEVELOPING_SETUP / WATCHLIST_ONLY rows.
-  if (created === 0) {
-    const active = await getActiveSignals(Math.min(limit, 50));
-    const seen = new Set<string>();
-    for (const s of active) {
-      const dir = String(s.direction ?? '').toUpperCase();
-      if (dir !== 'BUY' && dir !== 'SELL') continue;
-      const conf = Number(s.confidence_score ?? s.confidence ?? 0);
-      if (conf < confFloor) continue;
-      const entry = Number(s.entry_price ?? 0);
-      const stop = Number(s.stop_loss ?? 0);
-      const target = Number(s.target1 ?? 0);
-      if (!hasValidSetupPrices(entry, stop, target)) { gateFiltered++; continue; }
-      const sym = String(s.tradingsymbol ?? s.symbol ?? '').toUpperCase();
-      if (!sym || seen.has(sym)) continue;
-      const gateRow = await loadSignalGateFields(sym);
-      if (!gateRow || !passesInstitutionalGates({
-        classification: gateRow.classification as string | null,
-        signal_status: gateRow.signal_status as string | null,
-        live_valid: gateRow.live_valid as boolean | number | null,
-        stress_survival_score: gateRow.stress_survival_score != null ? Number(gateRow.stress_survival_score) : null,
-        final_score: gateRow.final_score != null ? Number(gateRow.final_score) : null,
-      })) {
-        gateFiltered++;
-        continue;
-      }
-      seen.add(sym);
-      const reason = Array.isArray(s.reasons)
-        ? s.reasons.slice(0, 3).map((r: any) => r.message ?? r.text ?? '').filter(Boolean).join('. ')
-        : '';
-      try {
-        await upsertTradeSetup({
-          instrument_key: s.instrument_key ?? `NSE_EQ|${sym}`,
-          tradingsymbol:  sym,
-          exchange:       s.exchange ?? 'NSE',
-          direction:      dir,
-          entry_price:    Number(s.entry_price ?? 0),
-          stop_loss:      Number(s.stop_loss ?? 0),
-          target1:        Number(s.target1 ?? 0),
-          target2:        s.target2 != null ? Number(s.target2) : null,
-          risk_reward:    Number(s.risk_reward ?? 0),
-          confidence:     conf,
-          timeframe:      s.timeframe ?? 'swing',
-          reason:         reason || `Scanner ${dir} — ${s.scenario_tag ?? s.signal_type ?? 'active signal'}`,
-          scenario_tag:   String(s.scenario_tag ?? 'NO_STRATEGY'),
-          regime:         String(s.regime ?? s.market_regime ?? 'NEUTRAL'),
-          expires_at:     expiresAt,
-        });
-        created++;
-        fallback++;
-      } catch (err: any) {
-        console.warn('[TradeSetups] fallback insert failed:', sym, err?.message);
+      return NextResponse.json(payload, { headers: { 'X-Cache': 'MISS' } });
+    } finally {
+      if (inFlight.get(identity) === work) inFlight.delete(identity);
+      if (lockState === 'acquired') {
+        await observeRedis(() => cacheReleaseLock(lockKey, lockToken));
       }
     }
+  } catch (error) {
+    if (error instanceof TimeoutError) {
+      return NextResponse.json({
+        error: error.operation === 'provider'
+          ? 'Market data provider timed out. Please retry.'
+          : 'Database operation timed out. Please retry.',
+        code: `${error.operation.toUpperCase()}_TIMEOUT`,
+      }, { status: 504 });
+    }
+    log.error('Trade setup generation failed', new Error('Trade setup generation failed'), {
+      error_name: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return NextResponse.json({
+      error: 'Trade setup generation failed safely. Please retry.',
+      code: 'TRADE_SETUP_GENERATION_FAILED',
+    }, { status: 500 });
   }
-
-  return NextResponse.json({
-    success: true, created, rejected, skipped, fallback, gateFiltered, total: ranked.length,
-    approval_rate: ranked.length > 0 ? parseFloat((created / ranked.length * 100).toFixed(1)) : 0,
-    note: created > 0
-      ? fallback > 0
-        ? `${created} setups created from scanner pool (${fallback} passed Phase-12 main-table gates; ${gateFiltered} filtered; ${rejected} live candidates rejected).`
-        : `${created} setups created. ${rejected} signals blocked by rejection engine.`
-      : `No setups passed institutional gates (${rejected} live rejected, ${gateFiltered} scanner filtered, ${skipped} skipped from ${ranked.length} stocks).`,
-  });
 }
+
+export const GET = withApiHandler(handleGet);
+export const POST = withApiHandler(handlePost);

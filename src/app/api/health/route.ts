@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { cacheGet, cacheSet } from '@/lib/redis';
+import { CACHE_TTL } from '@/lib/cache/cachePolicy';
 import { getPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
 import { computeManipulationFreshness } from '@/lib/manipulation-engine/manipulationSignalRisk';
 
@@ -86,7 +87,7 @@ export async function GET() {
   // ── Check 2: Redis connectivity ───────────────────────────
   try {
     const testKey = '__health_probe__';
-    await cacheSet(testKey, 1, 10);
+    await cacheSet(testKey, 1, CACHE_TTL.REDIS_HEALTH_PROBE);
     const val = await cacheGet<number>(testKey);
     checks.redis = { status: val === 1 ? 'ok' : 'warn' };
   } catch (err) {

@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import type { StrategyHubListResponse } from '@/lib/strategy-hub/types';
+import { QUERY_GC_TIME, visibleRefetchInterval } from '@/lib/query/queryPolicy';
 
 export interface HubFilters {
   category?: string | null;
@@ -32,16 +33,20 @@ function buildQuery(filters: HubFilters): string {
 export function useStrategyHub(filters: HubFilters = {}) {
   return useQuery({
     queryKey: ['strategy-hub', filters],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await fetch(`/api/strategies/registry?${buildQuery(filters)}`, {
         cache: 'no-store',
         credentials: 'include',
+        signal,
       });
       if (!res.ok) throw new Error('Strategy hub fetch failed');
       const body = await res.json();
       if (!body.ok) throw new Error(body.error ?? 'Strategy hub fetch failed');
       return body as StrategyHubListResponse & { ok: true };
     },
-    refetchInterval: 120_000,
+    staleTime: 60_000,
+    gcTime: QUERY_GC_TIME.REFERENCE,
+    refetchInterval: visibleRefetchInterval(120_000),
+    refetchOnWindowFocus: false,
   });
 }

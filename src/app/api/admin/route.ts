@@ -19,6 +19,7 @@ import { generateSignal,
          persistSignal,
          logRejection }                 from '@/lib/signal-engine/live/analyzeInstrument';
 import { cacheGet, cacheSet, cacheDel } from '@/lib/redis';
+import { CACHE_TTL } from '@/lib/cache/cachePolicy';
 import { getRejectionAnalysis,
          getSignalAccuracySummary }     from '@/services/performanceTracker';
 import { invalidateConfig,
@@ -439,7 +440,11 @@ export async function POST(req: NextRequest) {
     const valid = ['STRONG_BULL','BULL','NEUTRAL','CHOPPY','BEAR','STRONG_BEAR'];
     if (!valid.includes(body.regime))
       return NextResponse.json({ error: 'Invalid regime' }, { status: 400 });
-    await cacheSet('market:regime', { regime: body.regime, set_by: 'admin', set_at: new Date().toISOString() }, 7200);
+    await cacheSet(
+      'market:regime',
+      { regime: body.regime, set_by: 'admin', set_at: new Date().toISOString() },
+      CACHE_TTL.MARKET_REGIME_ADMIN_OVERRIDE,
+    );
     // Invalidate scenario/stance caches so they recompute
     await cacheDel('scenario:current');
     await cacheDel('market:stance');

@@ -7,10 +7,10 @@ import {
 } from '../connections/authTransactions';
 import {
   getBrokerConnectionByUserAndBroker,
-  markBrokerConnectionStatus,
   upsertBrokerConnectionRecord,
 } from '../connections/repository';
 import { resolvePrimaryFlagOnConnect } from '../connections/activeDataSource';
+import { setCredentialStatus, isCredentialUsable } from '../connections/credentialStatus';
 import { parseBrokerTokenExpiry } from '../connections/expiry';
 import type { BrokerConnectionRecord } from '../connections/types';
 import {
@@ -99,6 +99,11 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
           expiryParsed: Boolean(parsedExpiry),
           expiryFallbackApplied: !parsedExpiry,
           activatedOnConnect: isPrimary,
+          // Clear prior rejection / misclassification flags on successful OAuth.
+          providerRejectionConfirmed: false,
+          repairedFromExpired: false,
+          lastCredentialStatusReason: 'oauth_success',
+          lastCredentialStatusAt: new Date().toISOString(),
         },
       });
 
@@ -176,22 +181,18 @@ export const shoonyaBrokerAdapter: DataSourceBrokerAdapter = {
 
   async validateConnection(connection: BrokerConnectionRecord): Promise<boolean> {
     if (connection.broker !== 'shoonya') return false;
-    if (connection.status !== 'active') return false;
-    if (!connection.accessTokenEncrypted) return false;
-    if (connection.tokenExpiresAt) {
-      const t = new Date(connection.tokenExpiresAt).getTime();
-      if (!Number.isNaN(t) && t <= Date.now()) return false;
-    }
-    return true;
+    return isCredentialUsable(connection);
   },
 
   async disconnect(connection: BrokerConnectionRecord): Promise<void> {
-    await markBrokerConnectionStatus(
-      connection.userId,
-      'shoonya',
-      'disconnected',
-      true,
-    );
+    await setCredentialStatus({
+      userId: connection.userId,
+      broker: 'shoonya',
+      newStatus: 'disconnected',
+      reason: 'manual_disconnect',
+      source: 'shoonyaAdapter.disconnect',
+      clearTokens: true,
+    });
   },
 };
 

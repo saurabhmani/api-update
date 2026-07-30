@@ -37,6 +37,10 @@ import { getLivePrice }              from '@/lib/marketData/getLivePrice';
 import { getMarketEnvelope }         from '@/lib/marketData/marketHours';
 import { db }                        from '@/lib/db';
 import { ensureUniverseReady }       from '@/lib/startup/ensureUniverseReady';
+import { withApiHandler }            from '@/lib/apiHandler';
+import { logger }                    from '@/lib/logger';
+
+const rankingsLog = logger.child({ component: 'api.rankings' });
 
 // Any ranking row whose stored LTP differs from the live WS tick
 // by more than this is logged loudly — it's the signature of a
@@ -327,7 +331,7 @@ async function refreshStaleRankingsIfNeeded(marketOpen: boolean): Promise<void> 
   }
 }
 
-export async function GET(req: NextRequest) {
+async function handleRankingsGet(req: NextRequest) {
   try { await requireSession(); }
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
 
@@ -344,12 +348,35 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = req.nextUrl;
 
-  const limitRaw    = parseInt(searchParams.get('limit')    ?? '50', 10);
-  const pageRaw     = parseInt(searchParams.get('page')     ?? '1',  10);
+  const limitParam  = searchParams.get('limit');
+  const pageParam   = searchParams.get('page');
+  const limitRaw    = Number(limitParam ?? '50');
+  const pageRaw     = Number(pageParam ?? '1');
   const exchangeRaw = searchParams.get('exchange')?.trim().toUpperCase();
 
-  const limit    = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 50;
-  const page     = Number.isFinite(pageRaw)  ? Math.max(pageRaw, 1) : 1;
+  const invalidLimit = limitParam !== null
+    && (!/^\d+$/.test(limitParam) || !Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > 500);
+  const invalidPage = pageParam !== null
+    && (!/^\d+$/.test(pageParam) || !Number.isInteger(pageRaw) || pageRaw < 1);
+  const invalidExchange = exchangeRaw !== undefined
+    && !['NSE', 'BSE'].includes(exchangeRaw);
+  if (invalidLimit || invalidPage || invalidExchange) {
+    return NextResponse.json(
+      {
+        error: 'Invalid query parameters',
+        code: 'INVALID_QUERY',
+        fields: [
+          invalidLimit ? 'limit' : null,
+          invalidPage ? 'page' : null,
+          invalidExchange ? 'exchange' : null,
+        ].filter(Boolean),
+      },
+      { status: 400 },
+    );
+  }
+
+  const limit    = limitRaw;
+  const page     = pageRaw;
   const exchange = exchangeRaw && ['NSE', 'BSE'].includes(exchangeRaw)
     ? exchangeRaw : undefined;
 
@@ -375,7 +402,12 @@ export async function GET(req: NextRequest) {
     // market.isOpen here means a Saturday request can never reach
     // Yahoo / NSE upstreams just because the rankings table happens
     // to be empty.
-    const result = await getTopRankings(limit, page, exchange, market.isOpen);
+    const [result, rankingsMaxUpdatedAtResult] = await Promise.all([
+      getTopRankings(limit, page, exchange, market.isOpen),
+      db.query<{ max_ts: Date | string | null }>(
+        `SELECT MAX(updated_at) AS max_ts FROM rankings`,
+      ).then(({ rows }) => rows[0]?.max_ts ?? null).catch(() => null),
+    ]);
 
     // Backfill flat 0% rows from market_data_daily (and last-resort
     // live resolver) in ALL market states — previously this only ran
@@ -429,16 +461,11 @@ export async function GET(req: NextRequest) {
       dataSource = isCacheHit ? 'last_close_cache' : 'last_rankings_db';
     }
 
-    let rankingsMaxUpdatedAt: string | null = null;
-    try {
-      const { rows: tsRows } = await db.query<{ max_ts: Date | string | null }>(
-        `SELECT MAX(updated_at) AS max_ts FROM rankings`,
-      );
-      const raw = tsRows[0]?.max_ts;
-      if (raw) {
-        rankingsMaxUpdatedAt = raw instanceof Date ? raw.toISOString() : String(raw);
-      }
-    } catch { /* non-fatal */ }
+    let rankingsMaxUpdatedAt: string | null = rankingsMaxUpdatedAtResult
+      ? rankingsMaxUpdatedAtResult instanceof Date
+        ? rankingsMaxUpdatedAtResult.toISOString()
+        : String(rankingsMaxUpdatedAtResult)
+      : null;
     if (!rankingsMaxUpdatedAt) {
       for (const row of result.data ?? []) {
         const ts = row.rankings_updated_at;
@@ -468,13 +495,15 @@ export async function GET(req: NextRequest) {
       message: dataSource === 'unavailable'
         ? 'No rankings rows in database. Sync rankings from Admin → Data Management during market hours.'
         : null,
-    });
-  } catch (err: any) {
-    console.error('[/api/rankings] Error:', err?.message);
+    }, { headers: { 'X-Cache': isCacheHit ? 'HIT' : 'MISS' } });
+  } catch (err: unknown) {
+    rankingsLog.error(
+      'Rankings request failed',
+      err instanceof Error ? err : new Error(String(err)),
+    );
     return NextResponse.json(
       {
         error: 'Failed to fetch rankings',
-        details: err?.message,
         mode:         market.mode,
         market_state: market.state,
         market_label: market.label,
@@ -485,3 +514,5 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+export const GET = withApiHandler(handleRankingsGet);

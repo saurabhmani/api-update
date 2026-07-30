@@ -153,7 +153,7 @@ Generated `.next/`, `node_modules/`, caches, local environment files, and data a
 
 ### Route/API layer
 
-`src/app/api/**/route.ts` parses HTTP input, performs per-handler auth, calls services/domain modules, and serializes a response. `withApiHandler` in `src/lib/apiHandler.ts` supplies request IDs, logging, normalized errors and monitoring, but adoption is not universal. Many handlers retain local `try/catch` and `NextResponse.json`.
+`src/app/api/**/route.ts` parses HTTP input, performs per-handler auth, calls services/domain modules, and serializes a response. `withApiHandler` in `src/lib/apiHandler.ts` supplies request IDs, timing headers, normalized errors, monitoring and request-scoped performance accounting, but adoption is not universal. Many handlers retain local `try/catch` and `NextResponse.json`. The complete route audit is maintained in `docs/performance/api-optimization-inventory.{md,json}`.
 
 ### Application services
 
@@ -169,8 +169,8 @@ Generated `.next/`, `node_modules/`, caches, local environment files, and data a
 | Signal write path | `src/lib/signal-engine/`, `src/app/api/run-signal-engine/route.ts` | Reads candles; writes candidates, runs and diagnostics | Promotion is a separate maturity step |
 | Promotion | `runSignalMaturityWorker` in `src/lib/cron/signalMaturity.ts` | Scores maturity and writes confirmed snapshots | Preserve stability/data-quality gates |
 | Market resolver | `resolveBatch`, `resolveSingle`, `resolvePrice` in `src/lib/marketData/resolver/marketDataResolver.ts` | Cache/provider/network reads; quality metadata | Use resolver instead of bypassing provider policy |
-| Database | `db.query`/`getDb` in `src/lib/db.ts` | MySQL pool and compatibility SQL conversion | Server-only; parameterize values |
-| Cache | `cacheGet`, `cacheSet`, quote helpers in `src/lib/redis.ts` | Redis or no-cache fallback | Redis may be disabled/unavailable |
+| Database | `db.query`/`getDb` in `src/lib/db.ts` | MySQL pool, compatibility SQL conversion and request-scoped query timing | Server-only; parameterize values |
+| Cache | `cacheService`, `cacheKeys`, `CACHE_POLICIES` in `src/lib/cache/`; client in `src/lib/redis.ts` | Versioned cache-aside/SWR, precise invalidation, Redis plus in-process fallback | One Redis client; user scopes must be opaque; Redis may be disabled/unavailable |
 | Auth/security | `src/services/auth.ts`, `src/lib/session.ts`, `src/lib/security/` | Users, sessions, MFA, audit/security events | Route handlers must explicitly guard sensitive work |
 | Broker/execution | `src/lib/broker/`, `src/lib/execution/`, `src/lib/kite/` | Token storage, provider calls, orders | Encryption keys, kill switches and user scoping are security boundaries |
 | Portfolio/paper/billing | corresponding `src/lib/*` directories | Positions, orders, risk, subscriptions, wallet | Maintain account/user ownership checks |
@@ -222,6 +222,20 @@ sequenceDiagram
 
 The write flow is triggered by scheduled/manual scan entry points. The signal engine reads universe/candles/provider data, evaluates strategies and gates, and persists run/candidate state. `runSignalMaturityWorker` later re-evaluates stability and promotes eligible records to confirmed snapshots. `/api/signals` calls read-path assembly and returns filtered confirmed/displayable data; it should not own scan work. Failures are exposed through health/recovery metadata and API errors.
 
+### Trade Setup automatic generation
+
+The authenticated Trade Setup page first queries active user-owned setups. When
+none exist, it queries one ranked seed symbol and triggers generation only after
+auth, the active-list result and the symbol are ready. Client identity guards
+prevent rerender/Strict Mode duplication. `POST /api/trade-setups` validates
+ownership and builds a deterministic identity from user, symbol, strategy,
+timeframe, market session/date, engine version and candle freshness. It checks
+the user-scoped cache and recent database state, coalesces in-process work,
+acquires a short Redis distributed lock, and fetches through
+`marketDataResolver`. Persistence is an idempotent upsert. Manual regeneration
+deletes/bypasses the result cache. This endpoint must never trigger a
+full-universe scan.
+
 ### Contact form
 
 `src/components/corporate/ContactForm.tsx` validates browser fields and posts JSON to `src/app/api/contact/route.ts`. The handler trims/validates input, silently accepts honeypot submissions, requires Mailjet configuration, escapes user text, and sends both the internal enquiry and submitter acknowledgement in one Mailjet API request. Provider/configuration failures return 5xx JSON; the component displays the returned error or success state. No contact record is persisted.
@@ -262,7 +276,11 @@ Next App Router file-system routing is used. Dynamic segments include `[id]`, `[
 | Billing | `/api/billing/*`, `/api/subscription/*`, `/api/wallet/*`, `/api/usage` | billing and entitlement modules |
 | Public/integration | `/api/public/v1/*`, `/api/openapi`, `/api/contact`, `/api/events` | public handlers and integrations |
 
-There are 331 route files and 343 exported method handlers (219 GET, 98 POST, 10 PATCH, 9 DELETE, 7 PUT) at review time. Use `rg --files src/app/api -g 'route.ts'` for the authoritative exhaustive inventory.
+The Phase 1 performance inventory records 332 route files in the current
+workspace. Route counts change as features are added; use
+`rg --files src/app/api -g 'route.ts'` and
+`docs/performance/api-optimization-inventory.json` for the authoritative
+snapshot rather than relying on this narrative count.
 
 ## 9. Data Architecture
 
@@ -291,7 +309,7 @@ Schema creation is distributed across `src/lib/db/ensureAllSchemas.ts`, `ensureS
 
 Relationships are numerous and partly created by runtime DDL; a single trustworthy full ER model is **Not verified**, so no complete ER diagram is asserted.
 
-Writes generally use parameterized SQL in repositories/services. Some operations use explicit transactions (notably broker/security paths), but transaction use is not uniform. Validation occurs in route handlers, security helpers, and domain gates rather than a single schema library. Redis caches sessions, quotes/ticks and selected computed state. Local CSV/JSON/XLSX files seed/reference universes; no general object-storage integration was found.
+Writes generally use parameterized SQL in repositories/services. Some operations use explicit transactions (notably broker/security paths), but transaction use is not uniform. Validation occurs in route handlers, security helpers, and domain gates rather than a single schema library. Redis caches sessions, quotes/ticks and selected computed state. Reusable application caching belongs in `src/lib/cache`, while `src/lib/redis.ts` retains client and low-level fallback ownership. Local CSV/JSON/XLSX files seed/reference universes; no general object-storage integration was found.
 
 ## 10. State Management and Data Flow
 
@@ -300,7 +318,7 @@ Writes generally use parameterized SQL in repositories/services. Some operations
 - **Server state:** TanStack Query via `QueryProvider`; feature hooks under `src/hooks/` wrap API requests, polling and mutations.
 - **Streaming state:** `useMarketStream`, `useLiveTick`, `useEventStream`, the WebSocket/tick bus, and Redis quote/tick helpers.
 - **Persistent state:** primarily MySQL; PostgreSQL in the alternate service topology.
-- **Caching:** React Query in the browser; Redis and module/global caches on the server. Cache TTLs are domain-specific. Redis absence degrades to DB/provider behavior where coded.
+- **Caching:** React Query in the browser; the centralized `src/lib/cache` policy/key/invalidation layer over the single Redis client on the server. Cache keys are versioned/environment-prefixed and user scopes are opaque. Redis absence degrades to in-process coalescing and DB/provider behavior on safe paths.
 - **Mutation:** client hooks call API handlers; handlers authorize and invoke services/domain repositories; successful mutations invalidate/refetch client queries according to each hook.
 
 There is no Redux-style centralized store. Do not treat cached market data as authoritative persistence.
@@ -322,7 +340,7 @@ No third-party social identity provider is verified.
 | Integration | Purpose/client | Configuration/auth | Error/retry/local notes |
 |---|---|---|---|
 | MySQL | Primary persistence through `src/lib/db.ts` | `MYSQL_*` or compatibility `DATABASE_URL` | Pool has bounded queue/connect timeout; query failures propagate |
-| Redis | Cache/live state through `src/lib/redis.ts` | `REDIS_*`, `REDIS_DISABLED` | Optional; callers often fall back to DB/provider |
+| Redis | One client in `src/lib/redis.ts`; reusable cache layer in `src/lib/cache/` | `REDIS_HOST`, `REDIS_PORT`, `REDIS_USER`, `REDIS_PASSWORD`, `REDIS_DISABLED`, `CACHE_KEY_VERSION`, `CACHE_ENV_PREFIX` | Optional; safe callers fall back to memory plus DB/provider |
 | Kite Connect | Quotes/history/streaming/broker session | `src/lib/kite/`, adapters; app credentials and user access token | Rate/freshness controls; OAuth callbacks under `/api/kite/auth/*` |
 | Shoonya | Alternate data/broker auth | broker adapters/routes and `SHOONYA_*` | Conditional validation; timeouts/configurable URLs |
 | NSE/Yahoo | Market-data fallback | resolver/provider adapters | Controlled by provider/fallback flags; Yahoo is emergency-oriented |
@@ -351,7 +369,8 @@ The table documents architecture-defining variables. Many domain thresholds also
 | `SESSION_MAX_AGE`, `MAX_SESSIONS_PER_USER` | Optional | Session lifecycle | seconds/integer | Code defaults |
 | `ENCRYPTION_KEY` | Recommended | TOTP/general encryption | 64 hex chars | Warn; session-secret-derived fallback |
 | `BROKER_TOKEN_ENCRYPTION_KEY` | Production required | Broker token encryption | 64 hex chars | Production error unless legacy override |
-| `REDIS_HOST` or `REDIS_URL`; `REDIS_*` | Optional | Redis cache | host/URL, redacted password | DB-only/slower or disabled behavior |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_USER`, `REDIS_PASSWORD`, `REDIS_DISABLED` | Optional | Single Redis client and fallback selection | hostname, port, username, redacted secret, `0`/`1` | localhost defaults or in-process fallback |
+| `CACHE_KEY_VERSION`, `CACHE_ENV_PREFIX` | Optional | Versioned/environment cache namespaces | short non-secret tokens | `v1` and `NODE_ENV`/`development` |
 | `NEXT_PUBLIC_APP_URL`, `APP_BASE_URL`, `APP_URL` | Production required as group | redirects/CORS/OAuth | `https://app.example.com` | Production validation error |
 | `PORT`, `NEXT_PORT`, `HOST`, `NEXT_HOSTNAME` | Optional | HTTP bind | `5000`, hostname | `server.js` defaults |
 | `STREAM_WS_PORT`, `STREAM_WS_DISABLED`, `NEXT_PUBLIC_STREAM_WS_*` | Optional | WebSocket server/client | port, boolean, URL | Defaults or streaming disabled |
@@ -372,9 +391,9 @@ Never expose `NEXT_PUBLIC_*` values that are intended to be secret; those variab
 
 ## 14. Error Handling, Logging, and Observability
 
-`withApiHandler` (`src/lib/apiHandler.ts`) is the preferred route wrapper: it adds request IDs, structured context, typed-error mapping, monitoring and safe unexpected-error responses. Adoption is partial, so many handlers use local `try/catch` and `{ error: string }` responses. Consumers must check HTTP status and the route-specific shape.
+`withApiHandler` (`src/lib/apiHandler.ts`) is the preferred route wrapper: it adds request IDs, timing headers, structured context, typed-error mapping, monitoring, safe unexpected-error responses, and request-scoped database/Redis/provider/cache accounting. Adoption is partial, so many handlers use local `try/catch` and `{ error: string }` responses. Consumers must check HTTP status and the route-specific shape.
 
-`src/lib/logger.ts` is the primary structured JSON logger with levels, child context and deduplication. Direct `console.*` remains in boot code and some routes/workers. `src/lib/api/apiPerf.ts` tracks named steps/SQL for selected hot APIs. `src/lib/monitor/`, `src/lib/reliability/`, and engine-health modules expose internal metrics, snapshots, alerts and health endpoints.
+`src/lib/logger.ts` is the primary structured JSON logger with levels, child context and deduplication. Direct `console.*` remains in boot code and some routes/workers. `src/lib/api/apiPerf.ts` tracks named steps/SQL for selected hot APIs. `src/lib/monitor/apiPerformanceMetrics.ts` uses request-local context to aggregate route duration, database queries/duration, Redis duration, provider duration, cache outcomes and Trade Setup deduplication. `/api/metrics` exposes the `q365_api_*` and `q365_trade_setup_*` Prometheus families. Metrics do not label user IDs, request IDs or raw cache keys. `src/lib/monitor/`, `src/lib/reliability/`, and engine-health modules expose additional internal metrics, snapshots, alerts and health endpoints.
 
 Important health routes include `/api/health`, `/api/operations/health`, `/api/reliability/health`, `/api/market-data/health`, `/api/system/institutional-health`, and `/api/engine-health/status`. `src/instrumentation.ts` registers process-level rejection/exception logging. No third-party tracing/APM SDK is verified. User-facing errors are handled per component; no single global App Router error boundary file was found, while `src/pages/_error.tsx` provides Pages Router compatibility.
 

@@ -69,14 +69,29 @@ async function migrateIntelligence() {
     console.log('✓ signal_performance');
 
     await conn.execute(`CREATE TABLE IF NOT EXISTS trade_setups (
-      id INT AUTO_INCREMENT PRIMARY KEY, instrument_key VARCHAR(150), tradingsymbol VARCHAR(50) NOT NULL,
+      id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NULL,
+      generation_identity VARCHAR(255) NULL, strategy_id VARCHAR(100) NULL,
+      instrument_key VARCHAR(150), tradingsymbol VARCHAR(50) NOT NULL,
       exchange VARCHAR(20), direction VARCHAR(10), entry_price DECIMAL(12,2), stop_loss DECIMAL(12,2),
       target1 DECIMAL(12,2), target2 DECIMAL(12,2), risk_reward DECIMAL(6,2), confidence SMALLINT,
       timeframe VARCHAR(20), reason TEXT, scenario_tag VARCHAR(100), regime VARCHAR(30),
       status VARCHAR(20) DEFAULT 'active', triggered_at DATETIME, expires_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_ts_sym (tradingsymbol), INDEX idx_ts_status (status), INDEX idx_ts_exp (expires_at)
+      INDEX idx_ts_sym (tradingsymbol), INDEX idx_ts_status (status), INDEX idx_ts_exp (expires_at),
+      INDEX idx_ts_user (user_id), UNIQUE KEY uq_ts_generation (generation_identity)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    for (const ddl of [
+      `ALTER TABLE trade_setups ADD COLUMN IF NOT EXISTS user_id INT NULL`,
+      `ALTER TABLE trade_setups ADD COLUMN IF NOT EXISTS generation_identity VARCHAR(255) NULL`,
+      `ALTER TABLE trade_setups ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(100) NULL`,
+    ]) await conn.execute(ddl);
+    try {
+      await conn.execute(
+        `ALTER TABLE trade_setups ADD UNIQUE KEY uq_ts_generation (generation_identity)`,
+      );
+    } catch (error: any) {
+      if (error?.code !== 'ER_DUP_KEYNAME') throw error;
+    }
     console.log('✓ trade_setups');
 
     await conn.execute(`CREATE TABLE IF NOT EXISTS alert_events (

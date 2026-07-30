@@ -18,6 +18,22 @@ vi.mock('@/lib/broker/connections/repository', () => ({
   markRemainingConnectionsNeedSelection: (...args: unknown[]) => mockMarkRemaining(...args),
   mergeBrokerConnectionMetadata: (...args: unknown[]) => mockMergeMeta(...args),
   upsertBrokerConnectionRecord: (...args: unknown[]) => mockUpsert(...args),
+  getBrokerConnectionByUserAndBroker: (...args: unknown[]) => {
+    const [userId, broker] = args as [number, string];
+    const rows = mockList.mock.results.at(-1)?.value
+      ?? mockList.mock.results[0]?.value;
+    // Prefer latest resolved list; fall back to searching last call args
+    return Promise.resolve(
+      (Array.isArray(rows) ? rows : [])
+        .find((c: { userId?: number; broker?: string }) =>
+          c.broker === broker && (c.userId == null || c.userId === userId))
+      ?? conn({ userId, broker, isPrimary: true }),
+    );
+  },
+}));
+
+vi.mock('@/lib/logger', () => ({
+  logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
 vi.mock('@/lib/broker/connections/migrate', () => ({
@@ -61,6 +77,7 @@ describe('getUserActiveDataSource', () => {
     mockMarkStatus.mockReset();
     mockMarkRemaining.mockReset();
     mockMergeMeta.mockReset();
+    mockMergeMeta.mockResolvedValue(undefined);
     mockUpsert.mockReset();
     mockMigrate.mockResolvedValue(undefined);
     mockKiteSession.mockResolvedValue(null);

@@ -7,6 +7,7 @@ import {
   updateStrategyConfiguration,
 } from '@/lib/strategy-hub/services/configurationService';
 import type { ConfigurableParamKey } from '@/lib/strategy-hub/strategyParameterCatalog';
+import { invalidateStrategyCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -68,6 +69,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       }, { status: 400 });
     }
 
+    await invalidateStrategyCaches(id);
     return NextResponse.json({
       ok: true,
       config: result.config,
@@ -108,6 +110,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ ok: false, error: result.error ?? 'Reset failed' }, { status: 400 });
     }
 
+    await invalidateStrategyCaches(id);
     return NextResponse.json({
       ok: true,
       config: result.config,

@@ -19,6 +19,7 @@ import { getPortfolioContext,
          persistExposureSnapshot }        from '@/services/portfolioFitService';
 import { computeScenario }                from '@/services/scenarioEngine';
 import { computeMarketStance }            from '@/services/marketStanceEngine';
+import { invalidatePortfolioCaches }      from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -236,6 +237,7 @@ export async function POST(req: NextRequest) {
       `qty=${quantity} buy=${buy_price} insertId=${r.insertId ?? 'undefined'}`
     );
     console.log('OK OK ✅ API SUCCESS  /api/portfolio  POST');
+    await invalidatePortfolioCaches(user.id);
     return NextResponse.json({ success: true, position_id: r.insertId ?? null }, { status: 201 });
   } catch (e: any) {
     console.error('[PORTFOLIO] POST failed:', e?.message ?? e);
@@ -258,6 +260,7 @@ export async function PATCH(req: NextRequest) {
        WHERE pp.id=? AND p.user_id=?`,
       [quantity, buy_price, current_price||null, id, user.id]
     );
+    await invalidatePortfolioCaches(user.id);
     return NextResponse.json({ success: true });
   } catch { return NextResponse.json({ error: 'Server error' }, { status: 500 }); }
 }
@@ -276,6 +279,7 @@ export async function DELETE(req: NextRequest) {
        WHERE pp.id=? AND p.user_id=?`,
       [id, user.id]
     );
+    await invalidatePortfolioCaches(user.id);
     return NextResponse.json({ success: true });
   } catch { return NextResponse.json({ error: 'Server error' }, { status: 500 }); }
 }

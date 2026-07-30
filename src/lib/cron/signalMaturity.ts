@@ -33,6 +33,7 @@ import {
   type TrackerRow,
 } from '@/lib/signal-engine/repository/maturityTracker';
 import { insertConfirmedSnapshotIfEligible } from '@/lib/signal-engine/repository/confirmedSnapshots';
+import { invalidateSignalPromotedCaches } from '@/lib/cache/cacheInvalidation';
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { isDailyCandleWarehousePromotable } from '@/lib/marketData/candleFreshness';
@@ -1068,6 +1069,9 @@ export async function runSignalMaturityWorker(): Promise<MaturityRunResult> {
         })),
       });
     }
+  }
+  if (result.promoted > 0) {
+    await invalidateSignalPromotedCaches();
   }
   return result;
 }

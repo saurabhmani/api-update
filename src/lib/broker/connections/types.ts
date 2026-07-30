@@ -2,11 +2,20 @@
 
 export type DataSourceBroker = 'zerodha' | 'shoonya';
 
+/**
+ * Persistent credential status (not runtime stream health).
+ * - `expired` — only when token_expires_at <= now
+ * - `revoked` — provider confirmed credentials revoked
+ * - `reauth_required` — provider confirmed invalid session/token before time expiry
+ * - `disconnected` — user/manual disconnect
+ * Temporary REST/WS failures must NOT change this field.
+ */
 export type BrokerConnectionStatus =
   | 'pending'
   | 'active'
   | 'expired'
   | 'revoked'
+  | 'reauth_required'
   | 'error'
   | 'disconnected';
 

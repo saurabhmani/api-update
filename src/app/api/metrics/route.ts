@@ -26,6 +26,7 @@ import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { getKiteHealth } from '@/lib/kite/health';
 import { db } from '@/lib/db';
+import { renderApiPerformanceMetrics } from '@/lib/monitor/apiPerformanceMetrics';
 
 export const runtime = 'nodejs';
 
@@ -53,7 +54,7 @@ export async function GET(): Promise<Response> {
     market_open:      market.isOpen,
   });
 
-  const body = renderPrometheusMetrics({
+  const institutionalBody = renderPrometheusMetrics({
     snapshot,
     candle: {
       candle_age_seconds: candleReport.candle_age_seconds,
@@ -79,6 +80,7 @@ export async function GET(): Promise<Response> {
         }
       : null,
   });
+  const body = `${institutionalBody}${renderApiPerformanceMetrics()}`;
 
   // Best-effort Redis mirror — fire-and-forget so a Redis stall does
   // not delay the scrape response. Prometheus scrapes are typically

@@ -27,6 +27,11 @@ import { isOperationalError, AuthenticationError, ForbiddenError } from '@/lib/e
 import { toClientError } from '@/lib/security/secureErrors';
 import { recordApiCall, type MonitorProvider } from '@/lib/monitor/apiMonitor';
 import { startTrace, finishTrace, addTraceStep } from '@/lib/monitor/trace';
+import {
+  commitApiPerformanceContext,
+  getApiPerformanceContext,
+  runWithApiPerformanceContext,
+} from '@/lib/monitor/apiPerformanceMetrics';
 
 // Re-export for backward compat if anything imports ApiError from here
 export { AppError as ApiError } from '@/lib/errors';
@@ -71,24 +76,58 @@ function pickProviderFromResult(result: any): {
   return { provider, fallback, symbols };
 }
 
+function estimateJsonSize(value: unknown): number | null {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRouteName(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => (
+      /^\d+$/.test(segment)
+      || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segment)
+        ? ':id'
+        : segment
+    ))
+    .join('/');
+}
+
 export function withApiHandler(handler: HandlerFn) {
   return async function wrappedHandler(req: NextRequest, ctx?: any) {
     const requestId = generateRequestId();
     const method = req.method;
     const path = req.nextUrl.pathname;
+    const routeName = normalizeRouteName(path);
+    return runWithApiPerformanceContext({ requestId, method, route: routeName }, async () => {
     const startMs = Date.now();
     const traceId = startTrace(path);
     addTraceStep(traceId, { label: 'Route', detail: `${method} ${path}` });
+
+    const attachObservabilityHeaders = <T extends NextResponse>(response: T): T => {
+      if (!response.headers.has('X-Request-ID')) {
+        response.headers.set('X-Request-ID', requestId);
+      }
+      if (!response.headers.has('Server-Timing')) {
+        response.headers.set('Server-Timing', `app;dur=${Date.now() - startMs}`);
+      }
+      return response;
+    };
 
     const finalize = (
       status: number,
       success: boolean,
       errorCode: string | null,
       providerHint?: { provider: MonitorProvider | null; fallback: boolean; symbols?: number },
+      responseSizeBytes?: number | null,
     ) => {
       const durationMs = Date.now() - startMs;
       const provider = providerHint?.provider ?? null;
       const fallback = providerHint?.fallback ?? false;
+      const performance = getApiPerformanceContext();
       addTraceStep(traceId, {
         label: 'Response',
         detail: success ? `${status}` : `${status} ${errorCode ?? 'ERR'}`,
@@ -105,6 +144,28 @@ export function withApiHandler(handler: HandlerFn) {
         errorCode,
         fallbackUsed: fallback,
         traceId,
+      });
+      commitApiPerformanceContext(durationMs);
+      log.info('API performance', {
+        metric: 'q365_api_request_duration_ms',
+        route: routeName,
+        method,
+        requestId,
+        totalDurationMs: durationMs,
+        databaseDurationMs: performance?.dbDurationMs ?? 0,
+        databaseQueryCount: performance?.dbQueryCount ?? 0,
+        redisDurationMs: performance?.redisDurationMs ?? 0,
+        providerDurationMs: performance?.providerDurationMs ?? 0,
+        cache: performance?.cacheHitCount
+          ? 'hit'
+          : performance?.cacheMissCount
+            ? 'miss'
+            : 'not_used',
+        cacheHitCount: performance?.cacheHitCount ?? 0,
+        cacheMissCount: performance?.cacheMissCount ?? 0,
+        cacheStaleCount: performance?.cacheStaleCount ?? 0,
+        errorCategory: success ? null : errorCode ?? 'UNKNOWN',
+        responseSizeBytes: responseSizeBytes ?? null,
       });
       // eslint-disable-next-line no-console
       console.log(
@@ -123,8 +184,16 @@ export function withApiHandler(handler: HandlerFn) {
         log.info('Request completed', {
           requestId, method, path, durationMs: Date.now() - startMs, traceId,
         });
-        finalize(result.status ?? 200, result.status < 400, null);
-        return result;
+        const contentLengthHeader = result.headers.get('Content-Length');
+        const contentLength = contentLengthHeader == null ? Number.NaN : Number(contentLengthHeader);
+        finalize(
+          result.status ?? 200,
+          result.status < 400,
+          null,
+          undefined,
+          Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : null,
+        );
+        return attachObservabilityHeaders(result);
       }
 
       const hint = pickProviderFromResult(result);
@@ -133,9 +202,10 @@ export function withApiHandler(handler: HandlerFn) {
         durationMs: Date.now() - startMs, traceId,
         provider: hint.provider, fallback: hint.fallback,
       });
-      const json = NextResponse.json({ success: true, requestId, ...result });
-      finalize(200, true, null, hint);
-      return json;
+      const payload = { success: true, requestId, ...result };
+      const json = NextResponse.json(payload);
+      finalize(200, true, null, hint, estimateJsonSize(payload));
+      return attachObservabilityHeaders(json);
 
     } catch (err) {
       const durationMs = Date.now() - startMs;
@@ -146,11 +216,12 @@ export function withApiHandler(handler: HandlerFn) {
           requestId, method, path, status: err.statusCode,
           code: err.code, error_message: err.message, durationMs, traceId,
         });
-        finalize(err.statusCode, false, err.code);
-        return NextResponse.json(
-          { success: false, requestId, ...err.toJSON() },
+        const payload = { success: false, requestId, ...err.toJSON() };
+        finalize(err.statusCode, false, err.code, undefined, estimateJsonSize(payload));
+        return attachObservabilityHeaders(NextResponse.json(
+          payload,
           { status: err.statusCode },
-        );
+        ));
       }
 
       // Legacy auth errors (thrown by requireSession / requireAdmin)
@@ -160,22 +231,24 @@ export function withApiHandler(handler: HandlerFn) {
           log.warn('Request failed (auth)', {
             requestId, method, path, status: 401, durationMs, traceId,
           });
-          finalize(401, false, authErr.code);
-          return NextResponse.json(
-            { success: false, requestId, ...authErr.toJSON() },
+          const payload = { success: false, requestId, ...authErr.toJSON() };
+          finalize(401, false, authErr.code, undefined, estimateJsonSize(payload));
+          return attachObservabilityHeaders(NextResponse.json(
+            payload,
             { status: 401 },
-          );
+          ));
         }
         if (err.message.includes('Forbidden') || err.message.includes('403')) {
           const forbidErr = new ForbiddenError();
           log.warn('Request failed (forbidden)', {
             requestId, method, path, status: 403, durationMs, traceId,
           });
-          finalize(403, false, forbidErr.code);
-          return NextResponse.json(
-            { success: false, requestId, ...forbidErr.toJSON() },
+          const payload = { success: false, requestId, ...forbidErr.toJSON() };
+          finalize(403, false, forbidErr.code, undefined, estimateJsonSize(payload));
+          return attachObservabilityHeaders(NextResponse.json(
+            payload,
             { status: 403 },
-          );
+          ));
         }
       }
 
@@ -185,8 +258,17 @@ export function withApiHandler(handler: HandlerFn) {
       });
 
       const clientErr = toClientError(err, requestId);
-      finalize(clientErr.statusCode, false, clientErr.code);
-      return NextResponse.json(clientErr, { status: clientErr.statusCode });
+      finalize(
+        clientErr.statusCode,
+        false,
+        clientErr.code,
+        undefined,
+        estimateJsonSize(clientErr),
+      );
+      return attachObservabilityHeaders(
+        NextResponse.json(clientErr, { status: clientErr.statusCode }),
+      );
     }
+    });
   };
 }

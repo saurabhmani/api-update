@@ -9,6 +9,7 @@ import {
 } from '@/lib/strategy-hub/services/modeManagementService';
 import { isValidStrategyMode } from '@/lib/strategy-hub/services/strategyModeOverrides';
 import type { StrategyMode } from '@/lib/signal-engine/types/signalEngine.types';
+import { invalidateStrategyCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -82,6 +83,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const sync = await syncStrategyModesForSignalEngine();
+    if (result.changed) await invalidateStrategyCaches(strategyId);
     return NextResponse.json({
       ok: true,
       ...result,

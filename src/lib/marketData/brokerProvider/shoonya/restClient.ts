@@ -5,10 +5,8 @@
 
 import { getShoonyaConfig } from '@/lib/broker/oauth/shoonya';
 import { logger } from '@/lib/logger';
-import {
-  isSessionExpiryMessage,
-  markProviderSessionExpired,
-} from '../connectionHelpers';
+import { applyProviderAuthFailure } from '../connectionHelpers';
+import { isConfirmedShoonyaCredentialInvalid } from '@/lib/broker/connections/providerFailure';
 import { BrokerMarketDataError } from '../types';
 import type { ShoonyaCandleRaw, ShoonyaQuoteRaw } from './convert';
 
@@ -314,18 +312,58 @@ export class ShoonyaRestClient {
       : undefined;
     const stat = isRecord(parsed) ? pickString(parsed, ['stat', 'status']) : undefined;
 
-    if (
-      response.status === 401
-      || response.status === 403
-      || isSessionExpiryMessage(emsg)
-      || (stat && /not_?ok/i.test(stat) && isSessionExpiryMessage(emsg))
-    ) {
-      await markProviderSessionExpired('shoonya', this.session.userId);
-      log.warn('Shoonya session expired on REST', { path, userId: this.session.userId });
+    const confirmedInvalid = isConfirmedShoonyaCredentialInvalid(emsg, {
+      httpStatus: response.status,
+      stat: stat ?? null,
+    });
+
+    // Persist credential demotion ONLY on confirmed invalid session/token —
+    // never for 401/403/5xx/timeouts alone.
+    if (confirmedInvalid) {
+      const applied = await applyProviderAuthFailure(
+        'shoonya',
+        this.session.userId,
+        {
+          httpStatus: response.status,
+          providerErrorMessage: emsg,
+          confirmedCredentialInvalid: true,
+          transport: 'rest',
+        },
+        `shoonya.rest:${path}`,
+      );
+      log.warn('Shoonya credentials require reauth on REST', {
+        path,
+        userId: this.session.userId,
+        category: applied.category,
+        persisted: applied.persisted,
+      });
       throw new BrokerMarketDataError(
         'shoonya',
         'session_expired',
-        'Shoonya session expired — reconnect on /data-source',
+        'Shoonya session invalid — reconnect on /data-source',
+      );
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      // Ambiguous auth HTTP without confirmed invalid-session language —
+      // keep persistent credential status unchanged.
+      await applyProviderAuthFailure(
+        'shoonya',
+        this.session.userId,
+        {
+          httpStatus: response.status,
+          providerErrorMessage: emsg,
+          confirmedCredentialInvalid: false,
+          transport: 'rest',
+        },
+        `shoonya.rest:${path}`,
+      );
+      throw new BrokerMarketDataError(
+        'shoonya',
+        'provider_error',
+        emsg
+          ? `Shoonya request failed: ${emsg.slice(0, 120)}`
+          : `Shoonya request failed (HTTP ${response.status})`,
       );
     }
 

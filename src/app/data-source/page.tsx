@@ -78,6 +78,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   cancelled: 'Broker authorization was cancelled.',
   not_configured: 'This broker is not configured on the server yet.',
   session_expired: 'Your broker session expired. Please reconnect to continue.',
+  reauth_required: 'Your broker session is no longer valid. Please reconnect to continue.',
+  revoked: 'Broker credentials were revoked. Please reconnect to continue.',
   persistence_failed: 'Broker login succeeded but saving the connection failed. Please try again.',
   reconnect: '',
 };
@@ -197,6 +199,8 @@ export default function DataSourcePage() {
   const isLoginRequired =
     feedStatus === 'login_required'
     || status?.status === 'expired'
+    || status?.status === 'reauth_required'
+    || status?.status === 'revoked'
     || searchParams.get('reason') === 'session_expired';
   const isConnectionError =
     feedStatus === 'error'
@@ -404,6 +408,8 @@ export default function DataSourcePage() {
                 ?? (connected ? 'active' : 'disconnected');
               const showLoginRequired =
                 rowStatus === 'expired'
+                || rowStatus === 'reauth_required'
+                || rowStatus === 'revoked'
                 || (isActive && isLoginRequired);
 
               return (

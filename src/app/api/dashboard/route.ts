@@ -38,6 +38,10 @@ import {
   type InternalFetchResult,
 }                                    from '@/lib/api/internalFetch';
 import { resolveUserFeedMeta }       from '@/lib/broker/connections';
+import { withApiHandler }            from '@/lib/apiHandler';
+import { cacheService }              from '@/lib/cache/cacheService';
+import { cacheKeys }                 from '@/lib/cache/cacheKeys';
+import { CACHE_POLICIES }            from '@/lib/cache/cachePolicy';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -167,7 +171,7 @@ function classifyTransport(
 
 // ── GET ────────────────────────────────────────────────────────
 
-export async function GET(req: NextRequest) {
+async function handleDashboardGet(req: NextRequest) {
   let userId: number;
   try {
     const user = await requireSession();
@@ -176,10 +180,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
 
-  const feedMeta = await resolveUserFeedMeta(userId).catch(() => ({
-    provider: null as null,
-    status: 'not_connected' as const,
-  }));
+  const responseCacheKey = cacheKeys.dashboardSummary(userId);
+  const cached = await cacheService.get<Record<string, unknown>>(responseCacheKey);
+  if (cached) {
+    return NextResponse.json(cached, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'X-Cache': 'HIT',
+      },
+    });
+  }
 
   const cookieHeader  = req.headers.get('cookie') ?? '';
   const warnings: string[] = [];
@@ -211,6 +221,7 @@ export async function GET(req: NextRequest) {
   // Fire all upstream calls concurrently. Each is independent — one
   // failure must never block the response.
   const [
+    feedMetaResult,
     signalsRes,
     engineHealthRes,
     dailyReportRes,
@@ -220,6 +231,7 @@ export async function GET(req: NextRequest) {
     optionsRes,
     backtestsListRes,
   ] = await Promise.allSettled([
+    resolveUserFeedMeta(userId),
     internalFetch<any>(req, `/api/signals?action=top&limit=20&request_id=dash-${Date.now()}`, { cookieHeader, timeoutMs: TIMEOUT.signals }).then(toFetchResult),
     internalFetch<any>(req, `/api/signals/engine-health`,                                     { cookieHeader, timeoutMs: TIMEOUT.engineHealth }).then(toFetchResult),
     internalFetch<any>(req, `/api/signals/daily-report`,                                      { cookieHeader, timeoutMs: TIMEOUT.dailyReport }).then(toFetchResult),
@@ -229,6 +241,10 @@ export async function GET(req: NextRequest) {
     internalFetch<any>(req, `/api/options/intelligence?symbol=NIFTY`,                         { cookieHeader, timeoutMs: TIMEOUT.options }).then(toFetchResult),
     internalFetch<any>(req, `/api/backtests`,                                                 { cookieHeader, timeoutMs: TIMEOUT.backtestsList }).then(toFetchResult),
   ]);
+
+  const feedMeta = feedMetaResult.status === 'fulfilled'
+    ? feedMetaResult.value
+    : { provider: null as null, status: 'not_connected' as const };
 
   const rejectedShim: FetchResult<any> = {
     ok: false, status: 0, data: null, error: 'settled-rejected',
@@ -1073,8 +1089,7 @@ export async function GET(req: NextRequest) {
     ),
   });
 
-  return NextResponse.json(
-    {
+  const payload = {
       ok:                true,
       provider:          feedMeta.provider,
       status:            feedMeta.status,
@@ -1104,7 +1119,20 @@ export async function GET(req: NextRequest) {
       warnings,
       moduleStatusCounts,
       sourceStatus,
-    },
-    { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+  };
+
+  await cacheService.set(
+    responseCacheKey,
+    payload,
+    CACHE_POLICIES.dashboardSummary,
   );
+
+  return NextResponse.json(payload, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'X-Cache': 'MISS',
+    },
+  });
 }
+
+export const GET = withApiHandler(handleDashboardGet);

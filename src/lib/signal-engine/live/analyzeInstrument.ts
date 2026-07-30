@@ -76,6 +76,7 @@ export interface Signal {
   instrument_key:    string;
   tradingsymbol:     string;
   exchange:          string;
+  strategy?:         StrategyName;
 
   direction:         SignalDirection;
   timeframe:         Timeframe;
@@ -476,6 +477,7 @@ function buildFromCandidate(
 
   return {
     instrument_key, tradingsymbol, exchange,
+    strategy:           best.strategy,
     direction,
     timeframe:         'swing',
     confidence,

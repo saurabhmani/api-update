@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { getOrCreateAccount } from '@/lib/paper-trading';
+import { invalidatePaperTradingCaches } from '@/lib/cache/cacheInvalidation';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
         killSwitchActive: false,
       });
       const refreshed = await getOrCreateAccount(user.id);
+      await invalidatePaperTradingCaches(user.id);
       return NextResponse.json({ ok: true, ...refreshed });
     }
     return NextResponse.json({ ok: true, ...summary });

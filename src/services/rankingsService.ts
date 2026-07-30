@@ -8,11 +8,14 @@
  *   regime alignment + portfolio fit + scenario alignment
  */
 
-import { cacheGet, cacheSet }                    from '@/lib/redis';
 import { db }                                    from '@/lib/db';
+import { cacheGet }                              from '@/lib/redis';
 import { fetchIndices, fetchGainersLosers }      from './marketQuote';
 import { syncRankingsFromNse }                   from './dataSync';
 import { getSector }                             from '@/lib/signal-engine/constants/phase3.constants';
+import { CACHE_POLICIES }                        from '@/lib/cache/cachePolicy';
+import { cachePattern, cacheKeys }               from '@/lib/cache/cacheKeys';
+import { cacheService }                          from '@/lib/cache/cacheService';
 
 export type SignalType = 'BUY' | 'SELL' | 'HOLD' | null;
 
@@ -74,9 +77,10 @@ export interface RankingsResult {
   as_of:       string;
 }
 
-const RANKINGS_TTL  = 60;
 const MAX_LIMIT     = 500;
 const DEFAULT_LIMIT = 50;
+const legacyRankingsKey = (limit: number, exchange?: string) =>
+  `rankings:top:${limit}:${exchange ?? 'ALL'}`;
 /**
  * When we want a globally-correct top-N by `opportunity_rank`, we have
  * to fetch a wider candidate pool from the DB first, compute the rank
@@ -154,9 +158,6 @@ function applyDeterministicOrder(rows: RankedEntry[]): RankedEntry[] {
   rows.forEach((r, i) => { r.rank_position = i + 1; });
   return rows;
 }
-
-const rankingsKey = (limit: number, exchange?: string) =>
-  `rankings:top:${limit}:${exchange ?? 'ALL'}`;
 
 // ── Multi-dimensional opportunity rank ────────────────────────────
 
@@ -550,9 +551,14 @@ export async function getRankings(opts: GetRankingsOptions): Promise<RankingsRes
   // built from MySQL kept `data_source: 'mysql'` even after a 60s
   // Redis round-trip. The UI's "Cached" badge would never light up.
   if (page === 1) {
-    const cKey   = rankingsKey(limit, exchange);
-    const cached = await cacheGet<RankingsResult>(cKey);
+    const cKey   = cacheKeys.rankingsList(limit, page, exchange);
+    const centralized = await cacheService.get<RankingsResult>(cKey);
+    const cached = centralized
+      ?? await cacheGet<RankingsResult>(legacyRankingsKey(limit, exchange));
     if (cached) {
+      if (!centralized) {
+        await cacheService.set(cKey, cached, CACHE_POLICIES.rankings);
+      }
       return {
         ...cached,
         data_source: 'redis',
@@ -636,7 +642,11 @@ export async function getRankings(opts: GetRankingsOptions): Promise<RankingsRes
         cache_hit:   false,
         as_of: new Date().toISOString(),
       };
-      await cacheSet(rankingsKey(limit, exchange), seededResult, RANKINGS_TTL);
+      await cacheService.set(
+        cacheKeys.rankingsList(limit, page, exchange),
+        seededResult,
+        CACHE_POLICIES.rankings,
+      );
       return seededResult;
     }
   }
@@ -650,7 +660,11 @@ export async function getRankings(opts: GetRankingsOptions): Promise<RankingsRes
   };
 
   if (page === 1 && pagedRows.length > 0) {
-    await cacheSet(rankingsKey(limit, exchange), result, RANKINGS_TTL);
+    await cacheService.set(
+      cacheKeys.rankingsList(limit, page, exchange),
+      result,
+      CACHE_POLICIES.rankings,
+    );
   }
   return result;
 }
@@ -671,8 +685,13 @@ export async function bustRankingsCache(): Promise<void> {
   const limits = [50, 100, 200, 500];
   const exchanges: Array<string | undefined> = [undefined, 'NSE', 'BSE'];
   await Promise.all(
-    limits.flatMap((lim) =>
-      exchanges.map((ex) => cacheDel(`rankings:top:${lim}:${ex ?? 'ALL'}`)),
-    ),
+    [
+      ...limits.flatMap((lim) =>
+        exchanges.map((ex) => cacheDel(`rankings:top:${lim}:${ex ?? 'ALL'}`)),
+      ),
+      cacheService.deleteByPattern(cachePattern('rankings', '*')),
+      cacheService.delete(cacheKeys.tickerStrip()),
+      cacheDel('ticker:strip'),
+    ],
   );
 }

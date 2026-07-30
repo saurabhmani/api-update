@@ -20,6 +20,7 @@ import { validatePostSignal } from '../validation/postSignalValidator';
 import { computeFinalScore } from '../ranking/dynamicRanker';
 import { upsertTrackerOnDetection } from './maturityTracker';
 import { getStrategyEntryType } from '../strategies/strategyRegistry';
+import { invalidateSignalGeneratedCaches } from '@/lib/cache/cacheInvalidation';
 import {
   deriveSignalQualityStatus,
   qualityToPersistedSignalStatus,
@@ -252,6 +253,9 @@ export async function saveSignals(
       `— check the per-reason tally above. Live-gap / low-conf / momentum rejects ` +
       `are silent gates inside saveOneSignal; lower them via env if intended.`,
     );
+  }
+  if (tally.saved > 0) {
+    await invalidateSignalGeneratedCaches();
   }
   return idMap;
 }

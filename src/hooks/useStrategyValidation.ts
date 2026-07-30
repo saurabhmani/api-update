@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import type { ValidationReport } from '@/lib/strategy-hub/validation/types';
+import { QUERY_GC_TIME, visibleRefetchInterval } from '@/lib/query/queryPolicy';
 
 export interface ValidationStatusResponse {
   ok: true;
@@ -20,10 +21,11 @@ export interface ValidationStatusResponse {
 export function useStrategyValidation(strategyId: string) {
   return useQuery({
     queryKey: ['strategy-validation', strategyId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await fetch(`/api/strategies/${strategyId}/validation`, {
         cache: 'no-store',
         credentials: 'include',
+        signal,
       });
       if (!res.ok) throw new Error('Failed to load validation status');
       const body = await res.json();
@@ -31,6 +33,9 @@ export function useStrategyValidation(strategyId: string) {
       return body as ValidationStatusResponse;
     },
     enabled: !!strategyId,
-    refetchInterval: 120_000,
+    staleTime: 60_000,
+    gcTime: QUERY_GC_TIME.DEFAULT,
+    refetchInterval: visibleRefetchInterval(120_000),
+    refetchOnWindowFocus: false,
   });
 }

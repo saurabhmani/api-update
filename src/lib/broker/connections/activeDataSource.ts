@@ -16,10 +16,16 @@ import { getActiveKiteSession } from '@/lib/kite/active-session-store';
 import { getBrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
 import type { BrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
 import { isBrokerTokenExpired } from './expiry';
+import {
+  effectiveCredentialStatus,
+  expireCredentialIfPastExpiry,
+  isCredentialUsable,
+  repairMisclassifiedExpiredCredential,
+  setCredentialStatus,
+} from './credentialStatus';
 import { migrateLegacyBrokerDataForUser } from './migrate';
 import {
   listBrokerConnectionsForUser,
-  markBrokerConnectionStatus,
   markRemainingConnectionsNeedSelection,
   mergeBrokerConnectionMetadata,
   setPrimaryDataSourceBroker,
@@ -56,10 +62,7 @@ export interface UserActiveDataSource {
 }
 
 function isUsable(conn: BrokerConnectionRecord): boolean {
-  if (conn.status !== 'active') return false;
-  if (!conn.accessTokenEncrypted) return false;
-  if (isBrokerTokenExpired(conn.tokenExpiresAt)) return false;
-  return true;
+  return isCredentialUsable(conn);
 }
 
 function pendingSelection(conn: BrokerConnectionRecord): boolean {
@@ -76,9 +79,8 @@ function toSummary(
   conn: BrokerConnectionRecord,
   activeProvider: DataSourceBroker | null,
 ): SafeBrokerConnectionSummary {
-  const expired = isBrokerTokenExpired(conn.tokenExpiresAt);
-  const status = expired && conn.status === 'active' ? 'expired' : conn.status;
-  const connected = status === 'active' && !expired && !!conn.accessTokenEncrypted;
+  const status = effectiveCredentialStatus(conn);
+  const connected = isCredentialUsable({ ...conn, status: conn.status });
   return {
     broker: conn.broker,
     status,
@@ -130,11 +132,19 @@ export async function getUserActiveDataSource(
 
   const all = await listBrokerConnectionsForUser(userId);
 
-  // Expire stale actives in place
-  for (const conn of all) {
+  // Repair misclassified expired rows (future token_expires_at) → reauth_required.
+  // Expire only when token time has actually passed.
+  for (let i = 0; i < all.length; i++) {
+    let conn = all[i]!;
+    if (conn.status === 'expired' && !isBrokerTokenExpired(conn.tokenExpiresAt)) {
+      conn = await repairMisclassifiedExpiredCredential(conn);
+      all[i] = conn;
+      continue;
+    }
     if (conn.status === 'active' && isBrokerTokenExpired(conn.tokenExpiresAt)) {
-      await markBrokerConnectionStatus(userId, conn.broker, 'expired');
+      await expireCredentialIfPastExpiry(userId, conn.broker, 'getUserActiveDataSource');
       conn.status = 'expired';
+      all[i] = conn;
     }
   }
 
@@ -158,6 +168,8 @@ export async function getUserActiveDataSource(
     const hadExpired = all.some(
       (c) =>
         c.status === 'expired'
+        || c.status === 'reauth_required'
+        || c.status === 'revoked'
         || (c.status === 'active' && isBrokerTokenExpired(c.tokenExpiresAt)),
     );
     return empty(hadExpired ? 'expired' : 'none');
@@ -290,7 +302,14 @@ export async function disconnectDataSourceBroker(
   const before = await getUserActiveDataSource(userId);
   const wasActive = before.provider === broker;
 
-  await markBrokerConnectionStatus(userId, broker, 'disconnected', true);
+  await setCredentialStatus({
+    userId,
+    broker,
+    newStatus: 'disconnected',
+    reason: 'manual_disconnect',
+    source: 'disconnectDataSourceBroker',
+    clearTokens: true,
+  });
 
   let needsSelection = false;
   let remaining: DataSourceBroker[] = [];

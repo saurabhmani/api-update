@@ -1,6 +1,9 @@
 /**
  * Shared helpers for BrokerMarketDataProvider adapters.
  * Keep token decrypt + connection lookup here so adapters stay thin.
+ *
+ * Persistent credential status is managed via credentialStatus.ts —
+ * never write `expired` for operational REST/WS failures.
  */
 
 import {
@@ -8,9 +11,17 @@ import {
   getBrokerConnectionById,
   getBrokerConnectionByUserAndBroker,
   getDecryptedAccessTokenForUser,
-  markBrokerConnectionStatus,
 } from '@/lib/broker/connections';
+import {
+  applyProviderFailureToCredentialStatus,
+  expireCredentialIfPastExpiry,
+  isCredentialUsable,
+} from '@/lib/broker/connections/credentialStatus';
 import type { BrokerConnectionRecord } from '@/lib/broker/connections/types';
+import {
+  classifyProviderFailure,
+  type ClassifyProviderFailureInput,
+} from '@/lib/broker/connections/providerFailure';
 import type {
   BrokerConnectionContext,
   BrokerProviderName,
@@ -50,11 +61,35 @@ export async function requireActiveConnection(
       `${broker} connection not found for user`,
     );
   }
+
+  // Time-based expiry only
+  if (row.status === 'active') {
+    const expired = await expireCredentialIfPastExpiry(
+      context.userId,
+      broker,
+      'requireActiveConnection',
+    );
+    if (expired.changed || expired.newStatus === 'expired') {
+      throw new BrokerMarketDataError(
+        broker,
+        'session_expired',
+        `${broker} session expired`,
+      );
+    }
+  }
+
   if (row.status === 'expired') {
     throw new BrokerMarketDataError(
       broker,
       'session_expired',
       `${broker} session expired`,
+    );
+  }
+  if (row.status === 'reauth_required' || row.status === 'revoked') {
+    throw new BrokerMarketDataError(
+      broker,
+      'session_expired',
+      `${broker} requires reauthentication`,
     );
   }
   if (row.status !== 'active') {
@@ -91,14 +126,15 @@ export function statusFromConnection(
 
   let state: ProviderConnectionStatus['state'] = 'disconnected';
   if (row.status === 'active') state = 'connected';
-  else if (row.status === 'expired') state = 'expired';
-  else if (row.status === 'error') state = 'error';
+  else if (row.status === 'expired' || row.status === 'reauth_required' || row.status === 'revoked') {
+    state = 'expired';
+  } else if (row.status === 'error') state = 'error';
   else if (row.status === 'pending') state = 'connecting';
 
   return {
     broker,
     state: extras.state ?? state,
-    sessionActive: row.status === 'active',
+    sessionActive: row.status === 'active' && isCredentialUsable(row),
     streamConnected: extras.streamConnected ?? false,
     lastTickAt: extras.lastTickAt ?? null,
     lastError: extras.lastError ?? null,
@@ -146,12 +182,13 @@ export async function hydrateBrokerSession(
     );
   }
 
-  if (
-    connection.tokenExpiresAt
-    && Number.isFinite(Date.parse(connection.tokenExpiresAt))
-    && Date.parse(connection.tokenExpiresAt) <= Date.now()
-  ) {
-    await markBrokerConnectionStatus(context.userId, broker, 'expired').catch(() => undefined);
+  // Time-based expiry only — never mark expired from hydrate alone without past expiry
+  const expiryCheck = await expireCredentialIfPastExpiry(
+    context.userId,
+    broker,
+    'hydrateBrokerSession',
+  );
+  if (expiryCheck.newStatus === 'expired') {
     throw new BrokerMarketDataError(
       broker,
       'session_expired',
@@ -166,16 +203,47 @@ export async function hydrateBrokerSession(
   };
 }
 
+/**
+ * @deprecated Prefer applyProviderAuthFailure / expireCredentialIfPastExpiry.
+ * Kept as a thin alias that ONLY expires when token time has passed.
+ */
 export async function markProviderSessionExpired(
   broker: BrokerProviderName,
   userId: number,
 ): Promise<void> {
-  await markBrokerConnectionStatus(userId, broker, 'expired').catch(() => undefined);
+  await expireCredentialIfPastExpiry(userId, broker, 'markProviderSessionExpired');
 }
 
+/**
+ * Apply a classified provider failure. Temporary failures leave credential status alone.
+ */
+export async function applyProviderAuthFailure(
+  broker: BrokerProviderName,
+  userId: number,
+  failure: ClassifyProviderFailureInput,
+  source: string,
+): Promise<{ category: string; persisted: boolean }> {
+  const result = await applyProviderFailureToCredentialStatus(
+    userId,
+    broker,
+    failure,
+    source,
+  );
+  return { category: result.category, persisted: result.persisted };
+}
+
+/**
+ * Narrow check for confirmed session/token invalidation messages.
+ * Generic "fail" / "invalid" / "denied" alone return false.
+ */
 export function isSessionExpiryMessage(message: string | null | undefined): boolean {
   if (!message) return false;
-  return /session\s*(expired|invalid)|invalid\s*session|logged\s*out|not\s*logged|token\s*(expired|invalid)|authorization\s*failed|unauthori[sz]ed/i.test(
-    message,
-  );
+  const category = classifyProviderFailure({
+    providerErrorMessage: message,
+    confirmedCredentialInvalid: false,
+  });
+  return category === 'reauth_required' || category === 'credentials_revoked';
 }
+
+export { classifyProviderFailure };
+export type { ClassifyProviderFailureInput };

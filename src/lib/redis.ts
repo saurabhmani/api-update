@@ -8,6 +8,7 @@ let redisFailed = false;
 // like the signal engine don't hammer NSE with a call per stock.
 interface MemEntry { value: string; expiresAt: number }
 const _mem = new Map<string, MemEntry>();
+const _memLocks = new Map<string, { token: string; expiresAt: number }>();
 
 function memSet(key: string, data: unknown, ttl?: number) {
   _mem.set(key, {
@@ -24,6 +25,22 @@ function memGet<T>(key: string): T | null {
 }
 
 function memDel(key: string) { _mem.delete(key); }
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+}
+
+function memDelByPattern(pattern: string): number {
+  const matcher = globToRegExp(pattern);
+  let deleted = 0;
+  for (const key of _mem.keys()) {
+    if (!matcher.test(key)) continue;
+    _mem.delete(key);
+    deleted += 1;
+  }
+  return deleted;
+}
 
 // ── Redis client ──────────────────────────────────────────────────
 function getRedis(): Redis | null {
@@ -109,6 +126,103 @@ export async function cacheDel(key: string) {
   if (!r) return;
   try {
     await r.del(key);
+  } catch {
+    redisFailed = true;
+  }
+}
+
+/**
+ * Delete matching cache entries without using Redis KEYS.
+ *
+ * Redis outages are intentionally swallowed: invalidation also runs against
+ * the in-process fallback, and callers may safely continue to MySQL/provider
+ * paths when Redis is unavailable.
+ */
+export async function cacheDelByPattern(pattern: string): Promise<number> {
+  const memoryDeleted = memDelByPattern(pattern);
+  const r = getRedis();
+  if (!r) return memoryDeleted;
+
+  try {
+    let cursor = '0';
+    let redisDeleted = 0;
+    do {
+      const [nextCursor, keys] = await r.scan(
+        cursor,
+        'MATCH',
+        pattern,
+        'COUNT',
+        250,
+      );
+      cursor = nextCursor;
+      if (keys.length > 0) redisDeleted += await r.del(...keys);
+    } while (cursor !== '0');
+    return Math.max(memoryDeleted, redisDeleted);
+  } catch {
+    redisFailed = true;
+    return memoryDeleted;
+  }
+}
+
+/** Acquire a short-lived distributed lock, falling back to this process. */
+export async function cacheAcquireLock(
+  key: string,
+  token: string,
+  ttlSeconds: number,
+): Promise<boolean> {
+  const r = getRedis();
+  if (r) {
+    try {
+      return (await r.set(key, token, 'EX', ttlSeconds, 'NX')) === 'OK';
+    } catch {
+      redisFailed = true;
+    }
+  }
+
+  const now = Date.now();
+  const current = _memLocks.get(key);
+  if (current && current.expiresAt > now) return false;
+  _memLocks.set(key, { token, expiresAt: now + ttlSeconds * 1000 });
+  return true;
+}
+
+export type DistributedLockState = 'acquired' | 'held' | 'unavailable';
+
+/**
+ * Redis-only lock acquisition. Callers must use promise coalescing when this
+ * reports unavailable; an in-process guard is not a distributed lock.
+ */
+export async function cacheAcquireDistributedLock(
+  key: string,
+  token: string,
+  ttlSeconds: number,
+): Promise<DistributedLockState> {
+  const r = getRedis();
+  if (!r) return 'unavailable';
+  try {
+    return (await r.set(key, token, 'EX', ttlSeconds, 'NX')) === 'OK'
+      ? 'acquired'
+      : 'held';
+  } catch {
+    redisFailed = true;
+    return 'unavailable';
+  }
+}
+
+/** Release only a lock owned by the supplied token. */
+export async function cacheReleaseLock(key: string, token: string): Promise<void> {
+  const local = _memLocks.get(key);
+  if (local?.token === token) _memLocks.delete(key);
+
+  const r = getRedis();
+  if (!r) return;
+  try {
+    await r.eval(
+      'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+      1,
+      key,
+      token,
+    );
   } catch {
     redisFailed = true;
   }

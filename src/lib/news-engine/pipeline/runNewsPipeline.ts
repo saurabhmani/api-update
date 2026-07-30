@@ -17,6 +17,7 @@ import { scoreEvents } from '../scoring/runScoringPipeline';
 import { computeNewsImpact } from '../impact/computeImpact';
 import { eventBus } from '@/lib/eventBus';
 import { logger } from '@/lib/logger';
+import { invalidateNewsCaches } from '@/lib/cache/cacheInvalidation';
 
 const log = logger.child({ component: 'newsPipeline' });
 
@@ -138,6 +139,7 @@ export async function runFullPipeline(
 
   // Emit real-time events
   if (newEvents.length > 0) {
+    await invalidateNewsCaches();
     eventBus.emit('news:new', { newEvents: newEvents.length, totalFetched: raw.items.length });
   }
   eventBus.emit('pipeline:status', { stage: 'news', status: 'completed', durationMs, newEvents: newEvents.length });

@@ -15,7 +15,10 @@
 
 import { NextRequest, NextResponse }   from 'next/server';
 import { requireSession }              from '@/lib/session';
-import { cacheGet, cacheSet }          from '@/lib/redis';
+import { CACHE_TTL }                   from '@/lib/cache/cachePolicy';
+import { cacheService }                from '@/lib/cache/cacheService';
+import { cacheKeys }                   from '@/lib/cache/cacheKeys';
+import { withApiHandler }              from '@/lib/apiHandler';
 import { fetchYahooQuotesBatch }       from '@/lib/marketData/yahooBatch'; // @deprecated marker
 import { getMarketEnvelope }           from '@/lib/marketData/marketHours';
 import { getTopRankings }              from '@/services/rankingsService';
@@ -41,8 +44,8 @@ export type TickerDataSource =
   | 'last_rankings_db' // DB fallback (closed market or Yahoo miss)
   | 'unknown';
 
-const STRIP_KEY = 'ticker:strip';
-const STRIP_TTL = 30;
+const STRIP_KEY = cacheKeys.tickerStrip();
+const STRIP_TTL = CACHE_TTL.TICKER_STRIP;
 const LIMIT     = 30;
 
 // TICKER-TIMEOUT-FIX (2026-05) — wrap the Yahoo batch in a wall-clock
@@ -61,7 +64,7 @@ const TICKER_YAHOO_TIMEOUT_MS = (() => {
 })();
 // On a degraded response (Yahoo timeout / error), serve a shorter TTL
 // from cache so the strip recovers quickly the moment Yahoo is back.
-const STRIP_TTL_DEGRADED = 10;
+const STRIP_TTL_DEGRADED = CACHE_TTL.TICKER_STRIP_DEGRADED;
 
 async function fetchYahooWithTimeout(
   symbols: string[],
@@ -139,7 +142,7 @@ async function fetchYahooWithTimeout(
   return { map, degraded, reason };
 }
 
-export async function GET(req: NextRequest) {
+async function handleTickerGet(req: NextRequest) {
   // Spec TICKER-504-FIX — wrap the entire handler in a wall-clock race.
   // Next.js Route Handlers have a 10s default execution limit on many
   // platforms (Vercel/Nginx). If DB + Yahoo take >10s, the gateway returns
@@ -162,15 +165,15 @@ export async function GET(req: NextRequest) {
     if (err.message === 'TICKER_HANDLER_TIMEOUT' || err.name === 'AbortError') {
       console.warn('[/api/ticker] handler timeout reached (9s) — falling back to cache/empty');
       // Try one last-ditch cache read
-      const stripped = await cacheGet<{ items: TickerItem[]; source: string }>(STRIP_KEY);
+      const stripped = await cacheService.get<{ items: TickerItem[]; source: string }>(STRIP_KEY);
       if (stripped?.items?.length) {
         return NextResponse.json({
           items:  stripped.items,
           source: `${stripped.source}+timeout_fallback`,
           count:  stripped.items.length,
           data_source: 'cached_ticker',
-          degraded: true
-        });
+          degraded: true,
+        }, { headers: { 'X-Cache': 'HIT' } });
       }
       return NextResponse.json({ items: [], source: 'timeout', count: 0, degraded: true });
     }
@@ -199,7 +202,7 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
   const mode: 'live' | 'market_closed' = market.isOpen ? 'live' : 'market_closed';
 
   // ── Step 1: assembled strip cache ─────────────────────────────
-  const stripped = await cacheGet<{ items: TickerItem[]; source: string }>(STRIP_KEY);
+  const stripped = await cacheService.get<{ items: TickerItem[]; source: string }>(STRIP_KEY);
   if (stripped?.items?.length) {
     return NextResponse.json({
       items:  stripped.items,
@@ -209,7 +212,7 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
       market_state: market.state,
       market_label: market.label,
       data_source:  'cached_ticker' satisfies TickerDataSource,
-    });
+    }, { headers: { 'X-Cache': 'HIT' } });
   }
 
   let items: TickerItem[] = [];
@@ -316,8 +319,6 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
     return NextResponse.json(
       {
         error:   'Failed to load ticker data',
-        details: err?.sqlMessage || err?.message || 'unknown',
-        code:    err?.code,
         mode,
         market_state: market.state,
         market_label: market.label,
@@ -336,7 +337,7 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
     const ttl = dataSource === 'last_rankings_db' && market.isOpen
       ? STRIP_TTL_DEGRADED
       : STRIP_TTL;
-    await cacheSet(STRIP_KEY, { items, source }, ttl);
+    await cacheService.set(STRIP_KEY, { items, source }, ttl);
   }
 
   return NextResponse.json({
@@ -348,5 +349,7 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
     // TICKER-TIMEOUT-FIX (2026-05) — surface a `degraded` boolean the
     // UI can hang a status pip on without parsing data_source strings.
     degraded:     market.isOpen && dataSource === 'last_rankings_db',
-  });
+  }, { headers: { 'X-Cache': 'MISS' } });
 }
+
+export const GET = withApiHandler(handleTickerGet);
