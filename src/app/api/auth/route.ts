@@ -6,10 +6,40 @@ import { authLimiter } from '@/lib/rateLimit';
 import { logSecurityEvent } from '@/lib/security/audit';
 import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 import { resolvePostLoginDestination } from '@/lib/broker/connections';
+import { extractErrorMessage } from '@/lib/errors';
 
 export const dynamic = 'force-dynamic';
 
 const COOKIE = 'q200_session';
+
+function flattenErrorText(err: unknown): string {
+  const parts: string[] = [extractErrorMessage(err, '')];
+  if (err && typeof err === 'object') {
+    const e = err as { code?: unknown; errno?: unknown; errors?: unknown[] };
+    if (typeof e.code === 'string') parts.push(e.code);
+    if (e.errno != null) parts.push(String(e.errno));
+    if (Array.isArray(e.errors)) {
+      for (const nested of e.errors) {
+        parts.push(flattenErrorText(nested));
+      }
+    }
+  }
+  return parts.filter(Boolean).join(' | ');
+}
+
+function isDatabaseUnavailable(err: unknown): boolean {
+  const text = flattenErrorText(err);
+  return (
+    /access denied for user/i.test(text)
+    || /ECONNREFUSED/i.test(text)
+    || /ENOTFOUND/i.test(text)
+    || /ETIMEDOUT/i.test(text)
+    || /connect ETIMEDOUT/i.test(text)
+    || /unknown database/i.test(text)
+    || /AggregateError/i.test(text)
+    || (err instanceof AggregateError)
+  );
+}
 
 function isLoopbackAppHost(): boolean {
   for (const key of ['APP_BASE_URL', 'APP_URL', 'NEXT_PUBLIC_APP_URL'] as const) {
@@ -136,20 +166,15 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('[auth POST]', message);
+    const message = flattenErrorText(err);
+    console.error('[auth POST]', message || '(empty error)');
 
-    const dbDenied =
-      /access denied for user/i.test(message)
-      || /ECONNREFUSED/i.test(message)
-      || /ENOTFOUND/i.test(message)
-      || /connect ETIMEDOUT/i.test(message)
-      || /unknown database/i.test(message);
+    const dbDenied = isDatabaseUnavailable(err);
 
     return NextResponse.json(
       {
         error: dbDenied
-          ? 'Database unavailable. Check MYSQL_HOST / MYSQL_USER / MYSQL_PASSWORD on the server.'
+          ? 'Database unavailable. Start MySQL on MYSQL_HOST:MYSQL_PORT (currently localhost:3306) and verify MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE.'
           : 'Authentication service unavailable',
         code: dbDenied ? 'database_unavailable' : 'auth_unavailable',
       },

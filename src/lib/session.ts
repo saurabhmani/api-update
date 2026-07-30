@@ -19,29 +19,44 @@ export async function getSession(): Promise<SessionUser | null> {
   const token = cookieStore.get('q200_session')?.value;
   if (!token) return null;
 
-  // Redis cache for speed
-  const cached = await cacheGet<SessionUser>(`session:${token}`);
-  if (cached) return cached;
+  // Redis cache for speed (cacheGet already swallows Redis failures)
+  try {
+    const cached = await cacheGet<SessionUser>(`session:${token}`);
+    if (cached) return cached;
+  } catch {
+    // Continue to DB fallback
+  }
 
-  // Fall back to DB
-  const { rows } = await db.query<SessionUser & { expires_at: string }>(
-    `SELECT u.id, u.email, u.name, u.role
-     FROM user_sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.token = ? AND s.expires_at > NOW() AND u.is_active = TRUE`,
-    [token]
-  );
+  // Fall back to DB — never let a connection AggregateError crash RSC
+  try {
+    const { rows } = await db.query<SessionUser & { expires_at: string }>(
+      `SELECT u.id, u.email, u.name, u.role
+       FROM user_sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.token = ? AND s.expires_at > NOW() AND u.is_active = TRUE`,
+      [token]
+    );
 
-  if (!rows.length) return null;
-  const user = {
-    id: rows[0].id,
-    email: rows[0].email,
-    name: rows[0].name,
-    role: rows[0].role,
-    permissions: getPermissionsForRole(rows[0].role),
-  };
-  await cacheSet(`session:${token}`, user, 300);
-  return user;
+    if (!rows.length) return null;
+    const user = {
+      id: rows[0].id,
+      email: rows[0].email,
+      name: rows[0].name,
+      role: rows[0].role,
+      permissions: getPermissionsForRole(rows[0].role),
+    };
+    await cacheSet(`session:${token}`, user, 300);
+    return user;
+  } catch (err) {
+    const detail =
+      err instanceof AggregateError
+        ? (err.errors?.map((e) => (e instanceof Error ? e.message : String(e))).filter(Boolean).join('; ') || err.message || 'AggregateError')
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    console.error('[getSession] DB lookup failed:', detail || '(empty)');
+    return null;
+  }
 }
 
 /**

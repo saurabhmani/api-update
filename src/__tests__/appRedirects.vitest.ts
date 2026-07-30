@@ -65,4 +65,13 @@ describe('appRedirects public host preference', () => {
     const req = new NextRequest('http://localhost:3000/api/brokers/shoonya/callback?code=x');
     expect(resolveAppRedirectOrigin(req)).toBe('http://localhost:3000');
   });
+
+  it('prefers the callback host over a stale configured public domain', async () => {
+    process.env.APP_BASE_URL = 'https://old.quantorus.in';
+    const { resolveAppRedirectOrigin } = await import('@/lib/broker/oauth/appRedirects');
+    const req = new NextRequest('https://staging.quantorus.in/api/kite/auth/callback', {
+      headers: { host: 'staging.quantorus.in' },
+    });
+    expect(resolveAppRedirectOrigin(req)).toBe('https://staging.quantorus.in');
+  });
 });

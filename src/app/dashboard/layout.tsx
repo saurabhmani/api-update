@@ -13,7 +13,13 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getSession();
+  let session = null;
+  try {
+    session = await getSession();
+  } catch {
+    // Transient Redis/MySQL failures — treat as logged out
+    session = null;
+  }
   if (!session) {
     redirect('/login?from=/dashboard');
   }

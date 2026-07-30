@@ -177,6 +177,14 @@ export function normalizeError(raw: unknown): Error & { digest?: string } {
 export function extractErrorMessage(raw: unknown, fallback = 'An unexpected error occurred'): string {
   if (raw == null) return fallback;
   if (typeof raw === 'string' && raw.trim().length > 0) return raw;
+  if (raw instanceof AggregateError) {
+    const parts = (raw.errors ?? [])
+      .map((e) => (e instanceof Error ? e.message : typeof e === 'string' ? e : ''))
+      .filter((m) => m.trim().length > 0);
+    if (parts.length) return parts.join('; ');
+    if (raw.message?.trim()) return raw.message;
+    return 'Database or network connection failed (AggregateError)';
+  }
   if (raw instanceof Error && raw.message) return raw.message;
   if (typeof raw === 'object') {
     const m = (raw as { message?: unknown }).message;

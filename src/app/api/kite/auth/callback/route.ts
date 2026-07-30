@@ -7,12 +7,14 @@ import { createKiteCompletionCode } from '@/lib/kite/completion-store';
 import {
   buildAuthCompleteRedirectUrl,
   isLoopbackOrigin,
-  resolveAuthCompleteOrigin,
 } from '@/lib/kite/auth-complete-fragment';
 import { getKiteClient } from '@/lib/kite/client';
 import { saveActiveKiteSession } from '@/lib/kite/active-session-store';
 import { persistZerodhaBrokerConnection } from '@/lib/broker/oauth/zerodhaBridge';
-import { redirectToAppPath } from '@/lib/broker/oauth/appRedirects';
+import {
+  redirectToAppPath,
+  resolveAppRedirectOrigin,
+} from '@/lib/broker/oauth/appRedirects';
 import {
   buildKiteRedirectMismatchUrl,
   getConfiguredKiteRedirectOrigin,
@@ -53,9 +55,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const origin = resolveAuthCompleteOrigin(request.nextUrl.origin, {
-    headers: request.headers,
-  });
+  const origin = resolveAppRedirectOrigin(request);
 
   try {
     const user = await requireSession();
@@ -178,10 +178,7 @@ export async function GET(request: NextRequest) {
       console.error('[kite/callback] completion code unavailable; redirecting to dashboard', {
         reason: completionErr instanceof Error ? completionErr.name : 'unknown',
       });
-      return redirectToAppPath(request, '/data-source', {
-        connected: '1',
-        broker: 'zerodha',
-      });
+      return redirectToAppPath(request, '/dashboard');
     }
   } catch (err) {
     if (err instanceof AuthenticationError) {

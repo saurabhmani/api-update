@@ -84,9 +84,7 @@ export async function GET(request: NextRequest) {
       xForwardedHost: request.headers.get('x-forwarded-host'),
       nextOrigin: request.nextUrl.origin,
     });
-    // Land on /data-source so the user sees status + active selection.
-    // Active provider is NOT switched when another broker was already active.
-    return redirectToAppPath(request, '/data-source', { connected: '1', broker: 'shoonya' });
+    return redirectToAppPath(request, '/dashboard');
   } catch (err) {
     if (err instanceof AuthenticationError) {
       console.log('[shoonya/callback] no session — redirecting to login');
