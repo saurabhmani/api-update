@@ -1459,6 +1459,8 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
 
   // ── Initial load + 5s poll ─────────────────────────────────────
   useEffect(() => {
+    if (pollStartedRef.current) return;
+    pollStartedRef.current = true;
     pushLog('[ENV] mode=' + (process.env.NODE_ENV ?? 'unknown') + '  page=/signals  transport=ws+sse');
 
     const loadingTimeoutId = setTimeout(() => {
@@ -1472,7 +1474,6 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
 
     load({ heavy: true }).finally(() => {
       clearTimeout(loadingTimeoutId);
-      autoRefreshIfStale();
     });
 
     // Spec §4: stop polling when market closed. Off-hours the
@@ -1484,7 +1485,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     const FAST_POLL_MS  = 5_000;
     const SLOW_POLL_MS  = 60_000;
     let currentPollMs   = FAST_POLL_MS;
-    let pollId: ReturnType<typeof setInterval>;
+    let pollId: ReturnType<typeof setInterval> | undefined;
     const arm = () => {
       pollId = setInterval(() => {
         const wantMs = lastModeRef.current === 'market_closed' ? SLOW_POLL_MS : FAST_POLL_MS;
@@ -1498,11 +1499,11 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
         load({ spinner: false, heavy: false });
       }, currentPollMs);
     };
-    arm();
+    // SSE/WebSocket updates own live refreshes after the single HTTP load.
 
     return () => {
       clearTimeout(loadingTimeoutId);
-      clearInterval(pollId);
+      if (pollId) clearInterval(pollId);
       // reqSeqRef is a numeric sequence counter (not a DOM ref) — incrementing
       // it in cleanup is intentional: it invalidates any in-flight load() call
       // so stale responses are discarded when the effect re-mounts.

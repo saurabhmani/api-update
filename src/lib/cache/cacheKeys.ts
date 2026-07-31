@@ -66,6 +66,21 @@ export const cacheKeys = {
     cacheKey('market', 'quote', symbol.trim().toUpperCase()),
   signalsList: (userId: string | number, window: string) =>
     cacheKey('signals', 'list', `user-${opaqueScope(userId)}`, window),
+  signalsResponse: (
+    userId: string | number,
+    action: string,
+    limit: number,
+    lite: boolean,
+    marketContext: string,
+  ) => cacheKey(
+    'signals',
+    'response',
+    `user-${opaqueScope(userId)}`,
+    action,
+    limit,
+    lite ? 'lite' : 'full',
+    marketContext,
+  ),
   portfolioSummary: (userId: string | number) =>
     cacheKey('portfolio', 'summary', `user-${opaqueScope(userId)}`),
   dashboardSummary: (userId: string | number) =>

@@ -137,6 +137,8 @@
     "test:portfolio-construction": "vitest run src/__tests__/portfolioConstruction.vitest.ts",
     "test:execution-planner": "vitest run src/__tests__/portfolioExecutionPlanner.vitest.ts",
     "benchmark:portfolio": "tsx scripts/benchmarkPortfolio.ts",
+    "benchmark:signals-api": "node scripts/benchmarkSignalsApi.mjs",
+    "profile:signals-db": "node scripts/profileSignalsDatabase.mjs",
     "validate:deployment": "tsx scripts/validateDeployment.ts",
     "release:manifest": "tsx scripts/generateReleaseManifest.ts",
     "backup:operational": "tsx scripts/backupOperationalData.ts",

@@ -9,6 +9,7 @@ import {
   cacheReleaseLock,
 } from '@/lib/redis';
 import { db } from '@/lib/db';
+import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 import { ENGINE_VERSION } from '@/lib/signal-engine/constants/engineVersion';
 import { generateSignal, type Signal } from '@/lib/signal-engine/live/analyzeInstrument';
 import { getRegistryEntry } from '@/lib/strategy-hub/registry';
@@ -82,6 +83,46 @@ class TimeoutError extends Error {
   constructor(readonly operation: 'database' | 'provider') {
     super(`${operation}_timeout`);
   }
+}
+
+function isSchemaError(error: unknown): boolean {
+  const code = (error as { code?: string })?.code ?? '';
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    code === 'ER_NO_SUCH_TABLE'
+    || code === 'ER_BAD_FIELD_ERROR'
+    || /doesn't exist|unknown column|no such table/i.test(message)
+  );
+}
+
+function databaseFailureResponse(error: unknown): NextResponse {
+  if (error instanceof TimeoutError) {
+    return NextResponse.json({
+      error: 'Database operation timed out. Please retry.',
+      code: 'DATABASE_TIMEOUT',
+    }, { status: 504 });
+  }
+  if (isSchemaError(error)) {
+    log.error('Trade setups schema missing or outdated', error instanceof Error ? error : new Error(String(error)));
+    return NextResponse.json({
+      error: 'Trade setups storage is not ready. Please retry in a moment.',
+      code: 'TRADE_SETUPS_SCHEMA_UNAVAILABLE',
+    }, { status: 503 });
+  }
+  log.error('Trade setups database failure', error instanceof Error ? error : new Error(String(error)));
+  return NextResponse.json({
+    error: 'Unable to load trade setups right now. Please retry.',
+    code: 'TRADE_SETUPS_DATABASE_ERROR',
+  }, { status: 500 });
+}
+
+async function ensureTradeSetupStorage(): Promise<void> {
+  // Creates trade_setups / rankings if missing and adds any absent columns.
+  await ensureAllSchemas().catch((err) => {
+    log.warn('ensureAllSchemas during trade-setups failed', {
+      error_name: err instanceof Error ? err.name : 'UnknownError',
+    });
+  });
 }
 
 function withTimeout<T>(
@@ -300,6 +341,7 @@ async function generateOne(
 
 async function handleGet(req: NextRequest) {
   const user = await requireSession();
+  await ensureTradeSetupStorage();
   const limitRaw = Number(req.nextUrl.searchParams.get('limit') ?? 20);
   if (!Number.isInteger(limitRaw) || limitRaw < 1 || limitRaw > 100) {
     return NextResponse.json({ error: 'limit must be an integer from 1 to 100' }, { status: 400 });
@@ -321,19 +363,14 @@ async function handleGet(req: NextRequest) {
     );
     return NextResponse.json({ setups: rows, count: rows.length });
   } catch (error) {
-    if (error instanceof TimeoutError) {
-      return NextResponse.json({
-        error: 'Database operation timed out. Please retry.',
-        code: 'DATABASE_TIMEOUT',
-      }, { status: 504 });
-    }
-    throw error;
+    return databaseFailureResponse(error);
   }
 }
 
 async function handlePost(req: NextRequest) {
   const started = Date.now();
   const user = await requireSession();
+  await ensureTradeSetupStorage();
   const request = validateBody(await req.json().catch(() => null));
   if (!request) {
     return NextResponse.json({
@@ -483,6 +520,9 @@ async function handlePost(req: NextRequest) {
           : 'Database operation timed out. Please retry.',
         code: `${error.operation.toUpperCase()}_TIMEOUT`,
       }, { status: 504 });
+    }
+    if (isSchemaError(error)) {
+      return databaseFailureResponse(error);
     }
     log.error('Trade setup generation failed', new Error('Trade setup generation failed'), {
       error_name: error instanceof Error ? error.name : 'UnknownError',

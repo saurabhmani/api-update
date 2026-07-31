@@ -678,6 +678,64 @@ const ALL_TABLES: string[] = [
     INDEX idx_session (snapshot_session)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
+  // Trade setups — required by /api/trade-setups (GET/POST). Previously
+  // only created via setup.ts / migrateIntelligence, so production boots
+  // that only run ensureAllSchemas hit "Unknown table 'trade_setups'".
+  `CREATE TABLE IF NOT EXISTS trade_setups (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NULL,
+    generation_identity VARCHAR(255) NULL,
+    strategy_id VARCHAR(100) NULL,
+    instrument_key VARCHAR(150) NULL,
+    tradingsymbol VARCHAR(50) NOT NULL,
+    exchange VARCHAR(20) NULL,
+    direction VARCHAR(10) NULL,
+    entry_price DECIMAL(12,2) NULL,
+    stop_loss DECIMAL(12,2) NULL,
+    target1 DECIMAL(12,2) NULL,
+    target2 DECIMAL(12,2) NULL,
+    risk_reward DECIMAL(6,2) NULL,
+    confidence SMALLINT NULL,
+    timeframe VARCHAR(20) NULL,
+    reason TEXT NULL,
+    scenario_tag VARCHAR(100) NULL,
+    regime VARCHAR(30) NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    triggered_at DATETIME NULL,
+    expires_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_ts_sym (tradingsymbol),
+    INDEX idx_ts_status (status),
+    INDEX idx_ts_exp (expires_at),
+    INDEX idx_ts_user (user_id),
+    INDEX idx_ts_user_status_created (user_id, status, created_at),
+    UNIQUE KEY uq_ts_generation (generation_identity)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  // Rankings — used by trade-setup generation ownership checks and
+  // /trade-setups seed-symbol selection.
+  `CREATE TABLE IF NOT EXISTS rankings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    instrument_key VARCHAR(150) NULL,
+    tradingsymbol VARCHAR(50) NULL,
+    exchange VARCHAR(20) NULL,
+    name VARCHAR(255) NULL,
+    score DECIMAL(8,4) NULL,
+    rank_position INT NULL,
+    pct_change DECIMAL(8,4) NULL,
+    ltp DECIMAL(12,2) NULL,
+    volume BIGINT NULL,
+    confidence_score SMALLINT NULL,
+    portfolio_fit_score SMALLINT NULL,
+    conviction_band VARCHAR(30) NULL,
+    market_stance VARCHAR(30) NULL,
+    scenario_tag VARCHAR(100) NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_rankings_sym (tradingsymbol),
+    INDEX idx_rankings_score (score)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
   // ── PHASE 1–6 CLOSURE TABLES ──────────────────────────────────
   //
   // These are the upstream writer targets for the loaders that
@@ -1003,6 +1061,17 @@ const ENSURE_COLUMNS: Array<{ table: string; column: string; definition: string 
   { table: 'q365_signal_feature_snapshots', column: 'provider_lineage', definition: 'VARCHAR(120) DEFAULT NULL' },
   { table: 'q365_signal_feature_snapshots', column: 'data_quality_status', definition: 'VARCHAR(40) DEFAULT NULL' },
   { table: 'q365_signal_feature_snapshots', column: 'data_timestamp', definition: 'DATETIME DEFAULT NULL' },
+  // Trade setups — older deployments may have a slim table without
+  // user-scoped generation columns required by /api/trade-setups.
+  { table: 'trade_setups', column: 'user_id', definition: 'INT NULL' },
+  { table: 'trade_setups', column: 'generation_identity', definition: 'VARCHAR(255) NULL' },
+  { table: 'trade_setups', column: 'strategy_id', definition: 'VARCHAR(100) NULL' },
+  { table: 'trade_setups', column: 'instrument_key', definition: 'VARCHAR(150) NULL' },
+  { table: 'trade_setups', column: 'scenario_tag', definition: 'VARCHAR(100) NULL' },
+  { table: 'trade_setups', column: 'regime', definition: 'VARCHAR(30) NULL' },
+  { table: 'trade_setups', column: 'status', definition: "VARCHAR(20) NOT NULL DEFAULT 'active'" },
+  { table: 'trade_setups', column: 'expires_at', definition: 'DATETIME NULL' },
+  { table: 'trade_setups', column: 'updated_at', definition: 'DATETIME NULL' },
 ];
 
 /** Add a column only if it's missing. Mirrors migrateSignalEngine.ts:287. */
@@ -1076,6 +1145,18 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
         `[ensureAllSchemas] ensureColumn ${c.table}.${c.column} failed:`,
         (err as Error).message,
       );
+    }
+  }
+
+  // Unique generation identity for trade setup idempotency (POST upsert).
+  try {
+    await db.query(
+      `ALTER TABLE trade_setups ADD UNIQUE KEY uq_ts_generation (generation_identity)`,
+    );
+  } catch (err: any) {
+    if (err?.code !== 'ER_DUP_KEYNAME' && err?.code !== 'ER_NO_SUCH_TABLE') {
+      // Non-fatal — table may already have equivalent unique key
+      console.warn('[ensureAllSchemas] trade_setups unique key ensure:', err?.message ?? err);
     }
   }
 

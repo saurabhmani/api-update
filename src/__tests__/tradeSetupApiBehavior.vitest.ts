@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/session', () => ({ requireSession: mocks.requireSession }));
 vi.mock('@/lib/db', () => ({ db: { query: mocks.dbQuery } }));
+vi.mock('@/lib/db/ensureAllSchemas', () => ({
+  ensureAllSchemas: vi.fn(async () => ({ created: 0, failed: 0, cached: true })),
+}));
 vi.mock('@/lib/cache/cacheService', () => ({
   cacheService: {
     get: mocks.cacheGet,

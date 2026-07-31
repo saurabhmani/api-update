@@ -25,6 +25,10 @@
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
+import {
+  getTableColumns,
+  optionalColumnExpression,
+} from '@/lib/db/tableColumns';
 import type {
   StabilitySnapshot,
   MaturityStage,
@@ -651,6 +655,10 @@ function numOrNull(v: unknown): number | null {
  */
 export async function getInProgressTrackers(limit = 50): Promise<InProgressTrackerRow[]> {
   try {
+    const signalColumns = await getTableColumns('q365_signals');
+    const classificationSelect = optionalColumnExpression(
+      signalColumns, 's', 'classification', 'signal_classification',
+    );
     const result = await db.query<InProgressJoinRow>(
       `SELECT t.id, t.symbol, t.direction,
               t.first_detected_at, t.last_seen_at, t.last_evaluated_at,
@@ -666,7 +674,7 @@ export async function getInProgressTrackers(limit = 50): Promise<InProgressTrack
               s.risk_reward AS signal_risk_reward,
               s.confidence_score AS signal_confidence_score,
               s.final_score  AS signal_final_score,
-              s.classification AS signal_classification,
+              ${classificationSelect},
               s.market_regime  AS signal_market_regime,
               s.decay_state    AS signal_decay_state,
               s.scenario_tag   AS signal_scenario_tag
@@ -786,6 +794,10 @@ export async function getInProgressTrackersLenient(limit = 50): Promise<InProgre
     Math.floor(Number.isFinite(rawHours) && rawHours > 0 ? rawHours : 24),
   ));
   try {
+    const signalColumns = await getTableColumns('q365_signals');
+    const classificationSelect = optionalColumnExpression(
+      signalColumns, 's', 'classification', 'signal_classification',
+    );
     const result = await db.query<InProgressJoinRow>(
       `SELECT t.id, t.symbol, t.direction,
               t.first_detected_at, t.last_seen_at, t.last_evaluated_at,
@@ -801,7 +813,7 @@ export async function getInProgressTrackersLenient(limit = 50): Promise<InProgre
               s.risk_reward AS signal_risk_reward,
               s.confidence_score AS signal_confidence_score,
               s.final_score  AS signal_final_score,
-              s.classification AS signal_classification,
+              ${classificationSelect},
               s.market_regime  AS signal_market_regime,
               s.decay_state    AS signal_decay_state,
               s.scenario_tag   AS signal_scenario_tag

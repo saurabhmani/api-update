@@ -35,8 +35,7 @@ import {
 
 import {
   getActiveConfirmedSnapshots,
-  getActiveSnapshotReaderDiagnostics,
-  getConfirmedSnapshotFreshness,
+  getConfirmedSnapshotReadMeta,
 }                                     from '@/lib/signal-engine/repository/readConfirmedSnapshots';
 import {
   getInProgressTrackers,
@@ -68,6 +67,7 @@ import {
   dedupeLatestPerSymbolDirection,
   dedupeOneSymbolOneSignal,
 }                                     from '@/lib/signals/closedMarketSignals';
+import type { SignalsApiProfiler }    from '@/lib/signals/signalsApiProfiler';
 
 // ────────────────────────────────────────────────────────────────
 //  Live-price enrichment
@@ -86,6 +86,7 @@ import {
 export interface EnrichLiveLtpOpts {
   /** Authenticated user — routes quotes through their active broker. */
   userId?: number;
+  marketOpen?: boolean;
 }
 
 export interface EnrichLiveLtpResult<T> {
@@ -179,7 +180,7 @@ export async function enrichWithLiveLtpDetailed<
     if (r.livePrice != null) totalLive++;
   }
 
-  const marketOpen = getMarketStatus().isOpen;
+  const marketOpen = opts.marketOpen ?? getMarketStatus().isOpen;
   console.log(
     `[DATA SOURCE] path=LIVE  channel=${brokerFilled > 0 ? 'USER_BROKER' : fallbackUsed ? 'FALLBACK' : 'NONE'}  ` +
     `rows=${rows.length} live=${totalLive} brokerFilled=${brokerFilled} ` +
@@ -335,6 +336,8 @@ export interface LoadConfirmedSignalsOpts {
   limit: number;
   /** Authenticated user — live LTP via their active broker (Phase 10). */
   userId?: number;
+  marketOpen?: boolean;
+  profile?: Pick<SignalsApiProfiler, 'time' | 'mark'>;
 }
 
 /**
@@ -352,17 +355,42 @@ export interface LoadConfirmedSignalsOpts {
 export async function loadConfirmedSignalsBundle(
   opts: LoadConfirmedSignalsOpts,
 ): Promise<ConfirmedSignalsBundle> {
-  const [snapshots, inProgress, freshnessRaw, trackerCounts, readerDiag] = await Promise.all([
-    getActiveConfirmedSnapshots({ limit: opts.limit }),
-    getInProgressTrackers(50).catch(() => []),
-    getConfirmedSnapshotFreshness(),
-    getTrackerCounts().catch(
-      () => ({ candidate: 0, developing: 0, mature: 0, promoted: 0, terminated: 0, total: 0 }),
-    ),
-    getActiveSnapshotReaderDiagnostics().catch(
-      () => ({ totalActive: 0, readerEligible: 0, excludedByClassification: 0, breakdown: [] as Array<{ classification: string; count: number }> }),
-    ),
-  ]);
+  const marketIsOpen = opts.marketOpen ?? getMarketStatus().isOpen;
+  const loadDatabase = () => Promise.all([
+      getActiveConfirmedSnapshots({ limit: opts.limit }),
+      getInProgressTrackers(50).catch(() => []),
+      getTrackerCounts().catch(
+        () => ({ candidate: 0, developing: 0, mature: 0, promoted: 0, terminated: 0, total: 0 }),
+      ),
+      getConfirmedSnapshotReadMeta().catch(
+        () => ({
+          freshness: {
+            latest_confirmed_at: null,
+            latest_confirmed_ms: null,
+            active_count: 0,
+            total_lifetime: 0,
+          },
+          diagnostics: {
+            totalActive: 0,
+            readerEligible: 0,
+            excludedByClassification: 0,
+            breakdown: [] as Array<{ classification: string; count: number }>,
+          },
+        }),
+      ),
+    ] as const);
+  const [snapshots, inProgress, trackerCounts, readMeta] =
+    opts.profile
+      ? await opts.profile.time(
+          'database_queries',
+          loadDatabase,
+          (result) => ({
+            rows: result[0].length + result[1].length,
+          }),
+        )
+      : await loadDatabase();
+  const freshnessRaw = readMeta.freshness;
+  const readerDiag = readMeta.diagnostics;
 
   // PROMOTION-AUDIT (2026-05) — canonical [SNAPSHOT_READ] tag for the
   // reader path. Pairs with [SNAPSHOT_WRITE] / [PROMOTION_SUCCESS] in
@@ -382,29 +410,33 @@ export async function loadConfirmedSignalsBundle(
   // Live-price enrichment for snapshots AND in-progress trackers.
   // Phase 10: prefer the authenticated user's active broker quotes.
   // System resolveBatch is only used when SIGNALS_LIVE_FALLBACK=1.
-  const shouldEnrichLive = snapshots.length > 0;
-  const enrichOpts = { userId: opts.userId };
-  const [snapEnrich, progEnrich] = shouldEnrichLive
-    ? await Promise.all([
-        enrichWithLiveLtpDetailed(snapshots as ConfirmedSignalRow[], enrichOpts),
-        enrichWithLiveLtpDetailed(inProgress as ConfirmedSignalRow[], enrichOpts),
-      ])
-    : [
-        { rows: snapshots as ConfirmedSignalRow[], liveOrigin: null as DataOrigin | null, fallbackUsed: false },
-        { rows: inProgress as ConfirmedSignalRow[], liveOrigin: null as DataOrigin | null, fallbackUsed: false },
-      ];
+  const snapshotRows = snapshots as ConfirmedSignalRow[];
+  const trackerRows = inProgress as ConfirmedSignalRow[];
+  const combinedRows = [...snapshotRows, ...trackerRows];
+  const shouldEnrichLive = combinedRows.length > 0;
+  const enrichOpts = { userId: opts.userId, marketOpen: marketIsOpen };
+  const enrichMarketData = async () => shouldEnrichLive
+    ? enrichWithLiveLtpDetailed(combinedRows, enrichOpts)
+    : { rows: combinedRows, liveOrigin: null as DataOrigin | null, fallbackUsed: false };
+  const combinedEnrichment = opts.profile
+    ? await opts.profile.time(
+        'market_data_fetch',
+        enrichMarketData,
+        () => ({ providerCalls: shouldEnrichLive ? 1 : 0 }),
+      )
+    : await enrichMarketData();
   if (!shouldEnrichLive && inProgress.length > 0) {
     console.log(
       `[PERF] enrichWithLiveLtp skipped — confirmed_snapshots=0 ` +
       `in_progress=${inProgress.length} (relaxed/closed loader owns the main table)`,
     );
   }
-  const enriched: ConfirmedSignalRow[] = snapEnrich.rows;
-  const inProgressEnriched: ConfirmedSignalRow[] = progEnrich.rows;
-  const liveEnrichmentOrigin = snapEnrich.liveOrigin ?? progEnrich.liveOrigin;
-  const fallbackUsed = snapEnrich.fallbackUsed || progEnrich.fallbackUsed;
+  const enriched = combinedEnrichment.rows.slice(0, snapshotRows.length);
+  const inProgressEnriched = combinedEnrichment.rows.slice(snapshotRows.length);
+  const liveEnrichmentOrigin = combinedEnrichment.liveOrigin;
+  const fallbackUsed = combinedEnrichment.fallbackUsed;
   // Market state — drives the freshness cap (6h open / 24h closed).
-  const marketIsOpen = getMarketStatus().isOpen;
+  const processingStartedAt = Date.now();
 
   // MATURATION_AUDIT_2026-05 — instrumented strict-gate funnel. Run
   // strictApprovedAudit on every enriched row so we can publish a
@@ -414,27 +446,34 @@ export async function loadConfirmedSignalsBundle(
   // dies at the strict gate the operator was previously seeing zero
   // diagnostic output — they couldn't tell whether the engine was
   // generating nothing or whether the gate was over-punishing.
-  const strictAudit = enriched.map((r) => ({
-    row:    r,
-    detail: strictApprovedAudit(r),
-  }));
-  const strictPassed: ConfirmedSignalRow[] = strictAudit
-    .filter((a) => a.detail.passed)
-    .map((a) => a.row);
-  const strictDropped = strictAudit.filter((a) => !a.detail.passed);
+  const strictStartedAt = Date.now();
+  const strictPassed: ConfirmedSignalRow[] = [];
+  const strictDropped: Array<{
+    row: ConfirmedSignalRow;
+    detail: ReturnType<typeof strictApprovedAudit>;
+  }> = [];
+  const strictCauseHistogram: Record<string, number> = {};
+  for (const row of enriched) {
+    const detail = strictApprovedAudit(row);
+    if (detail.passed) {
+      strictPassed.push(row);
+      continue;
+    }
+    strictDropped.push({ row, detail });
+    const first = detail.failed[0] ?? 'unknown';
+    const eq = first.indexOf('=');
+    const cause = (eq >= 0 ? first.slice(0, eq) : first)
+      .replace('rr_ratio', 'risk_reward')
+      .replace('confidence_score', 'confidence');
+    strictCauseHistogram[cause] = (strictCauseHistogram[cause] ?? 0) + 1;
+  }
+  opts.profile?.mark('confidence_scoring_filtering', Date.now() - strictStartedAt, {
+    rows: strictPassed.length,
+  });
 
   if (enriched.length > 0) {
     // Bucket each dropped row by the FIRST failure (dominant gate)
     // so the histogram answers "what's the #1 blocker today?".
-    const cause: Record<string, number> = {};
-    for (const d of strictDropped) {
-      const first = d.detail.failed[0] ?? 'unknown';
-      const eq = first.indexOf('=');
-      const head = (eq >= 0 ? first.slice(0, eq) : first)
-        .replace('rr_ratio',     'risk_reward')
-        .replace('confidence_score','confidence');
-      cause[head] = (cause[head] ?? 0) + 1;
-    }
     const num = (v: unknown): number | null => {
       if (v == null) return null;
       const n = typeof v === 'number' ? v : Number(v);
@@ -489,7 +528,7 @@ export async function loadConfirmedSignalsBundle(
       input_count:    enriched.length,
       passed_count:   strictPassed.length,
       dropped_count:  strictDropped.length,
-      cause_histogram: cause,
+      cause_histogram: strictCauseHistogram,
       floors_active: {
         confidence:           STRICT_CONFIDENCE_FLOOR,
         final:                STRICT_FINAL_FLOOR,
@@ -514,6 +553,7 @@ export async function loadConfirmedSignalsBundle(
   //   - applySectorDiversity caps per-sector occupancy so financials
   //     / IT cannot fill the table on a sector-strong day.
   //   - confirmedSnapshotCmp is preserved as the deterministic tiebreak.
+  const rankingStartedAt = Date.now();
   const beforeFreshness = strictPassed;
   let sortedApproved: ConfirmedSignalRow[] = beforeFreshness
     .filter((r) => isFreshEnough(r, { marketOpen: marketIsOpen }))
@@ -627,18 +667,7 @@ export async function loadConfirmedSignalsBundle(
     }
     console.log('[APPROVAL_BOTTLENECK]', approvalBottleneck);
   } else if (strictPassed.length === 0) {
-    // Recompute the cause histogram from strictDropped (already
-    // computed above for [STRICT_FUNNEL] but local to that block).
-    const cause: Record<string, number> = {};
-    for (const d of strictDropped) {
-      const first = d.detail.failed[0] ?? 'unknown';
-      const eq = first.indexOf('=');
-      const head = (eq >= 0 ? first.slice(0, eq) : first)
-        .replace('rr_ratio', 'risk_reward')
-        .replace('confidence_score', 'confidence');
-      cause[head] = (cause[head] ?? 0) + 1;
-    }
-    const ranked = Object.entries(cause).sort((a, b) => b[1] - a[1]);
+    const ranked = Object.entries(strictCauseHistogram).sort((a, b) => b[1] - a[1]);
     const dominant = ranked[0]?.[0] ?? 'unknown';
     const dominantCount = ranked[0]?.[1] ?? 0;
     approvalBottleneck = {
@@ -696,6 +725,9 @@ export async function loadConfirmedSignalsBundle(
     });
   }
   const finalRows: ConfirmedSignalRow[] = applyConfirmedCap(dedupedApproved);
+  opts.profile?.mark('ranking_sorting_maturity', Date.now() - rankingStartedAt, {
+    rows: finalRows.length,
+  });
 
   // Sector diversity / cap funnel — fires only when the cap actually
   // bit. applySectorDiversity can also reject rows when a sector is
@@ -743,6 +775,10 @@ export async function loadConfirmedSignalsBundle(
     };
     console.log('[APPROVAL_BOTTLENECK]', approvalBottleneck);
   }
+
+  opts.profile?.mark('signal_processing_ranking_filtering', Date.now() - processingStartedAt, {
+    rows: finalRows.length,
+  });
 
   return {
     enriched,

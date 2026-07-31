@@ -226,11 +226,14 @@ export function getDb(): mysql.Pool {
 export const db = {
   query: async <T = any>(text: string, params?: any[]): Promise<{ rows: T[]; insertId?: number; affectedRows?: number }> => {
     const queryStartedAt = Date.now();
+    let rowsReturned = 0;
     try {
     const p = getDb();
 
     if (/INSERT\s+INTO[\s\S]*RETURNING/i.test(text)) {
-      return handleReturning(p, text, params || []) as Promise<{ rows: T[] }>;
+      const result = await handleReturning(p, text, params || []) as { rows: T[] };
+      rowsReturned = result.rows.length;
+      return result;
     }
 
     // For INSERT/UPDATE/DELETE, extract metadata from ResultSetHeader
@@ -246,9 +249,10 @@ export const db = {
     }
 
     const { rows } = await executeQuery(p, text, params);
+    rowsReturned = rows.length;
     return { rows: rows as T[] };
     } finally {
-      recordDbOperation(Date.now() - queryStartedAt);
+      recordDbOperation(Date.now() - queryStartedAt, rowsReturned);
     }
   },
 };

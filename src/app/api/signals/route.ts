@@ -13,6 +13,14 @@
  */
 import { NextRequest, NextResponse }  from 'next/server';
 import { requireSession }             from '@/lib/session';
+import { withApiHandler }             from '@/lib/apiHandler';
+import { cacheService }               from '@/lib/cache/cacheService';
+import { cacheKeys }                  from '@/lib/cache/cacheKeys';
+import { CACHE_POLICIES }             from '@/lib/cache/cachePolicy';
+import {
+  createSignalsApiProfiler,
+  type SignalsApiProfiler,
+}                                     from '@/lib/signals/signalsApiProfiler';
 import { ensureLiveMarketStack }      from '@/lib/marketData/ensureLiveMarketStack';
 import { resolveUserFeedMeta, withProviderMeta } from '@/lib/broker/connections';
 import {
@@ -210,12 +218,11 @@ const VERBOSE_SIGNALS = process.env.LOG_VERBOSE_SIGNALS === '1';
 //  No sticky-LKG: empty stays empty. The operator must see the
 //  genuine engine state, not a stale "last good" mask.
 // ────────────────────────────────────────────────────────────────
+// Legacy process-local cache helpers remain isolated below for compatibility;
+// the GET path now uses the centralized cacheService.
 const FREEZE_TTL_MS = Math.max(60_000, Number(process.env.SIGNALS_FREEZE_TTL_MS) || 5 * 60_000);
 type FreezeEntry = { ts: number; payload: any; batchMs: number };
 const freezeCache = new Map<string, FreezeEntry>();
-function freezeKey(action: string, limit: number, lite: boolean): string {
-  return `${action}|${limit}|${lite ? 1 : 0}`;
-}
 
 // PROD-STALE-FIX 2026-05 — generation-aware freeze cache.
 //
@@ -1574,19 +1581,22 @@ function logEnvStampOnce(): void {
   });
 }
 
-export async function GET(req: NextRequest) {
+async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) {
   let sessionUserId: number;
   try {
-    const user = await requireSession();
+    const user = await profile.time('authentication', () => requireSession());
     sessionUserId = user.id;
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const feedMeta = await resolveUserFeedMeta(sessionUserId).catch(() => ({
-    provider: null as null,
-    status: 'not_connected' as const,
-  }));
+  const feedMeta = await profile.time(
+    'signal_source_selection',
+    () => resolveUserFeedMeta(sessionUserId).catch(() => ({
+      provider: null as null,
+      status: 'not_connected' as const,
+    })),
+  );
 
   // Warm THIS user's active broker stream in the background.
   // Never await on the request path — reconnecting Shoonya/Zerodha
@@ -1605,7 +1615,10 @@ export async function GET(req: NextRequest) {
 
   // Boot live feed stack so freshness + engine-health preview see the
   // same WS poll state as /api/market-data/live-feed-status.
-  await ensureLiveMarketStack().catch(() => {});
+  await profile.time(
+    'market_data_stack',
+    () => ensureLiveMarketStack().catch(() => undefined),
+  );
 
   // Spec STEP 2 — universe init guard. Idempotent + race-safe via
   // the shared promise lock in initOnce(). On a cold instrumentation
@@ -1614,7 +1627,7 @@ export async function GET(req: NextRequest) {
   // sync getters; on every subsequent request it's a single-property
   // check. A clean 503 beats a 500 with NIFTY500_UNIVERSE_NOT_INITIALIZED
   // in the body.
-  const universeReady = await ensureUniverseReady();
+  const universeReady = await profile.time('universe_validation', () => ensureUniverseReady());
   if (!universeReady.ok) {
     return NextResponse.json(
       {
@@ -1631,7 +1644,10 @@ export async function GET(req: NextRequest) {
   // internally to once per sync interval so the per-request cost is
   // bounded. No-op when REDIS_DISABLED=1 or DISTRIBUTED_ROTATION=0;
   // best-effort otherwise (Redis outage leaves local state intact).
-  await pullRotationStateFromRedis().catch(() => undefined);
+  await profile.time(
+    'redis_rotation_lookup',
+    () => pullRotationStateFromRedis().catch(() => undefined),
+  );
 
   logEnvStampOnce();
 
@@ -1674,6 +1690,7 @@ export async function GET(req: NextRequest) {
   // operator can see exactly which tier produced which row count. Pure
   // visibility — no behavior change, no extra DB writes.
   const debugSignals = searchParams.get('debug') === 'signals';
+  profile.mark('request_validation', 0);
   // The local 13-field `compactSignal` shaper that lived here was only
   // used by the now-deleted dead 'top'/'all' legacy q365_signals
   // branches. The active confirmed-snapshot path uses the typed
@@ -1749,11 +1766,53 @@ export async function GET(req: NextRequest) {
       // batch is visible without the market_close_snapshot envelope.
       const forceLive = searchParams.get('force') === 'live';
       const overrideMarket = isMarketOverrideEnabled();
+      let responseCacheKey: string | null = null;
+      let responseCacheChecked = false;
+      const initialMarketStatus = getMarketStatus();
+      let resolvedMarketOpen = initialMarketStatus.isOpen;
+      let resolvedMarketLabel = initialMarketStatus.label;
       if (overrideMarket) {
         console.log('[MARKET OVERRIDE] forcing pipeline run');
       }
       if (!forceLive && !overrideMarket) {
-        const session = await marketSessionService.getStatus({ exchange: 'NSE' });
+        const session = await profile.time(
+          'market_status_detection',
+          () => marketSessionService.getStatus({ exchange: 'NSE' }),
+        );
+        resolvedMarketOpen = session.isOpen;
+        resolvedMarketLabel = session.status;
+        responseCacheKey = cacheKeys.signalsResponse(
+          sessionUserId,
+          action,
+          limit,
+          lite,
+          `${session.tradingDate}:${session.status}`,
+        );
+        if (!bootstrap && !noCache && !debugSignals) {
+          responseCacheChecked = true;
+          const cached = await profile.time(
+            'redis_lookup',
+            () => cacheService.get<Record<string, unknown>>(responseCacheKey!),
+          );
+          if (cached) {
+            profile.setCache('hit');
+            const cacheSerializationStartedAt = Date.now();
+            const cachedResponse = NextResponse.json(
+              withProviderMeta(
+                { ...cached, request_id: requestId, served_from_cache: true },
+                { provider: feedMeta.provider, status: feedMeta.status },
+              ),
+              {
+                headers: {
+                  'Cache-Control': 'private, no-store',
+                },
+              },
+            );
+            profile.mark('response_serialization', Date.now() - cacheSerializationStartedAt);
+            return cachedResponse;
+          }
+          profile.setCache('miss');
+        }
         console.log(
           JSON.stringify({
             event: 'market_session_resolved',
@@ -1850,7 +1909,33 @@ export async function GET(req: NextRequest) {
           // table. Snapshots can lag for days while market_data_daily stays
           // current; healthPreview must reflect candle freshness, not
           // snapshot staleness (otherwise off-hours shows false DEGRADED).
-          const latestCandleMs = await probeLatestCandleMs().catch(() => null);
+          const probeWindowHours = resolveClosedSignalsMaxAgeHours();
+          const [
+            latestCandleMs,
+            scannerProbe,
+            scannerUniverseSize,
+            closedTrackerCounts,
+            closedSignals,
+          ] = await profile.time(
+            'closed_market_parallel_reads',
+            () => Promise.all([
+              probeLatestCandleMs().catch(() => null),
+              probeScannerBatch({ windowHours: probeWindowHours }).catch(() => ({
+                scannerBatchId:       null as string | null,
+                scannerEngineKind:    'unknown' as 'scanner' | 'phase4' | 'unknown',
+                scannerLatestSymbols: null as number | null,
+              })),
+              loadUniverseSize().catch(() => null),
+              getTrackerCounts({ freshHours: probeWindowHours }).catch(() => ({
+                candidate: 0, developing: 0, mature: 0,
+                promoted: 0, terminated: 0, total: 0,
+              })),
+              loadClosedMarketSignals({ limit }).catch((err) => {
+                console.warn('[/api/signals] closed-mode signal loader failed', err?.message);
+                return null;
+              }),
+            ]),
+          );
           const candleAgeMinutes = latestCandleMs != null
             ? Math.round((Date.now() - latestCandleMs) / 60_000)
             : null;
@@ -1880,13 +1965,6 @@ export async function GET(req: NextRequest) {
           // default 72h). Without widening the probe past its 24h
           // default, latest_batch_id is null on every weekend even
           // though q365_signals still has Friday's batch metadata.
-          const probeWindowHours = resolveClosedSignalsMaxAgeHours();
-          const scannerProbe = await probeScannerBatch({ windowHours: probeWindowHours }).catch(() => ({
-            scannerBatchId:       null as string | null,
-            scannerEngineKind:    'unknown' as 'scanner' | 'phase4' | 'unknown',
-            scannerLatestSymbols: null as number | null,
-          }));
-          const scannerUniverseSize = await loadUniverseSize().catch(() => null);
           const scannerPersistencePct =
             scannerUniverseSize && scannerUniverseSize > 0 && scannerProbe.scannerLatestSymbols != null
               ? Math.round((scannerProbe.scannerLatestSymbols / scannerUniverseSize) * 1000) / 10
@@ -1898,18 +1976,6 @@ export async function GET(req: NextRequest) {
           // rows from the prior session). Failure is non-fatal — falls
           // back to the all-zeros object so the response shape stays
           // stable when the table query throws.
-          const closedTrackerCounts = await getTrackerCounts({
-            // Reuse the closed-market max-age window (default 72h) so
-            // weekend polls can see Friday's candidate trackers. The
-            // live-path 6h freshness gate is too tight off-hours and
-            // would surface zero counts even when the DB has hundreds
-            // of prior-session rows.
-            freshHours: probeWindowHours,
-          }).catch(() => ({
-            candidate: 0, developing: 0, mature: 0,
-            promoted: 0, terminated: 0, total: 0,
-          }));
-
           // ── Last-stored filtered signals (DB-only, no upstream) ──
           // Spec: "Return LAST STORED FILTERED signals" — apply
           //   confidence>=70  final>=75  rr>=1.5  status='ACTIVE'
@@ -1918,11 +1984,6 @@ export async function GET(req: NextRequest) {
           // Failure of this loader MUST NOT break the closed-market
           // branch — we already have market_data ready to ship, so a
           // bad query just leaves signals empty and logs.
-          const closedSignals = await loadClosedMarketSignals({ limit })
-            .catch((err) => {
-              console.warn('[/api/signals] closed-mode signal loader failed', err?.message);
-              return null;
-            });
           // Spec §9 — even off-hours, every emitted signal MUST be in
           // the locked NIFTY 500 set. Stale rows from before the lock
           // landed are dropped here.
@@ -2550,7 +2611,21 @@ export async function GET(req: NextRequest) {
             };
             closedPayload.nearestSignals = closestRows;
           }
-          return NextResponse.json(
+          if (responseCacheKey && !bootstrap && !noCache && !debugSignals) {
+            await profile.time(
+              'redis_store',
+              () => cacheService.set(
+                responseCacheKey!,
+                closedPayload,
+                { ttlSeconds: 5 * 60 },
+              ),
+            );
+          }
+          profile.mark('pagination', 0, {
+            rows: Array.isArray(closedPayload.signals) ? closedPayload.signals.length : 0,
+          });
+          const serializationStartedAt = Date.now();
+          const closedResponse = NextResponse.json(
             withProviderMeta(closedPayload as Record<string, unknown>, {
               provider: feedMeta.provider,
               status: feedMeta.status,
@@ -2564,9 +2639,13 @@ export async function GET(req: NextRequest) {
               }).note,
             }),
             {
-              headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+              headers: {
+                'Cache-Control': 'private, no-store',
+              },
             },
           );
+          profile.mark('response_serialization', Date.now() - serializationStartedAt);
+          return closedResponse;
         }
       }
 
@@ -2582,26 +2661,47 @@ export async function GET(req: NextRequest) {
       // freezePut — a 5-min stale empty would otherwise mask a
       // newly-populated DB. Also protects against any future code
       // path that bypasses the freezePut emptiness check.
-      const cacheKey = freezeKey(action, limit, lite);
-      const fresh = await freezeGetFresh(cacheKey);
-      const cachedIsEmpty =
-        fresh != null &&
-        (fresh.payload?.main_signals_count ?? 0) === 0 &&
-        (!Array.isArray(fresh.payload?.signals) || fresh.payload.signals.length === 0);
-      if (cachedIsEmpty) {
-        freezeDrop(cacheKey);
+      if (!responseCacheKey) {
+        responseCacheKey = cacheKeys.signalsResponse(
+          sessionUserId,
+          action,
+          limit,
+          lite,
+          `${resolvedMarketLabel}:${resolvedMarketOpen ? 'open' : 'closed'}:forced`,
+        );
       }
       // ?bootstrap=true means the operator is asking for a fresh
       // synchronous recovery run — never serve a cached payload, since
       // the whole point is to land new data on this single request.
-      if (fresh && !cachedIsEmpty && !bootstrap) {
-        return NextResponse.json(
-          withProviderMeta(
-            { ...fresh.payload, request_id: requestId, served_from_cache: true } as Record<string, unknown>,
-            { provider: feedMeta.provider, status: feedMeta.status },
-          ),
-          { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+      if (
+        !responseCacheChecked
+        && !forceLive
+        && !bootstrap
+        && !noCache
+        && !debugSignals
+      ) {
+        const cached = await profile.time(
+          'redis_lookup',
+          () => cacheService.get<Record<string, unknown>>(responseCacheKey!),
         );
+        if (cached) {
+          profile.setCache('hit');
+          const cacheSerializationStartedAt = Date.now();
+          const cachedResponse = NextResponse.json(
+            withProviderMeta(
+              { ...cached, request_id: requestId, served_from_cache: true },
+              { provider: feedMeta.provider, status: feedMeta.status },
+            ),
+            {
+              headers: {
+                'Cache-Control': 'private, no-store',
+              },
+            },
+          );
+          profile.mark('response_serialization', Date.now() - cacheSerializationStartedAt);
+          return cachedResponse;
+        }
+        profile.setCache('miss');
       }
 
       // ── READ-ONLY CONTRACT ───────────────────────────────────────
@@ -2629,7 +2729,12 @@ export async function GET(req: NextRequest) {
           return null;
         },
       );
-      let bundle = await loadConfirmedSignalsBundle({ limit, userId: sessionUserId });
+      let bundle = await loadConfirmedSignalsBundle({
+        limit,
+        userId: sessionUserId,
+        marketOpen: resolvedMarketOpen,
+        profile,
+      });
       let enriched           = bundle.enriched;
       let finalRows          = bundle.finalRows;
       let belowFloorDemoted  = bundle.belowFloorDemoted;
@@ -2733,7 +2838,12 @@ export async function GET(req: NextRequest) {
       // along with auto_recovery.last_error explaining why.
       if (bootstrap && autoScanState.status === 'completed') {
         console.log('[BOOTSTRAP] reloading confirmed-signals bundle after synchronous recovery');
-        bundle = await loadConfirmedSignalsBundle({ limit, userId: sessionUserId });
+        bundle = await loadConfirmedSignalsBundle({
+          limit,
+          userId: sessionUserId,
+          marketOpen: resolvedMarketOpen,
+          profile,
+        });
         enriched           = bundle.enriched;
         finalRows          = bundle.finalRows;
         belowFloorDemoted  = bundle.belowFloorDemoted;
@@ -3130,6 +3240,9 @@ export async function GET(req: NextRequest) {
                     const latestRowIso = latestRowTs != null
                       ? new Date(latestRowTs).toISOString()
                       : null;
+                    const compactBestTagged = lite
+                      ? bestTagged.map(compactConfirmedSignal)
+                      : null;
                     const derivedBatchId = bestTagged
                       .map((r) => r.batch_id)
                       .find((v) => v != null && v !== '') ?? null;
@@ -3146,8 +3259,8 @@ export async function GET(req: NextRequest) {
                     };
                     responsePayloadBase = {
                       ...responsePayloadBase,
-                      signals:             lite ? bestTagged.map(compactConfirmedSignal) : (bestTagged as any),
-                      approved:            lite ? bestTagged.map(compactConfirmedSignal) : (bestTagged as any),
+                      signals:             compactBestTagged ?? (bestTagged as any),
+                      approved:            compactBestTagged ?? (bestTagged as any),
                       main_signals_count:  bestTagged.length,
                       buy_count:           bestBuy,
                       sell_count:          bestSell,
@@ -4257,8 +4370,8 @@ export async function GET(req: NextRequest) {
         freshness?: { freshness_mode?: string };
       });
       const ddContextBase: Omit<DueDiligenceContext, 'tier'> = {
-        marketOpen:       ms.marketStatus?.isOpen ?? getMarketStatus().isOpen,
-        marketLabel:      ms.marketStatus?.label ?? getMarketStatus().label,
+        marketOpen:       ms.marketStatus?.isOpen ?? resolvedMarketOpen,
+        marketLabel:      ms.marketStatus?.label ?? resolvedMarketLabel,
         isBootstrap:      false,
         isFallback:       usedRelaxedSignals || relaxedUsed || signalQuality !== 'STRICT',
         freshnessMode:    (ms.freshness as { freshness_mode?: string } | undefined)?.freshness_mode
@@ -4290,6 +4403,7 @@ export async function GET(req: NextRequest) {
         approvedSell:  displayableSell,
       };
 
+      const responseTimestamp = new Date().toISOString();
       const responsePayload = {
         ...responsePayloadBase,
         // INSTITUTIONAL_TIER_2026-05 — strict-only signals[]. The lite
@@ -4408,8 +4522,8 @@ export async function GET(req: NextRequest) {
         api_usage: getApiUsage(),
 
         // ── FIX FINAL SIGNAL VISIBILITY 2026-05 ──
-        lastApiRequestAt: new Date().toISOString(),
-        lastSuccessAt:    new Date().toISOString(),
+        lastApiRequestAt: responseTimestamp,
+        lastSuccessAt:    responseTimestamp,
         isBootstrap:      bootstrap,
 
         // ── DASHBOARD-PARITY-2026-05 — overwrite stale aggregate aliases ──
@@ -4455,10 +4569,24 @@ export async function GET(req: NextRequest) {
         || usedRelaxedSignals
         || shippedMainCount > 0
         || (Array.isArray(responsePayload.signals) && responsePayload.signals.length > 0);
-      if (cacheablePayload) {
-        await freezePut(cacheKey, responsePayload);
-      } else {
-        freezeDrop(cacheKey);
+      if (
+        cacheablePayload
+        && responseCacheKey
+        && !forceLive
+        && !bootstrap
+        && !noCache
+        && !debugSignals
+      ) {
+        await profile.time(
+          'redis_store',
+          () => cacheService.set(
+            responseCacheKey!,
+            responsePayload,
+            resolvedMarketOpen
+              ? CACHE_POLICIES.signalsList
+              : { ttlSeconds: 5 * 60 },
+          ),
+        );
       }
 
       if (usedRelaxedSignals) {
@@ -4470,10 +4598,12 @@ export async function GET(req: NextRequest) {
         generation: generationOrigin,
         liveEnrichment: liveEnrichmentOrigin,
         fallbackUsed: liveFallbackUsed,
-        marketOpen: getMarketStatus().isOpen,
+        marketOpen: resolvedMarketOpen,
       });
 
-      return NextResponse.json(
+      profile.mark('pagination', 0, { rows: shippedMainCount });
+      const serializationStartedAt = Date.now();
+      const response = NextResponse.json(
         withProviderMeta(responsePayload as Record<string, unknown>, {
           provider: feedMeta.provider,
           status: feedMeta.status,
@@ -4482,8 +4612,14 @@ export async function GET(req: NextRequest) {
           fallbackUsed: provenance.fallbackUsed,
           provenanceNote: provenance.note,
         }),
-        { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } },
+        {
+          headers: {
+            'Cache-Control': 'private, no-store',
+          },
+        },
       );
+      profile.mark('response_serialization', Date.now() - serializationStartedAt);
+      return response;
     }
 
     if (action === 'stats') {
@@ -4603,6 +4739,21 @@ export async function GET(req: NextRequest) {
     // Log the full stack so "undefined is not a function" tells us
     // which call site is failing, not just the message.
     console.error('[/api/signals]', err?.message, '\n', err?.stack ?? '(no stack)');
-    return NextResponse.json({ error: 'Server error', details: err?.message }, { status: 500 });
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
   }
 }
+
+export const GET = withApiHandler(async (req: NextRequest) => {
+  const requestId =
+    req.headers.get('X-Request-ID')
+    ?? req.nextUrl.searchParams.get('request_id')
+    ?? `signals-${Date.now().toString(36)}`;
+  const profile = createSignalsApiProfiler({
+    requestId,
+    method: 'GET',
+    route: '/api/signals',
+  });
+  const response = await executeSignalsGet(req, profile);
+  await profile.finish(response);
+  return response;
+});

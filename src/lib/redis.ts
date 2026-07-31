@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { recordCacheCodecDuration } from '@/lib/monitor/apiPerformanceMetrics';
 
 let redis: Redis | null = null;
 let redisFailed = false;
@@ -10,9 +11,9 @@ interface MemEntry { value: string; expiresAt: number }
 const _mem = new Map<string, MemEntry>();
 const _memLocks = new Map<string, { token: string; expiresAt: number }>();
 
-function memSet(key: string, data: unknown, ttl?: number) {
+function memSetSerialized(key: string, value: string, ttl?: number) {
   _mem.set(key, {
-    value:     JSON.stringify(data),
+    value,
     expiresAt: ttl ? Date.now() + ttl * 1000 : Infinity,
   });
 }
@@ -21,7 +22,9 @@ function memGet<T>(key: string): T | null {
   const entry = _mem.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) { _mem.delete(key); return null; }
+  const startedAt = performance.now();
   try { return JSON.parse(entry.value) as T; } catch { return null; }
+  finally { recordCacheCodecDuration('deserialize', performance.now() - startedAt); }
 }
 
 function memDel(key: string) { _mem.delete(key); }
@@ -84,13 +87,16 @@ export function getRedisClient(): Redis | null {
 
 // ── Typed helpers — Redis first, in-process memory fallback ───────
 export async function cacheSet(key: string, data: unknown, ttl?: number) {
-  // Always write to in-process memory (fast, same-process reads skip Redis)
-  memSet(key, data, ttl);
+  const serializationStartedAt = performance.now();
+  const val = JSON.stringify(data);
+  recordCacheCodecDuration('serialize', performance.now() - serializationStartedAt);
+  // Always write to in-process memory (fast, same-process reads skip Redis).
+  // Reuse the exact serialized value written to Redis.
+  memSetSerialized(key, val, ttl);
 
   const r = getRedis();
   if (!r) return;
   try {
-    const val = JSON.stringify(data);
     if (ttl) await r.setex(key, ttl, val);
     else await r.set(key, val);
   } catch {
@@ -106,11 +112,19 @@ export async function cacheGet<T = unknown>(key: string): Promise<T | null> {
   const r = getRedis();
   if (!r) return null;
   try {
-    const val = await r.get(key);
+    const result = await r.pipeline().get(key).pttl(key).exec();
+    const val = result?.[0]?.[1] as string | null | undefined;
+    const ttlMs = Number(result?.[1]?.[1]);
     if (val) {
+      const deserializationStartedAt = performance.now();
       const parsed = JSON.parse(val) as T;
-      // Warm the in-process cache so subsequent same-process reads are fast
-      memSet(key, parsed);
+      recordCacheCodecDuration('deserialize', performance.now() - deserializationStartedAt);
+      // Preserve Redis expiry when warming the in-process tier. The old
+      // code made Redis-loaded entries immortal inside this process.
+      const ttlSeconds = Number.isFinite(ttlMs) && ttlMs > 0
+        ? Math.max(1, Math.ceil(ttlMs / 1000))
+        : undefined;
+      memSetSerialized(key, val, ttlSeconds);
       return parsed;
     }
     return null;

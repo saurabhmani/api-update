@@ -25,6 +25,10 @@
 import { db } from '@/lib/db';
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { normalizeWinProbability } from '@/lib/signals/signalsResponseMapper';
+import {
+  getTableColumns,
+  optionalColumnExpression,
+} from '@/lib/db/tableColumns';
 
 /** SQL IN-list mirroring the reader WHERE clause classification filter. */
 const READER_CLASSIFICATION_SQL_IN = [...MAIN_TABLE_CLASSIFICATIONS]
@@ -414,6 +418,16 @@ export async function getActiveConfirmedSnapshots(
     params.push(opts.direction);
   }
   params.push(limit);
+  const signalColumns = await getTableColumns('q365_signals');
+  const sourceCompositeSelect = optionalColumnExpression(
+    signalColumns,
+    'q',
+    'composite_final_score',
+    'source_composite_final_score',
+  );
+  const sourceCompositeOrder = signalColumns.has('composite_final_score')
+    ? 'q.composite_final_score, '
+    : '';
 
   // Bug fix — confirmed-snapshot rows often carry NULL maturity-tracker
   // columns (older promotions copied them through inconsistently). The
@@ -434,7 +448,7 @@ export async function getActiveConfirmedSnapshots(
               -- can prefer the institutional value over the snapshot's
               -- (possibly decayed) stored final_score. resolves stale
               -- snapshots promoted before the writer fix landed.
-              q.composite_final_score AS source_composite_final_score,
+              ${sourceCompositeSelect},
               q.confidence_score      AS source_confidence_score,
               s.factor_scores_json, s.explanation_json, s.gate_details_json,
               s.stress_survival_score, s.live_valid, s.rejection_codes_json,
@@ -452,7 +466,7 @@ export async function getActiveConfirmedSnapshots(
          LEFT JOIN q365_signals q
            ON  q.id = s.source_signal_id
         WHERE ${where}
-        ORDER BY COALESCE(q.composite_final_score, s.final_score, s.confidence_score, 0) DESC,
+        ORDER BY COALESCE(${sourceCompositeOrder}s.final_score, s.confidence_score, 0) DESC,
                  s.confidence_score DESC,
                  s.confirmed_at DESC,
                  s.id ASC
@@ -662,6 +676,90 @@ export async function getActiveSnapshotReaderDiagnostics(): Promise<{
   } catch (err: any) {
     if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return empty;
     throw err;
+  }
+}
+
+export async function getConfirmedSnapshotReadMeta(): Promise<{
+  freshness: {
+    latest_confirmed_at: string | null;
+    latest_confirmed_ms: number | null;
+    active_count: number;
+    total_lifetime: number;
+  };
+  diagnostics: {
+    totalActive: number;
+    readerEligible: number;
+    excludedByClassification: number;
+    breakdown: Array<{ classification: string; count: number }>;
+  };
+}> {
+  const empty = {
+    freshness: {
+      latest_confirmed_at: null,
+      latest_confirmed_ms: null,
+      active_count: 0,
+      total_lifetime: 0,
+    },
+    diagnostics: {
+      totalActive: 0,
+      readerEligible: 0,
+      excludedByClassification: 0,
+      breakdown: [] as Array<{ classification: string; count: number }>,
+    },
+  };
+  try {
+    const [aggregateRes, breakdownRes] = await Promise.all([
+      db.query<{
+        latest_ts: number | null;
+        total_lifetime: number;
+        active_count: number;
+        reader_eligible: number;
+      }>(
+        `SELECT UNIX_TIMESTAMP(MAX(confirmed_at)) AS latest_ts,
+                COUNT(*) AS total_lifetime,
+                SUM(status='ACTIVE' AND valid_until>NOW()) AS active_count,
+                SUM(
+                  status='ACTIVE' AND valid_until>NOW()
+                  AND UPPER(classification) IN (${READER_CLASSIFICATION_SQL_IN})
+                ) AS reader_eligible
+           FROM q365_confirmed_signal_snapshots`,
+      ),
+      db.query<{ classification: string; count: number }>(
+        `SELECT UPPER(classification) AS classification, COUNT(*) AS count
+           FROM q365_confirmed_signal_snapshots
+          WHERE status='ACTIVE' AND valid_until>NOW()
+            AND UPPER(classification) NOT IN (${READER_CLASSIFICATION_SQL_IN})
+          GROUP BY UPPER(classification)
+          ORDER BY count DESC
+          LIMIT 10`,
+      ),
+    ]);
+    const aggregate = aggregateRes.rows[0];
+    const latestMs = aggregate?.latest_ts == null
+      ? null
+      : Number(aggregate.latest_ts) * 1000;
+    const totalActive = Number(aggregate?.active_count ?? 0);
+    const readerEligible = Number(aggregate?.reader_eligible ?? 0);
+    return {
+      freshness: {
+        latest_confirmed_at: latestMs ? new Date(latestMs).toISOString() : null,
+        latest_confirmed_ms: latestMs,
+        active_count: totalActive,
+        total_lifetime: Number(aggregate?.total_lifetime ?? 0),
+      },
+      diagnostics: {
+        totalActive,
+        readerEligible,
+        excludedByClassification: Math.max(0, totalActive - readerEligible),
+        breakdown: breakdownRes.rows.map((row) => ({
+          classification: String(row.classification ?? 'UNKNOWN'),
+          count: Number(row.count ?? 0),
+        })),
+      },
+    };
+  } catch (err: any) {
+    if (/doesn'?t exist|unknown table/i.test(err?.message ?? '')) return empty;
+    return empty;
   }
 }
 
