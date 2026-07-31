@@ -4,13 +4,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEventStream } from '@/hooks/useEventStream';
 import { useAuth } from '@/hooks/useAuth';
 import AppShell from '@/components/layout/AppShell';
-import { Card, Badge, Loading, Empty, Button } from '@/components/ui';
+import { Badge, Loading, Empty, Button } from '@/components/ui';
 import { fmt } from '@/lib/utils';
 import { Target, RefreshCw } from 'lucide-react';
 import '@/styles/components/_intelligence.scss';
 
 const TRADE_SETUP_QUERY_KEY = ['trade-setup', 'active'] as const;
 const TRADE_SETUP_SEED_KEY = ['trade-setup', 'seed-symbol'] as const;
+/** Fallback when rankings are empty so Regenerate is never stuck disabled. */
+const FALLBACK_SEED_SYMBOL = 'RELIANCE';
 
 function SignalChip({ dir }: { dir: string }) {
   return <span className={`signal-chip signal-chip--${dir}`}>{dir}</span>;
@@ -20,13 +22,14 @@ export default function TradeSetupsPage() {
   const { user, loading: authLoading } = useAuth();
   const queryClient = useQueryClient();
   const [note, setNote] = useState<string | null>(null);
+  const [noteTone, setNoteTone] = useState<'success' | 'warning'>('success');
   const automaticIdentityRef = useRef<string | null>(null);
   const queryKey = TRADE_SETUP_QUERY_KEY;
 
   const tradeSetupQuery = useQuery({
     queryKey,
     queryFn: async ({ signal }) => {
-      const response = await fetch('/api/trade-setups?action=active', {
+      const response = await fetch('/api/trade-setups?limit=20', {
         cache: 'no-store',
         signal,
       });
@@ -48,7 +51,8 @@ export default function TradeSetupsPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Unable to select a ranked symbol');
       const row = payload.data?.[0];
-      return String(row?.tradingsymbol ?? row?.symbol ?? '').toUpperCase();
+      const ranked = String(row?.tradingsymbol ?? row?.symbol ?? '').toUpperCase();
+      return ranked || FALLBACK_SEED_SYMBOL;
     },
     enabled: Boolean(
       !authLoading &&
@@ -62,7 +66,7 @@ export default function TradeSetupsPage() {
   });
 
   const targetSymbol = String(
-    setups[0]?.tradingsymbol ?? seedSymbolQuery.data ?? '',
+    setups[0]?.tradingsymbol ?? seedSymbolQuery.data ?? FALLBACK_SEED_SYMBOL,
   ).toUpperCase();
 
   const generateMutation = useMutation({
@@ -85,8 +89,15 @@ export default function TradeSetupsPage() {
       return payload as { note?: string; generationStatus?: string };
     },
     onSuccess: async (payload) => {
-      if (payload.note) setNote(payload.note);
+      if (payload.note) {
+        setNote(payload.note);
+        setNoteTone(payload.generationStatus === 'no_setup' ? 'warning' : 'success');
+      }
       await queryClient.invalidateQueries({ queryKey });
+    },
+    onError: () => {
+      // Clear so Retry / remount can auto-generate again.
+      automaticIdentityRef.current = null;
     },
   });
 
@@ -97,6 +108,7 @@ export default function TradeSetupsPage() {
   useEffect(() => {
     if (
       !automaticIdentity ||
+      !targetSymbol ||
       automaticIdentityRef.current === automaticIdentity ||
       !tradeSetupQuery.isSuccess ||
       setups.length > 0
@@ -130,7 +142,6 @@ export default function TradeSetupsPage() {
     setups.length,
   ]);
 
-  // Refresh when a new signal is generated
   const { lastEvent } = useEventStream();
   useEffect(() => {
     if (lastEvent?.type === 'signal:new' || lastEvent?.type === 'pipeline:status') {
@@ -141,7 +152,17 @@ export default function TradeSetupsPage() {
   const recompute = () => {
     if (!targetSymbol) return;
     setNote(null);
+    automaticIdentityRef.current = null;
     generateMutation.mutate({ force: true, symbol: targetSymbol });
+  };
+
+  const retry = () => {
+    if (generateMutation.error) {
+      automaticIdentityRef.current = null;
+      generateMutation.mutate({ force: false, symbol: targetSymbol });
+    } else {
+      tradeSetupQuery.refetch();
+    }
   };
 
   const error = setups.length === 0
@@ -150,6 +171,9 @@ export default function TradeSetupsPage() {
   const loading = authLoading || tradeSetupQuery.isLoading ||
     (setups.length === 0 && seedSymbolQuery.isLoading) ||
     (setups.length === 0 && generateMutation.isPending);
+  const noSetupNote = generateMutation.data?.generationStatus === 'no_setup'
+    ? (generateMutation.data.note ?? note)
+    : null;
 
   return (
     <AppShell title="Trade Setups">
@@ -160,7 +184,15 @@ export default function TradeSetupsPage() {
         </div>
 
         {note && (
-          <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#166534' }}>
+          <div style={{
+            background: noteTone === 'warning' ? '#FFFBEB' : '#F0FDF4',
+            border: noteTone === 'warning' ? '1px solid #FDE68A' : '1px solid #BBF7D0',
+            borderRadius: 8,
+            padding: '10px 14px',
+            marginBottom: 16,
+            fontSize: 13,
+            color: noteTone === 'warning' ? '#92400E' : '#166534',
+          }}>
             {note}
           </div>
         )}
@@ -171,19 +203,21 @@ export default function TradeSetupsPage() {
             title="Trade setups could not be loaded"
             description={error instanceof Error ? error.message : 'Please retry the request.'}
             action={
-              <Button onClick={() => {
-                if (generateMutation.error) {
-                  generateMutation.mutate({ force: false, symbol: targetSymbol });
-                } else {
-                  tradeSetupQuery.refetch();
-                }
-              }}>
+              <Button onClick={retry}>
                 <RefreshCw size={13} /> Retry
               </Button>
             }
           />
         ) : setups.length === 0 ? (
-          <Empty icon={Target} title="No active setups" description="No setup currently passes the institutional gates. You can retry generation for the highest-ranked symbol using the latest available market data." action={<Button onClick={recompute} loading={generateMutation.isPending} disabled={!targetSymbol}><RefreshCw size={13} /> Regenerate</Button>} />
+          <Empty
+            icon={Target}
+            title="No active setups"
+            description={
+              noSetupNote
+                ?? `No setup currently passes the institutional gates for ${targetSymbol}. Retry generation when market data is available.`
+            }
+            action={<Button onClick={recompute} loading={generateMutation.isPending} disabled={!targetSymbol}><RefreshCw size={13} /> Regenerate</Button>}
+          />
         ) : (
           <div className="grid-3">
             {setups.map((s: any) => (

@@ -10,7 +10,7 @@ export type RiskLevel = typeof RISK_LEVELS[number];
 export const SIGNAL_STATUSES = ['active', 'expired', 'target_hit', 'sl_hit', 'cancelled'] as const;
 export type SignalStatus = typeof SIGNAL_STATUSES[number];
 
-export const SETUP_STATUSES = ['pending', 'triggered', 'target_hit', 'stop_loss_hit', 'expired', 'cancelled'] as const;
+export const SETUP_STATUSES = ['active', 'pending', 'triggered', 'target_hit', 'stop_loss_hit', 'expired', 'cancelled'] as const;
 export type SetupStatus = typeof SETUP_STATUSES[number];
 
 // Validity windows

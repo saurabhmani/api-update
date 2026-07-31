@@ -28,6 +28,11 @@ describe('trade setup automatic generation contracts', () => {
     expect(page).toContain('!targetSymbol');
   });
 
+  it('falls back to a seed symbol when rankings are empty', () => {
+    expect(page).toContain('FALLBACK_SEED_SYMBOL');
+    expect(page).toContain("ranked || FALLBACK_SEED_SYMBOL");
+  });
+
   it('uses symbol, strategy, and timeframe in the generation identity and key', () => {
     expect(page).toContain("`${user.id}:${targetSymbol}:auto:swing`");
     expect(page).toContain(

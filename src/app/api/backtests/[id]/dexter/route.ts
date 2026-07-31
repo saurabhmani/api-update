@@ -17,7 +17,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { loadBacktestRun, loadBacktestTrades } from '@/lib/backtesting/repository/persistence';
-import { loadBacktestMetrics, loadCalibrationSnapshots } from '@/lib/backtesting/repository/metricsPersistence';
+import { loadBacktestMetrics } from '@/lib/backtesting/repository/metricsPersistence';
+import { resolveCalibrationForRun } from '@/lib/backtesting/repository/resolveCalibration';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import type { CalibrationBucketResult } from '@/lib/backtesting/types';
 
@@ -98,11 +99,12 @@ export async function GET(
       );
     }
 
-    const [trades, metrics, calibration] = await Promise.all([
+    const [trades, metrics, resolvedCalib] = await Promise.all([
       loadBacktestTrades(params.id),
       loadBacktestMetrics(params.id),
-      loadCalibrationSnapshots(params.id),
+      resolveCalibrationForRun(params.id),
     ]);
+    const calibration = resolvedCalib.buckets;
 
     const summary = run.summary_json
       ? (typeof run.summary_json === 'string' ? JSON.parse(run.summary_json) : run.summary_json)

@@ -255,7 +255,7 @@ export default function BacktestingPage() {
         fetchJson(`/api/backtest/${runId}?include=summary,trades,equity`),
         fetchJson(`/api/backtests/${runId}/analytics`),
         fetchJson(`/api/backtests/${runId}/calibration`),
-        fetchJson(`/api/backtests/${runId}/audit`).catch(() => ({ logs: [] })),
+        fetchJson(`/api/backtests/${runId}/audit`),
         fetchJson(`/api/backtests/${runId}/dexter`).catch(() => null),
       ]);
 
@@ -263,6 +263,7 @@ export default function BacktestingPage() {
       if (detailRes.status === 'rejected') failures.push(formatBacktestApiError(detailRes.reason));
       if (analyticsRes.status === 'rejected') failures.push(formatBacktestApiError(analyticsRes.reason));
       if (calibRes.status === 'rejected') failures.push(formatBacktestApiError(calibRes.reason));
+      if (auditRes.status === 'rejected') failures.push(formatBacktestApiError(auditRes.reason));
       if (failures.length > 0) setError(failures.join(' | '));
 
       if (detailRes.status === 'fulfilled') {
@@ -284,6 +285,10 @@ export default function BacktestingPage() {
         }
         setTrades(detailRes.value.trades ?? []);
         setEquityCurve(detailRes.value.equityCurve ?? []);
+        const runMeta = detailRes.value.run;
+        if (runMeta?.error || runMeta?.errorMessage) {
+          setRunErrorMessage(runMeta.error ?? runMeta.errorMessage);
+        }
       }
       if (analyticsRes.status === 'fulfilled') {
         setStrategyBreak(analyticsRes.value.strategyBreakdown ?? []);
@@ -627,11 +632,13 @@ export default function BacktestingPage() {
                 const handleClick = () => {
                   setSelectedId(r.run_id);
                   setError(null);
+                  // Keep persistence / run errors visible even for COMPLETED
+                  // (partial_success is normalized to COMPLETED in the UI).
+                  setRunErrorMessage(r.error ?? null);
                   if (rowStatus === 'COMPLETED') {
                     setRunStatus(null);
                     setRunProgress(0);
                     setRunCurrentStep(null);
-                    setRunErrorMessage(null);
                     setQueuedPolls(0);
                     loadDetail(r.run_id);
                   } else {
@@ -641,7 +648,6 @@ export default function BacktestingPage() {
                     setRunStatus(rowStatus);
                     setRunProgress(Number(r.progress_percent ?? 0));
                     setRunCurrentStep(r.current_step ?? null);
-                    setRunErrorMessage(r.error ?? null);
                     setQueuedPolls(0);
                     setStuckLoadingPolls(0);
                     // Clear any stale detail-panel state from a previous selection.
@@ -760,9 +766,16 @@ export default function BacktestingPage() {
                       Run the NSE EOD ingestion pipeline (POST <code>/api/manipulation/eod-ingest</code>) to populate the candles warehouse, then retry.
                     </div>
                   )}
-                  {runStatus === 'FAILED' && runErrorMessage && (
-                    <div style={{ marginTop: 8, padding: '8px 12px', background: '#FEE2E2', borderRadius: 6, fontSize: 11, color: '#7F1D1D', wordBreak: 'break-word' }}>
-                      <strong>Error:</strong> {runErrorMessage}
+                  {runErrorMessage && (
+                    <div style={{
+                      marginTop: 8, padding: '8px 12px',
+                      background: runStatus === 'FAILED' ? '#FEE2E2' : '#FFFBEB',
+                      border: runStatus === 'FAILED' ? '1px solid #FECACA' : '1px solid #FDE68A',
+                      borderRadius: 6, fontSize: 11,
+                      color: runStatus === 'FAILED' ? '#7F1D1D' : '#92400E',
+                      wordBreak: 'break-word',
+                    }}>
+                      <strong>{runStatus === 'FAILED' ? 'Error:' : 'Persistence warning:'}</strong> {runErrorMessage}
                     </div>
                   )}
                 </div>
@@ -959,7 +972,11 @@ export default function BacktestingPage() {
                           </tr>
                         ))}
                         {calibration.length === 0 && (
-                          <tr><td colSpan={8} style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>No calibration data yet — needs more trades.</td></tr>
+                          <tr><td colSpan={8} style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
+                            {trades.length === 0
+                              ? 'No calibration data — this run has no persisted trades.'
+                              : 'No calibration snapshots for this run. Refresh after deploy, or re-run the backtest.'}
+                          </td></tr>
                         )}
                       </tbody>
                     </table>
@@ -1243,7 +1260,9 @@ export default function BacktestingPage() {
                             </tr>
                           ))}
                           {auditLogs.length === 0 && (
-                            <tr><td colSpan={4} style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>No audit entries.</td></tr>
+                            <tr><td colSpan={4} style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 12 }}>
+                              No audit entries persisted for this run. Audit is written after trades — a partial persistence failure can leave this empty.
+                            </td></tr>
                           )}
                         </tbody>
                       </table>

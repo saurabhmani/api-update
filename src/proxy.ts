@@ -126,6 +126,7 @@ export const config = {
     '/settings/:path*',
     '/data-source/:path*',
     '/trade-journal/:path*',
+    '/trade-setups/:path*',
     '/watchlist/:path*',
     '/signals/:path*',
     '/options/:path*',

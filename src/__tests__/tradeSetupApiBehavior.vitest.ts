@@ -125,7 +125,9 @@ describe('trade setup API behavior', () => {
   });
 
   it('preserves the authenticated active-list response contract', async () => {
-    mocks.dbQuery.mockResolvedValueOnce({ rows: [signal] });
+    mocks.dbQuery
+      .mockResolvedValueOnce({ rows: [], affectedRows: 0 }) // expire stale
+      .mockResolvedValueOnce({ rows: [signal] }); // list active
     const response = await GET(getRequest());
     expect(response.status).toBe(200);
     const body = await response.json();

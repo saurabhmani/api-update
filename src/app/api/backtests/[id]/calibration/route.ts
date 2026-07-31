@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
-import { loadCalibrationSnapshots } from '@/lib/backtesting/repository/metricsPersistence';
+import { resolveCalibrationForRun } from '@/lib/backtesting/repository/resolveCalibration';
 
 export async function GET(
   req: NextRequest,
@@ -18,7 +18,10 @@ export async function GET(
   const ROUTE = `/api/backtests/${params.id}/calibration`;
   try {
     await ensureBacktestTables();
-    const buckets = await loadCalibrationSnapshots(params.id);
+    // Prefer persisted snapshots; recompute + backfill from trades when
+    // snapshots were never written (partial_success / older runs).
+    const resolved = await resolveCalibrationForRun(params.id);
+    const buckets = resolved.buckets;
 
     // Aggregate metadata for the dashboard
     const overconfident = buckets.filter(b => b.calibrationState === 'overconfident' || b.calibrationState === 'slightly_overconfident');
@@ -30,11 +33,16 @@ export async function GET(
       runId: params.id,
       total: buckets.length,
       buckets,
+      source: resolved.source,
       summary: {
         overconfidentCount: overconfident.length,
         underconfidentCount: underconfident.length,
         wellCalibratedCount: wellCalibrated.length,
-        recommendation: overconfident.length > underconfident.length
+        recommendation: buckets.length === 0
+          ? resolved.tradeCount === 0
+            ? 'No trades persisted for this run — cannot calibrate'
+            : 'No calibration data available'
+          : overconfident.length > underconfident.length
           ? 'Reduce confidence on overconfident bands'
           : underconfident.length > 0
           ? 'Some bands are underconfident — could be more aggressive'

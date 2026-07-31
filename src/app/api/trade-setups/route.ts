@@ -26,6 +26,7 @@ import {
   recordTradeSetupDeduplicated,
   recordTradeSetupGeneration,
 } from '@/lib/monitor/apiPerformanceMetrics';
+import { VALIDITY_HOURS } from '@/lib/constants/signals';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -117,7 +118,6 @@ function databaseFailureResponse(error: unknown): NextResponse {
 }
 
 async function ensureTradeSetupStorage(): Promise<void> {
-  // Creates trade_setups / rankings if missing and adds any absent columns.
   await ensureAllSchemas().catch((err) => {
     log.warn('ensureAllSchemas during trade-setups failed', {
       error_name: err instanceof Error ? err.name : 'UnknownError',
@@ -179,9 +179,12 @@ async function resolveAuthorizedInstrument(
              FROM portfolio_positions pp
              JOIN portfolios p ON p.id=pp.portfolio_id
             WHERE p.user_id=? AND UPPER(pp.tradingsymbol)=?
+           UNION
+           SELECT instrument_key, tradingsymbol, exchange
+             FROM instruments WHERE UPPER(tradingsymbol)=?
          ) candidate
         LIMIT 1`,
-      [symbol, userId, symbol, userId, symbol],
+      [symbol, userId, symbol, userId, symbol, symbol],
     ),
     DATABASE_TIMEOUT_MS,
     'database',
@@ -224,6 +227,8 @@ async function loadRecentSetup(
 }
 
 function signalToSetup(signal: Signal): TradeSetup {
+  const hours = VALIDITY_HOURS[signal.timeframe as keyof typeof VALIDITY_HOURS]
+    ?? VALIDITY_HOURS.swing;
   return {
     tradingsymbol: signal.tradingsymbol,
     exchange: signal.exchange,
@@ -238,8 +243,27 @@ function signalToSetup(signal: Signal): TradeSetup {
     reason: signal.reasons.slice(0, 3).map((reason) => reason.text).join('. '),
     scenario_tag: signal.scenario_tag,
     regime: signal.regime,
-    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    expires_at: new Date(Date.now() + hours * 60 * 60 * 1000),
   };
+}
+
+/** Mark prior active setups for this user+symbol as expired before inserting a fresh one. */
+async function expirePriorActiveSetups(
+  userId: string | number,
+  symbol: string,
+  keepIdentity: string,
+): Promise<void> {
+  await withTimeout(
+    db.query(
+      `UPDATE trade_setups
+          SET status='expired', updated_at=NOW()
+        WHERE user_id=? AND UPPER(tradingsymbol)=? AND status='active'
+          AND (generation_identity IS NULL OR generation_identity<>?)`,
+      [userId, symbol.toUpperCase(), keepIdentity],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
 }
 
 async function persistSetup(
@@ -249,6 +273,7 @@ async function persistSetup(
   instrument: InstrumentRef,
   setup: TradeSetup,
 ): Promise<void> {
+  await expirePriorActiveSetups(userId, setup.tradingsymbol, identity);
   await withTimeout(
     db.query(
       `INSERT INTO trade_setups
@@ -323,7 +348,13 @@ async function generateOne(
       generationStatus: 'no_setup',
       note: request.strategyId !== 'auto' && generatedStrategy
         ? `The current setup matched ${generatedStrategy}, not ${request.strategyId}.`
-        : 'No setup currently passes the generation and risk gates.',
+        : !resolvedPrice.price
+          ? `No usable market price for ${request.symbol} — check data sources and retry.`
+          : signal?.direction === 'HOLD'
+            ? `${request.symbol} has no actionable signal right now (HOLD).`
+            : (signal?.rejection_reasons?.length ?? 0) > 0
+              ? `${request.symbol} was rejected by risk gates.`
+              : 'No setup currently passes the generation and risk gates.',
     };
   }
 
@@ -347,6 +378,16 @@ async function handleGet(req: NextRequest) {
     return NextResponse.json({ error: 'limit must be an integer from 1 to 100' }, { status: 400 });
   }
   try {
+    await withTimeout(
+      db.query(
+        `UPDATE trade_setups SET status='expired', updated_at=NOW()
+          WHERE user_id=? AND status='active' AND expires_at IS NOT NULL AND expires_at<=NOW()`,
+        [user.id],
+      ),
+      DATABASE_TIMEOUT_MS,
+      'database',
+    );
+
     const { rows } = await withTimeout(
       db.query<TradeSetup>(
         `SELECT id, tradingsymbol, exchange, direction, entry_price, stop_loss,
@@ -385,7 +426,7 @@ async function handlePost(req: NextRequest) {
     ]);
     if (!instrument) {
       return NextResponse.json({
-        error: 'Symbol is not available in your watchlist, portfolio, or the ranked universe',
+        error: 'Symbol is not available in your watchlist, portfolio, ranked universe, or instrument master',
       }, { status: 403 });
     }
 
