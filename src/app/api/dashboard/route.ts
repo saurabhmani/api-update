@@ -42,6 +42,10 @@ import { withApiHandler }            from '@/lib/apiHandler';
 import { cacheService }              from '@/lib/cache/cacheService';
 import { cacheKeys }                 from '@/lib/cache/cacheKeys';
 import { CACHE_POLICIES }            from '@/lib/cache/cachePolicy';
+import {
+  createRequestStageProfiler,
+  type RequestStageProfiler,
+}                                    from '@/lib/api/requestStageProfiler';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -171,18 +175,23 @@ function classifyTransport(
 
 // ── GET ────────────────────────────────────────────────────────
 
-async function handleDashboardGet(req: NextRequest) {
+async function handleDashboardGet(req: NextRequest, profile: RequestStageProfiler) {
   let userId: number;
   try {
-    const user = await requireSession();
+    const user = await profile.time('authentication', () => requireSession());
     userId = user.id;
   } catch {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
 
   const responseCacheKey = cacheKeys.dashboardSummary(userId);
-  const cached = await cacheService.get<Record<string, unknown>>(responseCacheKey);
+  const bypassCache = req.nextUrl.searchParams.get('noCache') === 'true';
+  const cached = bypassCache ? null : await profile.time(
+    'cache_lookup',
+    () => cacheService.get<Record<string, unknown>>(responseCacheKey),
+  );
   if (cached) {
+    profile.setCache('hit');
     return NextResponse.json(cached, {
       headers: {
         'Cache-Control': 'no-store, no-cache, must-revalidate',
@@ -190,6 +199,7 @@ async function handleDashboardGet(req: NextRequest) {
       },
     });
   }
+  profile.setCache(bypassCache ? 'bypass' : 'miss');
 
   const cookieHeader  = req.headers.get('cookie') ?? '';
   const warnings: string[] = [];
@@ -230,7 +240,7 @@ async function handleDashboardGet(req: NextRequest) {
     manipulationRes,
     optionsRes,
     backtestsListRes,
-  ] = await Promise.allSettled([
+  ] = await profile.time('dashboard_dependencies', () => Promise.allSettled([
     resolveUserFeedMeta(userId),
     internalFetch<any>(req, `/api/signals?action=top&limit=20&request_id=dash-${Date.now()}`, { cookieHeader, timeoutMs: TIMEOUT.signals }).then(toFetchResult),
     internalFetch<any>(req, `/api/signals/engine-health`,                                     { cookieHeader, timeoutMs: TIMEOUT.engineHealth }).then(toFetchResult),
@@ -240,7 +250,7 @@ async function handleDashboardGet(req: NextRequest) {
     internalFetch<any>(req, `/api/manipulation?action=health`,                                { cookieHeader, timeoutMs: TIMEOUT.manipulation }).then(toFetchResult),
     internalFetch<any>(req, `/api/options/intelligence?symbol=NIFTY`,                         { cookieHeader, timeoutMs: TIMEOUT.options }).then(toFetchResult),
     internalFetch<any>(req, `/api/backtests`,                                                 { cookieHeader, timeoutMs: TIMEOUT.backtestsList }).then(toFetchResult),
-  ]);
+  ]));
 
   const feedMeta = feedMetaResult.status === 'fulfilled'
     ? feedMetaResult.value
@@ -276,9 +286,16 @@ async function handleDashboardGet(req: NextRequest) {
   recordSource('manipulation',  manipulation);
   recordSource('options',       options);
   recordSource('backtests',     backtestsList);
+  for (const [name, source] of Object.entries(sourceStatus)) {
+    profile.mark(`${name}_loading`, source.elapsedMs, {
+      providerCalls: name === 'options' ? 1 : 0,
+    });
+  }
 
   // ── Market status ─────────────────────────────────────────────
+  const marketStartedAt = performance.now();
   const market = getMarketStatus();
+  profile.mark('market_status', performance.now() - marketStartedAt);
   const marketStatus = {
     status: (market.isOpen ? 'OPEN' : 'CLOSED') as 'OPEN' | 'CLOSED' | 'UNKNOWN',
     label:  market.label,
@@ -1089,6 +1106,7 @@ async function handleDashboardGet(req: NextRequest) {
     ),
   });
 
+  const responseProcessingStartedAt = performance.now();
   const payload = {
       ok:                true,
       provider:          feedMeta.provider,
@@ -1120,19 +1138,33 @@ async function handleDashboardGet(req: NextRequest) {
       moduleStatusCounts,
       sourceStatus,
   };
+  profile.mark('response_processing', performance.now() - responseProcessingStartedAt);
 
-  await cacheService.set(
-    responseCacheKey,
-    payload,
-    CACHE_POLICIES.dashboardSummary,
-  );
+  if (!bypassCache) {
+    await profile.time('cache_write', () => cacheService.set(
+      responseCacheKey,
+      payload,
+      CACHE_POLICIES.dashboardSummary,
+    ));
+  }
 
-  return NextResponse.json(payload, {
+  const serializationStartedAt = performance.now();
+  const response = NextResponse.json(payload, {
     headers: {
       'Cache-Control': 'no-store, no-cache, must-revalidate',
       'X-Cache': 'MISS',
     },
   });
+  profile.mark('serialization', performance.now() - serializationStartedAt);
+  return response;
 }
 
-export const GET = withApiHandler(handleDashboardGet);
+export const GET = withApiHandler(async (req: NextRequest) => {
+  const requestId = req.headers.get('X-Request-ID') ?? `dashboard-${Date.now().toString(36)}`;
+  const profile = createRequestStageProfiler({
+    route: '/api/dashboard', method: 'GET', requestId,
+  });
+  const response = await handleDashboardGet(req, profile);
+  await profile.finish(response);
+  return response;
+});

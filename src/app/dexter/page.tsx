@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import { Card, Loading } from '@/components/ui';
 import { Brain, RefreshCw, Shield, AlertTriangle, TrendingUp, Target, Zap, ChevronDown, ChevronUp, Wifi } from 'lucide-react';
@@ -103,22 +103,38 @@ export default function DexterPage() {
   const [data, setData] = useState<DexterIntel[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const requestGenerationRef = useRef(0);
+  const loadedIdentityRef = useRef<string | null>(null);
 
   // Auto-refresh when new signals arrive via SSE
   const { lastEvent, connected } = useEventStream();
 
   const load = useCallback(async (spinner = true) => {
+    requestControllerRef.current?.abort();
+    const generation = ++requestGenerationRef.current;
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     if (spinner) setLoading(true);
     try {
       const convParam = filter !== 'all' ? `&conviction=${filter}` : '';
-      const res = await fetch(`/api/signal-engine/dexter?days=7${convParam}`, { cache: 'no-store' });
+      const res = await fetch(`/api/signal-engine/dexter?days=7${convParam}`, {
+        cache: 'no-store', signal: controller.signal,
+      });
       const json = await res.json();
-      setData(json.intelligence ?? []);
-    } catch { setData([]); }
-    if (spinner) setLoading(false);
+      if (generation === requestGenerationRef.current) setData(json.intelligence ?? []);
+    } catch { if (!controller.signal.aborted) setData([]); }
+    if (spinner && generation === requestGenerationRef.current) setLoading(false);
   }, [filter]);
 
-  useEffect(() => { load(); }, [filter, load]);
+  useEffect(() => {
+    const identity = `7d:${filter}`;
+    if (loadedIdentityRef.current === identity) return;
+    loadedIdentityRef.current = identity;
+    void load();
+  }, [filter, load]);
+
+  useEffect(() => () => requestControllerRef.current?.abort(), []);
 
   useEffect(() => {
     if (lastEvent?.type === 'dexter:update' || lastEvent?.type === 'signal:new') {
@@ -126,14 +142,14 @@ export default function DexterPage() {
     }
   }, [lastEvent, load]);
 
-  // Auto-refresh every 30 seconds as a polling fallback
+  // Poll only while the cross-process SSE transport is unavailable.
   // (SSE events may not cross process boundaries on the server)
   useEffect(() => {
     const id = setInterval(() => {
-      if (!document.hidden) load(false);
-    }, 10_000);
+      if (!document.hidden && !connected) load(false);
+    }, 30_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [connected, load]);
 
   const counts = { high: 0, moderate: 0, low: 0, avoid: 0 };
   data.forEach(d => { if (d.conviction in counts) counts[d.conviction as keyof typeof counts]++; });

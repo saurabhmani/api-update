@@ -27,6 +27,8 @@ export const CACHE_TTL = {
   NEWS_SYMBOL_STALE: 7 * 24 * 60 * 60,
   TRADE_SETUP: 30,
   DASHBOARD_SUMMARY: 30,
+  DEXTER_INTELLIGENCE: 30,
+  DEXTER_EMPTY: 10,
   STRATEGY_SUMMARY: 60,
   HEALTH_SUMMARY: 15,
   PORTFOLIO_SUMMARY: 15,
@@ -77,6 +79,11 @@ export const CACHE_POLICIES = {
     ttlSeconds: CACHE_TTL.DASHBOARD_SUMMARY,
     staleWhileRevalidateSeconds: 30,
   },
+  dexterIntelligence: {
+    ttlSeconds: CACHE_TTL.DEXTER_INTELLIGENCE,
+    staleWhileRevalidateSeconds: 30,
+  },
+  dexterEmpty: { ttlSeconds: CACHE_TTL.DEXTER_EMPTY },
   strategySummary: {
     ttlSeconds: CACHE_TTL.STRATEGY_SUMMARY,
     staleWhileRevalidateSeconds: 60,

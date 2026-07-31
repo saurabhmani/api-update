@@ -576,8 +576,13 @@ export default function DashboardPage() {
   const [error,   setError]   = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const requestInFlightRef = useRef(false);
+  const initialLoadStartedRef = useRef(false);
+  const lastLoadedAtRef = useRef(0);
 
   const load = useCallback(async () => {
+    if (requestInFlightRef.current) return;
+    requestInFlightRef.current = true;
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
@@ -597,15 +602,20 @@ export default function DashboardPage() {
         return;
       }
       setData(json as DashboardPayload);
+      lastLoadedAtRef.current = Date.now();
     } catch (e) {
       if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      requestInFlightRef.current = false;
     }
   }, []);
 
   useEffect(() => () => requestControllerRef.current?.abort(), []);
 
   useEffect(() => {
+    if (initialLoadStartedRef.current) return;
+    initialLoadStartedRef.current = true;
     (async () => {
       setLoading(true);
       await load();
@@ -633,7 +643,10 @@ export default function DashboardPage() {
   // Immediate refresh when the tab becomes visible again (e.g. return from OAuth).
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void load();
+      if (
+        document.visibilityState === 'visible'
+        && Date.now() - lastLoadedAtRef.current >= 30_000
+      ) void load();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);

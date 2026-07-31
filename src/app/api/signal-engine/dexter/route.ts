@@ -17,12 +17,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
-import { ensureSignalEngineSchemas } from '@/lib/signal-engine/repository/ensureSchemas';
 import { buildDexterNarrative, type DexterSignalIntelligence } from '@/lib/signal-engine/dexter/buildDexterNarrative';
 import { fetchLiveNewsContext, computeEventRisk } from '@/lib/signal-engine/context/macroContext';
 import { computeContextualModifiers } from '@/lib/signal-engine/context/contextualModifiers';
 import { loadLiveFeedbackState } from '@/lib/signal-engine/repository/savePhase4Artifacts';
 import { computeFreshness } from '@/lib/signal-engine/freshness/signalDecay';
+import { withApiHandler } from '@/lib/apiHandler';
+import { cacheService } from '@/lib/cache/cacheService';
+import { cacheKeys } from '@/lib/cache/cacheKeys';
+import { CACHE_POLICIES } from '@/lib/cache/cachePolicy';
+import {
+  createRequestStageProfiler,
+  type RequestStageProfiler,
+} from '@/lib/api/requestStageProfiler';
 import type {
   Phase4SignalEnvelope,
   MacroContext,
@@ -37,26 +44,47 @@ import type {
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export async function GET(req: NextRequest) {
+async function handleDexterGet(req: NextRequest, profile: RequestStageProfiler) {
+  let userId: number;
   try {
-    await requireSession();
+    const user = await profile.time('authentication', () => requireSession());
+    userId = user.id;
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
-    await ensureSignalEngineSchemas();
+    const validationStartedAt = performance.now();
+    const rawDays = Number(req.nextUrl.searchParams.get('days') || '7');
+    const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(30, Math.floor(rawDays))) : 7;
+    const rawSymbol = req.nextUrl.searchParams.get('symbol')?.trim().toUpperCase() ?? null;
+    const symbolFilter = rawSymbol && /^[A-Z0-9&.-]{1,30}$/.test(rawSymbol) ? rawSymbol : null;
+    const rawConviction = req.nextUrl.searchParams.get('conviction');
+    const convictionFilter = rawConviction && ['high', 'moderate', 'low', 'avoid'].includes(rawConviction)
+      ? rawConviction
+      : null;
+    profile.mark('request_validation', performance.now() - validationStartedAt);
 
-    const days = Number(req.nextUrl.searchParams.get('days') || '7');
-    const symbolFilter = req.nextUrl.searchParams.get('symbol');
-    const convictionFilter = req.nextUrl.searchParams.get('conviction');
+    const responseCacheKey = cacheKeys.dexterIntelligence(
+      userId, days, symbolFilter, convictionFilter,
+    );
+    const bypassCache = req.nextUrl.searchParams.get('noCache') === 'true';
+    const cached = bypassCache ? null : await profile.time(
+      'cache_lookup',
+      () => cacheService.get<Record<string, unknown>>(responseCacheKey),
+    );
+    if (cached) {
+      profile.setCache('hit');
+      return NextResponse.json(cached, { headers: { 'Cache-Control': 'private, no-store' } });
+    }
+    profile.setCache(bypassCache ? 'bypass' : 'miss');
 
     // ── Load signals ────────────────────────────────────────────
     const symbolClause = symbolFilter ? 'AND s.symbol = ?' : '';
     const params: any[] = [days];
     if (symbolFilter) params.push(symbolFilter);
 
-    const { rows: signalRows } = await db.query(
+    const { rows: signalRows } = await profile.time('signals_loading', () => db.query(
       `SELECT s.id, s.symbol, s.signal_type, s.direction,
               s.confidence_score, s.confidence_band,
               s.risk_score, s.risk_band,
@@ -69,23 +97,29 @@ export async function GET(req: NextRequest) {
         ORDER BY s.generated_at DESC
         LIMIT 100`,
       params,
-    );
+    ), (result) => ({ rows: result.rows.length }));
 
     const signals = signalRows as any[];
     if (signals.length === 0) {
-      return NextResponse.json({
+      const emptyPayload = {
         intelligence: [],
         meta: { lookbackDays: days, signalsAnalyzed: 0, generatedAt: new Date().toISOString() },
-      });
+      };
+      if (!bypassCache) {
+        await profile.time('cache_write', () => cacheService.set(
+          responseCacheKey, emptyPayload, CACHE_POLICIES.dexterEmpty,
+        ));
+      }
+      return NextResponse.json(emptyPayload);
     }
 
     // ── Batch-fetch explanations for AI guidance/risk text ──────
     const ids = signals.map((r: any) => r.id);
     const placeholders = ids.map(() => '?').join(',');
-    const { rows: explRows } = await db.query(
+    const { rows: explRows } = await profile.time('AI_context_loading', () => db.query(
       `SELECT signal_id, explanation_json FROM q365_signal_explanations WHERE signal_id IN (${placeholders})`,
       ids,
-    );
+    ), (result) => ({ rows: result.rows.length }));
     const explBySignal = new Map<number, any>();
     for (const r of explRows as any[]) explBySignal.set(Number(r.signal_id), safeJsonParse(r.explanation_json, {}));
 
@@ -93,10 +127,10 @@ export async function GET(req: NextRequest) {
     let reasonsBySignal = new Map<number, string[]>();
     let warningsBySignal = new Map<number, string[]>();
     try {
-      const { rows: reasonRows } = await db.query(
+      const { rows: reasonRows } = await profile.time('AI_context_loading', () => db.query(
         `SELECT signal_id, reason_type, message FROM q365_signal_reasons WHERE signal_id IN (${placeholders}) ORDER BY id`,
         ids,
-      );
+      ), (result) => ({ rows: result.rows.length }));
       for (const r of reasonRows as any[]) {
         const sid = Number(r.signal_id);
         if (r.reason_type === 'warning') {
@@ -128,7 +162,38 @@ export async function GET(req: NextRequest) {
     const macro = buildMacroFromRegime(dominantRegime);
     macro.sectorLeadership = leadingSectors;
 
+    // Deduplicate context reads before narrative construction. News is
+    // loaded once per symbol and feedback once per strategy/regime pair;
+    // the loop below performs no provider or database awaits.
+    const newsBySymbol = new Map<string, Promise<NewsContext>>();
+    const feedbackByIdentity = new Map<string, Promise<FeedbackState>>();
+    for (const sig of signals) {
+      if (!newsBySymbol.has(sig.symbol)) {
+        newsBySymbol.set(sig.symbol, fetchLiveNewsContext(sig.symbol).catch(() => ({
+          bias: 'neutral', strength: 0, freshnessHours: 999,
+          sourceConfidence: 0, eventTags: [], headline: null,
+        })));
+      }
+      const identity = `${sig.signal_type ?? 'unknown'}|${sig.market_regime ?? 'NEUTRAL'}`;
+      if (!feedbackByIdentity.has(identity)) {
+        feedbackByIdentity.set(identity, loadLiveFeedbackState(
+          sig.signal_type ?? 'unknown', sig.market_regime ?? 'NEUTRAL',
+        ).catch(() => ({
+          strategyRecentWinRate: null,
+          strategyEnvironmentFit: 'insufficient_data',
+          confidenceCalibrationState: 'insufficient_data',
+        })));
+      }
+    }
+    await profile.time('AI_context_loading', () => Promise.all([
+      ...newsBySymbol.values(), ...feedbackByIdentity.values(),
+    ]), () => ({
+      calls: newsBySymbol.size + feedbackByIdentity.size,
+      providerCalls: newsBySymbol.size,
+    }));
+
     // ── Build Dexter intelligence per signal (LIVE computation) ──
+    const processingStartedAt = performance.now();
     const intelligence: DexterSignalIntelligence[] = [];
 
     for (const sig of signals) {
@@ -137,12 +202,7 @@ export async function GET(req: NextRequest) {
       const strategy = sig.signal_type ?? 'unknown';
 
       // 1. Fetch LIVE news context for this symbol
-      let news: NewsContext;
-      try {
-        news = await fetchLiveNewsContext(sig.symbol);
-      } catch {
-        news = { bias: 'neutral', strength: 0, freshnessHours: 999, sourceConfidence: 0, eventTags: [], headline: null };
-      }
+      const news = await newsBySymbol.get(sig.symbol)!;
 
       // 2. Compute event risk from news tags
       const eventTags: EventTag[] = (news.eventTags?.length > 0 ? news.eventTags : ['none']) as EventTag[];
@@ -158,12 +218,9 @@ export async function GET(req: NextRequest) {
       }
 
       // 4. Load LIVE feedback state from learning loop
-      let feedback: FeedbackState;
-      try {
-        feedback = await loadLiveFeedbackState(strategy, sig.market_regime ?? 'NEUTRAL');
-      } catch {
-        feedback = { strategyRecentWinRate: null, strategyEnvironmentFit: 'insufficient_data', confidenceCalibrationState: 'insufficient_data' };
-      }
+      const feedback = await feedbackByIdentity.get(
+        `${strategy}|${sig.market_regime ?? 'NEUTRAL'}`,
+      )!;
 
       // 5. Compute contextual modifiers (the REAL engine)
       const sectorInLeadership = macro.sectorLeadership.length > 0;
@@ -250,8 +307,13 @@ export async function GET(req: NextRequest) {
       if (convictionFilter && dexter.conviction !== convictionFilter) continue;
       intelligence.push(dexter);
     }
+    profile.mark('Dexter_response_processing', performance.now() - processingStartedAt, {
+      calls: signals.length,
+      rows: intelligence.length,
+      providerCalls: 0,
+    });
 
-    return NextResponse.json({
+    const payload = {
       intelligence,
       meta: {
         lookbackDays: days,
@@ -260,7 +322,16 @@ export async function GET(req: NextRequest) {
         regimeDetected: dominantRegime,
         marketTone: macro.marketTone,
       },
-    });
+    };
+    if (!bypassCache) {
+      await profile.time('cache_write', () => cacheService.set(
+        responseCacheKey, payload, CACHE_POLICIES.dexterIntelligence,
+      ));
+    }
+    const serializationStartedAt = performance.now();
+    const response = NextResponse.json(payload);
+    profile.mark('serialization', performance.now() - serializationStartedAt);
+    return response;
   } catch (err) {
     console.error('[dexter]', err);
     return NextResponse.json(
@@ -269,6 +340,16 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
+export const GET = withApiHandler(async (req: NextRequest) => {
+  const requestId = req.headers.get('X-Request-ID') ?? `dexter-${Date.now().toString(36)}`;
+  const profile = createRequestStageProfiler({
+    route: '/api/signal-engine/dexter', method: 'GET', requestId,
+  });
+  const response = await handleDexterGet(req, profile);
+  await profile.finish(response);
+  return response;
+});
 
 // ── Helpers ──────────────────────────────────────────────────
 

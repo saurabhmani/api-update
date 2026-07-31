@@ -139,6 +139,7 @@
     "benchmark:portfolio": "tsx scripts/benchmarkPortfolio.ts",
     "benchmark:signals-api": "node scripts/benchmarkSignalsApi.mjs",
     "profile:signals-db": "node scripts/profileSignalsDatabase.mjs",
+    "benchmark:dashboard-dexter": "node scripts/benchmarkDashboardDexter.mjs",
     "validate:deployment": "tsx scripts/validateDeployment.ts",
     "release:manifest": "tsx scripts/generateReleaseManifest.ts",
     "backup:operational": "tsx scripts/backupOperationalData.ts",

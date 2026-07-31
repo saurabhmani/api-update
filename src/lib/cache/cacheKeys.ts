@@ -85,6 +85,19 @@ export const cacheKeys = {
     cacheKey('portfolio', 'summary', `user-${opaqueScope(userId)}`),
   dashboardSummary: (userId: string | number) =>
     cacheKey('dashboard', 'summary', `user-${opaqueScope(userId)}`),
+  dexterIntelligence: (
+    userId: string | number,
+    days: number,
+    symbol: string | null,
+    conviction: string | null,
+  ) => cacheKey(
+    'dexter',
+    'intelligence',
+    `user-${opaqueScope(userId)}`,
+    `${days}d`,
+    symbol?.trim().toUpperCase() || 'ALL',
+    conviction || 'ALL',
+  ),
   tickerStrip: () => cacheKey('market', 'ticker-strip', 'NSE'),
   rankingsList: (limit: number, page: number, exchange?: string) =>
     cacheKey('rankings', 'list', exchange || 'ALL', limit, page),

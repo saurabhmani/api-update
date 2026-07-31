@@ -18,7 +18,7 @@ describe('high-impact API optimization contracts', () => {
     expect(source).toContain('Promise.allSettled([');
     expect(source).toContain('resolveUserFeedMeta(userId)');
     expect(source).toContain("'X-Cache': 'HIT'");
-    expect(source).toContain('withApiHandler(handleDashboardGet)');
+    expect(source).toContain('withApiHandler(async (req: NextRequest)');
   });
 
   it('validates rankings pagination and does not expose caught errors', () => {
