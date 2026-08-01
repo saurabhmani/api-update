@@ -14,6 +14,8 @@ describe('trade setup API optimization contracts', () => {
     expect(route).toContain('resolveAuthorizedInstrument');
     expect(route).toContain('w.user_id=?');
     expect(route).toContain('p.user_id=?');
+    // Prevent ER_CANT_AGGREGATE_NCOLLATIONS across mixed table collations.
+    expect(route).toContain('COLLATE utf8mb4_unicode_ci');
   });
 
   it('uses deterministic identity dimensions and idempotent persistence', () => {

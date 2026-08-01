@@ -163,24 +163,35 @@ async function resolveAuthorizedInstrument(
   userId: string | number,
   symbol: string,
 ): Promise<InstrumentRef | null> {
+  // Explicit COLLATE: watchlist/portfolio tables may still be
+  // utf8mb4_0900_ai_ci while rankings/instruments are unicode_ci.
+  // Without this, MySQL raises ER_CANT_AGGREGATE_NCOLLATIONS on UNION.
   const { rows } = await withTimeout(
     db.query<InstrumentRef>(
       `SELECT candidate.instrument_key, candidate.tradingsymbol, candidate.exchange
          FROM (
-           SELECT instrument_key, tradingsymbol, exchange
+           SELECT instrument_key COLLATE utf8mb4_unicode_ci AS instrument_key,
+                  tradingsymbol COLLATE utf8mb4_unicode_ci AS tradingsymbol,
+                  exchange COLLATE utf8mb4_unicode_ci AS exchange
              FROM rankings WHERE UPPER(tradingsymbol)=?
            UNION
-           SELECT instrument_key, tradingsymbol, exchange
+           SELECT wi.instrument_key COLLATE utf8mb4_unicode_ci,
+                  wi.tradingsymbol COLLATE utf8mb4_unicode_ci,
+                  wi.exchange COLLATE utf8mb4_unicode_ci
              FROM watchlist_items wi
              JOIN watchlists w ON w.id=wi.watchlist_id
             WHERE w.user_id=? AND UPPER(wi.tradingsymbol)=?
            UNION
-           SELECT pp.instrument_key, pp.tradingsymbol, pp.exchange
+           SELECT pp.instrument_key COLLATE utf8mb4_unicode_ci,
+                  pp.tradingsymbol COLLATE utf8mb4_unicode_ci,
+                  pp.exchange COLLATE utf8mb4_unicode_ci
              FROM portfolio_positions pp
              JOIN portfolios p ON p.id=pp.portfolio_id
             WHERE p.user_id=? AND UPPER(pp.tradingsymbol)=?
            UNION
-           SELECT instrument_key, tradingsymbol, exchange
+           SELECT instrument_key COLLATE utf8mb4_unicode_ci,
+                  tradingsymbol COLLATE utf8mb4_unicode_ci,
+                  exchange COLLATE utf8mb4_unicode_ci
              FROM instruments WHERE UPPER(tradingsymbol)=?
          ) candidate
         LIMIT 1`,
@@ -565,9 +576,14 @@ async function handlePost(req: NextRequest) {
     if (isSchemaError(error)) {
       return databaseFailureResponse(error);
     }
-    log.error('Trade setup generation failed', new Error('Trade setup generation failed'), {
-      error_name: error instanceof Error ? error.name : 'UnknownError',
-    });
+    log.error(
+      'Trade setup generation failed',
+      error instanceof Error ? error : new Error(String(error)),
+      {
+        error_name: error instanceof Error ? error.name : 'UnknownError',
+        error_code: (error as { code?: string })?.code,
+      },
+    );
     return NextResponse.json({
       error: 'Trade setup generation failed safely. Please retry.',
       code: 'TRADE_SETUP_GENERATION_FAILED',

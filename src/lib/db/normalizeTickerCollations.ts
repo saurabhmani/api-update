@@ -1,10 +1,10 @@
 /**
- * Align rankings + instruments to utf8mb4_unicode_ci so ticker/rankings
- * JOINs against q365_signals.instrument_key succeed.
+ * Align rankings / instruments / watchlist / portfolio string columns to
+ * utf8mb4_unicode_ci so ticker JOINs and trade-setup UNIONs succeed.
  *
- * Root cause (errno 1267 ER_CANT_AGGREGATE_2COLLATIONS):
- *   rankings / instruments inherited MySQL 8+ server default
- *   utf8mb4_0900_ai_ci, while q365_* tables are utf8mb4_unicode_ci.
+ * Root cause (errno 1267 / 1271 ER_CANT_AGGREGATE_*COLLATIONS):
+ *   some tables inherited MySQL 8+ server default utf8mb4_0900_ai_ci,
+ *   while q365_* / rankings / instruments use utf8mb4_unicode_ci.
  *
  * Idempotent — safe on every ensureAllSchemas() boot.
  */
@@ -13,8 +13,13 @@ import { db } from '@/lib/db';
 
 export const TICKER_CANONICAL_COLLATION = 'utf8mb4_unicode_ci';
 
-/** Tables compared on textual identity keys in fetchFromMySQL / ticker. */
-export const TICKER_COLLATION_TABLES = ['rankings', 'instruments'] as const;
+/** Tables compared on textual identity keys in fetchFromMySQL / ticker / trade-setups. */
+export const TICKER_COLLATION_TABLES = [
+  'rankings',
+  'instruments',
+  'watchlist_items',
+  'portfolio_positions',
+] as const;
 
 export type TickerCollationTable = (typeof TICKER_COLLATION_TABLES)[number];
 
