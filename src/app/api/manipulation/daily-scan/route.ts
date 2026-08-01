@@ -11,10 +11,9 @@
 //
 //  Behaviour:
 //    • Auth-gated (requireSession) — runs a multi-minute scan.
+//    • Default = async 202 (avoids nginx 60s HTML 504). Pass
+//      ?sync=true for cron that needs the full DailyScanResult.
 //    • Always returns JSON, even on unexpected error.
-//    • Reports per-step success: ingestion success, candles advanced,
-//      scanner success — so the UI can show "ingested but scan
-//      failed" vs "scan ran on stale data" precisely.
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,6 +22,9 @@ import { runDailyManipulationScan } from '@/lib/manipulation-engine/pipeline/run
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+export const maxDuration = 300;
+
+let inFlight: Promise<unknown> | null = null;
 
 export async function POST(req: NextRequest) {
   try {
@@ -58,16 +60,53 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  try {
-    const result = await runDailyManipulationScan({
-      date:           body.date,
-      timeoutMs:      body.timeoutMs,
-      limit:          body.limit,
-      skipIngestion:  body.skipIngestion,
-      skipScan:       body.skipScan,
-      skipPenalties:  body.skipPenalties,
+  const wantsSync = req.nextUrl.searchParams.get('sync') === 'true';
+
+  if (inFlight) {
+    return NextResponse.json({
+      ok: true,
+      generationStatus: 'in_progress',
+      reason: 'A daily manipulation scan is already running.',
+    }, { status: 202, headers: { 'Retry-After': '5' } });
+  }
+
+  const work = runDailyManipulationScan({
+    date:           body.date,
+    timeoutMs:      body.timeoutMs,
+    limit:          body.limit,
+    skipIngestion:  body.skipIngestion,
+    skipScan:       body.skipScan,
+    skipPenalties:  body.skipPenalties,
+  });
+  const tracked = work.finally(() => {
+    if (inFlight === tracked) inFlight = null;
+  });
+  inFlight = tracked;
+
+  if (!wantsSync) {
+    void tracked.catch((err) => {
+      console.error('[API manipulation/daily-scan] background failed:', err);
     });
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ok: true,
+      generationStatus: 'in_progress',
+      reason: 'Daily manipulation pipeline started in the background. Refresh shortly for results.',
+      scan: {
+        skipped: false,
+        scanned: 0,
+        snapshotsPersisted: 0,
+        skippedInsufficient: 0,
+        failed: 0,
+        bandCounts: { low: 0, watch: 0, elevated: 0, high: 0, severe: 0 },
+        penaltiesWritten: 0,
+        durationMs: 0,
+      },
+    }, { status: 202, headers: { 'Retry-After': '5' } });
+  }
+
+  try {
+    const result = await work;
+    return NextResponse.json({ ...result, generationStatus: 'complete' });
   } catch (err) {
     return NextResponse.json(
       {

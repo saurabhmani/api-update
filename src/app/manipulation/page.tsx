@@ -272,7 +272,7 @@ export default function ManipulationPage() {
   const [eodRunning,        setEodRunning]        = useState(false);
   const [dailyScanRunning,  setDailyScanRunning]  = useState(false);
   const [pipelineResult,    setPipelineResult]    = useState<{
-    kind:    'eod' | 'daily-scan';
+    kind:    'eod' | 'daily-scan' | 'full-scan';
     ok:      boolean;
     message: string;
     details: Array<{ label: string; value: string }>;
@@ -408,6 +408,7 @@ export default function ManipulationPage() {
   const runScan = async () => {
     setScanning(true);
     setError(null);
+    setPipelineResult(null);
     try {
       const res = await fetch('/api/manipulation', {
         method: 'POST',
@@ -415,10 +416,40 @@ export default function ManipulationPage() {
         body: JSON.stringify({}),
       });
       const data = await readJsonOrThrow(res, '/api/manipulation');
+      if (res.status === 202 || data.generationStatus === 'in_progress') {
+        setPipelineResult({
+          kind:    'full-scan',
+          ok:      true,
+          message: data.note
+            ?? 'Full manipulation scan started in the background. Results appear as symbols complete.',
+          details: [
+            { label: 'Status', value: 'in_progress' },
+            ...(data.symbolCount != null
+              ? [{ label: 'Symbol cap', value: String(data.symbolCount) }]
+              : []),
+          ],
+        });
+        // Poll overview while the background job writes snapshots.
+        for (let i = 0; i < 24; i++) {
+          await new Promise((r) => setTimeout(r, 5_000));
+          await loadSummary();
+        }
+        return;
+      }
       if (!res.ok) {
         setError(data.error ?? `Scan failed (HTTP ${res.status})`);
         return;
       }
+      setPipelineResult({
+        kind:    'full-scan',
+        ok:      true,
+        message: `Scan complete. ${data.scannedSymbols ?? 0} symbols scanned, ${data.alertsGenerated ?? 0} events.`,
+        details: [
+          { label: 'Scanned', value: String(data.scannedSymbols ?? 0) },
+          { label: 'Events',  value: String(data.alertsGenerated ?? 0) },
+          { label: 'Duration', value: `${Math.round((data.scanDuration ?? 0) / 1000)}s` },
+        ],
+      });
       await loadSummary();
     } catch (err) {
       setError(formatErr(err));
@@ -489,6 +520,21 @@ export default function ManipulationPage() {
         body: JSON.stringify({}),
       });
       const data = await readJsonOrThrow(res, '/api/manipulation/daily-scan');
+      if (res.status === 202 || data.generationStatus === 'in_progress') {
+        setPipelineResult({
+          kind:    'daily-scan',
+          ok:      true,
+          message: String(data.reason
+            ?? 'Daily manipulation pipeline started in the background. Refresh shortly for results.'),
+          details: [{ label: 'Status', value: 'in_progress' }],
+        });
+        for (let i = 0; i < 24; i++) {
+          await new Promise((r) => setTimeout(r, 5_000));
+          await loadSummary();
+          if (tab === 'health') await loadHealth();
+        }
+        return;
+      }
       if (!res.ok) {
         setError(data.error ?? `Daily scan failed (HTTP ${res.status})`);
         setPipelineResult({
@@ -613,7 +659,11 @@ export default function ManipulationPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
               <div style={{ fontWeight: 800 }}>
                 {pipelineResult.ok ? <CheckCircle size={13} style={{ verticalAlign: -2, marginRight: 6 }} /> : <AlertTriangle size={13} style={{ verticalAlign: -2, marginRight: 6 }} />}
-                {pipelineResult.kind === 'eod' ? 'EOD ingestion' : 'Daily manipulation scan'} — {pipelineResult.ok ? 'OK' : 'attention'}
+                {pipelineResult.kind === 'eod'
+                  ? 'EOD ingestion'
+                  : pipelineResult.kind === 'full-scan'
+                    ? 'Full manipulation scan'
+                    : 'Daily manipulation scan'} — {pipelineResult.ok ? 'OK' : 'attention'}
               </div>
               <button
                 onClick={() => setPipelineResult(null)}

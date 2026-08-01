@@ -52,6 +52,13 @@ const MAX_SCAN_SYMBOLS = 500;
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+// Background scan can run for minutes; Next (and any host) may kill
+// after this. Nginx still has a ~60s read timeout — so POST defaults
+// to async 202 and never waits for the full scan behind the proxy.
+export const maxDuration = 300;
+
+/** In-process coalescing so a double-click cannot start two full scans. */
+let inFlightPostScan: Promise<unknown> | null = null;
 
 // ── Shape mappers ─────────────────────────────────────────────
 //
@@ -310,6 +317,79 @@ function canAffectSignalEngine(band: RiskBand, freshness: FreshnessStatus): bool
 
 // ── POST: batch scan ──────────────────────────────────────────
 
+async function executePostScan(opts: {
+  symbols: string[];
+  lookbackDays: number;
+  minScore: number;
+}): Promise<{
+  scannedSymbols: number;
+  alertsGenerated: number;
+  alerts: LegacyAlert[];
+  scanDuration: number;
+  scanDate: string;
+  engine: { path: string; module: string };
+}> {
+  const { symbols, lookbackDays, minScore } = opts;
+  const startMs = Date.now();
+  let scannedSymbols = 0;
+  let eventsPersisted = 0;
+  const scanDate = new Date().toISOString();
+
+  // Iterate symbols sequentially. Each iteration is small (DB read
+  // + ~13 pure detector calls + DB write), so concurrency gains are
+  // modest and risk data-races on the UNIQUE (symbol, snapshot_date)
+  // key. Sequential is fine for the nightly-scan use case.
+  for (const symbol of symbols) {
+    try {
+      const bars = await loadDailyBars(symbol, { lookback: lookbackDays });
+      if (bars.length < 22) continue;
+
+      const snapshot = scanSymbol(symbol, bars, { symbol });
+      if (!snapshot) continue;
+
+      scannedSymbols++;
+      if (snapshot.manipulationScore < minScore) continue;
+
+      await saveSnapshot(snapshot);
+      // Count only genuinely-triggered events so the response
+      // number matches what appears in the alerts list.
+      eventsPersisted += snapshot.triggeredEvents.filter((e) => e.triggered).length;
+    } catch (err) {
+      console.error(`[ManipulationScan] ${symbol}:`, err);
+    }
+  }
+
+  const scanDuration = Date.now() - startMs;
+  console.log(
+    `[ManipulationScan] ${scannedSymbols}/${symbols.length} symbols, ${eventsPersisted} events in ${scanDuration}ms`,
+  );
+
+  // Load the top events from this scan window for the response
+  // envelope. Uses the same shape as the old scanForManipulation
+  // so the UI's POST handler keeps working.
+  const { rows: topRows } = await db.query<any>(
+    `SELECT id, symbol, event_type, severity, score, status, event_date, evidence_json
+       FROM q365_manipulation_events
+      WHERE created_at >= FROM_UNIXTIME(?)
+      ORDER BY score DESC
+      LIMIT 50`,
+    [Math.floor(startMs / 1000)],
+  );
+
+  return {
+    scannedSymbols,
+    alertsGenerated: eventsPersisted,
+    alerts: (topRows ?? []).map(eventRowToLegacyAlert),
+    scanDuration,
+    scanDate,
+    engine: {
+      path: 'manipulation-engine',
+      // Presence of this field is the unit test for "split-brain removed"
+      module: 'src/lib/manipulation-engine',
+    },
+  };
+}
+
 export async function POST(req: NextRequest) {
   // Auth gate. POST runs a sequential scan over `symbols` (default: full
   // Phase-1 universe, ~3000 symbols, multi-minute CPU). Without this the
@@ -331,64 +411,54 @@ export async function POST(req: NextRequest) {
     const lookbackDays = Number(body.lookbackDays ?? 60);
     const minScore = Number(body.minScore ?? 40);
 
-    const startMs = Date.now();
-    let scannedSymbols = 0;
-    let eventsPersisted = 0;
-    const scanDate = new Date().toISOString();
+    // Default = async: return 202 immediately so nginx's ~60s
+    // proxy_read_timeout never surfaces as an HTML 504. Pass
+    // ?sync=true for cron/admin tools that need the full envelope.
+    const wantsSync = req.nextUrl.searchParams.get('sync') === 'true';
 
-    // Iterate symbols sequentially. Each iteration is small (DB read
-    // + ~13 pure detector calls + DB write), so concurrency gains are
-    // modest and risk data-races on the UNIQUE (symbol, snapshot_date)
-    // key. Sequential is fine for the nightly-scan use case.
-    for (const symbol of symbols) {
-      try {
-        const bars = await loadDailyBars(symbol, { lookback: lookbackDays });
-        if (bars.length < 22) continue;
-
-        const snapshot = scanSymbol(symbol, bars, { symbol });
-        if (!snapshot) continue;
-
-        scannedSymbols++;
-        if (snapshot.manipulationScore < minScore) continue;
-
-        await saveSnapshot(snapshot);
-        // Count only genuinely-triggered events so the response
-        // number matches what appears in the alerts list.
-        eventsPersisted += snapshot.triggeredEvents.filter((e) => e.triggered).length;
-      } catch (err) {
-        console.error(`[ManipulationScan] ${symbol}:`, err);
-      }
+    if (inFlightPostScan) {
+      return NextResponse.json({
+        ok: true,
+        generationStatus: 'in_progress',
+        scannedSymbols: 0,
+        alertsGenerated: 0,
+        alerts: [],
+        note: 'An identical manipulation scan is already running.',
+        engine: {
+          path: 'manipulation-engine',
+          module: 'src/lib/manipulation-engine',
+        },
+      }, { status: 202, headers: { 'Retry-After': '5' } });
     }
 
-    const scanDuration = Date.now() - startMs;
-    console.log(
-      `[ManipulationScan] ${scannedSymbols}/${symbols.length} symbols, ${eventsPersisted} events in ${scanDuration}ms`,
-    );
-
-    // Load the top events from this scan window for the response
-    // envelope. Uses the same shape as the old scanForManipulation
-    // so the UI's POST handler keeps working.
-    const { rows: topRows } = await db.query<any>(
-      `SELECT id, symbol, event_type, severity, score, status, event_date, evidence_json
-         FROM q365_manipulation_events
-        WHERE created_at >= FROM_UNIXTIME(?)
-        ORDER BY score DESC
-        LIMIT 50`,
-      [Math.floor(startMs / 1000)],
-    );
-
-    return NextResponse.json({
-      scannedSymbols,
-      alertsGenerated: eventsPersisted,
-      alerts: (topRows ?? []).map(eventRowToLegacyAlert),
-      scanDuration,
-      scanDate,
-      engine: {
-        path: 'manipulation-engine',
-        // Presence of this field is the unit test for "split-brain removed"
-        module: 'src/lib/manipulation-engine',
-      },
+    const work = executePostScan({ symbols, lookbackDays, minScore });
+    const tracked = work.finally(() => {
+      if (inFlightPostScan === tracked) inFlightPostScan = null;
     });
+    inFlightPostScan = tracked;
+
+    if (!wantsSync) {
+      // Detach: do not await. The Node process keeps running the scan.
+      void tracked.catch((err) => {
+        console.error('[API manipulation] background scan failed:', err);
+      });
+      return NextResponse.json({
+        ok: true,
+        generationStatus: 'in_progress',
+        scannedSymbols: 0,
+        alertsGenerated: 0,
+        alerts: [],
+        symbolCount: symbols.length,
+        note: 'Manipulation scan started in the background. Refresh shortly for results.',
+        engine: {
+          path: 'manipulation-engine',
+          module: 'src/lib/manipulation-engine',
+        },
+      }, { status: 202, headers: { 'Retry-After': '5' } });
+    }
+
+    const result = await work;
+    return NextResponse.json({ ok: true, generationStatus: 'complete', ...result });
   } catch (err) {
     console.error('[API manipulation] Scan error:', err);
     return NextResponse.json(
