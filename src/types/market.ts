@@ -12,10 +12,11 @@
 //   Yahoo      = fallback ONLY // @deprecated marker
 //   PostgreSQL = ONLY runtime DB (last-resort stale tier)
 export type ProviderSource =
-  | 'cache'    // in-memory snapshot within TTL
-  | 'yahoo'    // Yahoo Finance fallback (15m delayed) // @deprecated marker
-  | 'db'       // PostgreSQL last-known — flagged stale
-  | 'kite';    // PRIMARY live / historical
+  | 'cache'      // in-memory snapshot within TTL
+  | 'yahoo'      // Yahoo Finance fallback (15m delayed) // @deprecated marker
+  | 'db'         // PostgreSQL last-known — flagged stale
+  | 'kite'       // PRIMARY live / historical (when MARKET_DATA_PROVIDER=kite)
+  | 'indianapi'; // IndianAPI — ingestion-populated warehouse (never a request-path hop)
 
 export type DataQuality =
   | 'live'              // (deprecated market-data quality — retained for back-compat with broker-side tagging)

@@ -190,6 +190,79 @@ export function recordHeartbeatTick(opts: {
   heartbeat.last_cache_misses = opts.cache_misses;
 }
 
+// ── IndianAPI ingestion counters ────────────────────────────────────
+//
+// Bumped by the IndianAPI adapter + ingestion orchestrator. Read by
+// the health endpoint and the Prometheus renderer so operators can
+// alert on 429 spikes, circuit opens, overlap skips, and sync lag.
+
+interface IndianApiIngestCounter {
+  requests_total:       number;
+  failures_total:       number;
+  rate_limited_total:   number;   // 429s observed
+  circuit_opens_total:  number;
+  overlap_skips_total:  number;   // scheduler_overlap_skipped
+  budget_blocks_total:  number;   // daily/monthly/per-run budget hits
+  runs_total:           number;
+  runs_failed_total:    number;
+  last_run_at:          string | null;
+  last_run_tier:        string | null;
+  last_run_processed:   number | null;
+  last_run_failed:      number | null;
+  last_quote_success_at: string | null;
+}
+
+const indianApiIngest: IndianApiIngestCounter = {
+  requests_total:       0,
+  failures_total:       0,
+  rate_limited_total:   0,
+  circuit_opens_total:  0,
+  overlap_skips_total:  0,
+  budget_blocks_total:  0,
+  runs_total:           0,
+  runs_failed_total:    0,
+  last_run_at:          null,
+  last_run_tier:        null,
+  last_run_processed:   null,
+  last_run_failed:      null,
+  last_quote_success_at: null,
+};
+
+export function recordIndianApiRequest(opts: { ok: boolean; rateLimited?: boolean }): void {
+  indianApiIngest.requests_total += 1;
+  if (!opts.ok) indianApiIngest.failures_total += 1;
+  if (opts.rateLimited) indianApiIngest.rate_limited_total += 1;
+}
+
+export function recordIndianApiCircuitOpen(): void {
+  indianApiIngest.circuit_opens_total += 1;
+}
+
+export function recordIndianApiOverlapSkip(): void {
+  indianApiIngest.overlap_skips_total += 1;
+}
+
+export function recordIndianApiBudgetBlock(): void {
+  indianApiIngest.budget_blocks_total += 1;
+}
+
+export function recordIndianApiIngestionRun(opts: {
+  tier: string;
+  ok: boolean;
+  processed?: number;
+  failed?: number;
+}): void {
+  indianApiIngest.runs_total += 1;
+  if (!opts.ok) indianApiIngest.runs_failed_total += 1;
+  indianApiIngest.last_run_at        = new Date().toISOString();
+  indianApiIngest.last_run_tier      = opts.tier;
+  indianApiIngest.last_run_processed = opts.processed ?? null;
+  indianApiIngest.last_run_failed    = opts.failed ?? null;
+  if (opts.tier === 'quotes' && opts.ok) {
+    indianApiIngest.last_quote_success_at = indianApiIngest.last_run_at;
+  }
+}
+
 // ── Snapshot reader ─────────────────────────────────────────────────
 
 export interface InstitutionalHealthSnapshot {
@@ -199,6 +272,7 @@ export interface InstitutionalHealthSnapshot {
   elite:            EliteCounter;
   full_scan:        FullScanCounter;
   heartbeat:        HeartbeatCounter;
+  indianapi_ingest: IndianApiIngestCounter;
   /** approved / (approved + rejected) since boot. null until first run. */
   approved_ratio:   number | null;
 }
@@ -212,6 +286,7 @@ export function getInstitutionalHealthSnapshot(): InstitutionalHealthSnapshot {
     elite:        { ...elite },
     full_scan:    { ...fullScan },
     heartbeat:    { ...heartbeat },
+    indianapi_ingest: { ...indianApiIngest },
     approved_ratio: total > 0 ? Math.round((elite.approved_total / total) * 1000) / 1000 : null,
   };
 }
@@ -232,5 +307,13 @@ export function resetInstitutionalHealth(): void {
   Object.assign(heartbeat, {
     ticks: 0, last_at: null, last_universe: null,
     last_cache_hits: null, last_cache_misses: null,
+  });
+  Object.assign(indianApiIngest, {
+    requests_total: 0, failures_total: 0, rate_limited_total: 0,
+    circuit_opens_total: 0, overlap_skips_total: 0, budget_blocks_total: 0,
+    runs_total: 0, runs_failed_total: 0,
+    last_run_at: null, last_run_tier: null,
+    last_run_processed: null, last_run_failed: null,
+    last_quote_success_at: null,
   });
 }

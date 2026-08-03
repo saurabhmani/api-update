@@ -14,7 +14,7 @@
 #    2. Creates the logs/ directory
 #    3. Installs npm dependencies (including dotenv)
 #    4. Builds Next.js for production
-#    5. Creates .env.local from .env.example if it doesn't exist yet
+#    5. Verifies that the required production environment file exists
 #    6. Runs all database migrations
 #    7. Starts all PM2 processes
 #    8. Prints the nginx config block you need to add
@@ -49,17 +49,11 @@ fi
 mkdir -p "$APP_DIR/logs"
 ok "logs/ directory ready"
 
-# ── 3. Create .env.local if missing ──────────────────────────────────
-if [ ! -f "$APP_DIR/.env.local" ]; then
-  cp "$APP_DIR/.env.example" "$APP_DIR/.env.local"
-  warn ".env.local created from .env.example — EDIT IT NOW before continuing"
-  warn "Required: MYSQL_*, SESSION_SECRET, ENCRYPTION_KEY, KITE_API_KEY, KITE_API_SECRET, NEXT_PUBLIC_APP_URL"
-  warn "See docs/security/credential-rotation.md for upstream rotations"
-  echo ""
-  read -p "  Press ENTER after you have edited .env.local to continue..." _
-else
-  ok ".env.local already exists"
+# ── 3. Verify production environment ─────────────────────────────────
+if [ ! -f "$APP_DIR/.env.production" ]; then
+  fail ".env.production is required. Copy the managed production configuration, then set every REPLACE_WITH_PRODUCTION_* value."
 fi
+ok ".env.production exists"
 
 # ── 4. Install dependencies ───────────────────────────────────────────
 echo ""
@@ -96,7 +90,7 @@ pm2 startup systemd -u $USER --hp $HOME | grep "sudo" | bash || \
   warn "Could not auto-run startup command. Run 'pm2 startup' manually and execute the printed command as root."
 
 # ── 9. Print nginx config ─────────────────────────────────────────────
-DOMAIN=$(grep NEXT_PUBLIC_APP_URL "$APP_DIR/.env.local" 2>/dev/null | sed 's/.*=https\?:\/\///' | tr -d ' ')
+DOMAIN=$(grep NEXT_PUBLIC_APP_URL "$APP_DIR/.env.production" 2>/dev/null | sed 's/.*=https\?:\/\///' | tr -d ' ')
 DOMAIN="${DOMAIN:-yourdomain.com}"
 
 echo ""

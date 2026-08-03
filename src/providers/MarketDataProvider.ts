@@ -132,17 +132,19 @@ export interface GetOptions {
 interface AttemptLog { source: ProviderSource; ok: boolean; error?: string; ms?: number }
 
 const PROVIDER_NAMES: Record<ProviderSource, string> = {
-  cache:  'Cache',
-  yahoo:  'Yahoo Finance', // @deprecated marker
-  db:     'MySQL',
-  kite:   'Kite Connect',
+  cache:     'Cache',
+  yahoo:     'Yahoo Finance', // @deprecated marker
+  db:        'MySQL',
+  kite:      'Kite Connect',
+  indianapi: 'IndianAPI',
 };
 
 const SOURCE_TYPES: Record<ProviderSource, ProviderSourceType> = {
-  cache:  'cache',
-  yahoo:  'fallback', // @deprecated marker
-  db:     'stale',
-  kite:   'primary',
+  cache:     'cache',
+  yahoo:     'fallback', // @deprecated marker
+  db:        'stale',
+  kite:      'primary',
+  indianapi: 'primary',
 };
 
 function extractVendorTimestamp(data: unknown, fetchedAt: number): number {
@@ -298,6 +300,60 @@ export async function getLiveSnapshot(
     symbol: sym,
   });
 
+  // ── IndianAPI mode: ingestion-first — serve cache → DB ONLY ──────
+  // The ingestion orchestrator is the sole IndianAPI caller; the
+  // request path never performs upstream HTTP. Freshness comes from
+  // the batch-tier ingestion writing quote:<SYMBOL> + snapshot rows.
+  // No silent Yahoo/Kite fallback: an empty warehouse is a loud
+  // StaleDataError, never a hidden provider switch.
+  if (selected === 'indianapi') {
+    if (!opts.forceRefresh) {
+      const cached = await cache.get<MarketSnapshot>(key)
+        ?? await redisCacheGet<MarketSnapshot>(key);
+      if (cached) {
+        trail.push({ source: 'cache', ok: true });
+        logProviderEvent('success', {
+          provider: 'cache',
+          selected,
+          fallback_provider: 'none',
+          capability,
+          latency_ms: Date.now() - startedAt,
+          symbol: sym,
+        });
+        return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
+      }
+    }
+    const dbRow = await tryStep('db', trail, async () => {
+      if (!dbRepo.getQuote) throw new Error('db repo not registered');
+      const row = await dbRepo.getQuote(sym);
+      if (!row) throw new Error('no row for symbol');
+      return row;
+    });
+    if (dbRow) {
+      logProviderEvent('success', {
+        provider: 'db',
+        selected,
+        fallback: 'db',
+        capability,
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
+      return rejectIfStale(wrap(dbRow, 'db', 'stale', trail), !!opts.signalCritical);
+    }
+    logProviderEvent('exhausted', {
+      selected,
+      symbol: sym,
+      note: 'indianapi_serve_path_is_cache_db_only',
+      latency_ms: Date.now() - startedAt,
+    });
+    throw new StaleDataError(wrap(
+      { symbol: sym, price: 0, ltp: 0, change: 0, changePercent: 0, volume: 0, open: 0, high: 0, low: 0, prevClose: 0, timestamp: 0 } as MarketSnapshot,
+      'db',
+      'stale',
+      trail,
+    ));
+  }
+
   // ── 1. Kite ─────────────────────────────────────────────────────
   logProviderEvent('attempt', {
     provider: 'kite',
@@ -436,11 +492,35 @@ export async function getHistorical(
   });
 
   if (!opts.forceRefresh) {
-    const cached = await cache.get<HistoricalSeries>(key);
+    const cached = await cache.get<HistoricalSeries>(key)
+      ?? await redisCacheGet<HistoricalSeries>(key);
     if (cached) {
       trail.push({ source: 'cache', ok: true });
       return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
     }
+  }
+
+  // IndianAPI mode: cache → DB warehouse only. Historical bars are
+  // ingested by the candle jobs (fetchUpstreamDailyCandles routes to
+  // the IndianAPI ingestion layer); the request path never fans out.
+  if (selected === 'indianapi') {
+    const dbSeries = await tryStep('db', trail, async () => {
+      if (!dbRepo.getHistorical) throw new Error('db repo not registered');
+      const row = await dbRepo.getHistorical(sym, range);
+      if (!row) throw new Error('no series for symbol');
+      return row;
+    });
+    if (dbSeries) {
+      logProviderEvent('success', {
+        provider: 'db',
+        selected,
+        capability: 'historical',
+        latency_ms: Date.now() - startedAt,
+        symbol: sym,
+      });
+      return rejectIfStale(wrap(dbSeries, 'db', 'stale', trail), !!opts.signalCritical);
+    }
+    throw new StaleDataError(wrap({ symbol: sym, range, candles: [] }, 'db', 'stale', trail));
   }
 
   logProviderEvent('attempt', {
@@ -710,7 +790,10 @@ export async function getCorporateIntel(
   const selected = getMarketDataProvider();
 
   if (!opts.forceRefresh) {
-    const cached = await cache.get<CorporateIntel>(key);
+    // Redis included: IndianAPI ingestion (quote + profile tiers)
+    // publishes corp:<SYMBOL> cross-process via Redis.
+    const cached = await cache.get<CorporateIntel>(key)
+      ?? await redisCacheGet<CorporateIntel>(key);
     if (cached) {
       trail.push({ source: 'cache', ok: true });
       return rejectIfStale(wrap(cached, 'cache', 'cached-fresh', trail), !!opts.signalCritical);
@@ -912,6 +995,24 @@ export async function getBatchLiveSnapshots(
   }
   if (misses.length === 0) {
     return { entries, batchCallsMade: 0, missingAfterBatch: [] };
+  }
+
+  // IndianAPI mode: NO request-path upstream. Misses are served as
+  // stale placeholders; the ingestion orchestrator (not this method)
+  // is responsible for refilling the cache on its own schedule.
+  if (getMarketDataProvider() === 'indianapi') {
+    for (const sym of misses) {
+      entries.push({ symbol: sym, snapshot: null, source: 'db', data_quality: 'stale' });
+    }
+    logProviderEvent('success', {
+      provider: 'cache',
+      method: 'getBatchQuotes',
+      selected: 'indianapi',
+      returned: entries.length - misses.length,
+      missing: misses.length,
+      note: 'indianapi_serve_path_is_cache_db_only',
+    });
+    return { entries, batchCallsMade: 0, missingAfterBatch: misses };
   }
 
   const estimatedCalls = misses.length;

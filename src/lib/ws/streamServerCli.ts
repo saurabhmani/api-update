@@ -10,7 +10,7 @@ import { config as dotenvConfig } from 'dotenv';
 if (process.env.NODE_ENV !== 'production') {
   dotenvConfig({ path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local') });
 }
-dotenvConfig({ path: path.resolve(process.cwd(), '.env') });
+dotenvConfig({ path: path.resolve(process.cwd(), '.env.production') });
 
 import { startLiveMarketFeed } from '../marketData/liveMarketFeed';
 import { startStreamServer } from './streamServer';

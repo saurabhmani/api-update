@@ -37,14 +37,11 @@
 // Load env BEFORE requiring next — instrumentation.ts and API routes
 // read process.env during construction.
 const path = require('path');
-const fs = require('fs');
 
 function resolveEnvFilePath() {
   if (process.env.DOTENV_CONFIG_PATH) return process.env.DOTENV_CONFIG_PATH;
-  if (process.env.NODE_ENV === 'production') return path.resolve(process.cwd(), '.env');
-  const local = path.resolve(process.cwd(), '.env.local');
-  if (fs.existsSync(local)) return local;
-  return path.resolve(process.cwd(), '.env');
+  if (process.env.NODE_ENV === 'production') return path.resolve(process.cwd(), '.env.production');
+  return path.resolve(process.cwd(), '.env.local');
 }
 
 require('dotenv').config({ path: resolveEnvFilePath() });
@@ -60,20 +57,6 @@ if (process.env.Q365_CUSTOM_SERVER_DEV === '1') {
   if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
 } else {
   process.env.NODE_ENV = 'production';
-}
-
-// Also load .env.production as a secondary source so the committed
-// production baseline ships keys missing from a VPS .env. dotenv
-// does NOT override existing process.env values, so an operator's
-// .env / .env.local entries still win. This closes the silent-drift hole
-// where .env.production looked authoritative but was never actually loaded
-// (PM2's ecosystem.config.js points DOTENV_CONFIG_PATH at .env).
-if (process.env.NODE_ENV === 'production') {
-  try {
-    require('dotenv').config({
-      path: path.resolve(process.cwd(), '.env.production'),
-    });
-  } catch { /* missing .env.production is fine — .env is the master */ }
 }
 
 // PROD CRON OWNERSHIP — server.js unconditionally spawns the scheduler

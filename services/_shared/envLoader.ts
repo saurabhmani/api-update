@@ -4,7 +4,7 @@
 //  Hand-rolled to avoid a dotenv dep, identical to the pattern used
 //  by src/lib/db/postgres/migrate.ts and friends. Keep this tiny and
 //  side-effect-only: importing it loads the project env into process.env.
-//  Production uses `.env`; local dev prefers `.env.local` when present.
+//  Production uses `.env.production`; development uses `.env.local`.
 // ════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';

@@ -7,7 +7,7 @@ import { config as dotenvConfig } from 'dotenv';
 import WebSocket from 'ws';
 
 dotenvConfig({ path: path.resolve(process.cwd(), '.env.local') });
-dotenvConfig({ path: path.resolve(process.cwd(), '.env') });
+dotenvConfig({ path: path.resolve(process.cwd(), '.env.production') });
 
 const symbol = (process.argv.find((a) => a.startsWith('--symbol='))?.split('=')[1]
   ?? process.env.VERIFY_WS_SYMBOL

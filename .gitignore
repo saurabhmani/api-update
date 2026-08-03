@@ -6,9 +6,8 @@ node_modules/
 out/
 build/
 
-# env files (IMPORTANT — never commit secrets; track placeholders only)
+# env files (IMPORTANT — never commit secrets)
 .env*
-!.env.example
 
 # logs
 logs/

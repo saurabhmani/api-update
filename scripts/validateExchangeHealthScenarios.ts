@@ -25,7 +25,7 @@ function loadEnvFile(filePath: string): void {
   } catch { /* optional */ }
 }
 
-loadEnvFile(path.resolve(process.cwd(), '.env'));
+loadEnvFile(path.resolve(process.cwd(), '.env.production'));
 loadEnvFile(path.resolve(process.cwd(), '.env.local'));
 
 const PREMIUM_INTEGRATION = ['corporate_filings', 'deals_feed', 'social_signals'] as const;

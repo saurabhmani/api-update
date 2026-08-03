@@ -9,7 +9,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { resolve as resolvePath } from 'node:path';
 
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+dotenvConfig({ path: resolvePath(process.cwd(), '.env.production') });
 
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import { STRATEGY_REGISTRY, getStrategyEntryType } from '@/lib/signal-engine/strategies/strategyRegistry';

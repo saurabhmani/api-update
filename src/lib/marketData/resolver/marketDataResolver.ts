@@ -35,6 +35,7 @@ import {
   quoteCacheKey,
   QUOTE_TTL_S,
 } from '@/lib/cache';
+import { cacheGet as redisCacheGet } from '@/lib/redis';
 import {
   isYahooEmergencyFallbackEnabled, // @deprecated marker
   getMarketDataProvider,
@@ -363,7 +364,11 @@ async function readCacheBatch(symbols: string[]): Promise<{
   const hits: MarketSnapshot[] = [];
   const misses: string[] = [];
   await Promise.all(symbols.map(async (sym) => {
-    const v = await cache.get<MarketSnapshot>(quoteCacheKey(sym));
+    // In-process tier first, then Redis — cross-process writers (the
+    // IndianAPI ingestion orchestrator, batch tier in another worker)
+    // publish quote:<SYMBOL> via Redis.
+    const v = await cache.get<MarketSnapshot>(quoteCacheKey(sym))
+      ?? await redisCacheGet<MarketSnapshot>(quoteCacheKey(sym));
     if (v && Number.isFinite(v.price) && v.price > 0) hits.push(v);
     else misses.push(sym);
   }));
@@ -661,6 +666,76 @@ export async function resolveBatch(
       symbolsCount: symbols.length,
     });
     return result;
+  }
+
+  // ── IndianAPI mode gate (ingestion-first architecture) ─────────
+  // Serve path is cache-only: the ingestion orchestrator (batch tier)
+  // is the sole IndianAPI caller and publishes quote:<SYMBOL> to
+  // Redis. The resolver NEVER calls Kite / NSE direct / Yahoo in this
+  // mode — an empty cache is a loud degraded envelope, not a hidden
+  // provider switch.
+  if (getMarketDataProvider() === 'indianapi') {
+    const { hits, misses } = await readCacheBatch(symbols);
+    if (hits.length === symbols.length) {
+      logProviderEvent('success', {
+        provider: 'cache',
+        selected: 'indianapi',
+        fallback: 'none',
+        cache_hit: 'full',
+        latency_ms: Date.now() - startTs,
+      });
+      const r = assembleResultFromCache(hits, symbols, startedAt, startTs, opts);
+      logResolverOutcome(symbols.length, r, null);
+      return r;
+    }
+    if (hits.length > 0) {
+      const responseReceivedAt = nowIso();
+      const coverage = Math.round((hits.length / symbols.length) * 100);
+      const r: ResolverResult = {
+        provider: 'cache',
+        status: 'partial',
+        dataQuality: 'LOW',
+        requestStartedAt: startedAt,
+        responseReceivedAt,
+        latencyMs: Date.now() - startTs,
+        symbolsRequested: symbols.length,
+        symbolsReturned: hits.length,
+        coveragePercent: coverage,
+        staleSymbols: [],
+        failedSymbols: misses,
+        errorCode: null,
+        errorMessage: null,
+        fallbackUsed: false,
+        snapshots: snapshotsToMap(hits),
+        data: snapshotsToDataRecord(hits, 'cache'),
+      };
+      if (!opts.quiet) {
+        void logFeedHealth({
+          provider: 'cache',
+          endpoint: 'indianapi_warehouse_cache',
+          request_started_at: startedAt,
+          response_received_at: responseReceivedAt,
+          status: 'partial',
+          latency_ms: r.latencyMs,
+          symbols_requested: symbols.length,
+          symbols_returned: hits.length,
+          coverage_percent: coverage,
+          data_quality: 'LOW',
+          error_code: null,
+          error_message: null,
+        });
+      }
+      logResolverOutcome(symbols.length, r, null);
+      return r;
+    }
+    const r = emptyResult({
+      provider: 'none', status: 'degraded',
+      errorCode: 'INDIANAPI_WAREHOUSE_EMPTY',
+      errorMessage: 'MARKET_DATA_PROVIDER=indianapi — cache empty; check ingestion scheduler / [INDIANAPI_INGEST] logs',
+      symbolsAsked: symbols, startedAt, startTs,
+    });
+    logResolverOutcome(symbols.length, r, 'INDIANAPI_WAREHOUSE_EMPTY');
+    return r;
   }
 
   // Tracks whether the cascade (NSE direct → Yahoo) is allowed to
@@ -1153,6 +1228,13 @@ export async function resolveSingle(
       symbolsAsked: [sym], startedAt, startTs,
     });
     return { ...r, snapshot: null };
+  }
+
+  // IndianAPI mode: no request-path upstream — resolveBatch serves
+  // the cache-only chain and returns a loud degraded result on miss.
+  if (getMarketDataProvider() === 'indianapi') {
+    const batch = await resolveBatch([sym], { signal });
+    return { ...batch, snapshot: batch.snapshots.get(sym) ?? null };
   }
 
   // Always try Kite getQuote first (Phase 1 — no vendor stock-details path).

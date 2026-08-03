@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # scripts/checkProductionEnv.sh
 #
-# Production-readiness audit. Reads /var/www/api-update/.env
+# Production-readiness audit. Reads /var/www/api-update/.env.production
 # (or path from $ENV_FILE), checks every important variable, and
 # reports problems without printing secret values.
 #
 # Usage on the VPS:
 #   bash /var/www/api-update/scripts/checkProductionEnv.sh
-#   ENV_FILE=/path/to/other.env  bash scripts/checkProductionEnv.sh
+#   ENV_FILE=/path/to/.env.production  bash scripts/checkProductionEnv.sh
 
 set -uo pipefail
 
-ENV_FILE="${ENV_FILE:-./.env}"
+ENV_FILE="${ENV_FILE:-./.env.production}"
 if [ ! -f "$ENV_FILE" ]; then
   echo "✗ FATAL  $ENV_FILE not found"
-  echo "  Copy the template:  cp .env.example .env"
+  echo "  Create .env.production from the managed production configuration."
   exit 2
 fi
 

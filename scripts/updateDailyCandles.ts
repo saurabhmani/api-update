@@ -14,7 +14,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { resolve as resolvePath } from 'node:path';
 
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+dotenvConfig({ path: resolvePath(process.cwd(), '.env.production') });
 
 import { runCandleDailyUpdateJob } from '@/lib/marketData/candleDailyUpdateJob';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
@@ -64,19 +64,19 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  const { ensureCandleIngestConfigured, fetchConnectedBrokerDailyCandles } = await import(
+  const { ensureCandleIngestConfigured } = await import(
     '@/lib/marketData/jobs/candleIngestBroker'
   );
+  const { fetchUpstreamDailyCandles } = await import('@/lib/marketData/candleFallbackChain');
   const gate = await ensureCandleIngestConfigured();
-  if (!gate.ok || !gate.ingest) {
+  if (!gate.ok) {
     console.error(`[CANDLE DAILY PREFLIGHT] ${gate.message}`);
     return false;
   }
   console.log(
-    `[CANDLE DAILY PREFLIGHT] probing ${symbol} via ${gate.ingest.broker} ` +
-    `(userId=${gate.ingest.userId}, ${gate.ingest.reason}) ...`,
+    `[CANDLE DAILY PREFLIGHT] probing ${symbol} via ${gate.provider} ...`,
   );
-  const result = await fetchConnectedBrokerDailyCandles(symbol, '1mo', gate.ingest);
+  const result = await fetchUpstreamDailyCandles(symbol, '1mo');
   const bars = result.validBarCount;
   if (result.ok) {
     console.log(

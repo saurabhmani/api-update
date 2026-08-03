@@ -358,21 +358,91 @@ export async function fetchKiteDailyCandles(
  * Prefers the connected active broker (Shoonya or Zerodha) when
  * CANDLE_INGEST_USE_CONNECTED_BROKER is on (default); else classic Kite.
  */
+/**
+ * Fetch daily bars via the IndianAPI ingestion layer (budget + rate
+ * limiter + retry policy applied by the orchestrator). Never throws.
+ *
+ * Caveat: IndianAPI /historical_data (filter=price) is a close-only
+ * series — OHLC collapse to close and volume is 0. Adequate for EOD
+ * trend continuity; not a tick-accurate OHLCV feed.
+ */
+export async function fetchIndianApiDailyCandles(
+  symbol: string,
+  range: HistoricalRange = '1y',
+): Promise<UpstreamCandleFetchResult> {
+  const sym = symbol.toUpperCase();
+  try {
+    const { fetchHistoricalSeries } = await import(
+      '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
+    );
+    const series = await fetchHistoricalSeries(sym, range, 'candle-ingestion');
+    const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(series.candles);
+    if (candles.length === 0) {
+      return {
+        ok: false, candles: [], errorCode: 'EMPTY_RESPONSE',
+        errorMessage: 'IndianAPI returned no valid daily bars',
+        rawBarCount, validBarCount, provider: null,
+      };
+    }
+    return {
+      ok: true, candles, errorCode: null, errorMessage: null,
+      rawBarCount, validBarCount, provider: null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const name = err instanceof Error ? err.name : '';
+    const code =
+      name === 'IndianApiRateLimitError' ? 'RATE_LIMITED'
+        : name === 'ApiBudgetExceededError' ? 'BUDGET_EXCEEDED'
+          : name === 'IndianApiConfigError' ? 'API_KEY_MISSING'
+            : mapProviderErrorCode(null);
+    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=${code} reason="${message}"`);
+    return {
+      ok: false, candles: [], errorCode: code, errorMessage: message,
+      rawBarCount: 0, validBarCount: 0, provider: null,
+    };
+  }
+}
+
 export async function fetchUpstreamDailyCandles(
   symbol: string,
   range: HistoricalRange = '1y',
-): Promise<UpstreamCandleFetchResult & { warehouseSource?: 'kite' | 'shoonya' }> {
-  try {
-    const { isConnectedBrokerCandleIngestEnabled, fetchConnectedBrokerDailyCandles } =
-      await import('@/lib/marketData/jobs/candleIngestBroker');
-    if (isConnectedBrokerCandleIngestEnabled()) {
-      return fetchConnectedBrokerDailyCandles(symbol, range);
+): Promise<UpstreamCandleFetchResult & { warehouseSource?: 'kite' | 'shoonya' | 'indianapi' }> {
+  const { resolveSystemMarketDataProvider } = await import(
+    '@/lib/marketData/providerResolution'
+  );
+  const resolved = await resolveSystemMarketDataProvider('historical_candles');
+  if (resolved.ok === false) {
+    // Backwards-compatible system-Kite mode remains available only when no
+    // system user is configured. A configured user with no broker gets the
+    // resolver's actionable IndianAPI configuration error instead.
+    const { getSystemMarketDataUserId } = await import(
+      '@/lib/marketData/connectionManager/systemFeed'
+    );
+    const { getSystemMarketDataProvider } = await import('@/lib/marketData/providerFlags');
+    if (getSystemMarketDataUserId() == null && getSystemMarketDataProvider() === 'kite') {
+      const kite = await fetchKiteDailyCandles(symbol, range);
+      return { ...kite, warehouseSource: 'kite' };
     }
-  } catch {
-    /* fall through to classic Kite */
+    return {
+      ok: false, candles: [], errorCode: 'NOT_CONFIGURED', errorMessage: resolved.message,
+      rawBarCount: 0, validBarCount: 0, provider: null,
+    };
   }
-  const kite = await fetchKiteDailyCandles(symbol, range);
-  return { ...kite, warehouseSource: 'kite' };
+  if (resolved.providerKind === 'indianapi') {
+    const viaIndianApi = await fetchIndianApiDailyCandles(symbol, range);
+    return { ...viaIndianApi, warehouseSource: 'indianapi' };
+  }
+  const { fetchConnectedBrokerDailyCandles } = await import(
+    '@/lib/marketData/jobs/candleIngestBroker'
+  );
+  const broker = await fetchConnectedBrokerDailyCandles(symbol, range, {
+    userId: resolved.context.userId,
+    broker: resolved.provider,
+    connectionId: resolved.context.connectionId ?? null,
+    reason: resolved.active.reason === 'sole_connection' ? 'system_user_sole' : 'system_user_active',
+  });
+  return broker;
 }
 
 // ── DB upsert ──────────────────────────────────────────────────────

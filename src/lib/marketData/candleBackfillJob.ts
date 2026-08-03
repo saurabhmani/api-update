@@ -406,7 +406,7 @@ async function upsertDailyCandle(
   low: number,
   close: number,
   volume: number,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' | 'indianapi' = 'kite',
 ): Promise<'inserted' | 'updated' | 'unchanged' | 'skipped'> {
   const { upsertWarehouseCandle } = await import('@/lib/marketData/jobs/candleWarehouseUpsert');
   return upsertWarehouseCandle({
@@ -426,7 +426,7 @@ async function upsertDailyCandle(
 export async function persistBarsForSymbol(
   symbol: string,
   bars: Array<{ ts: string | Date; open: number; high: number; low: number; close: number; volume: number }>,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' | 'indianapi' = 'kite',
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
   let inserted = 0;
   let updated = 0;

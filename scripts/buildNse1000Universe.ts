@@ -13,7 +13,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { resolve as resolvePath } from 'node:path';
 
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+dotenvConfig({ path: resolvePath(process.cwd(), '.env.production') });
 
 import { ensureAllSchemas } from '@/lib/db/ensureAllSchemas';
 import { _resetNifty500CacheForTests } from '@/lib/marketData/nifty500Universe';

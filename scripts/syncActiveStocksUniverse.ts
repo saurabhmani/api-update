@@ -14,7 +14,7 @@ import { resolve as resolvePath } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+dotenvConfig({ path: resolvePath(process.cwd(), '.env.production') });
 
 interface ActiveStockRow {
   tradingsymbol?: string;

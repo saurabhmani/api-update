@@ -10,7 +10,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { resolve as resolvePath } from 'node:path';
 
 dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+dotenvConfig({ path: resolvePath(process.cwd(), '.env.production') });
 
 import { db } from '@/lib/db';
 import { MIN_CANDLE_COUNT } from '@/lib/signal-engine/constants/signalEngine.constants';

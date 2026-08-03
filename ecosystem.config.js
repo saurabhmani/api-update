@@ -28,7 +28,7 @@ const APP_DIR = process.env.APP_DIR || '/var/www/api-update';
 
 const SHARED_ENV = {
   NODE_ENV: 'production',
-  DOTENV_CONFIG_PATH: `${APP_DIR}/.env`,
+  DOTENV_CONFIG_PATH: `${APP_DIR}/.env.production`,
   PORT: 5000,
   STREAM_WS_PORT: 5001,
 };

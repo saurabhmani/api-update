@@ -5,7 +5,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { resolve } from 'node:path';
 
 dotenvConfig({ path: resolve(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolve(process.cwd(), '.env') });
+dotenvConfig({ path: resolve(process.cwd(), '.env.production') });
 
 import { buildFibonacciTestCandles } from './seedFibonacciPullbackTest';
 import { buildSignalFeatures } from '@/lib/signal-engine/features/buildSignalFeatures';

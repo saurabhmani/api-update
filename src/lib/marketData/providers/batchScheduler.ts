@@ -93,7 +93,7 @@ import type { MarketSnapshot, MoversBucket, MoversResult, ProviderResponse, Prov
 const log = logger.child({ component: 'batchScheduler' });
 
 /** Live upstream sources that may persist into DB / Redis quote cache. */
-const LIVE_QUOTE_SOURCES: ReadonlySet<ProviderSource> = new Set(['kite', 'yahoo', 'cache']);
+const LIVE_QUOTE_SOURCES: ReadonlySet<ProviderSource> = new Set(['kite', 'yahoo', 'cache', 'indianapi']);
 
 function logSchedulerProvider(
   event: string,
@@ -117,7 +117,8 @@ function wrapBatchResponse(
     source === 'kite' ? 'Kite Connect'
       : source === 'yahoo' ? 'Yahoo'
         : source === 'cache' ? 'Cache'
-          : 'MarketData';
+          : source === 'indianapi' ? 'IndianAPI'
+            : 'MarketData';
   return {
     data: snap,
     source,
@@ -299,6 +300,52 @@ interface BatchTierDetails {
 export async function runBatchTier(): Promise<TierReport<BatchTierDetails>> {
   return runTier('batch', async () => {
     const selected = getMarketDataProvider();
+
+    // ── IndianAPI mode: ingestion-first architecture ────────────────
+    // The orchestrator owns the upstream fan-out (rate limiter, batch
+    // probe, locks, checkpoints, DLQ) and writes into the SAME cache
+    // keys + snapshot tables Tier A populates in kite mode. MDP serves
+    // clients from cache/DB — it never calls IndianAPI itself.
+    if (selected === 'indianapi') {
+      const { runQuoteIngestion, runMoversIngestion } = await import(
+        '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
+      );
+      const quotes = await runQuoteIngestion();
+      let moversCount = 0;
+      try {
+        const movers = await runMoversIngestion();
+        moversCount = movers.skipped ? 0 : movers.gainers + movers.losers;
+      } catch (err) {
+        log.warn('movers ingestion failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      console.log('[SCAN_COVERAGE]', {
+        stage:        'scheduler.batch',
+        universe:     quotes.totalSymbols,
+        received:     quotes.processed,
+        missing:      quotes.failed,
+        coverage_pct: quotes.totalSymbols > 0
+          ? Math.round((quotes.processed / quotes.totalSymbols) * 1000) / 10
+          : 0,
+        selected,
+        rate_limited: quotes.rateLimited,
+        batch_mode:   quotes.batchMode,
+        aborted:      quotes.aborted,
+        latency_ms:   quotes.elapsedMs,
+      });
+      return {
+        batchSymbols: quotes.totalSymbols,
+        batchCallsMade: quotes.apiCalls,
+        batchReceived: quotes.processed,
+        batchMissing: quotes.failed,
+        trendingCount: moversCount,
+        shockersCount: 0,
+        mostActiveCount: moversCount,
+        persistErrors: 0,
+      };
+    }
+
     const universe = getBatchUniverse();
     const t0 = Date.now();
 

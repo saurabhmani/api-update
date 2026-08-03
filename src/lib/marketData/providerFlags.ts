@@ -14,6 +14,7 @@
 export type MarketDataProviderName =
   | 'yahoo'
   | 'kite'
+  | 'indianapi'
   | 'none'
   | 'legacy';
 
@@ -32,16 +33,53 @@ function asInt(raw: string | undefined, fallback: number, min = 0): number {
 }
 
 /**
+ * IndianAPI feature flag. Default OFF — must be explicitly enabled
+ * before IndianAPI can be selected or bootstrap-defaulted.
+ */
+export function isIndianApiEnabled(): boolean {
+  return asBool(process.env.INDIANAPI_ENABLED, false);
+}
+
+/**
+ * True when an IndianAPI key is present in the environment.
+ * Never logs or returns the key itself.
+ */
+export function indianApiCredentialsPresent(): boolean {
+  const key = (
+    process.env.INDIANAPI_API_KEY?.trim()
+    || process.env.INDIANAPI_KEY?.trim()
+    || process.env.INDIAN_API_KEY?.trim()
+    || ''
+  );
+  return key.length > 0;
+}
+
+/**
  * SYSTEM-LEVEL primary provider (background jobs / boot only).
  * Never use this to choose a user's Zerodha vs Shoonya data source.
- * Unset / unrecognized → `none` (no hidden kite default).
+ *
+ * Resolution order:
+ *   1. Explicit MARKET_DATA_PROVIDER value always wins.
+ *   2. Unset / empty → bootstrap default `indianapi` when the feature
+ *      flag is on AND credentials are present (idempotent — pure env
+ *      resolution, no DB writes, no duplication on repeated startup).
+ *   3. Otherwise `none` (no hidden kite default).
  */
 export function getSystemMarketDataProvider(): MarketDataProviderName {
   const raw = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
-  if (raw === 'yahoo' || raw === 'kite' || raw === 'none' || raw === 'legacy') {
+  if (raw === 'yahoo' || raw === 'kite' || raw === 'indianapi' || raw === 'none' || raw === 'legacy') {
     return raw;
   }
+  if (raw === '' && isIndianApiEnabled() && indianApiCredentialsPresent()) {
+    return 'indianapi';
+  }
   return 'none';
+}
+
+/** True when IndianAPI was bootstrap-defaulted (no explicit selection). */
+export function isIndianApiBootstrapDefault(): boolean {
+  const raw = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
+  return raw === '' && getSystemMarketDataProvider() === 'indianapi';
 }
 
 /**
@@ -60,6 +98,10 @@ export function getPrimaryFallbackProvider(
       return 'yahoo|nse|db';
     case 'yahoo':
       return 'nse|db';
+    case 'indianapi':
+      // Serve path is cache → DB only; ingestion keeps them fresh.
+      // No silent Yahoo/Kite fallback when IndianAPI is selected.
+      return 'cache|db';
     case 'legacy':
       return 'legacy_path';
     case 'none':
@@ -120,6 +162,69 @@ export function isLegacyVendorPrimary(): boolean {
 /** System-level: is the process configured for Kite as primary feed? */
 export function isKitePrimary(): boolean {
   return getSystemMarketDataProvider() === 'kite';
+}
+
+/** System-level: is IndianAPI the active warehouse provider? */
+export function isIndianApiPrimary(): boolean {
+  return getSystemMarketDataProvider() === 'indianapi';
+}
+
+// ── IndianAPI ingestion configuration ──────────────────────────────
+//
+// All knobs for the rate-limit-safe ingestion pipeline. Retries are a
+// secondary safety net — the primary controls are the RPS token bucket,
+// bounded concurrency, and per-run budget caps.
+
+export interface IndianApiIngestConfig {
+  enabled: boolean;
+  /** Max concurrent in-flight upstream requests. */
+  maxConcurrency: number;
+  /** Symbols per batch call when the batch endpoint is available. */
+  batchSize: number;
+  /** 'auto' probes the batch endpoint; 'on'/'off' force it. */
+  batchMode: 'auto' | 'on' | 'off';
+  /** Global requests-per-second ceiling across all endpoints. */
+  rpsGlobal: number;
+  /** Max retry attempts per item (transient failures only). */
+  maxRetries: number;
+  /** Base backoff delay in ms (exponential + full jitter). */
+  retryBaseMs: number;
+  /** Per-run hard cap on upstream calls. */
+  perRunLimit: number;
+  /** Daily soft budget (degrade) / monthly hard budget (freeze). */
+  dailySoftLimit: number;
+  monthlyLimit: number;
+  /** Staging subset: 0 = full active universe. */
+  ingestSymbolLimit: number;
+  /** Distributed ingest-lock TTL in seconds. */
+  lockTtlS: number;
+  /** Circuit breaker: consecutive failures to open, cooldown ms. */
+  circuitFailures: number;
+  circuitCooldownMs: number;
+}
+
+export function getIndianApiIngestConfig(): IndianApiIngestConfig {
+  const batchRaw = (process.env.INDIANAPI_BATCH_ENABLED ?? 'auto').trim().toLowerCase();
+  const batchMode: 'auto' | 'on' | 'off' =
+    batchRaw === 'on' || batchRaw === 'true' || batchRaw === '1' ? 'on'
+      : batchRaw === 'off' || batchRaw === 'false' || batchRaw === '0' ? 'off'
+        : 'auto';
+  return {
+    enabled: isIndianApiEnabled(),
+    maxConcurrency: asInt(process.env.INDIANAPI_MAX_CONCURRENCY, 3, 1),
+    batchSize: asInt(process.env.INDIANAPI_BATCH_SIZE, 25, 1),
+    batchMode,
+    rpsGlobal: asInt(process.env.INDIANAPI_RPS_GLOBAL, 2, 1),
+    maxRetries: asInt(process.env.INDIANAPI_MAX_RETRIES, 3, 0),
+    retryBaseMs: asInt(process.env.INDIANAPI_RETRY_BASE_MS, 500, 100),
+    perRunLimit: asInt(process.env.INDIANAPI_PER_RUN_LIMIT, 1500, 1),
+    dailySoftLimit: asInt(process.env.INDIANAPI_DAILY_SOFT_LIMIT, 4500, 1),
+    monthlyLimit: asInt(process.env.INDIANAPI_MONTHLY_LIMIT, 100_000, 1),
+    ingestSymbolLimit: asInt(process.env.INDIANAPI_INGEST_SYMBOL_LIMIT, 0, 0),
+    lockTtlS: asInt(process.env.INDIANAPI_LOCK_TTL_S, 900, 60),
+    circuitFailures: asInt(process.env.INDIANAPI_CIRCUIT_FAILURES, 5, 1),
+    circuitCooldownMs: asInt(process.env.INDIANAPI_CIRCUIT_COOLDOWN_MS, 30_000, 1_000),
+  };
 }
 
 export function isLegacyRollbackActive(): boolean {
@@ -203,6 +308,10 @@ export function getProviderFlagsSummary(): Record<string, unknown> {
     systemMarketDataProvider: selected,
     note: 'system-level only; user paths use resolveUserLiveProvider / getUserActiveDataSource',
     kitePrimary: selected === 'kite',
+    indianApiPrimary: selected === 'indianapi',
+    indianApiEnabled: isIndianApiEnabled(),
+    indianApiBootstrapDefault: isIndianApiBootstrapDefault(),
+    indianApiCredentialsConfigured: indianApiCredentialsPresent(),
     primaryFallbackProvider: getPrimaryFallbackProvider(selected),
     liveFeedProvider: getSystemLiveFeedProvider(),
     dualSourceEnabled: dual.enabled,

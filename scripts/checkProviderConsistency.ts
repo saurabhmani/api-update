@@ -63,6 +63,17 @@ const VIOLATIONS: Array<{ pattern: RegExp; reason: string }> = [
     pattern: /axios\.(get|post)\s*\(\s*['"`]https:\/\/stock\.legacy_vendor\.in/,
     reason: 'Direct vendor adapter call — must go through MarketDataProvider.',
   },
+  {
+    // IndianAPI is ingestion-only: adapter + orchestrator live under
+    // allowlisted paths. Any request-path file making direct HTTP to
+    // an indianapi.in host is a leak.
+    pattern: /(axios\.(get|post)|fetch)\s*\(\s*['"`]https:\/\/(stock|dev|analyst|pro)\.indianapi\.in/,
+    reason: 'Direct IndianAPI HTTP call — only the ingestion adapter (src/providers/adapters/IndianAPIAdapter.ts) may call the upstream.',
+  },
+  {
+    pattern: /from\s+['"]@\/providers\/adapters\/IndianAPIAdapter['"]/,
+    reason: 'IndianAPI adapter import outside provider/ingestion paths — clients read via MarketDataProvider (cache/DB).',
+  },
 ];
 
 // Allowlist prefixes (POSIX-style). Files under these paths are

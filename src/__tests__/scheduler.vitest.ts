@@ -41,9 +41,11 @@ import type {
 
 const PROVIDER_NAMES: Record<ProviderSource, string> = {
   cache: 'Cache', yahoo: 'Yahoo Finance', db: 'PostgreSQL', kite: 'Kite Connect',
+  indianapi: 'IndianAPI',
 };
 const SOURCE_TYPES: Record<ProviderSource, ProviderSourceType> = {
   cache: 'cache', yahoo: 'fallback', db: 'stale', kite: 'primary',
+  indianapi: 'primary',
 };
 
 function snap(sym: string): MarketSnapshot {

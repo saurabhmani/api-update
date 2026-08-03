@@ -1178,6 +1178,16 @@ export async function ensureAllSchemas(force = false): Promise<EnsureSchemasResu
     console.error('[ensureAllSchemas] migrateProviderRequestLogs failed:', (err as Error).message);
   }
 
+  // IndianAPI ingestion bookkeeping (run audit + per-symbol sync state).
+  try {
+    const { migrateIndianApiIngestion } = await import('./migrateIndianApiIngestion');
+    await migrateIndianApiIngestion();
+    created += 2;
+  } catch (err) {
+    failed++;
+    console.error('[ensureAllSchemas] migrateIndianApiIngestion failed:', (err as Error).message);
+  }
+
   // 4. Apply the signal-engine column migrations on top of the slim
   //    q365_signals DDL above. migrateSignalEngine adds the full
   //    Phase-1/3/4/11 column set (ltp, pct_change, signal_status,

@@ -20,6 +20,7 @@ export type WarehouseCandleSource =
   | 'kite'
   | 'nse_bhavcopy'
   | 'shoonya'
+  | 'indianapi'
   | 'yahoo'
   | 'unknown';
 
@@ -28,6 +29,9 @@ const PRECEDENCE: Record<WarehouseCandleSource, number> = {
   kite: 80,
   /** Connected Shoonya ingest (enabled via CANDLE_INGEST_USE_CONNECTED_BROKER / SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST). */
   shoonya: 70,
+  /** IndianAPI /historical_data is close-only (OHLC collapse to close) —
+   *  never overwrite real OHLCV from bhavcopy / Kite / Shoonya. */
+  indianapi: 40,
   yahoo: 20,
   unknown: 10,
 };
@@ -43,6 +47,7 @@ export function normalizeWarehouseCandleSource(
   if (v === 'kite' || v === 'zerodha') return 'kite';
   if (v === 'nse_bhavcopy' || v === 'nse' || v === 'bhavcopy') return 'nse_bhavcopy';
   if (v === 'shoonya') return 'shoonya';
+  if (v === 'indianapi') return 'indianapi';
   if (v === 'yahoo') return 'yahoo';
   return 'unknown';
 }
@@ -58,7 +63,8 @@ export function isWarehouseCandleSourceAllowed(
     const connected = (process.env.CANDLE_INGEST_USE_CONNECTED_BROKER ?? '1').trim().toLowerCase();
     return connected === '1' || connected === 'true' || connected === 'yes' || connected === 'on';
   }
-  return source === 'kite' || source === 'nse_bhavcopy' || source === 'yahoo' || source === 'unknown';
+  return source === 'kite' || source === 'nse_bhavcopy' || source === 'indianapi'
+    || source === 'yahoo' || source === 'unknown';
 }
 
 /**

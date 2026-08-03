@@ -35,4 +35,4 @@ function loadEnvFile(filename: string): void {
 
 // Load .env.local first (Next.js convention), then .env as fallback
 loadEnvFile('.env.local');
-loadEnvFile('.env');
+loadEnvFile('.env.production');

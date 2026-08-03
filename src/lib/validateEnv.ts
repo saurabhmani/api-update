@@ -63,13 +63,56 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
   }
 
   const provider = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
-  const kitePrimary = !provider || provider === 'kite';
-  if (kitePrimary) {
+  const indianApiEnabledRaw = (process.env.INDIANAPI_ENABLED ?? '').trim().toLowerCase();
+  const indianApiEnabled =
+    indianApiEnabledRaw === 'true' || indianApiEnabledRaw === '1'
+    || indianApiEnabledRaw === 'yes' || indianApiEnabledRaw === 'on';
+  const indianApiKey = (
+    process.env.INDIANAPI_API_KEY?.trim()
+    || process.env.INDIANAPI_KEY?.trim()
+    || process.env.INDIAN_API_KEY?.trim()
+    || ''
+  );
+
+  if (provider === 'kite') {
     const key = (process.env.KITE_API_KEY ?? '').trim();
     if (!key) {
       warnings.push(
-        'MARKET_DATA_PROVIDER defaults to kite but KITE_API_KEY looks unset — '
+        'MARKET_DATA_PROVIDER=kite but KITE_API_KEY looks unset — '
         + 'expect yahoo/nse/db cascade until Kite app credentials and a dashboard session exist.',
+      );
+    }
+  }
+
+  // IndianAPI: explicit selection or bootstrap-default both require a key.
+  // Missing credentials must produce a clear configuration error, never a
+  // silent fallback to another vendor.
+  if (provider === 'indianapi') {
+    if (!indianApiKey) {
+      if (isProd && process.env.INDIANAPI_OPTIONAL !== 'true') {
+        errors.push(
+          'MARKET_DATA_PROVIDER=indianapi but INDIANAPI_API_KEY is not set. '
+          + 'Set INDIANAPI_API_KEY (or INDIANAPI_KEY / INDIAN_API_KEY) or select a different provider.',
+        );
+      } else {
+        warnings.push(
+          'MARKET_DATA_PROVIDER=indianapi but INDIANAPI_API_KEY is not set — '
+          + 'IndianAPI ingestion will refuse to run until credentials are configured.',
+        );
+      }
+    }
+    if (!indianApiEnabled) {
+      warnings.push(
+        'MARKET_DATA_PROVIDER=indianapi but INDIANAPI_ENABLED is not true — '
+        + 'ingestion jobs are feature-flag gated and will not run until INDIANAPI_ENABLED=true.',
+      );
+    }
+  } else if (!provider && indianApiEnabled) {
+    // Bootstrap-default path: unset provider + flag on → indianapi (if key present).
+    if (!indianApiKey) {
+      warnings.push(
+        'MARKET_DATA_PROVIDER is unset and INDIANAPI_ENABLED=true, but no INDIANAPI_API_KEY is set — '
+        + 'system provider resolves to none. Set the key to activate the IndianAPI bootstrap default.',
       );
     }
   }

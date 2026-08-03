@@ -32,6 +32,13 @@ export interface CandleIngestBroker {
   reason: 'system_user_active' | 'system_user_sole' | 'any_connected_primary' | 'any_connected_sole';
 }
 
+export interface CandleIngestConfiguration {
+  ok: boolean;
+  ingest: CandleIngestBroker | null;
+  provider: 'kite' | 'shoonya' | 'indianapi' | null;
+  message: string;
+}
+
 function envFlagOn(name: string, defaultOn = true): boolean {
   const raw = (process.env[name] ?? '').trim().toLowerCase();
   if (!raw) return defaultOn;
@@ -167,59 +174,34 @@ export async function resolveCandleIngestBroker(): Promise<CandleIngestBroker> {
 }
 
 /** True when ingest can proceed (connected broker or classic system Kite). */
-export async function ensureCandleIngestConfigured(): Promise<{
-  ok: boolean;
-  ingest: CandleIngestBroker | null;
-  message: string;
-}> {
-  try {
-    if (isConnectedBrokerCandleIngestEnabled()) {
-      const ingest = await resolveCandleIngestBroker();
-      return {
-        ok: true,
-        ingest,
-        message: `connected ${ingest.broker} userId=${ingest.userId} (${ingest.reason})`,
-      };
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Fall through to classic Kite check when connected-broker path fails.
-    if (!getSystemMarketDataUserId()) {
-      return { ok: false, ingest: null, message: msg };
-    }
-  }
-
-  const { ensureKiteHistoricalConfigured } = await import(
-    '@/lib/marketData/providers/kiteHistoricalProvider'
+export async function ensureCandleIngestConfigured(): Promise<CandleIngestConfiguration> {
+  const { resolveSystemMarketDataProvider } = await import(
+    '@/lib/marketData/providerResolution'
   );
-  if (await ensureKiteHistoricalConfigured()) {
-    const userId = getSystemMarketDataUserId()!;
-    return {
-      ok: true,
-      ingest: {
-        userId,
-        broker: 'zerodha',
-        connectionId: null,
-        reason: 'system_user_active',
-      },
-      message: `system kite userId=${userId}`,
-    };
+  const resolved = await resolveSystemMarketDataProvider('historical_candles');
+  if (resolved.ok === false) {
+    return { ok: false, ingest: null, provider: null, message: resolved.message };
   }
-
-  try {
-    const ingest = await resolveCandleIngestBroker();
+  if (resolved.providerKind === 'indianapi') {
     return {
       ok: true,
-      ingest,
-      message: `connected ${ingest.broker} userId=${ingest.userId}`,
-    };
-  } catch (err) {
-    return {
-      ok: false,
       ingest: null,
-      message: err instanceof Error ? err.message : String(err),
+      provider: 'indianapi',
+      message: 'IndianAPI fallback (no connected provider for historical candles)',
     };
   }
+  const ingest: CandleIngestBroker = {
+    userId: resolved.context.userId,
+    broker: resolved.provider,
+    connectionId: resolved.context.connectionId ?? null,
+    reason: resolved.active.reason === 'sole_connection' ? 'system_user_sole' : 'system_user_active',
+  };
+  return {
+    ok: true,
+    ingest,
+    provider: resolved.provider === 'zerodha' ? 'kite' : 'shoonya',
+    message: `connected ${resolved.provider} userId=${ingest.userId} (${resolved.active.reason})`,
+  };
 }
 
 function normalizeAdapterCandles(
