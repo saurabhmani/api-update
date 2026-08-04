@@ -210,7 +210,6 @@ async function enrichFromUserBroker<
       userId,
       connectionId: active.connectionId ?? undefined,
     };
-    await provider.connect(ctx);
     const instruments = targets.map(({ sym }) =>
       normalizeInstrument({ exchange: 'NSE', symbol: sym, instrumentType: 'EQ' }),
     );
@@ -219,13 +218,24 @@ async function enrichFromUserBroker<
       1_000,
       Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
     );
+    // Bound connect+quote together. connect() used to await
+    // ensureStreamingAfterBrokerConnect (and previously ensureLiveMarketStack)
+    // with no timeout, so a slow baseline refresh stalled every signals poll
+    // that had rows to enrich — Partial Intelligence Mode via TIMEOUT.
+    let timedOut = false;
     const quotes = await Promise.race([
-      provider.fetchQuote(ctx, instruments),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), ENRICH_TIMEOUT_MS)),
+      (async () => {
+        await provider.connect(ctx);
+        return provider.fetchQuote(ctx, instruments);
+      })(),
+      new Promise<null>((resolve) =>
+        setTimeout(() => { timedOut = true; resolve(null); }, ENRICH_TIMEOUT_MS),
+      ),
     ]);
     if (!quotes) {
       console.warn(
-        `[DATA SOURCE] user broker quote timeout userId=${userId} provider=${active.provider}`,
+        `[DATA SOURCE] user broker enrich ${timedOut ? 'timeout' : 'empty'} ` +
+        `userId=${userId} provider=${active.provider} after ${ENRICH_TIMEOUT_MS}ms`,
       );
       return 0;
     }

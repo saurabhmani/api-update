@@ -53,7 +53,7 @@ export function createSignalsApiProfiler(input: {
       ? Number.NaN
       : Number(contentLengthHeader);
     let payloadSizeBytes = Number.isFinite(parsedLength) ? parsedLength : null;
-    if (payloadSizeBytes == null) {
+    if (payloadSizeBytes == null && process.env.NODE_ENV === 'development') {
       try {
         payloadSizeBytes = (await response.clone().arrayBuffer()).byteLength;
       } catch {

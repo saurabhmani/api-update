@@ -1613,12 +1613,13 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
       .catch(() => { /* enrichment still runs via REST quote path */ });
   }
 
-  // Boot live feed stack so freshness + engine-health preview see the
-  // same WS poll state as /api/market-data/live-feed-status.
-  await profile.time(
-    'market_data_stack',
-    () => ensureLiveMarketStack().catch(() => undefined),
-  );
+  // Boot live feed stack in the background. Never await on the request
+  // path — refreshLiveFeedBaseline (inside ensureLiveMarketStack) was
+  // blocking every concurrent /api/signals poll when the baseline SQL
+  // ran long, which pushed past the dashboard 20s budget and flipped
+  // the UI into Partial Intelligence Mode (TIMEOUT).
+  void ensureLiveMarketStack().catch(() => undefined);
+  profile.mark('market_data_stack', 0, { cache: 'not_used' });
 
   // Spec STEP 2 — universe init guard. Idempotent + race-safe via
   // the shared promise lock in initOnce(). On a cold instrumentation
@@ -2861,11 +2862,33 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
       // and manipulation probes instead of awaiting it after both finish.
       const closedMarketPromise =
         bundle.finalRows.length === 0
-          ? loadClosedMarketSignals({ limit }).catch((err: unknown) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              console.warn(`[CLOSED_MARKET] prefetch failed: ${msg}`);
-              return null;
-            })
+          ? (async () => {
+              const CLOSED_WAIT_MS = Math.max(
+                1_000,
+                Math.min(15_000, Number(process.env.SIGNALS_CLOSED_MARKET_WAIT_MS) || 8_000),
+              );
+              let timer: NodeJS.Timeout | undefined;
+              try {
+                const winner = await Promise.race([
+                  loadClosedMarketSignals({ limit }).catch((err: unknown) => {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    console.warn(`[CLOSED_MARKET] prefetch failed: ${msg}`);
+                    return null;
+                  }),
+                  new Promise<null>((resolve) => {
+                    timer = setTimeout(() => {
+                      console.warn(
+                        `[PERF] loadClosedMarketSignals exceeded ${CLOSED_WAIT_MS}ms — continuing without relaxed rows`,
+                      );
+                      resolve(null);
+                    }, CLOSED_WAIT_MS);
+                  }),
+                ]);
+                return winner;
+              } finally {
+                if (timer) clearTimeout(timer);
+              }
+            })()
           : Promise.resolve(null);
 
       const buyCount  = finalRows.filter((r: ConfirmedSignalRow) => String(r.direction ?? '').toUpperCase() === 'BUY').length;
@@ -2891,10 +2914,106 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
         getManipulationRiskForSymbols,
       );
 
-      const [freshnessOut, manipulationResult] = await Promise.all([
-        freshnessPromise,
-        manipulationPromise,
+      // Soft-bound: manipulation + candle/scanner probes must not hold
+      // the whole /api/signals response past the dashboard budget.
+      const AUX_WAIT_MS = Math.max(
+        1_000,
+        Math.min(12_000, Number(process.env.SIGNALS_AUX_WAIT_MS) || 5_000),
+      );
+      let auxTimer: NodeJS.Timeout | undefined;
+      const auxTimedOut = Symbol('signals_aux_timeout');
+      const auxWinner = await Promise.race([
+        Promise.all([freshnessPromise, manipulationPromise]),
+        new Promise<typeof auxTimedOut>((resolve) => {
+          auxTimer = setTimeout(() => resolve(auxTimedOut), AUX_WAIT_MS);
+        }),
       ]);
+      if (auxTimer) clearTimeout(auxTimer);
+
+      let freshnessOut: Awaited<typeof freshnessPromise>;
+      let manipulationResult: Awaited<typeof manipulationPromise>;
+      if (auxWinner === auxTimedOut) {
+        console.warn(
+          `[PERF] freshness+manipulation exceeded ${AUX_WAIT_MS}ms — shipping without aux enrichment`,
+        );
+        // Do NOT re-await the hung promises — that would re-block the request.
+        const nowIso = new Date().toISOString();
+        const latestMs = freshnessRaw?.latest_confirmed_ms ?? fallbackBatchTs ?? null;
+        const latestIso = latestMs != null
+          ? new Date(latestMs).toISOString()
+          : (freshnessRaw?.latest_confirmed_at ?? null);
+        freshnessOut = {
+          freshness: {
+            server_now:                       nowIso,
+            latest_confirmed_at:              freshnessRaw?.latest_confirmed_at ?? null,
+            last_pipeline_run:                latestIso,
+            signal_latest_generated:          latestIso,
+            signal_age_minutes:               latestMs != null
+              ? Math.round((Date.now() - latestMs) / 60_000)
+              : null,
+            active_count:                     freshnessRaw?.active_count ?? 0,
+            total_lifetime:                   freshnessRaw?.total_lifetime ?? 0,
+            total_stored_signals:             freshnessRaw?.total_lifetime ?? 0,
+            candle_latest_ts:                 null,
+            candle_age_hours:                 null,
+            market_open:                      resolvedMarketOpen,
+            data_source:                      'confirmed_snapshots',
+            tracker_counts:                   trackerCounts,
+            in_progress_count:                inProgressEnriched.length,
+            last_validation_time:             nowIso,
+            latest_batch_id:                  null,
+            latest_batch_engine_kind:         'unknown',
+            latest_batch_symbols:             null,
+            latest_batch_persistence_percent: 0,
+            persistence_percent:              0,
+            scan_coverage_percent:            0,
+            total_persisted:                  0,
+            total_scanned:                    0,
+            universe_size:                    0,
+            kite_health: {
+              health: 'DEGRADED',
+              source: 'none',
+              login_required: false,
+              ws_state: 'unknown',
+              last_tick_age_ms: null,
+              subscribed_count: 0,
+              reconnect_attempts: 0,
+              last_error: 'freshness_aux_timeout',
+              status_label: 'rest_only',
+              message: `Freshness/manipulation enrichment exceeded ${AUX_WAIT_MS}ms`,
+            },
+            yahoo_health: {
+              health: 'DEGRADED',
+              source: 'none',
+              login_required: false,
+              ws_state: 'unknown',
+              last_tick_age_ms: null,
+              subscribed_count: 0,
+              reconnect_attempts: 0,
+              last_error: 'freshness_aux_timeout',
+              status_label: 'rest_only',
+              message: `Freshness/manipulation enrichment exceeded ${AUX_WAIT_MS}ms`,
+            },
+          },
+          scannerBatchId:    null,
+          scannerEngineKind: 'unknown',
+        };
+        manipulationResult = {
+          manipulationRiskMap:              undefined,
+          manipulationUsedFallbackUniverse: false,
+          manipulationRiskMeta: {
+            configured:          false,
+            symbolCount:         0,
+            snapshotCount:       0,
+            freshestSnapshotAt:  null,
+            stale:               false,
+            globalSnapshotCount: 0,
+            globalLatestScanAt:  null,
+          },
+        };
+      } else {
+        [freshnessOut, manipulationResult] = auxWinner;
+      }
       const {
         manipulationRiskMap,
         manipulationUsedFallbackUniverse,

@@ -85,15 +85,13 @@ export async function ensureStreamingAfterBrokerConnect(
         result.hydrated = true;
         result.userConnectionKey = snap.keyString;
         result.skippedAlreadyConnected = true;
-        try {
-          const { ensureLiveMarketStack } = await import(
-            '@/lib/marketData/ensureLiveMarketStack'
-          );
-          const stack = await ensureLiveMarketStack();
-          result.stackEnsured = true;
-          result.wsRunning = stack.wsRunning;
-          result.baselineSymbols = stack.baselineSymbols;
-        } catch { /* non-fatal */ }
+        // Warm the shared stack off the request path. Awaiting it here
+        // re-introduced the /api/signals hang: enrichFromUserBroker →
+        // provider.connect → ensureStreaming → ensureLiveMarketStack
+        // → baseline SQL, stalling live-price enrichment on every poll.
+        void import('@/lib/marketData/ensureLiveMarketStack')
+          .then(({ ensureLiveMarketStack }) => ensureLiveMarketStack())
+          .catch(() => { /* non-fatal */ });
         return result;
       }
     }
@@ -130,13 +128,33 @@ export async function ensureStreamingAfterBrokerConnect(
     }
 
     // 2) Warm shared WS fan-out / baseline (broker-neutral stack).
+    // Soft-bound: baseline SQL must not block OAuth / enrich callers.
     const { ensureLiveMarketStack } = await import(
       '@/lib/marketData/ensureLiveMarketStack'
     );
-    const stack = await ensureLiveMarketStack();
-    result.stackEnsured = true;
-    result.wsRunning = stack.wsRunning;
-    result.baselineSymbols = stack.baselineSymbols;
+    try {
+      const STACK_WAIT_MS = Math.max(
+        500,
+        Math.min(8_000, Number(process.env.LIVE_FEED_STACK_WAIT_MS) || 2_500),
+      );
+      let timer: NodeJS.Timeout | undefined;
+      const stack = await Promise.race([
+        ensureLiveMarketStack(),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), STACK_WAIT_MS);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (stack) {
+        result.stackEnsured = true;
+        result.wsRunning = stack.wsRunning;
+        result.baselineSymbols = stack.baselineSymbols;
+      } else {
+        void ensureLiveMarketStack().catch(() => undefined);
+      }
+    } catch {
+      /* non-fatal — streaming may still come up via lazy boot */
+    }
 
     if (!session.isOpen) {
       result.ok = true;

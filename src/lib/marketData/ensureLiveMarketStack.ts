@@ -49,7 +49,15 @@ export async function ensureLiveMarketStack(): Promise<{
   const { refreshLiveFeedBaseline, getBaselineSymbols } = await import(
     '@/lib/marketData/liveFeedBaseline'
   );
-  await refreshLiveFeedBaseline();
+  // Baseline refresh is soft-timed inside refreshLiveFeedBaseline so a
+  // slow q365_signals scan cannot stall request handlers that await this.
+  try {
+    await refreshLiveFeedBaseline();
+  } catch (err) {
+    log.warn('baseline refresh failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   const { getStreamServerStats } = await import('@/lib/ws/streamServer');
   const ws = getStreamServerStats();
 

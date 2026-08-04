@@ -65,6 +65,9 @@ function getRedis(): Redis | null {
         retryStrategy: (times) => (times > 3 ? null : 1000),
         lazyConnect: true,
         maxRetriesPerRequest: 1,
+        // Fail fast — a hung Redis must not stall /api/signals.
+        connectTimeout: Math.max(500, Number(process.env.REDIS_CONNECT_TIMEOUT_MS) || 2_000),
+        commandTimeout: Math.max(500, Number(process.env.REDIS_COMMAND_TIMEOUT_MS) || 2_000),
       });
       redis.on('error', () => {
         if (!redisFailed) {
