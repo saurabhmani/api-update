@@ -2,7 +2,7 @@
 //  Strategy Hub — mode management service (Phase 2)
 // ════════════════════════════════════════════════════════════════
 
-import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY } from '@strategy-engine';
 import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
 import type { StrategyMode, StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import { ACTIVE_RUNNER_STRATEGIES, getRegistryEntry, listRegistryStrategyIds } from '../registry';

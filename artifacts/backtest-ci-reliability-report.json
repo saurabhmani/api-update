@@ -1,0 +1,14 @@
+{
+  "executionStatus": "blocked",
+  "authoritativeEnvironment": "GitHub Actions ubuntu-latest",
+  "workflow": ".github/workflows/ci.yml / backtest-worker-integration",
+  "consecutiveSuccessfulRuns": 0,
+  "durationsSeconds": [],
+  "durationVariance": null,
+  "artifactConsistency": "not-measured-across-ci-runs",
+  "flakyTestCount": null,
+  "flakeRate": null,
+  "failureClassification": "environment-access",
+  "blocker": "GitHub CLI/authenticated Actions control is unavailable and the milestone changes are uncommitted, so repeated authoritative CI executions could not be dispatched.",
+  "verdict": "not-executed"
+}

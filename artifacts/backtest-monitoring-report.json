@@ -1,0 +1,53 @@
+{
+  "executionStatus": "passed",
+  "environment": {
+    "type": "disposable staging-compatible local runtime",
+    "prometheus": "3.5.0",
+    "grafana": "12.1.0",
+    "pushgateway": "1.11.1",
+    "productionDeployment": false
+  },
+  "deployment": {
+    "prometheusRuleGroups": 1,
+    "prometheusRules": 8,
+    "scrapeTargetHealth": "up",
+    "grafanaDashboard": "Quantorus365 Backtest Worker — Staging",
+    "dashboardProvisioned": true,
+    "parityMetricQueryable": true,
+    "parityMetricValue": 1
+  },
+  "alertVerification": {
+    "method": "promtool deterministic rule tests using configured evaluation and for durations",
+    "rulesSyntax": "passed",
+    "firingAndRecovery": "passed",
+    "alerts": [
+      "BacktestDuplicateClaim",
+      "BacktestStaleEpochClaim",
+      "BacktestWorkerNotReady",
+      "BacktestQueueAgeHigh",
+      "BacktestHeartbeatFailure",
+      "BacktestUnexpectedRecovery",
+      "BacktestPoolSaturation",
+      "BacktestParityFailed"
+    ]
+  },
+  "signalCoverage": {
+    "queueDepth": "dashboard",
+    "queueAge": "dashboard+alert",
+    "ownershipMode": "dashboard",
+    "ownershipEpoch": "dashboard",
+    "workerReadiness": "dashboard+alert",
+    "workerEnabled": "dashboard+alert",
+    "heartbeatFailures": "dashboard+alert",
+    "leaseExpiry": "lost-leases dashboard and stale-recovery alert",
+    "staleRecovery": "dashboard+alert",
+    "duplicateClaims": "dashboard+alert",
+    "parityStatus": "dashboard+alert",
+    "rollbackEvents": "rollback audit artifact plus validation metric",
+    "workerRestarts": "process_start_time_seconds dashboard expression",
+    "processingDuration": "dashboard",
+    "queueWaitDuration": "dashboard"
+  },
+  "thresholdStatus": "proposed; operator approval not recorded",
+  "verdict": "passed"
+}

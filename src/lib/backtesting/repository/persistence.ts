@@ -21,6 +21,7 @@ export async function saveBacktestRun(
   run: BacktestRunRecord,
   trades: SimulatedTrade[] = [],
   equityCurve: EquityPoint[] = [],
+  preserveExistingStatus = false,
 ): Promise<void> {
   // 1. Insert run metadata
   await db.query(
@@ -29,8 +30,8 @@ export async function saveBacktestRun(
      ON DUPLICATE KEY UPDATE
        name=VALUES(name),
        config_json=VALUES(config_json),
-       status=VALUES(status),
-       completed_at=VALUES(completed_at),
+       status=IF(?, status, VALUES(status)),
+       completed_at=IF(?, completed_at, VALUES(completed_at)),
        duration_ms=VALUES(duration_ms),
        error=VALUES(error),
        summary_json=VALUES(summary_json),
@@ -45,6 +46,7 @@ export async function saveBacktestRun(
       JSON.stringify(run.strategyBreakdown),
       JSON.stringify(run.regimeBreakdown),
       run.signalCount, run.tradeCount,
+      preserveExistingStatus, preserveExistingStatus,
     ],
   );
 

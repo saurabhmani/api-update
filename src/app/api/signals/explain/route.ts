@@ -22,7 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
 import { db }                        from '@/lib/db';
-import { getStrategyMeta }           from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta }           from '@strategy-engine';
 import { explainSignal }             from '@/lib/explainability/signalExplanation';
 import { detectMarketRegime, detectEnhancedRegime } from '@/lib/signal-engine/regime/detectMarketRegime';
 import type { Candle } from '@/lib/signal-engine/types/signalEngine.types';

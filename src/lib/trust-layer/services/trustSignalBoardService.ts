@@ -2,7 +2,7 @@
 //  Trust Signal Board — confirmed snapshots → board rows
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import { enrichWithLiveLtp } from '@/lib/signals/confirmedSignalsService';
 import { loadSnapshotsForBoard, type SignalBoardFilters } from '../repository/signalSnapshots';
 import { loadMarketRegimeSnapshot } from './benchmarkCandles';

@@ -1,0 +1,62 @@
+rule_files:
+  - ../backtest-worker-alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: quantorus_backtest_duplicate_claims_total
+        values: 0 1 1 1
+      - series: quantorus_backtest_stale_epoch_rejections_total
+        values: 0 1 1 1
+      - series: quantorus_backtest_heartbeat_failures_total
+        values: 0 1 1 1
+      - series: quantorus_backtest_stale_recoveries_total
+        values: 0 1 1 1
+      - series: quantorus_backtest_worker_enabled
+        values: 1x15
+      - series: quantorus_backtest_worker_readiness
+        values: 0x12 1x3
+      - series: quantorus_backtest_oldest_queued_age_seconds
+        values: 180x7 0x8
+      - series: quantorus_backtest_mysql_pool_utilization
+        values: 0.9x7 0x8
+      - series: quantorus_backtest_persisted_parity_ok
+        values: 0 0 1x13
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BacktestDuplicateClaim
+        exp_alerts: [{exp_labels: {alertname: BacktestDuplicateClaim}}]
+      - eval_time: 2m
+        alertname: BacktestStaleEpochClaim
+        exp_alerts: [{exp_labels: {alertname: BacktestStaleEpochClaim}}]
+      - eval_time: 2m
+        alertname: BacktestHeartbeatFailure
+        exp_alerts: [{exp_labels: {alertname: BacktestHeartbeatFailure}}]
+      - eval_time: 2m
+        alertname: BacktestUnexpectedRecovery
+        exp_alerts: [{exp_labels: {alertname: BacktestUnexpectedRecovery}}]
+      - eval_time: 11m
+        alertname: BacktestWorkerNotReady
+        exp_alerts: [{exp_labels: {alertname: BacktestWorkerNotReady}}]
+      - eval_time: 6m
+        alertname: BacktestQueueAgeHigh
+        exp_alerts: [{exp_labels: {alertname: BacktestQueueAgeHigh}}]
+      - eval_time: 6m
+        alertname: BacktestPoolSaturation
+        exp_alerts: [{exp_labels: {alertname: BacktestPoolSaturation}}]
+      - eval_time: 1m
+        alertname: BacktestParityFailed
+        exp_alerts: [{exp_labels: {alertname: BacktestParityFailed}}]
+      - eval_time: 14m
+        alertname: BacktestWorkerNotReady
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: BacktestQueueAgeHigh
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: BacktestPoolSaturation
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: BacktestParityFailed
+        exp_alerts: []
+

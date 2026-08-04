@@ -585,6 +585,8 @@ export async function GET(req: NextRequest) {
 // ── PATCH: mutate event triage status ─────────────────────────
 
 export async function PATCH(req: NextRequest) {
+  try { await requireSession(); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
   try {
     await ensureManipulationEngineTables();
     const body = await req.json();

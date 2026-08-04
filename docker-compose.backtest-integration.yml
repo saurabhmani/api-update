@@ -1,0 +1,18 @@
+services:
+  backtest-mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: integration-root-only
+      MYSQL_DATABASE: quantorus_backtest_it
+      MYSQL_USER: backtest_it
+      MYSQL_PASSWORD: integration-only
+    ports:
+      - "33316:3306"
+    command: ["--default-time-zone=+00:00"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -ubacktest_it -pintegration-only --silent"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    tmpfs:
+      - /var/lib/mysql

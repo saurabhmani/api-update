@@ -1,0 +1,83 @@
+{
+  "ok": true,
+  "executionStatus": "passed",
+  "verdict": "passed",
+  "timestamp": "2026-08-04T08:04:41.098Z",
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2"
+  },
+  "processes": [
+    {
+      "name": "worker-monolith-mode",
+      "pid": 68
+    },
+    {
+      "name": "monolith-owner",
+      "pid": 69
+    },
+    {
+      "name": "monolith-service-mode",
+      "pid": 185
+    },
+    {
+      "name": "worker-service-owner",
+      "pid": 186
+    },
+    {
+      "name": "worker-crash",
+      "pid": 331
+    },
+    {
+      "name": "monolith-reclaim",
+      "pid": 367
+    }
+  ],
+  "scenarios": {
+    "monolith": {
+      "pass": true,
+      "row": {
+        "attempt_count": 1,
+        "worker_version": "monolith",
+        "processor_type": "monolith"
+      }
+    },
+    "service": {
+      "pass": true,
+      "row": {
+        "status": "completed",
+        "attempt_count": 1,
+        "worker_version": "harness-worker",
+        "processor_type": "service"
+      }
+    },
+    "disabled": {
+      "pass": true,
+      "row": {
+        "attempt_count": 0
+      }
+    },
+    "crashRecovery": {
+      "pass": true,
+      "claimed": {
+        "processor_id": "backtest-worker:0d67a32b4d37:354:harness-crash-worker",
+        "ownership_epoch": 5,
+        "lease_expires_at": "2026-08-04 08:05:41.960",
+        "attempt_count": 1
+      },
+      "recovered": {
+        "requeued": 1,
+        "dead": 0
+      },
+      "final": {
+        "status": "completed",
+        "attempt_count": 2,
+        "processor_type": "monolith",
+        "ownership_epoch": 7,
+        "signal_count": 3,
+        "trade_count": 3
+      }
+    }
+  }
+}

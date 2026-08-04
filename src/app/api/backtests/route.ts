@@ -15,14 +15,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runBacktest } from '@/lib/backtesting/runner/backtestRunner';
 import { persistFullRun } from '@/lib/backtesting/runner/runOrchestrator';
-import { listBacktestRuns } from '@/lib/backtesting/repository/persistence';
 import { validateBacktestConfig } from '@/lib/backtesting/utils/validation';
 import { DEFAULT_BACKTEST_CONFIG } from '@/lib/backtesting/config/defaults';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { queueBacktestRun } from '@/lib/backtesting/runner/backtestQueue';
 import type { BacktestRunConfig } from '@/lib/backtesting/types';
+import { requireSession } from '@/lib/session';
+import { db } from '@/lib/db';
+import { backtestActorFromSession, listBacktestsForActor } from '@/lib/backtesting/authorization/resourceAuthorization';
 
 export async function POST(req: NextRequest) {
+  let actor;
+  try { actor = await requireSession(); }
+  catch { return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }); }
   const ROUTE = '/api/backtests';
   try {
     await ensureBacktestTables();
@@ -57,6 +62,7 @@ export async function POST(req: NextRequest) {
         orchestrationError = err instanceof Error ? err.message : String(err);
         console.error('[API] Sync-mode orchestration failed:', err);
       }
+      await db.query(`UPDATE backtest_runs SET created_by=? WHERE run_id=? AND created_by IS NULL`, [String(actor.id), result.runId]);
       return NextResponse.json({
         ok:            true,
         runId:         result.runId,
@@ -76,7 +82,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Default path — async queue.
-    const queued = await queueBacktestRun(config);
+    const queued = await queueBacktestRun(config, actor.id);
     return NextResponse.json({
       ok:          true,
       runId:       queued.runId,
@@ -105,10 +111,13 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET() {
+  let session;
+  try { session = await requireSession(); }
+  catch { return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }); }
   const ROUTE = '/api/backtests';
   try {
     await ensureBacktestTables();
-    const runs = await listBacktestRuns();
+    const runs = await listBacktestsForActor(backtestActorFromSession(session));
     return NextResponse.json({ ok: true, runs });
   } catch (err) {
     console.error('[Backtesting API] Route failed', {

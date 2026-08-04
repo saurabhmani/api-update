@@ -23,7 +23,7 @@
 //  Pure module — DB/I-O happens in the calling route.
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import type { ManipulationRisk } from '@/lib/manipulation-engine/manipulationSignalRisk';
 
 // ── Module statuses ──────────────────────────────────────────

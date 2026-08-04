@@ -2,7 +2,7 @@
 //  Strategy Hub alert engine (Phase 6)
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import { upsertAlert, listAlerts } from '../repository/opsAlerts';
 import type { StrategyHealthSnapshot, StrategyAlert } from './types';
 

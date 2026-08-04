@@ -3,7 +3,7 @@
 //  Effective = DB override → registry default
 // ════════════════════════════════════════════════════════════════
 
-import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY } from '@strategy-engine';
 import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
 import {
   CONFIGURABLE_PARAM_KEYS,

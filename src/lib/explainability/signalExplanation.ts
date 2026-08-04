@@ -16,7 +16,7 @@ import {
   getStrategyMeta,
   getStrategyExplanation,
   getStrategyInvalidation,
-} from '@/lib/signal-engine/strategies/strategyRegistry';
+} from '@strategy-engine';
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import type { ConfirmationAggregate } from '@/lib/confirmation/confirmationAggregator';
 import type { StrategyRoutingDecision, RoutedRegime } from '@/lib/strategies/regimeRouter';

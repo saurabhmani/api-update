@@ -22,7 +22,7 @@
 import {
   STRATEGY_REGISTRY,
   getStrategyMeta,
-} from '@/lib/signal-engine/strategies/strategyRegistry';
+} from '@strategy-engine';
 import type {
   MarketRegimeLabel,
   StrategyName,

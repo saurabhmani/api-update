@@ -31,6 +31,18 @@
       ],
       "@rpc/*": [
         "./packages/rpc/src/*"
+      ],
+      "@strategy-engine": [
+        "./packages/strategy-engine/src/index.ts"
+      ],
+      "@strategy-engine/*": [
+        "./packages/strategy-engine/src/*"
+      ],
+      "@risk-engine": [
+        "./packages/risk-engine/src/index.ts"
+      ],
+      "@market-data": [
+        "./packages/market-data/src/index.ts"
       ]
     },
     "plugins": [

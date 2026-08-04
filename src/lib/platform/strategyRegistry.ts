@@ -6,7 +6,7 @@
 import {
   STRATEGY_REGISTRY,
   getStrategiesForRegime,
-} from '@/lib/signal-engine/strategies/strategyRegistry';
+} from '@strategy-engine';
 import type { StrategyName, StrategyRegistryEntry } from '@/lib/signal-engine/types/signalEngine.types';
 import type { AssetClass, StrategyDefinition, StrategyFamily } from './types';
 import { MULTI_ASSET_SCHEMA_VERSION } from './types';

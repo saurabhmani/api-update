@@ -10,6 +10,7 @@ import {
   forceClearInFlight,
 } from '@/lib/scanner/scannerState';
 import { logger } from '@/lib/logger';
+import { requireAdmin } from '@/lib/session';
 
 const log = logger.child({ route: '/api/scanner/custom-universe/run' });
 
@@ -28,6 +29,8 @@ const scanProgressOpts = {
 };
 
 export async function POST(req: NextRequest) {
+  try { await requireAdmin(); }
+  catch { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }); }
   try {
     clearStaleLockIfNeeded();
 

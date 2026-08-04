@@ -5,7 +5,7 @@
 import { db } from '@/lib/db';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { getActiveConfirmedSnapshots } from '@/lib/signal-engine/repository/readConfirmedSnapshots';
-import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY } from '@strategy-engine';
 import { computePnl } from '@/services/portfolioLedgerService';
 import { computeRiskSummary } from '@/services/riskCoreService';
 import { loadMarketRegimeSnapshot } from './benchmarkCandles';

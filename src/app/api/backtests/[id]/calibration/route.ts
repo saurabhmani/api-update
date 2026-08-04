@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { resolveCalibrationForRun } from '@/lib/backtesting/repository/resolveCalibration';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
 
 export async function GET(
   req: NextRequest,
@@ -16,6 +17,8 @@ export async function GET(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/calibration`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_calibration');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
     // Prefer persisted snapshots; recompute + backfill from trades when

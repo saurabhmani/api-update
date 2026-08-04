@@ -9,6 +9,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/session';
 import {
   ensureManipulationEngineTables, loadSnapshotsByDate, saveSnapshot,
 } from '@/lib/manipulation-engine';
@@ -17,6 +18,7 @@ import { scanSymbol } from '@/lib/manipulation-engine/pipeline/runScan';
 import { loadDailyBars } from '@/lib/manipulation-engine/data/candleLoader';
 
 export async function GET(req: NextRequest) {
+  try { await requireAdmin(); } catch { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }); }
   try {
     const { searchParams } = req.nextUrl;
     const date = searchParams.get('date');
@@ -53,6 +55,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try { await requireAdmin(); } catch { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }); }
   try {
     const body = await req.json().catch(() => ({}));
     const symbols: string[] = Array.isArray(body.symbols) ? body.symbols : [];

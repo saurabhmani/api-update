@@ -3,7 +3,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
 import { listRegistryStrategyIds, ACTIVE_RUNNER_STRATEGIES } from '../registry';
 import { loadAllStrategyProfiles } from '../repository/strategyProfiles';

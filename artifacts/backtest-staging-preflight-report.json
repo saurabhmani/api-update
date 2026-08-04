@@ -1,0 +1,391 @@
+{
+  "ok": true,
+  "timestamp": "2026-08-04T08:08:12.684Z",
+  "checks": {
+    "authority": {
+      "owner": "monolith",
+      "epoch": 7,
+      "updatedAt": "2026-08-04T08:05:42.977Z",
+      "updatedBy": "harness-rollback"
+    },
+    "monolith": {
+      "processorType": "monolith",
+      "configuredOwner": "monolith",
+      "configuredEpoch": 7,
+      "authoritativeOwner": "monolith",
+      "authoritativeEpoch": 7,
+      "applicationVersion": "local-evidence",
+      "allowed": true,
+      "reason": "authorized"
+    },
+    "worker": {
+      "processorType": "service",
+      "configuredOwner": "monolith",
+      "authoritativeOwner": "monolith",
+      "authoritativeEpoch": 7,
+      "workerEnabled": false,
+      "applicationVersion": "local-evidence",
+      "workerVersion": "0.2.0",
+      "allowed": false,
+      "reason": "invalid-configuration"
+    },
+    "queuePreflight": {
+      "ok": true,
+      "metadata": {
+        "database": "quantorus_backtest_it",
+        "migration": "016",
+        "executedAt": "2026-08-04T08:08:12.496Z"
+      },
+      "blockers": {
+        "invalidStatuses": 0,
+        "runningWithoutTimestamps": 0,
+        "attemptsExhausted": 0,
+        "cancellationInconsistencies": 0
+      },
+      "warnings": {
+        "duplicateIdempotencyValues": 0,
+        "terminalWithoutCompletion": 0,
+        "staleRunningJobs": 0,
+        "ownerlessBacktests": 4
+      },
+      "report": {
+        "duplicateIdempotencyValues": 0,
+        "invalidStatuses": 0,
+        "runningWithoutTimestamps": 0,
+        "terminalWithoutCompletion": 0,
+        "staleRunningJobs": 0,
+        "attemptsExhausted": 0,
+        "cancellationInconsistencies": 0,
+        "ownerlessBacktests": 4
+      }
+    },
+    "migrations": [
+      {
+        "version": "016",
+        "checksum": "0eb5f9ad3f5d038a1e9166374322def42256cf7ecfe3a859f199c736fd6623f0",
+        "applied_at": "2026-08-04T08:04:40.935Z"
+      },
+      {
+        "version": "017",
+        "checksum": "c2ddf15250bea6a3a8a227d3a645971587089b4cc9bfcaa467d4cde48ad1a5f0",
+        "applied_at": "2026-08-04T08:04:40.996Z"
+      }
+    ],
+    "activeJobs": [],
+    "obsoleteActiveJobs": [],
+    "conflictingProcessors": [],
+    "settings": {
+      "leaseMs": 60000,
+      "heartbeatMs": 15000,
+      "workerConcurrency": 1
+    },
+    "operator": "codex-local-evidence",
+    "commit": "c6b1241f37b1ab92f4ef5e2ebc9d9e21467944e6",
+    "persistedParity": {
+      "executionStatus": "passed",
+      "verdict": "passed",
+      "fixtureId": "q365-backtest-canary-synthetic-v2",
+      "fixtureVersion": "2.0.0",
+      "fixtureContentHash": "abe8035bc8815515d59ce2eeff317c09ff8c02080002aebf90e3f5ad2f92f1b1",
+      "monolithRunId": "harness-monolith",
+      "workerRunId": "harness-service",
+      "comparedTables": [
+        "backtest_runs",
+        "backtest_trades",
+        "backtest_signals",
+        "backtest_signal_outcomes",
+        "backtest_metrics",
+        "calibration_snapshots",
+        "backtest_equity_curve",
+        "backtest_performance_metrics",
+        "backtest_news_analytics",
+        "backtest_news_effectiveness",
+        "backtest_summary"
+      ],
+      "normalization": [
+        "attempt_count",
+        "avg_ms_per_symbol",
+        "backtest_id",
+        "cancellation_requested_at",
+        "claimed_at",
+        "completed_at",
+        "computed_at",
+        "correlation_id",
+        "created_at",
+        "duration_ms",
+        "evaluated_at",
+        "heartbeat_at",
+        "id",
+        "lease_expires_at",
+        "max_ms_per_symbol",
+        "memory_heap_mb",
+        "memory_rss_mb",
+        "ms_per_trading_day",
+        "ownership_epoch",
+        "preload_ms",
+        "processing_completed_at",
+        "processing_started_at",
+        "processor_id",
+        "processor_type",
+        "run_id",
+        "signals_per_sec",
+        "simulation_ms",
+        "started_at",
+        "total_runtime_ms",
+        "trades_per_sec",
+        "updated_at",
+        "worker_instance_id",
+        "worker_version"
+      ],
+      "rowCounts": {
+        "backtest_runs": {
+          "monolith": 1,
+          "worker": 1
+        },
+        "backtest_trades": {
+          "monolith": 3,
+          "worker": 3
+        },
+        "backtest_signals": {
+          "monolith": 3,
+          "worker": 3
+        },
+        "backtest_signal_outcomes": {
+          "monolith": 3,
+          "worker": 3
+        },
+        "backtest_metrics": {
+          "monolith": 30,
+          "worker": 30
+        },
+        "calibration_snapshots": {
+          "monolith": 15,
+          "worker": 15
+        },
+        "backtest_equity_curve": {
+          "monolith": 59,
+          "worker": 59
+        },
+        "backtest_performance_metrics": {
+          "monolith": 1,
+          "worker": 1
+        },
+        "backtest_news_analytics": {
+          "monolith": 1,
+          "worker": 1
+        },
+        "backtest_news_effectiveness": {
+          "monolith": 0,
+          "worker": 0
+        },
+        "backtest_summary": {
+          "monolith": 1,
+          "worker": 1
+        }
+      },
+      "mismatches": []
+    },
+    "fixture": {
+      "ok": true,
+      "fixtureId": "q365-backtest-canary-synthetic-v2",
+      "fixtureVersion": "2.0.0",
+      "contentHash": "abe8035bc8815515d59ce2eeff317c09ff8c02080002aebf90e3f5ad2f92f1b1",
+      "hashes": {
+        "fixture.json": "5c0036805de98e78187bf5dd69a8cf2f502ce237bec22b5288eb1f7416fb5ca2",
+        "candles.json": "6cdc8c029558bab209221e23b5ac9bff411cca255d5c117cf19c979a9a7a26f0",
+        "expected-characteristics.json": "232f18f08400369a82d5aa6e9a76dae6c7e2eae3fa7c46bb7e33f5c4f87ac2dd"
+      },
+      "categories": {
+        "contentIntegrity": {
+          "ok": true,
+          "errors": []
+        },
+        "manifestIntegrity": {
+          "ok": true,
+          "errors": []
+        },
+        "hashIntegrity": {
+          "ok": true,
+          "errors": []
+        },
+        "schemaValidity": {
+          "ok": true,
+          "errors": []
+        },
+        "runnerSuitability": {
+          "ok": true,
+          "errors": []
+        },
+        "expectedPathSuitability": {
+          "ok": true,
+          "errors": []
+        }
+      },
+      "blockers": [],
+      "counts": {
+        "candles": 840,
+        "perSymbol": {
+          "FIXTURE-A": 280,
+          "FIXTURE-B": 280,
+          "FIXTURE-BENCH": 280
+        },
+        "configuredWarmupBars": 220,
+        "requiredBars": 260
+      },
+      "caveat": "Static expected-path suitability does not replace real-runner execution evidence."
+    },
+    "twoProcess": {
+      "ok": true,
+      "timestamp": "2026-08-04T08:04:41.098Z",
+      "environment": {
+        "platform": "linux",
+        "arch": "x64",
+        "node": "v22.23.2"
+      },
+      "processes": [
+        {
+          "name": "worker-monolith-mode",
+          "pid": 68
+        },
+        {
+          "name": "monolith-owner",
+          "pid": 69
+        },
+        {
+          "name": "monolith-service-mode",
+          "pid": 185
+        },
+        {
+          "name": "worker-service-owner",
+          "pid": 186
+        },
+        {
+          "name": "worker-crash",
+          "pid": 331
+        },
+        {
+          "name": "monolith-reclaim",
+          "pid": 367
+        }
+      ],
+      "scenarios": {
+        "monolith": {
+          "pass": true,
+          "row": {
+            "attempt_count": 1,
+            "worker_version": "monolith",
+            "processor_type": "monolith"
+          }
+        },
+        "service": {
+          "pass": true,
+          "row": {
+            "status": "completed",
+            "attempt_count": 1,
+            "worker_version": "harness-worker",
+            "processor_type": "service"
+          }
+        },
+        "disabled": {
+          "pass": true,
+          "row": {
+            "attempt_count": 0
+          }
+        },
+        "crashRecovery": {
+          "pass": true,
+          "claimed": {
+            "processor_id": "backtest-worker:0d67a32b4d37:354:harness-crash-worker",
+            "ownership_epoch": 5,
+            "lease_expires_at": "2026-08-04 08:05:41.960",
+            "attempt_count": 1
+          },
+          "recovered": {
+            "requeued": 1,
+            "dead": 0
+          },
+          "final": {
+            "status": "completed",
+            "attempt_count": 2,
+            "processor_type": "monolith",
+            "ownership_epoch": 7,
+            "signal_count": 3,
+            "trade_count": 3
+          }
+        }
+      }
+    },
+    "rollback": {
+      "executionStatus": "passed",
+      "verdict": "passed",
+      "processIds": {
+        "worker": 331,
+        "monolith": 367
+      },
+      "ownershipEpochs": [
+        5,
+        6,
+        7
+      ],
+      "activeJob": {
+        "processor_id": "backtest-worker:0d67a32b4d37:354:harness-crash-worker",
+        "ownership_epoch": 5,
+        "lease_expires_at": "2026-08-04 08:05:41.960",
+        "attempt_count": 1
+      },
+      "recovery": {
+        "requeued": 1,
+        "dead": 0
+      },
+      "final": {
+        "status": "completed",
+        "attempt_count": 2,
+        "processor_type": "monolith",
+        "ownership_epoch": 7,
+        "signal_count": 3,
+        "trade_count": 3
+      },
+      "attemptsPreserved": true,
+      "rowsDeleted": 0
+    },
+    "authorizationRegression": {
+      "ok": true,
+      "executedAt": "2026-08-03T18:19:31.000Z",
+      "suites": [
+        "backtestResourceAuthorization.vitest.ts",
+        "backtestRouteAuthorization.vitest.ts",
+        "backtestCancellationRoute.vitest.ts"
+      ],
+      "testsPassed": 16,
+      "testsFailed": 0
+    },
+    "rollbackTool": true,
+    "auditOutput": "artifacts/backtest-ownership-audit.json",
+    "workerEndpoint": {
+      "readinessStatus": 503,
+      "readiness": {
+        "healthy": true,
+        "ready": false,
+        "reason": "invalid-configuration",
+        "configuredOwner": "monolith",
+        "authoritativeEpoch": 7,
+        "processorType": "service",
+        "processorId": "backtest-worker:745693610f3f:31:b8965747-af1e-4465-9097-ce4112074c2c",
+        "workerEnabled": false,
+        "decision": {
+          "processorType": "service",
+          "configuredOwner": "monolith",
+          "authoritativeOwner": "monolith",
+          "authoritativeEpoch": 7,
+          "workerEnabled": false,
+          "applicationVersion": "unknown",
+          "workerVersion": "0.2.0",
+          "allowed": false,
+          "reason": "invalid-configuration"
+        },
+        "lastAuthorityRefreshSuccess": "2026-08-04T08:08:12.184Z"
+      },
+      "metricsStatus": 200
+    }
+  }
+}

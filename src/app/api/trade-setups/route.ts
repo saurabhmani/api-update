@@ -19,7 +19,7 @@ import {
   getMarketStatus,
 } from '@/lib/marketData/marketHours';
 import { logger } from '@/lib/logger';
-import { resolvePrice } from '@/lib/marketData/resolver/marketDataResolver';
+import { resolvePrice } from '@market-data';
 import {
   observeProvider,
   observeRedis,

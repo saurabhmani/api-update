@@ -16,7 +16,7 @@ import {
   type PerformanceWindow,
   type StrategyPerformance,
 } from '@/lib/strategies/strategyPerformance';
-import { getStrategyMeta, STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta, STRATEGY_REGISTRY } from '@strategy-engine';
 import {
   analyticsCacheKey,
   getAnalyticsCache,

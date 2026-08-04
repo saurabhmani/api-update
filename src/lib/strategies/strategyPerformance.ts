@@ -27,7 +27,7 @@ import { db } from '@/lib/db';
 import {
   STRATEGY_REGISTRY,
   getStrategyMeta,
-} from '@/lib/signal-engine/strategies/strategyRegistry';
+} from '@strategy-engine';
 import type {
   StrategyCategory,
 } from '@/lib/signal-engine/types/signalEngine.types';

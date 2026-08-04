@@ -4,14 +4,14 @@
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  loadBacktestRun,
-  loadBacktestTrades,
-} from '@/lib/backtesting/repository/persistence';
+import { loadBacktestTrades } from '@/lib/backtesting/repository/persistence';
 import { loadBacktestMetrics } from '@/lib/backtesting/repository/metricsPersistence';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { normalizeStatus } from '@/lib/backtesting/runner/backtestQueue';
 import { db } from '@/lib/db';
+import { requireSession } from '@/lib/session';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
+import { auditBacktestAuthorization, backtestActorFromSession, deleteBacktestForActor } from '@/lib/backtesting/authorization/resourceAuthorization';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,20 +44,11 @@ export async function GET(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_detail');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
-    const run = await loadBacktestRun(params.id);
-    if (!run) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'Backtest run not found',
-          route: ROUTE,
-          generatedAt: new Date().toISOString(),
-        },
-        { status: 404 },
-      );
-    }
+    const run = access.run;
 
     const includes = parseIncludes(req.nextUrl.searchParams.get('include'));
 
@@ -208,32 +199,23 @@ export async function DELETE(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}`;
+  let session;
+  try { session = await requireSession(); }
+  catch { return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 }); }
   try {
     await ensureBacktestTables();
     const runId = params.id;
-
-    // Delete from all related tables (no cascade defined, so do it manually)
-    const tables = [
-      'backtest_trades',
-      'backtest_signals',
-      'backtest_signal_outcomes',
-      'backtest_metrics',
-      'backtest_equity_curve',
-      'backtest_audit_logs',
-      'calibration_snapshots',
-    ];
-
-    for (const t of tables) {
-      await db.query(`DELETE FROM ${t} WHERE run_id = ?`, [runId]).catch(() => {});
-    }
-
-    const result = await db.query(`DELETE FROM backtest_runs WHERE run_id = ?`, [runId]);
+    const actor = backtestActorFromSession(session); const correlationId = req.headers.get('x-correlation-id') ?? crypto.randomUUID();
+    const result = await deleteBacktestForActor(runId, actor);
+    auditBacktestAuthorization({ actor,runId,route:ROUTE,operation:'delete',decision:result,correlationId });
+    if (result === 'not_found_or_unauthorized') return NextResponse.json({ ok:false,error:'Backtest not found' },{ status:404 });
+    if (result === 'active_not_deletable') return NextResponse.json({ ok:false,error:'Active Backtest cannot be deleted' },{ status:409 });
 
     return NextResponse.json({
       ok: true,
       success: true,
       runId,
-      deleted: result.affectedRows ?? 0,
+      deleted: 1,
     });
   } catch (err) {
     console.error('[Backtesting API] Route failed', {

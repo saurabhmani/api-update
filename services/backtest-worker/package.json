@@ -1,0 +1,6 @@
+{
+  "name": "@quantorus365/backtest-worker",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": { "start": "tsx src/server.ts", "typecheck": "tsc --noEmit", "test": "vitest run" }
+}

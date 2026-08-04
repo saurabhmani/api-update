@@ -2,7 +2,7 @@
 //  Unified operational activity timeline (Phase 6)
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import { listDeploymentHistory } from '../repository/strategyProfiles';
 import { listModeHistory } from '../repository/modeHistory';
 import { listConfigHistory } from '../repository/configHistory';

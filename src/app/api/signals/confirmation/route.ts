@@ -22,7 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession }            from '@/lib/session';
 import { db }                        from '@/lib/db';
 import { getSector }                 from '@/lib/signal-engine/constants/phase3.constants';
-import { getStrategyMeta }           from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta }           from '@strategy-engine';
 import { analyzeOptionChain }        from '@/services/optionIntelligence';
 import {
   aggregateConfirmation,

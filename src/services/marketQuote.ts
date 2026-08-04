@@ -14,7 +14,7 @@
  * rankings-table fallback when movers are unavailable.
  */
 import { cacheGet, cacheSet }   from '@/lib/redis';
-import { resolvePrice }         from '@/lib/marketData/resolver/marketDataResolver';
+import { resolvePrice }         from '@market-data';
 import { fetchYahooPublicQuote, fetchYahoo52WeekRange } from '@/lib/marketData/yahooChartPublic';
 import { fetchYahooFundamentals } from '@/lib/marketData/yahooFundamentals';
 import { isMarketOpen, getMarketStatus } from '@/lib/marketData/marketHours';

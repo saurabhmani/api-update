@@ -22,7 +22,7 @@
 //  No side effects, no DB calls, no Yahoo. Pure functions only.
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import type { EntryType, StrategyCategory } from '@/lib/signal-engine/types/signalEngine.types';
 
 /**

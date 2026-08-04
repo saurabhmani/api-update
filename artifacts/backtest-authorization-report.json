@@ -1,0 +1,1 @@
+{"ok":true,"executedAt":"2026-08-03T18:19:31.000Z","suites":["backtestResourceAuthorization.vitest.ts","backtestRouteAuthorization.vitest.ts","backtestCancellationRoute.vitest.ts"],"testsPassed":16,"testsFailed":0}

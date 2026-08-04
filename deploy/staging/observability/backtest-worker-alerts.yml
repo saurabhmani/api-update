@@ -1,0 +1,27 @@
+groups:
+  - name: quantorus-backtest-worker-staging
+    rules:
+      - alert: BacktestDuplicateClaim
+        expr: increase(quantorus_backtest_duplicate_claims_total[5m]) > 0
+        for: 0m
+      - alert: BacktestStaleEpochClaim
+        expr: increase(quantorus_backtest_stale_epoch_rejections_total[5m]) > 0
+        for: 0m
+      - alert: BacktestWorkerNotReady
+        expr: quantorus_backtest_worker_enabled == 1 and quantorus_backtest_worker_readiness == 0
+        for: 10m
+      - alert: BacktestQueueAgeHigh
+        expr: quantorus_backtest_oldest_queued_age_seconds > 120
+        for: 5m
+      - alert: BacktestHeartbeatFailure
+        expr: increase(quantorus_backtest_heartbeat_failures_total[5m]) > 0
+        for: 0m
+      - alert: BacktestUnexpectedRecovery
+        expr: increase(quantorus_backtest_stale_recoveries_total[15m]) > 0
+        for: 0m
+      - alert: BacktestPoolSaturation
+        expr: quantorus_backtest_mysql_pool_utilization > 0.8
+        for: 5m
+      - alert: BacktestParityFailed
+        expr: quantorus_backtest_persisted_parity_ok != 1
+        for: 0m

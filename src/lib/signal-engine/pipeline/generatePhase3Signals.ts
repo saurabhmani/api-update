@@ -32,13 +32,13 @@ import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { BEARISH_STRATEGIES } from '../types/signalEngine.types';
 import { computeRelativeStrength, defaultRelativeStrength } from '../context/relativeStrength';
 import { calculatePositionSize } from '../position-sizing/positionSizer';
-import { evaluatePortfolioFit } from '../portfolio-fit/evaluatePortfolioFit';
 import {
-  evaluateExecutionReadiness,
+  evaluatePortfolioFit,
+  evaluatePreTrade as evaluateExecutionReadiness,
+  evaluateSignalRisk as computePhase3Risk,
   resetApprovalGateAggregator,
   flushApprovalGateAggregator,
-} from '../execution/executionReadiness';
-import { computePhase3Risk } from '../risk/phase3Risk';
+} from '@risk-engine';
 import { createLifecycle, resolveInitialState } from '../lifecycle/signalLifecycle';
 import { buildPhase3TradePlanForStrategy } from '../trade-plan/buildTradePlan';
 import { enhancePhase3TradePlan } from '../trade-plan/tradePlanEnhancements';

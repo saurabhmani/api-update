@@ -11,7 +11,7 @@
 //  returns a structured decision. Never writes to the DB.
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 
 export type ConflictStatus = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';

@@ -2,7 +2,7 @@
 //  Paper Trading Readiness — deployment gate checks
 // ════════════════════════════════════════════════════════════════
 
-import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY } from '@strategy-engine';
 import type { StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import type { PaperTradingReadiness, StrategyProfileRow } from '../types';
 import { resolveDeploymentLifecycle, type DeploymentLifecycle } from '../deploymentLifecycle';

@@ -223,6 +223,14 @@ export function getDb(): mysql.Pool {
   return g.__mysqlPool;
 }
 
+/** Close the process-local pool. Intended for bounded CLI/integration processes. */
+export async function closeDbPool(): Promise<void> {
+  if (!g.__mysqlPool) return;
+  const pool = g.__mysqlPool as mysql.Pool;
+  g.__mysqlPool = undefined;
+  await pool.end();
+}
+
 export const db = {
   query: async <T = any>(text: string, params?: any[]): Promise<{ rows: T[]; insertId?: number; affectedRows?: number }> => {
     const queryStartedAt = Date.now();

@@ -1,0 +1,15 @@
+{
+  "title":"Quantorus365 Backtest Worker — Staging",
+  "tags":["staging","backtest-worker"],
+  "editable":true,
+  "panels":[
+    {"title":"Ownership / readiness","type":"stat","targets":[{"expr":"quantorus_backtest_authoritative_owner"},{"expr":"quantorus_backtest_ownership_epoch"},{"expr":"quantorus_backtest_worker_readiness"},{"expr":"quantorus_backtest_worker_enabled"}]},
+    {"title":"Queue depth and oldest age","type":"timeseries","targets":[{"expr":"quantorus_backtest_queue_depth"},{"expr":"quantorus_backtest_oldest_queued_age_seconds"}]},
+    {"title":"Running jobs and claims","type":"timeseries","targets":[{"expr":"quantorus_backtest_running_jobs"},{"expr":"rate(quantorus_backtest_claims_total[5m])"},{"expr":"rate(quantorus_backtest_claim_conflicts_total[5m])"},{"expr":"rate(quantorus_backtest_duplicate_claims_total[5m])"}]},
+    {"title":"Epoch and lease safety","type":"timeseries","targets":[{"expr":"rate(quantorus_backtest_stale_epoch_rejections_total[5m])"},{"expr":"rate(quantorus_backtest_heartbeat_failures_total[5m])"},{"expr":"rate(quantorus_backtest_lost_leases_total[5m])"},{"expr":"rate(quantorus_backtest_stale_recoveries_total[5m])"}]},
+    {"title":"Attempts / failures / duration","type":"timeseries","targets":[{"expr":"rate(quantorus_backtest_failed_jobs_total[5m])"},{"expr":"rate(quantorus_backtest_dead_jobs_total[5m])"},{"expr":"quantorus_backtest_processing_duration_seconds"},{"expr":"quantorus_backtest_queue_wait_seconds"}]},
+    {"title":"MySQL and process","type":"timeseries","targets":[{"expr":"rate(quantorus_backtest_mysql_failures_total[5m])"},{"expr":"quantorus_backtest_mysql_pool_utilization"},{"expr":"changes(process_start_time_seconds{job=\"backtest-worker\"}[1h])"}]},
+    {"title":"Parity / security","type":"stat","targets":[{"expr":"quantorus_backtest_persisted_parity_ok"},{"expr":"rate(quantorus_backtest_authorization_denials_total[5m])"},{"expr":"rate(quantorus_backtest_admin_destructive_actions_total[5m])"}]}
+  ],
+  "schemaVersion":39,"version":1
+}

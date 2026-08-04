@@ -2,7 +2,7 @@
 //  Strategy Hub Registry — dynamic loader over signal-engine registry
 // ════════════════════════════════════════════════════════════════
 
-import { STRATEGY_REGISTRY } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY } from '@strategy-engine';
 import { resolveEffectiveStrategyMode } from '@/lib/signal-engine/strategies/strategyModePolicy';
 import type { StrategyCardStatus, StrategyHubSummary, StrategyHubDetail } from './types';
 import { categoryLabel, riskProfileLabel } from './categories';

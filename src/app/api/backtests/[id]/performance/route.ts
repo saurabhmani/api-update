@@ -10,13 +10,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadPerformanceMetrics } from '@/lib/backtesting/repository/metricsPersistence';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   props: { params: Promise<{ id: string }> }
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/performance`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_performance');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
     const perf = await loadPerformanceMetrics(params.id);

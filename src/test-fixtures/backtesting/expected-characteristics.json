@@ -1,0 +1,18 @@
+{
+  "acceptedCandidatesAtLeast": 1,
+  "rejectedCandidatesAtLeast": 1,
+  "openedTradesAtLeast": 1,
+  "closedTradesAtLeast": 1,
+  "requiresFees": true,
+  "requiresSlippage": true,
+  "requiresEquityChange": true,
+  "requiresDrawdown": true,
+  "requiresStrategyBreakdown": true,
+  "requiredProgressCheckpoints": [
+    25,
+    75,
+    100
+  ],
+  "finalStatus": "completed",
+  "notes": "Path expectations must be proven by the real runner; the verifier never fabricates business results."
+}

@@ -31,7 +31,7 @@ import {
   getNseDirectFallbackConfig,
   isNseDirectFallbackEnabled,
 }                                     from '@/lib/marketData/providerFlags';
-import { getConsecutivePrimaryFailures } from '@/lib/marketData/resolver/marketDataResolver';
+import { getConsecutivePrimaryFailures } from '@market-data';
 import { getNseDirectStatus }         from '@/lib/marketData/providers/nseDirectProvider';
 import { db }                         from '@/lib/db';
 import { ensureUniverseReady }        from '@/lib/startup/ensureUniverseReady';

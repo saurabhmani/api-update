@@ -172,3 +172,74 @@ jobs:
 
       - name: Run full vitest suite
         run: npm test
+
+  backtest-worker-integration:
+    name: Backtest Worker MySQL integration (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: integration-root-only
+          MYSQL_DATABASE: quantorus_backtest_it
+          MYSQL_USER: backtest_it
+          MYSQL_PASSWORD: integration-only
+        ports:
+          - 33316:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ubacktest_it -pintegration-only --silent"
+          --health-interval=2s --health-timeout=2s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Deterministic fixture generation and readiness
+        run: |
+          npm run backtest:fixture:generated
+          npm run backtest:fixture:verify
+          npx vitest run src/__tests__/backtestFixtureReadiness.vitest.ts src/__tests__/backtestFixtureProductionPath.vitest.ts
+      - name: Authorization, ownership, readiness, and parity contracts
+        run: npx vitest run src/__tests__/backtestResourceAuthorization.vitest.ts src/__tests__/backtestRouteAuthorization.vitest.ts src/__tests__/backtestPersistedParity.vitest.ts src/__tests__/backtestOwnershipAuthority.vitest.ts src/__tests__/backtestProcessorAuthority.vitest.ts src/__tests__/backtestOwnershipReadiness.vitest.ts src/__tests__/backtestQueueOwnershipAndLeases.vitest.ts
+      - name: Migration, preflight fixtures, claims, leases, recovery, cancellation
+        env:
+          BACKTEST_MYSQL_INTEGRATION: 'true'
+        run: |
+          npx vitest run src/__tests__/backtestFullSchema.mysql.integration.vitest.ts
+          npm run backtest:it:test 2>&1 | tee backtest-integration.log
+      - name: Independent process ownership and rollback preparation
+        continue-on-error: true
+        run: |
+          npm run backtest:two-process
+          npm run backtest:parity
+      - name: Validate staging observability assets
+        if: always()
+        run: |
+          npx vitest run src/__tests__/backtestObservability.vitest.ts
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/staging/observability:/work" -w /work prom/prometheus:v3.5.0 check rules backtest-worker-alerts.yml
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/staging/observability:/work" -w /work/validation prom/prometheus:v3.5.0 test rules backtest-worker-alert-tests.yml
+      - name: Preserve integration log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-worker-integration-log
+          path: backtest-integration.log
+      - name: Preserve parity and fixture reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-worker-preparation-reports
+          path: |
+            artifacts/backtest-parity-report.json
+            artifacts/backtest-two-process-report.json
+            artifacts/backtest-rollback-report.json
+            artifacts/backtest-staging-preflight-report.json
+            artifacts/backtest-authorization-report.json
+            artifacts/backtest-monitoring-report.json
+            artifacts/backtest-ci-reliability-report.json
+            artifacts/*.log
+            src/test-fixtures/backtesting/manifest.json

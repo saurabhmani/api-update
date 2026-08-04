@@ -29,7 +29,7 @@ import {
   getSignalRiskReward,
   type RankableSignal,
 } from '@/lib/signals/signalRanking';
-import { getStrategyDisplayName } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyDisplayName } from '@strategy-engine';
 import type {
   HistoricalCandle,
   HistoricalCandleResult,

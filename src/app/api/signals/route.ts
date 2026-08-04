@@ -141,7 +141,7 @@ import {
 }                                     from '@/lib/signals/rotationPolicy';
 import { isInNifty500, getNifty500Symbols } from '@/lib/marketData/nifty500Universe';
 import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
-import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
+import { getQuotes as resolveBatch }  from '@market-data';
 /** Phase 3 — removed vendor adapter removed; stubs keep call sites compiling. */
 function upstreamVendor(): {
   open: boolean; state: string; auth_failed: boolean; remainingMs: number;

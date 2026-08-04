@@ -6,13 +6,13 @@
 // ════════════════════════════════════════════════════════════════
 
 import { buildSignalFeatures, buildSignalFeaturesDetailed } from '../../signal-engine/features/buildSignalFeatures';
-import { runAllStrategies } from '../../signal-engine/strategy-engine/runStrategies';
+import { runAllStrategies } from '@strategy-engine';
 import { detectEnhancedRegime, REGIME_MODEL_VERSION } from '../../signal-engine/regime/detectMarketRegime';
 import { scoreConfidenceForStrategy } from '../../signal-engine/scoring/confidenceScorer';
 import { runRejectionEngine } from '../../signal-engine/core/runRejectionEngine';
-import { buildTradePlanForStrategy } from '../../signal-engine/trade-plan/buildTradePlan';
+import { buildTradePlanForStrategy } from '@strategy-engine';
 import { generatePhase1Signals } from '../../signal-engine/pipeline/generatePhase1Signals';
-import { STRATEGY_REGISTRY, evaluateStrategyRegimeEligibility } from '../../signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY, evaluateStrategyRegimeEligibility } from '@strategy-engine';
 import { getRuntimeSignalEngineConfig } from '../../signal-engine/adaptive/runtimeConfiguration';
 
 export const PARITY_CONTRACT_VERSION = '7.0.0';

@@ -14,7 +14,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
-import { loadBacktestRun, loadEquityCurve, loadBacktestTrades } from '@/lib/backtesting/repository/persistence';
+import { loadEquityCurve, loadBacktestTrades } from '@/lib/backtesting/repository/persistence';
 import { loadBacktestMetrics } from '@/lib/backtesting/repository/metricsPersistence';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { analyzeByStrategy } from '@/lib/backtesting/analytics/byStrategy';
@@ -26,6 +26,7 @@ import { analyzeByHoldingPeriod } from '@/lib/backtesting/analytics/byHoldingPer
 import { analyzeByNewsImpact } from '@/lib/backtesting/analytics/byNewsImpact';
 import { db } from '@/lib/db';
 import type { SimulatedTrade } from '@/lib/backtesting/types';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,20 +89,11 @@ export async function GET(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/analytics`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_analytics');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
-    const run = await loadBacktestRun(params.id);
-    if (!run) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'Backtest run not found',
-          route: ROUTE,
-          generatedAt: new Date().toISOString(),
-        },
-        { status: 404 },
-      );
-    }
+    const run = access.run;
 
     const [equityCurve, metrics, rawTrades] = await Promise.all([
       loadEquityCurve(params.id),

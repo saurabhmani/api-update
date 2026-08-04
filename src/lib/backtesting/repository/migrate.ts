@@ -13,7 +13,8 @@ export async function ensureBacktestTables(): Promise<void> {
   _migrated = true;
 }
 
-export async function migrateBacktestTables(): Promise<void> {
+export async function migrateBacktestTables(options: { includeQueueLeaseColumns?: boolean } = {}): Promise<void> {
+  const includeQueueLeaseColumns = options.includeQueueLeaseColumns !== false;
   // 1. Backtest runs
   await db.query(`
     CREATE TABLE IF NOT EXISTS backtest_runs (
@@ -391,9 +392,31 @@ export async function migrateBacktestTables(): Promise<void> {
     `ALTER TABLE backtest_runs ADD COLUMN progress_percent INT NOT NULL DEFAULT 0`,
     `ALTER TABLE backtest_runs ADD COLUMN current_step VARCHAR(100) NULL`,
     `ALTER TABLE backtest_runs ADD COLUMN updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP`,
+    ...(includeQueueLeaseColumns ? [
+    `ALTER TABLE backtest_runs ADD COLUMN processor_id VARCHAR(191) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN claimed_at DATETIME(3) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN heartbeat_at DATETIME(3) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN lease_expires_at DATETIME(3) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN attempt_count INT NOT NULL DEFAULT 0`,
+    `ALTER TABLE backtest_runs ADD COLUMN max_attempts INT NOT NULL DEFAULT 3`,
+    `ALTER TABLE backtest_runs ADD COLUMN cancellation_requested_at DATETIME(3) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN failure_category VARCHAR(64) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN last_error TEXT NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN idempotency_key VARCHAR(191) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN worker_version VARCHAR(64) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN input_version VARCHAR(64) NULL`,
+    `ALTER TABLE backtest_runs ADD COLUMN strategy_version VARCHAR(64) NULL`,
+    ] : []),
   ];
   for (const ddl of runColumns) {
     try { await db.query(ddl); } catch { /* column exists */ }
+  }
+  for (const ddl of includeQueueLeaseColumns ? [
+    `ALTER TABLE backtest_runs ADD INDEX idx_br_claimable (status, lease_expires_at, attempt_count, started_at)`,
+    `ALTER TABLE backtest_runs ADD INDEX idx_br_processor_lease (processor_id, status, lease_expires_at)`,
+    `ALTER TABLE backtest_runs ADD INDEX idx_br_idempotency (idempotency_key)`,
+  ] : []) {
+    try { await db.query(ddl); } catch { /* index exists */ }
   }
 }
 

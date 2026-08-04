@@ -29,7 +29,7 @@ import { db } from '@/lib/db';
 import { detectMarketRegime, detectEnhancedRegime } from '@/lib/signal-engine/regime/detectMarketRegime';
 import type { Candle, MarketRegimeLabel, StrategyName } from '@/lib/signal-engine/types/signalEngine.types';
 import { getSector } from '@/lib/signal-engine/constants/phase3.constants';
-import { STRATEGY_REGISTRY, getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY, getStrategyMeta } from '@strategy-engine';
 import {
   buildRegimeRouter,
   routeStrategy,

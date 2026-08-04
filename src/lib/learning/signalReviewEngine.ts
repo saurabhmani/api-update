@@ -11,7 +11,7 @@
 //  snapshots + backtest trades.
 // ════════════════════════════════════════════════════════════════
 
-import { getStrategyMeta }      from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta }      from '@strategy-engine';
 import {
   buildPerformanceReport,
   type PerformanceOutcomeRow,

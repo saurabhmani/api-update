@@ -4,7 +4,7 @@
 
 import { db } from '@/lib/db';
 import { getConfirmedSnapshotById } from '@/lib/signal-engine/repository/readConfirmedSnapshots';
-import { getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { getStrategyMeta } from '@strategy-engine';
 import { normalizeSignalReasons } from '@/lib/signals/normalizeReasons';
 import type { SignalReasonResult } from '../types';
 

@@ -1,0 +1,33 @@
+{
+  "executionStatus": "passed",
+  "verdict": "passed",
+  "processIds": {
+    "worker": 331,
+    "monolith": 367
+  },
+  "ownershipEpochs": [
+    5,
+    6,
+    7
+  ],
+  "activeJob": {
+    "processor_id": "backtest-worker:0d67a32b4d37:354:harness-crash-worker",
+    "ownership_epoch": 5,
+    "lease_expires_at": "2026-08-04 08:05:41.960",
+    "attempt_count": 1
+  },
+  "recovery": {
+    "requeued": 1,
+    "dead": 0
+  },
+  "final": {
+    "status": "completed",
+    "attempt_count": 2,
+    "processor_type": "monolith",
+    "ownership_epoch": 7,
+    "signal_count": 3,
+    "trade_count": 3
+  },
+  "attemptsPreserved": true,
+  "rowsDeleted": 0
+}

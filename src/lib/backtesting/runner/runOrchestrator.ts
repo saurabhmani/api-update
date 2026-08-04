@@ -78,7 +78,7 @@ export interface OrchestratedResult {
  * Persist a complete backtest result. Single explicit contract: every
  * artifact comes from the in-memory result, no implicit reconstruction.
  */
-export async function persistFullRun(result: BacktestRunResult): Promise<OrchestratedResult> {
+export async function persistFullRun(result: BacktestRunResult, options: { preserveQueueStatus?: boolean } = {}): Promise<OrchestratedResult> {
   const runId = result.runId;
   const errors: string[] = [];
   const log = createLogger(
@@ -119,7 +119,7 @@ export async function persistFullRun(result: BacktestRunResult): Promise<Orchest
   // ── Step 7: Persist run record + Step 9: trades + equity curve ────
   // (saveBacktestRun handles run, trades, and equity_curve in one call)
   try {
-    await saveBacktestRun(result, result.trades, result.equityCurve);
+    await saveBacktestRun(result, result.trades, result.equityCurve, options.preserveQueueStatus === true);
     summary.run = 1;
     summary.trades = result.trades.length;
     summary.equityCurve = result.equityCurve.length;
@@ -267,13 +267,15 @@ export async function persistFullRun(result: BacktestRunResult): Promise<Orchest
   if (result.status === 'completed' && errors.length > 0) {
     finalStatus = 'partial_success';
     // Update the persisted run record with the degraded status
-    try {
-      await db.query(
-        `UPDATE backtest_runs SET status = ?, error = ? WHERE run_id = ?`,
-        ['partial_success', `Persistence errors: ${errors.join(' | ')}`, runId],
-      );
-    } catch (err) {
-      console.error('[Orchestrator] Failed to update status to partial_success:', err);
+    if (!options.preserveQueueStatus) {
+      try {
+        await db.query(
+          `UPDATE backtest_runs SET status = ?, error = ? WHERE run_id = ?`,
+          ['partial_success', `Persistence errors: ${errors.join(' | ')}`, runId],
+        );
+      } catch (err) {
+        console.error('[Orchestrator] Failed to update status to partial_success:', err);
+      }
     }
   }
 

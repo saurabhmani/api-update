@@ -1,0 +1,27 @@
+module.exports = {
+  apps: [{
+    name: 'quantorus-backtest-worker-staging',
+    cwd: process.cwd(),
+    script: 'npm',
+    args: '--prefix services/backtest-worker start',
+    instances: 1,
+    autorestart: true,
+    max_memory_restart: '768M',
+    kill_timeout: 70000,
+    env: {
+      NODE_ENV: 'staging',
+      BACKTEST_PROCESSOR_OWNER: process.env.BACKTEST_PROCESSOR_OWNER || 'disabled',
+      BACKTEST_WORKER_ENABLED: 'false',
+      BACKTEST_WORKER_MAX_CONCURRENCY: '1',
+      ...(process.env.BACKTEST_OWNERSHIP_EPOCH ? { BACKTEST_OWNERSHIP_EPOCH: process.env.BACKTEST_OWNERSHIP_EPOCH } : {}),
+      BACKTEST_WORKER_ID: 'staging-backtest-worker-1',
+      BACKTEST_WORKER_VERSION: process.env.BACKTEST_WORKER_VERSION || 'set-by-deployment',
+      BACKTEST_WORKER_HOST: '127.0.0.1',
+      BACKTEST_WORKER_PORT: '4800',
+    },
+    error_file: 'logs/staging/backtest-worker-error.log',
+    out_file: 'logs/staging/backtest-worker-out.log',
+    restart_delay: 5000,
+    max_restarts: 5,
+  }],
+};

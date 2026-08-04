@@ -19,10 +19,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { processQueuedBacktestRuns } from '@/lib/backtesting/runner/backtestQueue';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
+import { requireAdmin } from '@/lib/session';
 
 const ROUTE = '/api/backtests/process-queue';
 
 export async function POST(req: NextRequest) {
+  try { await requireAdmin(); }
+  catch { return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 }); }
   try {
     await ensureBacktestTables();
     const body = await req.json().catch(() => ({}));
@@ -61,6 +64,8 @@ export async function POST(req: NextRequest) {
 
 // GET is useful for "is the queue alive?" probes without firing any work.
 export async function GET() {
+  try { await requireAdmin(); }
+  catch { return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 }); }
   try {
     await ensureBacktestTables();
     const result = await processQueuedBacktestRuns(0).catch(() => ({

@@ -1,0 +1,35 @@
+{
+  "fixtureId": "q365-backtest-canary-synthetic-v2",
+  "fixtureVersion": "2.0.0",
+  "timezone": "Asia/Kolkata",
+  "marketCalendar": "Weekday-only deterministic synthetic calendar; no exchange-holiday claims",
+  "randomSeed": 36502,
+  "inputVersion": "2",
+  "strategyVersion": "strategy-engine-contract-v1",
+  "marketDataFixtureVersion": "2",
+  "minimumRunnerVersion": "backtest-runner-v2",
+  "instruments": [
+    "FIXTURE-A",
+    "FIXTURE-B"
+  ],
+  "benchmarkSymbol": "FIXTURE-BENCH",
+  "startDate": "2024-01-02",
+  "endDate": "2025-01-27",
+  "warmupBars": 220,
+  "startingCapital": 1000000,
+  "feesBps": 5,
+  "slippageBps": 10,
+  "risk": {
+    "maxPositionPercent": 10,
+    "maxDrawdownPercent": 20
+  },
+  "strategy": {
+    "acceptedSymbol": "FIXTURE-A",
+    "rejectedSymbol": "FIXTURE-B"
+  },
+  "provenance": {
+    "kind": "deterministic-synthetic-market-shaped",
+    "generator": "scripts/generateBacktestFixture.ts",
+    "historicalExchangeTruth": false
+  }
+}

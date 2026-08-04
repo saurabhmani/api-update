@@ -20,7 +20,7 @@
 //  build the response envelope around it.
 // ════════════════════════════════════════════════════════════════
 
-import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
+import { getQuotes as resolveBatch }  from '@market-data';
 import { getMarketStatus }            from '@/lib/marketData/marketHours';
 import { getUserActiveDataSource }    from '@/lib/broker/connections/activeDataSource';
 import { getBrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';

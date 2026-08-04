@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadBacktestTrades } from '@/lib/backtesting/repository/persistence';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
 
 export async function GET(
   req: NextRequest,
@@ -12,6 +13,8 @@ export async function GET(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/trades`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_trades');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
     const trades = await loadBacktestTrades(params.id);

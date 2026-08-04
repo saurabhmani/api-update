@@ -1,0 +1,12 @@
+{
+  "fixtureId": "q365-backtest-canary-synthetic-v2",
+  "fixtureVersion": "2.0.0",
+  "createdAt": "2026-08-04",
+  "generatorSeed": 36502,
+  "generator": "scripts/generateBacktestFixture.ts",
+  "files": {
+    "fixture.json": "5c0036805de98e78187bf5dd69a8cf2f502ce237bec22b5288eb1f7416fb5ca2",
+    "candles.json": "6cdc8c029558bab209221e23b5ac9bff411cca255d5c117cf19c979a9a7a26f0",
+    "expected-characteristics.json": "232f18f08400369a82d5aa6e9a76dae6c7e2eae3fa7c46bb7e33f5c4f87ac2dd"
+  }
+}

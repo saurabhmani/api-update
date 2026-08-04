@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
+import { authorizeBacktestRoute } from '@/lib/backtesting/authorization/routeAuthorization';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,8 @@ export async function GET(
 ) {
   const params = await props.params;
   const ROUTE = `/api/backtests/${params.id}/signals`;
+  const access = await authorizeBacktestRoute(req, params.id, ROUTE, 'read_signals');
+  if ('response' in access) return access.response;
   try {
     await ensureBacktestTables();
 

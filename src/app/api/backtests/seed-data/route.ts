@@ -21,6 +21,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdmin } from '@/lib/session';
 import { DEFAULT_BACKTEST_CONFIG } from '@/lib/backtesting/config/defaults';
 import { db } from '@/lib/db';
 
@@ -31,6 +32,7 @@ const MIN_CANDLES_PER_SYMBOL = 200;
 
 /** GET — availability check against existing EOD candles. */
 export async function GET() {
+  try { await requireAdmin(); } catch { return NextResponse.json({ ok:false,error:'Unauthorized' },{ status:401 }); }
   const ROUTE = '/api/backtests/seed-data';
   try {
     const universe = DEFAULT_BACKTEST_CONFIG.universe ?? [];
@@ -113,6 +115,7 @@ export async function GET() {
  * the request can never exceed the Nginx gateway timeout.
  */
 export async function POST(_req: NextRequest) {
+  try { await requireAdmin(); } catch { return NextResponse.json({ ok:false,error:'Unauthorized' },{ status:401 }); }
   return NextResponse.json(
     {
       ok: false,

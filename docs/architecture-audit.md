@@ -1,5 +1,7 @@
 # Quantorus365 — Enterprise Architecture Audit
 
+> **Superseded for system topology:** Use the repository-root [`ARCHITECTURE.md`](../ARCHITECTURE.md) as the current architecture source of truth. This audit (2025-06-25) incorrectly describes PostgreSQL as the primary runtime database; the monolith’s primary store is MySQL.
+
 **Version:** 2.1.0  
 **Audit Date:** 2025-06-25  
 **Scope:** Full codebase analysis — documentation only, no business-logic changes  

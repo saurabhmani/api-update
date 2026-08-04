@@ -31,7 +31,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
-import { resolvePrices } from '@/lib/marketData/resolver/marketDataResolver';
+import { resolvePrices } from '@market-data';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { MAIN_TABLE_CLASSIFICATIONS } from '@/lib/signal-engine/pipeline/phase12Routing';
 import { markTerminated } from '@/lib/signal-engine/repository/maturityTracker';

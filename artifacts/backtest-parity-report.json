@@ -1,0 +1,104 @@
+{
+  "executionStatus": "passed",
+  "verdict": "passed",
+  "fixtureId": "q365-backtest-canary-synthetic-v2",
+  "fixtureVersion": "2.0.0",
+  "fixtureContentHash": "abe8035bc8815515d59ce2eeff317c09ff8c02080002aebf90e3f5ad2f92f1b1",
+  "monolithRunId": "harness-monolith",
+  "workerRunId": "harness-service",
+  "comparedTables": [
+    "backtest_runs",
+    "backtest_trades",
+    "backtest_signals",
+    "backtest_signal_outcomes",
+    "backtest_metrics",
+    "calibration_snapshots",
+    "backtest_equity_curve",
+    "backtest_performance_metrics",
+    "backtest_news_analytics",
+    "backtest_news_effectiveness",
+    "backtest_summary"
+  ],
+  "normalization": [
+    "attempt_count",
+    "avg_ms_per_symbol",
+    "backtest_id",
+    "cancellation_requested_at",
+    "claimed_at",
+    "completed_at",
+    "computed_at",
+    "correlation_id",
+    "created_at",
+    "duration_ms",
+    "evaluated_at",
+    "heartbeat_at",
+    "id",
+    "lease_expires_at",
+    "max_ms_per_symbol",
+    "memory_heap_mb",
+    "memory_rss_mb",
+    "ms_per_trading_day",
+    "ownership_epoch",
+    "preload_ms",
+    "processing_completed_at",
+    "processing_started_at",
+    "processor_id",
+    "processor_type",
+    "run_id",
+    "signals_per_sec",
+    "simulation_ms",
+    "started_at",
+    "total_runtime_ms",
+    "trades_per_sec",
+    "updated_at",
+    "worker_instance_id",
+    "worker_version"
+  ],
+  "rowCounts": {
+    "backtest_runs": {
+      "monolith": 1,
+      "worker": 1
+    },
+    "backtest_trades": {
+      "monolith": 3,
+      "worker": 3
+    },
+    "backtest_signals": {
+      "monolith": 3,
+      "worker": 3
+    },
+    "backtest_signal_outcomes": {
+      "monolith": 3,
+      "worker": 3
+    },
+    "backtest_metrics": {
+      "monolith": 30,
+      "worker": 30
+    },
+    "calibration_snapshots": {
+      "monolith": 15,
+      "worker": 15
+    },
+    "backtest_equity_curve": {
+      "monolith": 59,
+      "worker": 59
+    },
+    "backtest_performance_metrics": {
+      "monolith": 1,
+      "worker": 1
+    },
+    "backtest_news_analytics": {
+      "monolith": 1,
+      "worker": 1
+    },
+    "backtest_news_effectiveness": {
+      "monolith": 0,
+      "worker": 0
+    },
+    "backtest_summary": {
+      "monolith": 1,
+      "worker": 1
+    }
+  },
+  "mismatches": []
+}

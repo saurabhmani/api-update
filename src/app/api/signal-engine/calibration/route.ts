@@ -20,7 +20,7 @@ import {
   type PerformanceOutcomeRow,
   type PerformanceWindow,
 } from '@/lib/strategies/strategyPerformance';
-import { STRATEGY_REGISTRY, getStrategyMeta } from '@/lib/signal-engine/strategies/strategyRegistry';
+import { STRATEGY_REGISTRY, getStrategyMeta } from '@strategy-engine';
 import { STOP_ATR_MULTIPLIER, TARGET1_R_MULTIPLE, TARGET2_R_MULTIPLE } from '@/lib/signal-engine/constants/signalEngine.constants';
 
 export const dynamic = 'force-dynamic';

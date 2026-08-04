@@ -18,8 +18,11 @@ import {
   loadLatestSnapshot,
 } from '@/lib/manipulation-engine';
 import type { WatchlistType } from '@/lib/manipulation-engine';
+import { requireSession } from '@/lib/session';
 
 export async function GET(req: NextRequest) {
+  try { await requireSession(); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
   try {
     await ensureManipulationEngineTables();
     const type = req.nextUrl.searchParams.get('type') as WatchlistType | null;
@@ -45,6 +48,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try { await requireSession(); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
   try {
     await ensureManipulationEngineTables();
     const body = await req.json();

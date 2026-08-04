@@ -67,6 +67,7 @@ import {
 } from '@/lib/backtesting';
 import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { processQueuedBacktestRuns } from '@/lib/backtesting/runner/backtestQueue';
+import { ownerMayProcess } from '@/lib/backtesting/queue/ownership';
 import { rescoreActiveSignals } from '@/lib/signal-engine/rescore/rescoreActiveSignals';
 import { isSignalIntradayRegenEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 
@@ -547,7 +548,7 @@ if (process.env.ALERT_MONITOR_DISABLED !== 'true') {
 //
 // Disabled cleanly via BACKTEST_QUEUE_SCHEDULER_ENABLED=false.
 const BACKTEST_QUEUE_SCHEDULER_ENABLED =
-  process.env.BACKTEST_QUEUE_SCHEDULER_ENABLED !== 'false';
+  process.env.BACKTEST_QUEUE_SCHEDULER_ENABLED !== 'false' && ownerMayProcess('monolith');
 let backtestQueueDrainRunning = false;
 if (BACKTEST_QUEUE_SCHEDULER_ENABLED) {
   cron.schedule('* * * * *', async () => {
