@@ -37,14 +37,11 @@
 // Load env BEFORE requiring next — instrumentation.ts and API routes
 // read process.env during construction.
 const path = require('path');
-const fs = require('fs');
 
 function resolveEnvFilePath() {
   if (process.env.DOTENV_CONFIG_PATH) return process.env.DOTENV_CONFIG_PATH;
-  if (process.env.NODE_ENV === 'production') return path.resolve(process.cwd(), '.env');
-  const local = path.resolve(process.cwd(), '.env.local');
-  if (fs.existsSync(local)) return local;
-  return path.resolve(process.cwd(), '.env');
+  if (process.env.NODE_ENV === 'production') return path.resolve(process.cwd(), '.env.production');
+  return path.resolve(process.cwd(), '.env.local');
 }
 
 require('dotenv').config({ path: resolveEnvFilePath() });
@@ -60,20 +57,6 @@ if (process.env.Q365_CUSTOM_SERVER_DEV === '1') {
   if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
 } else {
   process.env.NODE_ENV = 'production';
-}
-
-// Also load .env.production as a secondary source so the committed
-// production baseline ships keys missing from a VPS .env. dotenv
-// does NOT override existing process.env values, so an operator's
-// .env / .env.local entries still win. This closes the silent-drift hole
-// where .env.production looked authoritative but was never actually loaded
-// (PM2's ecosystem.config.js points DOTENV_CONFIG_PATH at .env).
-if (process.env.NODE_ENV === 'production') {
-  try {
-    require('dotenv').config({
-      path: path.resolve(process.cwd(), '.env.production'),
-    });
-  } catch { /* missing .env.production is fine — .env is the master */ }
 }
 
 // PROD CRON OWNERSHIP — server.js unconditionally spawns the scheduler
@@ -115,14 +98,45 @@ const DEV = process.env.NODE_ENV !== 'production';
 // Kite WebSocket stream server removed — live ticks are served by
 // removed vendor polling + WebSocket fan-out (see instrumentation.ts).
 
-// tsx binary used to run TypeScript worker entrypoints. Same binary
-// PM2 used to invoke in the old ecosystem config.
+// Prefer the JS CLI entry so spawn works without cmd.exe quoting issues
+// when the project path contains spaces (e.g. "api-update - Copy").
+const TSX_CLI = path.resolve(
+  process.cwd(),
+  'node_modules',
+  'tsx',
+  'dist',
+  'cli.mjs',
+);
 const TSX_BIN = path.resolve(
   process.cwd(),
   'node_modules',
   '.bin',
   process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
 );
+
+function spawnTsxWorker(scriptRel) {
+  const scriptPath = path.resolve(process.cwd(), scriptRel);
+  const fs = require('fs');
+  // node + tsx/cli.mjs avoids shell and handles spaces in cwd/script.
+  if (fs.existsSync(TSX_CLI)) {
+    return spawn(process.execPath, [TSX_CLI, scriptPath], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+  // Fallback: quote paths for cmd.exe when shell is required.
+  const quotedBin = process.platform === 'win32' ? `"${TSX_BIN}"` : TSX_BIN;
+  const quotedScript = process.platform === 'win32' ? `"${scriptPath}"` : scriptPath;
+  return spawn(quotedBin, [quotedScript], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: process.platform === 'win32',
+    windowsHide: true,
+  });
+}
 
 // ── Child-process supervision ────────────────────────────────────
 //
@@ -164,12 +178,7 @@ function registerWorker(name, script, opts = {}) {
     if (shuttingDown) return;
     lastStartAt = Date.now();
     console.log(`[server] starting worker: ${name} (${script})`);
-    const child = spawn(TSX_BIN, [script], {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
-    });
+    const child = spawnTsxWorker(script);
     workers.set(name, child);
     logLines(name, child.stdout);
     logLines(name, child.stderr);
@@ -209,12 +218,7 @@ function runOnceWorker(name, script) {
   }
   console.log(`[server] running one-shot worker: ${name}`);
   return new Promise((resolve) => {
-    const child = spawn(TSX_BIN, [script], {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
-    });
+    const child = spawnTsxWorker(script);
     workers.set(name, child);
     logLines(name, child.stdout);
     logLines(name, child.stderr);

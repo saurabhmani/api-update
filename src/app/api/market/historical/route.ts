@@ -4,61 +4,21 @@ import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import {
   instrumentFromQuery,
   isMarketApiGateResponse,
-  mapBrokerFetchError,
   providerDataJson,
-  refreshFeedStatus,
   resolveUserMarketDataContext,
 } from '@/lib/broker/connections';
-import {
-  BrokerMarketDataError,
-  type BrokerCandleInterval,
-} from '@/lib/marketData/brokerProvider/types';
-import { recordLiveFeedPollSuccess } from '@/lib/marketData/liveFeedState';
+import { getHistorical } from '@/providers/MarketDataProvider';
+import { StaleDataError } from '@/types/market';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const VALID_RANGES: HistoricalRange[] = ['1d', '5d', '1mo', '3mo', '6mo', '1y', '5y'];
 
-function rangeWindow(range: HistoricalRange): {
-  from: Date;
-  to: Date;
-  interval: BrokerCandleInterval;
-} {
-  const to = new Date();
-  const from = new Date(to);
-  switch (range) {
-    case '1d':
-      from.setDate(from.getDate() - 1);
-      return { from, to, interval: '5minute' };
-    case '5d':
-      from.setDate(from.getDate() - 5);
-      return { from, to, interval: '15minute' };
-    case '1mo':
-      from.setMonth(from.getMonth() - 1);
-      return { from, to, interval: 'day' };
-    case '3mo':
-      from.setMonth(from.getMonth() - 3);
-      return { from, to, interval: 'day' };
-    case '6mo':
-      from.setMonth(from.getMonth() - 6);
-      return { from, to, interval: 'day' };
-    case '1y':
-      from.setFullYear(from.getFullYear() - 1);
-      return { from, to, interval: 'day' };
-    case '5y':
-      from.setFullYear(from.getFullYear() - 5);
-      return { from, to, interval: 'day' };
-    default:
-      from.setMonth(from.getMonth() - 1);
-      return { from, to, interval: 'day' };
-  }
-}
-
 /**
  * GET /api/market/historical?symbol=RELIANCE&range=1mo
  *
- * auth → active provider → broker adapter historical → normalize → respond
+ * Session → IndianAPI warehouse historical (cache → DB).
  */
 export async function GET(req: NextRequest): Promise<Response> {
   const resolved = await resolveUserMarketDataContext();
@@ -88,48 +48,43 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   try {
-    await resolved.provider.connect(resolved.ctx);
     const instrument = instrumentFromQuery(symbol);
-    const window = rangeWindow(range);
-    const candles = await resolved.provider.fetchHistoricalCandles(resolved.ctx, {
-      instrument,
-      interval: window.interval,
-      from: window.from,
-      to: window.to,
-    });
+    const resp = await getHistorical(instrument.symbol, range);
+    const candles = resp.data?.candles ?? [];
 
-    if (candles.length > 0) {
-      recordLiveFeedPollSuccess({
-        userId: String(resolved.user.id),
-        provider: resolved.providerName,
-      });
-    }
-
-    const status = refreshFeedStatus(resolved.user.id, resolved.providerName);
-    return providerDataJson(resolved.providerName, status, {
+    return providerDataJson('indianapi', resolved.status, {
       symbol: instrument.symbol,
       instrumentKey: instrument.instrumentKey,
       range,
-      interval: window.interval,
+      interval: 'day',
       candles,
       count: candles.length,
+      source: resp.source,
+      data_quality: resp.data_quality,
+    }, {
+      dataOrigin: 'indianapi_warehouse',
+      fallbackUsed: resp.source === 'db',
+      fallbackSource: resp.source === 'db' ? 'database' : undefined,
     });
   } catch (err) {
-    const mapped = mapBrokerFetchError(resolved.providerName, err);
-    if (err instanceof BrokerMarketDataError && err.code === 'instrument_unresolved') {
+    if (err instanceof StaleDataError) {
       return providerDataJson(
-        resolved.providerName,
-        mapped.code,
-        { error: mapped.message, code: err.code },
+        'indianapi',
+        'stale',
+        {
+          error: 'Historical series not yet available in IndianAPI warehouse',
+          code: 'warehouse_empty',
+          symbol,
+          range,
+        },
         { status: 404 },
       );
     }
-    const http = mapped.code === 'login_required' ? 401 : 502;
     return providerDataJson(
-      resolved.providerName,
-      mapped.code,
-      { error: mapped.message, code: mapped.code },
-      { status: http },
+      'indianapi',
+      'error',
+      { error: err instanceof Error ? err.message : String(err), code: 'historical_failed' },
+      { status: 502 },
     );
   }
 }

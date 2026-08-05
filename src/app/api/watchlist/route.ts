@@ -3,13 +3,10 @@ import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
 import type { WatchlistItem } from '@/types';
 import {
-  instrumentFromQuery,
   providerDataJson,
   resolveUserFeedMeta,
-  resolveUserMarketDataContext,
-  isMarketApiGateResponse,
 } from '@/lib/broker/connections';
-import { recordLiveFeedTick } from '@/lib/marketData/liveFeedState';
+import { getLiveSnapshot } from '@/providers/MarketDataProvider';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -26,7 +23,7 @@ async function getOrCreateWatchlist(userId: number): Promise<number> {
   return (rows2[0] as { id: number }).id;
 }
 
-// GET /api/watchlist — items + optional live quotes from active provider
+// GET /api/watchlist — items + optional warehouse quotes (IndianAPI)
 export async function GET() {
   try {
     const user = await requireSession();
@@ -38,40 +35,26 @@ export async function GET() {
     );
 
     const feedMeta = await resolveUserFeedMeta(user.id);
-    let quotes: Array<{
+    const quotes: Array<{
       symbol: string;
       instrumentKey: string;
       ltp: number | null;
       changePercent: number | null;
     }> = [];
 
-    if (feedMeta.provider && rows.length > 0) {
-      const resolved = await resolveUserMarketDataContext();
-      if (!isMarketApiGateResponse(resolved)) {
-        try {
-          await resolved.provider.connect(resolved.ctx);
-          const instruments = rows.slice(0, 40).map((r) =>
-            instrumentFromQuery(
-              r.instrument_key || `${r.exchange || 'NSE'}:${r.tradingsymbol}`,
-            ),
-          );
-          const fetched = await resolved.provider.fetchQuote(resolved.ctx, instruments);
-          quotes = fetched.map((q) => ({
-            symbol: q.symbol,
-            instrumentKey: `${q.exchange}_EQ|${q.symbol}`,
-            ltp: q.ltp,
-            changePercent: q.changePercent,
-          }));
-          const anyLive = fetched.some((q) => Number.isFinite(q.ltp) && q.ltp > 0);
-          if (anyLive) {
-            recordLiveFeedTick(Date.now(), undefined, {
-              userId: String(user.id),
-              provider: resolved.providerName,
-            });
-          }
-        } catch {
-          // Watchlist CRUD must still succeed without live quotes.
-        }
+    for (const r of rows.slice(0, 40)) {
+      const sym = (r.tradingsymbol || r.instrument_key.split('|')[1] || '').toUpperCase();
+      if (!sym) continue;
+      try {
+        const resp = await getLiveSnapshot(sym);
+        quotes.push({
+          symbol: sym,
+          instrumentKey: r.instrument_key || `NSE_EQ|${sym}`,
+          ltp: resp.data.ltp ?? resp.data.price ?? null,
+          changePercent: resp.data.changePercent ?? null,
+        });
+      } catch {
+        // Watchlist CRUD must still succeed without quotes.
       }
     }
 
@@ -79,7 +62,7 @@ export async function GET() {
       items: rows,
       watchlist_id: watchlistId,
       quotes,
-    });
+    }, { dataOrigin: 'indianapi_warehouse' });
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
   }
@@ -95,73 +78,34 @@ export async function POST(req: NextRequest) {
 
     const watchlistId = await getOrCreateWatchlist(user.id);
 
-    // Derive symbol/exchange/name from instrument_key if not provided
-    let sym  = tradingsymbol  || instrument_key.split('|')[1] || instrument_key;
-    let exch = exchange       || instrument_key.split('|')[0]?.replace('_EQ', '') || 'NSE';
-    let nm   = name           || sym;
+    let sym = tradingsymbol || instrument_key.split('|')[1] || instrument_key;
+    let exch = exchange || instrument_key.split('|')[0]?.replace('_EQ', '') || 'NSE';
+    let nm = name || sym;
 
-    // Try instruments table for full name
-    if (!name) {
-      const { rows: inst } = await db.query(
-        `SELECT tradingsymbol, exchange, name FROM instruments WHERE instrument_key=? LIMIT 1`,
-        [instrument_key]
-      ).catch(() => ({ rows: [] }));
-      if (inst.length) { sym = inst[0].tradingsymbol; exch = inst[0].exchange; nm = inst[0].name; }
-    }
+    await db.query(
+      `INSERT IGNORE INTO watchlist_items (watchlist_id, instrument_key, tradingsymbol, exchange, name)
+       VALUES (?, ?, ?, ?, ?)`,
+      [watchlistId, instrument_key, sym, exch, nm],
+    );
 
-    // Try rankings table for name if still missing
-    if (nm === sym) {
-      const { rows: rank } = await db.query(
-        `SELECT tradingsymbol, exchange, name FROM rankings WHERE instrument_key=? OR tradingsymbol=? LIMIT 1`,
-        [instrument_key, sym]
-      ).catch(() => ({ rows: [] }));
-      if (rank.length && rank[0].name) {
-        sym = rank[0].tradingsymbol || sym;
-        exch = rank[0].exchange || exch;
-        nm = rank[0].name || nm;
-      }
-    }
-
-    try {
-      await db.query(
-        `INSERT INTO watchlist_items (watchlist_id, instrument_key, tradingsymbol, exchange, name)
-         VALUES (?,?,?,?,?)`,
-        [watchlistId, instrument_key, sym, exch, nm]
-      );
-      const { rows: newItem } = await db.query(
-        `SELECT * FROM watchlist_items WHERE watchlist_id=? AND instrument_key=? LIMIT 1`,
-        [watchlistId, instrument_key]
-      );
-      return NextResponse.json({ item: newItem[0] ?? null }, { status: 201 });
-    } catch (e: any) {
-      // MySQL duplicate entry
-      if (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) {
-        return NextResponse.json({ error: 'Already in watchlist' }, { status: 409 });
-      }
-      throw e;
-    }
-  } catch (e: any) {
-    if (e.status === 401) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    console.error('[POST /api/watchlist]', e?.message);
-    return NextResponse.json({ error: 'Server error', details: e?.message }, { status: 500 });
+    return NextResponse.json({ ok: true }, { headers: NO_STORE_HEADERS });
+  } catch {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
   }
 }
 
-// DELETE /api/watchlist?id=...
+// DELETE /api/watchlist
 export async function DELETE(req: NextRequest) {
   try {
     const user = await requireSession();
-    const id   = req.nextUrl.searchParams.get('id');
+    const body = await req.json().catch(() => ({}));
+    const id = body.id ?? body.item_id;
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-    await db.query(
-      `DELETE wi FROM watchlist_items wi
-       INNER JOIN watchlists w ON wi.watchlist_id = w.id
-       WHERE wi.id=? AND w.user_id=?`,
-      [id, user.id]
-    );
-    return NextResponse.json({ success: true });
+    const watchlistId = await getOrCreateWatchlist(user.id);
+    await db.query(`DELETE FROM watchlist_items WHERE id=? AND watchlist_id=?`, [id, watchlistId]);
+    return NextResponse.json({ ok: true }, { headers: NO_STORE_HEADERS });
   } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
   }
 }

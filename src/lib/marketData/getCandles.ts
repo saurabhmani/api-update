@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════════════════════
 //  getCandles — daily-OHLC entry point for candle ingest (backfill).
 //
-//  Kite is the sole historical upstream. Used ONLY by `candleIngest` —
+//  IndianAPI is the sole historical upstream (via fetchUpstreamDailyCandles
+//  → resolveSystemMarketDataProvider). Used ONLY by `candleIngest` —
 //  strategy evaluation reads from DB via `fetchDailyCandlesWithFallback`
 //  and never calls this function while a scan is in flight.
 //
@@ -17,7 +18,6 @@ import {
   fetchNseHistoricalCandles,
   isNseHistoricalFetchEnabled,
 } from './providers/nseHistoricalProvider';
-import { ensureKiteHistoricalConfigured } from './providers/kiteHistoricalProvider';
 import type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
 
 export type { OhlcBar, CandleFetchResult, CandleSource } from './yahooCandles';
@@ -64,18 +64,18 @@ export async function getCandles(
   const sym = String(symbol ?? '').trim().toUpperCase();
 
   if (PERMANENT_SKIP.has(sym)) {
-    return { ok: false, source: 'kite', reason: 'skip:not_tradable' };
+    return { ok: false, source: 'indianapi', reason: 'skip:not_tradable' };
   }
   if (INAV_PSEUDO_RE.test(sym)) {
-    return { ok: false, source: 'kite', reason: 'skip:inav_pseudo_symbol' };
+    return { ok: false, source: 'indianapi', reason: 'skip:inav_pseudo_symbol' };
   }
   if (NON_EQ_SERIES_RE.test(sym) || /[&]/.test(sym)) {
-    return { ok: false, source: 'kite', reason: 'skip:non_eq_series' };
+    return { ok: false, source: 'indianapi', reason: 'skip:non_eq_series' };
   }
 
   const negAt = failedAt.get(sym);
   if (negAt && Date.now() - negAt < NEGATIVE_TTL_MS) {
-    return { ok: false, source: 'kite', reason: 'neg_cache:provider_recently_failed' };
+    return { ok: false, source: 'indianapi', reason: 'neg_cache:provider_recently_failed' };
   }
 
   const sufficientDepth = SUFFICIENT_BAR_DEPTH();
@@ -90,30 +90,22 @@ export async function getCandles(
     }
   }
 
-  const kiteConfigured = await ensureKiteHistoricalConfigured();
-  let upCode = 'KITE_NOT_CONFIGURED';
-  let upMessage = 'No active Kite session — connect Zerodha from the dashboard';
+  let upCode = 'NOT_CONFIGURED';
+  let upMessage = 'IndianAPI is not configured — set INDIANAPI_ENABLED and INDIANAPI_API_KEY';
 
-  // 1) Kite upstream
-  if (kiteConfigured) {
-    const up = await fetchUpstreamDailyCandles(sym);
-    if (up.ok && up.candles.length > 0) {
-      failedAt.delete(sym);
-      return { ok: true, candles: toOhlcBars(up.candles), source: 'kite' };
-    }
-
-    upCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
-    upMessage = up.errorMessage ?? upMessage;
-    console.warn(
-      `[getCandles] upstream failed symbol=${sym} code=${upCode} — ` +
-      `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
-    );
-  } else {
-    console.warn(
-      `[getCandles] Kite not configured for ${sym} — ` +
-      `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
-    );
+  // 1) IndianAPI upstream — never gated on a broker session.
+  const up = await fetchUpstreamDailyCandles(sym);
+  if (up.ok && up.candles.length > 0) {
+    failedAt.delete(sym);
+    return { ok: true, candles: toOhlcBars(up.candles), source: 'indianapi' };
   }
+
+  upCode = String(up.errorCode ?? 'UPSTREAM_ERROR');
+  upMessage = up.errorMessage ?? upMessage;
+  console.warn(
+    `[getCandles] upstream failed symbol=${sym} code=${upCode} — ` +
+    `${isNseHistoricalFetchEnabled() ? 'trying NSE fallback' : 'NSE fallback disabled'}`,
+  );
 
   // 2) NSE — opt-in fallback only
   if (isNseHistoricalFetchEnabled()) {
@@ -134,7 +126,7 @@ export async function getCandles(
   failedAt.set(sym, Date.now());
   return {
     ok: false,
-    source: 'kite',
+    source: 'indianapi',
     reason: providerReason(upCode, upMessage),
   };
 }

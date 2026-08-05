@@ -4,7 +4,6 @@ import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import {
   isMarketApiGateResponse,
   providerDataJson,
-  refreshFeedStatus,
   resolveUserMarketDataContext,
 } from '@/lib/broker/connections';
 import { logger } from '@/lib/logger';
@@ -23,9 +22,7 @@ const EMPTY_ENVELOPE = {
 /**
  * GET /api/market/movers
  *
- * Auth + active provider required. Movers are warehouse-ranked (product-
- * supported deliberate fallback) — never silent kite/yahoo live cascade
- * stamped as the user's broker. Response labels dataOrigin=database.
+ * Session required. Movers are warehouse-ranked from IndianAPI-backed data.
  */
 export async function GET(): Promise<Response> {
   const resolved = await resolveUserMarketDataContext();
@@ -39,15 +36,12 @@ export async function GET(): Promise<Response> {
     );
   }
 
-  const status = refreshFeedStatus(resolved.user.id, resolved.providerName);
-
   try {
-    // Warehouse movers only — do not call MarketDataProvider (kite/yahoo cascade).
     const { getMoversFromWarehouse } = await import('@/lib/marketData/moversWarehouse');
     const resp = await getMoversFromWarehouse();
     return providerDataJson(
-      resolved.providerName,
-      status,
+      'indianapi',
+      resolved.status,
       {
         gainers: resp.gainers,
         losers: resp.losers,
@@ -55,12 +49,11 @@ export async function GET(): Promise<Response> {
         source: 'warehouse',
         data_quality: resp.data_quality ?? 'stored',
         fetched_at: resp.fetched_at,
-        note: 'Movers ranking is warehouse-backed; not live ticks from the active broker',
+        note: 'Movers ranking is warehouse-backed (IndianAPI ingestion)',
       },
       {
-        dataOrigin: 'database',
-        fallbackUsed: true,
-        fallbackSource: 'warehouse',
+        dataOrigin: 'indianapi_warehouse',
+        fallbackUsed: false,
       },
     );
   } catch (err) {
@@ -70,39 +63,31 @@ export async function GET(): Promise<Response> {
           ? (err.response as { data?: typeof EMPTY_ENVELOPE }).data
           : undefined;
       return providerDataJson(
-        resolved.providerName,
-        status,
+        'indianapi',
+        'stale',
         {
           ...EMPTY_ENVELOPE,
           ...(payload && typeof payload === 'object' ? payload : {}),
           stale: true,
           source: 'warehouse',
-          note: 'Movers ranking is warehouse-backed; not live ticks from the active broker',
+          note: 'Movers ranking is warehouse-backed (IndianAPI ingestion)',
         },
-        {
-          dataOrigin: 'database',
-          fallbackUsed: true,
-          fallbackSource: 'warehouse',
-        },
+        { dataOrigin: 'indianapi_warehouse' },
       );
     }
     log.warn('movers warehouse unavailable', {
       error: err instanceof Error ? err.message : String(err),
     });
     return providerDataJson(
-      resolved.providerName,
-      status,
+      'indianapi',
+      resolved.status,
       {
         ...EMPTY_ENVELOPE,
         source: 'warehouse',
         unavailable: true,
-        note: 'Warehouse movers unavailable; refusing silent cross-provider live cascade',
+        note: 'Warehouse movers unavailable',
       },
-      {
-        dataOrigin: 'database',
-        fallbackUsed: true,
-        fallbackSource: 'warehouse',
-      },
+      { dataOrigin: 'indianapi_warehouse' },
     );
   }
 }

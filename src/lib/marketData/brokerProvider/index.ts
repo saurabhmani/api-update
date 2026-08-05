@@ -1,10 +1,6 @@
 /**
- * Broker-neutral market-data providers (Zerodha / Shoonya).
- *
- * @example
- *   const provider = getBrokerMarketDataProvider('shoonya');
- *   await provider.subscribe({ userId }, [{ symbol: 'RELIANCE', exchange: 'NSE' }]);
- *   // instrumentKey is derived: NSE_EQ|RELIANCE
+ * Minimal broker-neutral instrument helpers.
+ * Zerodha/Shoonya market-data providers have been removed (IndianAPI-only).
  */
 
 export type {
@@ -28,24 +24,27 @@ export type {
 export { BrokerMarketDataError } from './types';
 
 export {
-  getBrokerMarketDataProvider,
-  listBrokerMarketDataProviders,
-  assertBrokerMarketDataContract,
-} from './registry';
-
-export { zerodhaMarketDataProvider, ZerodhaMarketDataProvider } from './zerodhaMarketDataProvider';
-export { shoonyaMarketDataProvider, ShoonyaMarketDataProvider } from './shoonyaMarketDataProvider';
-export {
   toInstrumentKey,
   instrumentKeyFromNormalized,
-  toKiteInstrumentKey,
-  toShoonyaScripKey,
   normalizeInstrument,
   parseInstrumentKey,
-  mapToZerodhaInstrument,
-  mapToShoonyaInstrument,
-  mapManyToZerodha,
-  mapManyToShoonya,
-  getSubscriptionBook,
-  clearSubscriptionBook,
-} from './instruments';
+} from './instruments/normalize';
+
+/** @deprecated Broker MD providers removed — always throws. */
+export function getBrokerMarketDataProvider(
+  _name: string,
+): never {
+  throw new Error(
+    'Broker market-data providers (Zerodha/Shoonya) have been removed. '
+    + 'Use IndianAPI warehouse via MarketDataProvider.',
+  );
+}
+
+/** @deprecated Empty — no broker MD providers registered. */
+export function listBrokerMarketDataProviders(): [] {
+  return [];
+}
+
+export function assertBrokerMarketDataContract(): void {
+  // no-op — providers removed
+}

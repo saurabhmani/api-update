@@ -7,7 +7,8 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { HistoricalRange } from '@/types/market';
-import type { KiteHistoricalInterval } from '@/lib/kite/types';
+/** Local interval label (was KiteHistoricalInterval). */
+export type KiteHistoricalInterval = string;
 
 /** Short aliases used in docs / ops + full ChartInterval forms. */
 export type AppCandleInterval =

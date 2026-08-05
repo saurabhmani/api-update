@@ -1,51 +1,35 @@
-// ════════════════════════════════════════════════════════════════
-//  marketDataHealth — coarse "is the feed healthy" summary.
-//
-//  The fine-grained per-request observability lives in the
-//  q365_data_feed_health table (Step 7) and is exposed at
-//  GET /api/data-feed/health. This module is the *cheap* synchronous
-//  version used by older UI widgets that only need a green/yellow/red
-//  badge. It must not block, must not hit the network, and must not
-//  read the DB.
-//
-//    health = 'OK'        → Kite is configured and healthy
-//    health = 'DEGRADED'  → market closed OR Yahoo emergency fallback // @deprecated marker
-//    health = 'FAIL'      → no provider at all
-//
-//  The shape is preserved for backwards compatibility with the
-//  /api/market-data/health route.
-// ════════════════════════════════════════════════════════════════
+/**
+ * marketDataHealth — coarse feed health for UI badges.
+ * IndianAPI warehouse mode — no Kite/Shoonya SDK probes.
+ */
 
 import { getMarketStatus } from './marketHours';
 import {
   getMarketDataProvider,
+  indianApiCredentialsPresent,
+  isIndianApiEnabled,
   isYahooEmergencyFallbackEnabled,
 } from './providerFlags';
 import { getLiveMarketFeedStats } from './liveMarketFeed';
 import { getStreamServerStats } from '@/lib/ws/streamServer';
 import { getLiveFeedState } from './liveFeedState';
-import { getKiteHealth, isKiteConfigured } from '@/lib/kite/health';
 
 export type HealthState = 'OK' | 'DEGRADED' | 'FAIL';
-export type HealthSource = 'kite' | 'yahoo' | 'none'; // @deprecated marker yahoo
+export type HealthSource = 'indianapi' | 'yahoo' | 'none';
 
 export interface MarketDataHealth {
   health: HealthState;
   source: HealthSource;
   reason: string;
-  /** Selected MARKET_DATA_PROVIDER (additive Phase 8). */
   current_provider?: string;
-
   tickRatePerSec: number;
-  lastTickAgeMs:  number | null;
+  lastTickAgeMs: number | null;
   subscribedCount: number;
-
   market: {
     isOpen: boolean;
     state: string;
     label: string;
   };
-  // Retained for response-shape compatibility.
   ws: {
     state: string;
     loginRequired: boolean;
@@ -55,7 +39,7 @@ export interface MarketDataHealth {
     port?: number;
     clientCount?: number;
   };
-  yahooFallback: { // @deprecated marker
+  yahooFallback: {
     active: boolean;
     activations: number;
     recoveries: number;
@@ -71,25 +55,18 @@ export interface MarketDataHealth {
   serverNow: number;
   liveFeed: ReturnType<typeof getLiveFeedState>;
   liveFeedProvider: string;
-  /** Phase 8 additive — null monthly quota for kite. */
-  kite?: {
-    configured: boolean;
-    available: boolean;
-    auth_failed: boolean;
-    rate_limited: boolean;
+  indianapi?: {
+    enabled: boolean;
+    credentialsConfigured: boolean;
   };
 }
 
-/**
- * Compute the coarse health summary. Pure in-memory read — no DB,
- * no network, no await. Safe to call from high-QPS endpoints.
- */
 export function getMarketDataHealth(): MarketDataHealth {
   const mkt = getMarketStatus();
   const provider = getMarketDataProvider();
-  const yahooEmergency = isYahooEmergencyFallbackEnabled(); // @deprecated marker
-  const kiteHealth = getKiteHealth();
-  const kiteConfigured = isKiteConfigured();
+  const yahooEmergency = isYahooEmergencyFallbackEnabled();
+  const indianEnabled = isIndianApiEnabled();
+  const indianCreds = indianApiCredentialsPresent();
 
   const feed = getLiveMarketFeedStats();
   const ws = getStreamServerStats();
@@ -99,50 +76,30 @@ export function getMarketDataHealth(): MarketDataHealth {
   let source: HealthSource;
   let reason: string;
 
-  const liveProvider = feed.provider ?? 'kite';
-
-  if (provider === 'kite' || provider === 'legacy') {
-    if (!kiteConfigured) {
-      if (yahooEmergency) {
-        health = 'DEGRADED';
-        source = 'yahoo';
-        reason = 'KITE credentials missing — Yahoo emergency fallback active';
-      } else {
-        health = 'FAIL';
-        source = 'none';
-        reason = 'KITE_API_KEY missing or no active Kite session';
-      }
-    } else if (kiteHealth.auth_failed) {
-      health = 'DEGRADED';
-      source = 'kite';
-      reason = 'Kite authentication failed';
-    } else if (kiteHealth.rate_limited) {
-      health = 'DEGRADED';
-      source = 'kite';
-      reason = 'Kite rate limit active';
+  if (provider === 'indianapi') {
+    if (!indianEnabled || !indianCreds) {
+      health = 'FAIL';
+      source = 'none';
+      reason = !indianEnabled
+        ? 'INDIANAPI_ENABLED is not true'
+        : 'INDIANAPI_API_KEY missing';
     } else if (!mkt.isOpen) {
       health = 'DEGRADED';
-      source = 'kite';
-      reason = `Market closed (${mkt.label}) — Kite returns last close`;
-    } else if (liveFeed.quality === 'stale' || liveFeed.quality === 'disconnected') {
-      health = 'DEGRADED';
-      source = liveProvider === 'yahoo' ? 'yahoo' : 'kite';
-      reason = `Live feed ${liveFeed.quality} (${liveProvider}) — last tick ${liveFeed.lastTickAgeMs ?? '?'}ms ago`;
+      source = 'indianapi';
+      reason = `Market closed (${mkt.label}) — warehouse serves last close`;
     } else {
       health = 'OK';
-      source = liveProvider === 'yahoo' ? 'yahoo' : 'kite';
-      reason = liveProvider === 'yahoo'
-        ? `Yahoo live feed active (${liveFeed.quality})`
-        : `Kite live feed configured (${liveFeed.quality})`;
+      source = 'indianapi';
+      reason = 'IndianAPI warehouse configured';
     }
-  } else if (provider === 'yahoo') { // @deprecated marker
+  } else if (provider === 'yahoo') {
     health = mkt.isOpen ? 'OK' : 'DEGRADED';
-    source = 'yahoo'; // @deprecated marker
-    reason = 'MARKET_DATA_PROVIDER=yahoo — running on Yahoo as primary (deprecated)'; // @deprecated marker
+    source = 'yahoo';
+    reason = 'MARKET_DATA_PROVIDER=yahoo (deprecated)';
   } else {
     health = 'FAIL';
     source = 'none';
-    reason = `MARKET_DATA_PROVIDER=${provider} — no live data source configured`;
+    reason = `MARKET_DATA_PROVIDER=${provider} — configure indianapi`;
   }
 
   return {
@@ -182,12 +139,10 @@ export function getMarketDataHealth(): MarketDataHealth {
     lastTickTs: feed.lastTickTs,
     serverNow: Date.now(),
     liveFeed,
-    liveFeedProvider: liveProvider,
-    kite: {
-      configured: kiteConfigured,
-      available: kiteHealth.available,
-      auth_failed: kiteHealth.auth_failed,
-      rate_limited: kiteHealth.rate_limited,
+    liveFeedProvider: 'indianapi',
+    indianapi: {
+      enabled: indianEnabled,
+      credentialsConfigured: indianCreds,
     },
   };
 }

@@ -6,14 +6,8 @@ import {
   getBrokerConnectionByUserAndBroker,
   isDataSourceBroker,
 } from '@/lib/broker/connections';
-import { clearUserKiteSession } from '@/lib/kite/active-session-store';
-import { resetKiteClient } from '@/lib/kite/client';
 import { disconnectBrokerAccount } from '@/lib/broker/repository/brokerRepository';
-import { resolveAppBaseUrl } from '@/lib/broker/oauth/shoonya';
-import {
-  isSystemFeedOwner,
-  releaseBrokerConnection,
-} from '@/lib/marketData/connectionManager';
+import { resolveAppBaseUrl } from '@/lib/broker/oauth/appBaseUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,7 +35,7 @@ function isTrustedOrigin(request: NextRequest): boolean {
 
 /**
  * POST /api/brokers/:broker/disconnect
- * Tears down THIS user's connection only — never another tenant's stream.
+ * Clears legacy broker_connections rows only — no SDK/ticker teardown.
  */
 export async function POST(request: NextRequest, context: RouteContext) {
   try {
@@ -74,26 +68,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     const result = await disconnectDataSourceBroker(user.id, broker);
 
-    // Release this user's streaming instance only.
-    try {
-      await releaseBrokerConnection({ userId: user.id, provider: broker });
-    } catch { /* optional */ }
-
     if (broker === 'zerodha') {
       try {
-        const cleared = await clearUserKiteSession(user.id);
-        // Only reset the process-global Kite client if THIS user owned the system feed.
-        if (cleared.systemCleared || isSystemFeedOwner(user.id)) {
-          resetKiteClient();
-          try {
-            const { getTicker } = await import('@/lib/marketData/kiteTicker');
-            await getTicker().disconnect();
-          } catch { /* optional */ }
-        }
-      } catch { /* optional */ }
-      try {
         await disconnectBrokerAccount(user.id, 'kite');
-      } catch { /* optional */ }
+      } catch { /* optional legacy paper account row */ }
     }
 
     return NextResponse.json(

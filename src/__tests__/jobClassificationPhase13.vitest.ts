@@ -60,37 +60,46 @@ describe('requireSystemMarketDataUserId', () => {
 describe('candle source precedence', () => {
   beforeEach(() => {
     delete process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST;
+    delete process.env.SYSTEM_ALLOW_KITE_CANDLE_INGEST;
     delete process.env.CANDLE_INGEST_USE_CONNECTED_BROKER;
   });
 
-  it('allows shoonya warehouse writes when connected-broker ingest is on (default)', () => {
-    expect(isWarehouseCandleSourceAllowed('shoonya')).toBe(true);
-    expect(
-      shouldApplyCandleUpsert({ incoming: 'shoonya', existing: null }).apply,
-    ).toBe(true);
-  });
-
-  it('blocks shoonya when connected-broker ingest is explicitly off', () => {
-    process.env.CANDLE_INGEST_USE_CONNECTED_BROKER = '0';
+  it('blocks shoonya warehouse writes by default (broker ingest retired)', () => {
     expect(isWarehouseCandleSourceAllowed('shoonya')).toBe(false);
     expect(
       shouldApplyCandleUpsert({ incoming: 'shoonya', existing: null }).apply,
     ).toBe(false);
   });
 
-  it('nse_bhavcopy wins over kite; kite does not overwrite nse', () => {
+  it('allows shoonya only when SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST is on', () => {
+    process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST = '1';
+    expect(isWarehouseCandleSourceAllowed('shoonya')).toBe(true);
+    expect(
+      shouldApplyCandleUpsert({ incoming: 'shoonya', existing: null }).apply,
+    ).toBe(true);
+  });
+
+  it('nse_bhavcopy wins over legacy kite; kite does not overwrite nse', () => {
     expect(candleSourcePrecedence('nse_bhavcopy')).toBeGreaterThan(
       candleSourcePrecedence('kite'),
     );
     expect(
       shouldApplyCandleUpsert({ incoming: 'nse_bhavcopy', existing: 'kite' }).apply,
     ).toBe(true);
+    // kite blocked from new writes unless explicitly allowed
     expect(
       shouldApplyCandleUpsert({ incoming: 'kite', existing: 'nse_bhavcopy' }).apply,
     ).toBe(false);
   });
 
-  it('same source may refresh', () => {
+  it('same indianapi source may refresh', () => {
+    expect(
+      shouldApplyCandleUpsert({ incoming: 'indianapi', existing: 'indianapi' }).apply,
+    ).toBe(true);
+  });
+
+  it('legacy kite same-source refresh only when ingest allow-flag is on', () => {
+    process.env.SYSTEM_ALLOW_KITE_CANDLE_INGEST = '1';
     expect(
       shouldApplyCandleUpsert({ incoming: 'kite', existing: 'kite' }).apply,
     ).toBe(true);

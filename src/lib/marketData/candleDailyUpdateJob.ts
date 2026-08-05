@@ -204,12 +204,14 @@ async function updateOneSymbol(
     };
   }
 
+  const warehouseSource =
+    (fetch as { warehouseSource?: 'kite' | 'shoonya' | 'indianapi' }).warehouseSource;
   const { inserted, updated } = await persistBarsForSymbol(
     symbol,
     bars,
-    (fetch as { warehouseSource?: 'kite' | 'shoonya' }).warehouseSource === 'shoonya'
-      ? 'shoonya'
-      : 'kite',
+    warehouseSource === 'shoonya' ? 'shoonya'
+      : warehouseSource === 'indianapi' ? 'indianapi'
+        : 'kite',
   );
   if (inserted === 0 && updated === 0) {
     return {
@@ -279,10 +281,7 @@ async function runCandleDailyUpdateJobInner(
     );
     const gate = await ensureCandleIngestConfigured();
     if (!gate.ok) {
-      throw new Error(
-        gate.message
-        || 'No connected broker for candle ingest — connect Shoonya or Zerodha on /data-source',
-      );
+      throw new Error(gate.message || 'No configured market-data provider for candle ingest.');
     }
     console.log(`[CANDLE DAILY UPDATE] ingest=${gate.message}`);
   }

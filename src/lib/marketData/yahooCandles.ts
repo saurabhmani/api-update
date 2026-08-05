@@ -19,7 +19,7 @@ export interface OhlcBar {
   volume: number;
 }
 
-export type CandleSource = 'kite' | 'kite' | 'db' | 'nse' | 'yahoo'; // yahoo = legacy alias
+export type CandleSource = 'kite' | 'indianapi' | 'db' | 'nse' | 'yahoo'; // yahoo = legacy alias
 
 export type CandleFetchResult =
   | { ok: true;  candles: OhlcBar[]; source: CandleSource }

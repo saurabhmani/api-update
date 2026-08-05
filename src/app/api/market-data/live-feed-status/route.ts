@@ -35,12 +35,13 @@ export async function GET() {
     (f) => f.userId === String(meta.user.id),
   );
 
-  const activeFeed = meta.provider
-    ? getLiveFeedStateFor({
-        userId: String(meta.user.id),
-        provider: meta.provider,
-      })
-    : null;
+  const activeFeed =
+    meta.provider === 'zerodha' || meta.provider === 'shoonya'
+      ? getLiveFeedStateFor({
+          userId: String(meta.user.id),
+          provider: meta.provider,
+        })
+      : null;
 
   return providerDataJson(meta.provider, meta.status, {
     feed: activeFeed,

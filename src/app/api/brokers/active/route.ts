@@ -8,7 +8,7 @@ import {
   resolveUserFeedMeta,
   withProviderMeta,
 } from '@/lib/broker/connections';
-import { resolveAppBaseUrl } from '@/lib/broker/oauth/shoonya';
+import { resolveAppBaseUrl } from '@/lib/broker/oauth/appBaseUrl';
 
 export const dynamic = 'force-dynamic';
 

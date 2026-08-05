@@ -51,6 +51,31 @@ export interface ProviderRequestLogInput {
   requestedAt?: Date;
 }
 
+/**
+ * Defence-in-depth: strip any configured provider API key out of a
+ * string before it is persisted. Axios error messages normally never
+ * contain headers, but a vendor echoing the key in an error body (or a
+ * future code path interpolating config) must not leak into the audit
+ * table.
+ */
+function scrubSecrets(value: string | null | undefined): string | null {
+  if (!value) return value ?? null;
+  let out = value;
+  const secrets = [
+    process.env.INDIANAPI_API_KEY,
+    process.env.INDIANAPI_KEY,
+    process.env.INDIAN_API_KEY,
+    process.env.KITE_API_KEY,
+    process.env.KITE_API_SECRET,
+    process.env.KITE_ACCESS_TOKEN,
+  ];
+  for (const secret of secrets) {
+    const s = secret?.trim();
+    if (s && s.length >= 8) out = out.split(s).join('[REDACTED]');
+  }
+  return out;
+}
+
 export async function logProviderRequest(input: ProviderRequestLogInput): Promise<void> {
   const ctx = getProviderRequestContext();
   try {
@@ -67,7 +92,7 @@ export async function logProviderRequest(input: ProviderRequestLogInput): Promis
         input.requestType ?? ctx?.requestType ?? null,
         input.statusCode ?? null,
         input.success ? 1 : 0,
-        input.errorMessage?.slice(0, 512) ?? null,
+        scrubSecrets(input.errorMessage)?.slice(0, 512) ?? null,
         input.requestedAt ?? new Date(),
         input.jobId ?? ctx?.jobId ?? null,
         input.sourceJob ?? ctx?.sourceJob ?? null,

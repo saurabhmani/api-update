@@ -14,7 +14,6 @@ import { normalizedToMarketSnapshot } from '@/lib/marketData/dualSource/feedNorm
 import { fetchYahooPublicQuotesBatch, type YahooPublicQuote } from '@/lib/marketData/yahooChartPublic';
 import { propagateTick } from '@/lib/marketData/tickPropagator';
 import { tickBus } from '@/lib/marketData/tickBus';
-import { getTicker, type Tick as KiteTick } from '@/lib/marketData/kiteTicker';
 import { isMarketOpen } from '@/lib/marketData/marketHours';
 import { getBaselineSymbols } from '@/lib/marketData/liveFeedBaseline';
 import {
@@ -280,16 +279,9 @@ async function pollOnce(): Promise<void> {
       published = await pollDualSourceBatch(symbols);
     } else if (provider === 'yahoo') {
       published = await pollYahooBatch(symbols);
-    } else if (provider === 'kite') {
-      const ticker = getTicker();
-      if (ticker.getStatus().state !== 'open') {
-        published = await polllegacy_vendorBatch(symbols);
-      }
-      // WS open: ticks update freshness via recordLiveFeedTick — do not
-      // fake a poll success (auth/connect alone must not mark fresh).
     } else {
-      // provider === 'none' — no silent Yahoo/kite cascade
-      store.lastError = 'no_system_live_provider';
+      // indianapi / none — warehouse path; no broker ticker poll
+      store.lastError = provider === 'none' ? 'no_system_live_provider' : null;
       published = 0;
     }
     if (published === 0) {
@@ -349,21 +341,6 @@ function stopPollLoop(): void {
 function syncPollLoop(): void {
   const store = feed();
   const symbols = activeSymbols();
-  
-  if (getLiveFeedProvider() === 'kite') {
-    const nextSet = new Set(symbols);
-    const toUnsubscribe: string[] = [];
-    for (const sym of store.lastActiveSymbols) {
-      if (!nextSet.has(sym)) toUnsubscribe.push(sym);
-    }
-    if (toUnsubscribe.length > 0) {
-      getTicker().unsubscribeSymbols(toUnsubscribe).catch(() => {});
-    }
-    if (symbols.length > 0) {
-      getTicker().subscribeSymbols(symbols, 'full').catch(() => {});
-    }
-    store.lastActiveSymbols = nextSet;
-  }
 
   if (symbols.length === 0) {
     stopPollLoop();
@@ -401,40 +378,7 @@ export function setWsSymbolUnion(symbolsRaw: string[]): void {
 }
 
 export function startLiveMarketFeed(): void {
-  const store = feed();
   syncPollLoop();
-  
-  if (getLiveFeedProvider() === 'kite') {
-    const ticker = getTicker();
-    ticker.connect().catch(err => log.error('Failed to connect kite ticker', { error: err }));
-
-    // Attach the fan-out listener once per process — repeated startLiveMarketFeed
-    // calls (or ensureStreaming + instrumentation) must not stack handlers.
-    if (!(store as { __ticksListenerInstalled?: boolean }).__ticksListenerInstalled) {
-      (store as { __ticksListenerInstalled?: boolean }).__ticksListenerInstalled = true;
-      ticker.on('ticks', (ticks: KiteTick[]) => {
-        for (const t of ticks) {
-          if (!t.symbol) continue;
-          const snap: MarketSnapshot = {
-            symbol: t.symbol,
-            price: t.lastPrice,
-            ltp: t.lastPrice,
-            change: t.change ?? 0,
-            changePercent: t.pChange ?? 0,
-            volume: t.volume ?? 0,
-            open: t.open ?? t.lastPrice,
-            high: t.high ?? t.lastPrice,
-            low: t.low ?? t.lastPrice,
-            prevClose: t.close ?? t.lastPrice,
-            timestamp: t.ts,
-          };
-          const streamTick = snapshotToStreamTick(snap, 'kite-ws');
-          publishTick(streamTick);
-          void propagateTick(snap);
-        }
-      });
-    }
-  }
 
   if (isMarketOpen()) {
     void import('@/lib/marketData/liveFeedBaseline').then((m) => m.refreshLiveFeedBaseline());
@@ -448,9 +392,6 @@ export function startLiveMarketFeed(): void {
 export function stopLiveMarketFeed(): void {
   const store = feed();
   stopPollLoop();
-  if (getLiveFeedProvider() === 'kite') {
-    getTicker().disconnect().catch(() => {});
-  }
   store.demandExpiry.clear();
   store.wsSymbols.clear();
   store.lastActiveSymbols.clear();

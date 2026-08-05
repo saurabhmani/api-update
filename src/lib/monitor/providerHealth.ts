@@ -1,16 +1,14 @@
-// ════════════════════════════════════════════════════════════════
-//  providerHealth — composite ops snapshot (Phase 1 / kite-primary)
-//
-//  Aggregates Kite (auth / rate-limit / availability) plus soft
-//  yahoo/nse placeholder blocks for health & usage routes.
-//  No vendor usage tracker, breaker, or queue probes.
-// ════════════════════════════════════════════════════════════════
+/**
+ * providerHealth — composite ops snapshot (IndianAPI warehouse).
+ * No Kite/Shoonya SDK probes.
+ */
 
 import {
   getMarketDataProvider,
   getPrimaryFallbackProvider,
+  indianApiCredentialsPresent,
+  isIndianApiEnabled,
 } from '@/lib/marketData/providerFlags';
-import { getKiteHealth, type KiteHealthSnapshot } from '@/lib/kite/health';
 import { getProviderReport } from '@/lib/marketData/providerReport';
 import { getMonitorSnapshot } from '@/lib/monitor/apiMonitor';
 
@@ -24,8 +22,8 @@ export type ProviderCapability =
   | 'corporate'
   | 'search';
 
-const KITE_CAPS: ProviderCapability[] = [
-  'quotes', 'batch_quotes', 'historical', 'search',
+const INDIANAPI_CAPS: ProviderCapability[] = [
+  'quotes', 'batch_quotes', 'historical', 'corporate', 'search',
 ];
 
 const YAHOO_CAPS: ProviderCapability[] = [
@@ -58,9 +56,10 @@ export interface SoftProviderPlaceholder {
 export interface CompositeProviderHealth {
   current_provider: string;
   fallback_provider: string | null;
-  kite: KiteHealthSnapshot & {
+  indianapi: {
+    enabled: boolean;
+    credentialsConfigured: boolean;
     capabilities: ProviderCapability[];
-    /** Explicit: Kite has no monthly plan quota in this app. */
     monthly_quota: null;
     metrics: ProviderMetricsBlock;
   };
@@ -88,36 +87,18 @@ function monitorMetrics(provider: string): ProviderMetricsBlock {
   };
 }
 
-function kiteMetrics(k: KiteHealthSnapshot): ProviderMetricsBlock {
-  return {
-    provider: 'kite',
-    requests: k.requests,
-    successes: k.successes,
-    failures: k.failures,
-    avg_latency_ms: k.avg_latency_ms,
-    auth_failures: k.auth_failures,
-    rate_limit_events: k.rate_limit_events,
-    last_success_at: k.last_success_at,
-    last_error_code: k.last_error_code,
-  };
-}
-
-/**
- * Read-only composite used by health/usage/debug routes.
- * Never throws; individual probes soft-fail.
- */
 export function getCompositeProviderHealth(): CompositeProviderHealth {
   const current = getMarketDataProvider();
-  const kite = getKiteHealth();
 
   return {
     current_provider: current,
     fallback_provider: getPrimaryFallbackProvider(current),
-    kite: {
-      ...kite,
-      capabilities: KITE_CAPS,
+    indianapi: {
+      enabled: isIndianApiEnabled(),
+      credentialsConfigured: indianApiCredentialsPresent(),
+      capabilities: INDIANAPI_CAPS,
       monthly_quota: null,
-      metrics: kiteMetrics(kite),
+      metrics: monitorMetrics('indianapi'),
     },
     yahoo: {
       status: 'placeholder',

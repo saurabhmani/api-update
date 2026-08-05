@@ -1,6 +1,5 @@
 /**
- * Phase 11 — no hidden MARKET_DATA_PROVIDER / Yahoo / NSE defaults.
- * System provider unset → none; emergency fallbacks default OFF.
+ * IndianAPI-only provider flags — kite is never primary; kite env aliases to indianapi.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -14,6 +13,7 @@ import {
   isYahooEmergencyFallbackEnabled,
   isNseDirectFallbackEnabled,
   getProviderFlagsSummary,
+  resetIndianApiRpsWarningsForTests,
 } from '@/lib/marketData/providerFlags';
 
 const ENV_KEYS = [
@@ -21,10 +21,13 @@ const ENV_KEYS = [
   'YAHOO_EMERGENCY_FALLBACK_ENABLED',
   'NSE_DIRECT_FALLBACK_ENABLED',
   'KITE_ENABLED',
+  'INDIANAPI_ENABLED',
+  'INDIANAPI_API_KEY',
 ] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  resetIndianApiRpsWarningsForTests();
   for (const k of ENV_KEYS) {
     saved[k] = process.env[k];
     delete process.env[k];
@@ -38,7 +41,7 @@ afterEach(() => {
   }
 });
 
-describe('provider flags — Phase 11 no hidden defaults', () => {
+describe('provider flags — IndianAPI-only', () => {
   it('unset MARKET_DATA_PROVIDER → none (not kite)', () => {
     expect(getMarketDataProvider()).toBe('none');
     expect(isKitePrimary()).toBe(false);
@@ -47,18 +50,27 @@ describe('provider flags — Phase 11 no hidden defaults', () => {
     expect(getSystemLiveFeedProvider()).toBe('none');
   });
 
+  it('bootstrap defaults to indianapi when enabled + credentials', () => {
+    process.env.INDIANAPI_ENABLED = 'true';
+    process.env.INDIANAPI_API_KEY = 'test-key';
+    expect(getMarketDataProvider()).toBe('indianapi');
+    expect(getPrimaryFallbackProvider()).toBe('cache|db');
+    expect(getSystemLiveFeedProvider()).toBe('none');
+    expect(isKitePrimary()).toBe(false);
+  });
+
   it('MARKET_DATA_PROVIDER=yahoo selects yahoo', () => {
     process.env.MARKET_DATA_PROVIDER = 'yahoo';
     expect(getMarketDataProvider()).toBe('yahoo');
     expect(getSystemLiveFeedProvider()).toBe('yahoo');
   });
 
-  it('MARKET_DATA_PROVIDER=kite selects kite live feed', () => {
+  it('MARKET_DATA_PROVIDER=kite resolves to none (never kite or indianapi alias)', () => {
     process.env.MARKET_DATA_PROVIDER = 'kite';
-    expect(getMarketDataProvider()).toBe('kite');
-    expect(isKitePrimary()).toBe(true);
-    expect(getSystemLiveFeedProvider()).toBe('kite');
-    expect(getPrimaryFallbackProvider()).toBe('yahoo|nse|db');
+    expect(getMarketDataProvider()).toBe('none');
+    expect(isKitePrimary()).toBe(false);
+    expect(getSystemLiveFeedProvider()).toBe('none');
+    expect(getPrimaryFallbackProvider()).toBe('none');
   });
 
   it('unrecognized MARKET_DATA_PROVIDER pin maps to none', () => {
@@ -71,15 +83,16 @@ describe('provider flags — Phase 11 no hidden defaults', () => {
     expect(isNseDirectFallbackEnabled()).toBe(false);
   });
 
-  it('provider flags summary reports none when unset', () => {
+  it('provider flags summary reports indianapi-only shape', () => {
     const s = getProviderFlagsSummary();
     expect(s.marketDataProvider).toBe('none');
     expect(s.kitePrimary).toBe(false);
     expect(s.primaryFallbackProvider).toBe('none');
     expect(s.hiddenDefaultsRemoved).toBe(true);
+    expect(s.brokersRemovedFromMarketData).toBe(true);
   });
 
-  it('Kite-supported capabilities', () => {
+  it('Kite-supported capabilities list retained for compat', () => {
     expect(isKiteSupportedCapability('quotes')).toBe(true);
     expect(isKiteSupportedCapability('movers')).toBe(false);
     expect(isKiteSupportedCapability('news')).toBe(false);

@@ -5,7 +5,6 @@ import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealt
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthStatus } from '@/types/dashboard';
 import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
-import { getKiteHealth } from '@/lib/kite/health';
 
 export interface EngineHealthProbeResult {
   status:      EngineHealthStatus;
@@ -51,25 +50,16 @@ async function isCandleFeedFrozen(marketOpen: boolean): Promise<boolean> {
 
 /**
  * Lightweight engine-health probe for public monitors and load balancers.
- * Mirrors the institutional pipeline checks without session-gated upstreams.
  */
 export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult> {
   const market = getMarketStatus();
   const snapshot = getInstitutionalHealthSnapshot();
-  const kite = safeProbe(() => getKiteHealth(), null);
-  const current = safeProbe(() => getMarketDataProvider(), 'kite');
+  const current = safeProbe(() => getMarketDataProvider(), 'indianapi');
 
   const [candleFrozen] = await Promise.all([
     isCandleFeedFrozen(market.isOpen),
   ]);
 
-  const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
-    || snapshot.providers.every((p) => !p.fallback_triggered);
-  const kitePrimaryBroken =
-    current === 'kite'
-    && kite?.configured === true
-    && kite.available === false
-    && !fallbackHealthy;
   const lastScanOk =
     snapshot.full_scan.completes > 0
     && snapshot.full_scan.last_completed_at != null;
@@ -84,15 +74,11 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
       message:    'Candle feed frozen',
     };
   }
-  if (kitePrimaryBroken) {
+  if (current !== 'indianapi' && current !== 'none') {
     return {
-      status:     'DEGRADED',
+      status:     'WARNING',
       marketOpen: market.isOpen,
-      message: kite?.auth_failed
-        ? 'Kite authentication failed'
-        : kite?.rate_limited
-          ? 'Kite rate limit exceeded'
-          : 'Kite unavailable',
+      message:    `Unexpected MARKET_DATA_PROVIDER=${current} — expected indianapi`,
     };
   }
   if (approvedRatioBad) {

@@ -12,7 +12,7 @@
  */
 
 import { isMarketOpen } from '@/lib/marketData/marketHours';
-import { getSystemMarketDataUserId } from '@/lib/marketData/connectionManager/systemFeed';
+import { getSystemMarketDataUserId } from '@/lib/marketData/systemFeed';
 import type { BrokerProviderName } from '@/lib/marketData/brokerProvider/types';
 
 export type LiveFeedProvider = BrokerProviderName; // 'zerodha' | 'shoonya'

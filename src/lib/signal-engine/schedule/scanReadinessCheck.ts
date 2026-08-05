@@ -38,7 +38,7 @@ async function probeCandleCoverage(universeCount: number): Promise<number> {
              FROM candles
             WHERE candle_type = 'eod' AND interval_unit = '1day'
             GROUP BY instrument_key
-         ) c ON c.instrument_key = CONCAT('NSE_EQ|', u.symbol)
+         ) c ON c.instrument_key = CONCAT('NSE_EQ|', u.symbol) COLLATE utf8mb4_unicode_ci
         WHERE u.is_active = 1 AND c.bar_count >= ?
      ) t`,
     [minBars],

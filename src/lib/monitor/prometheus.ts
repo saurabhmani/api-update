@@ -294,6 +294,59 @@ export function renderPrometheusMetrics(ctx: PromContext): string {
     );
   }
 
+  // ── IndianAPI ingestion ────────────────────────────────────────
+  const ia = ctx.snapshot.indianapi_ingest;
+  e.metric(`${NAMESPACE}_indianapi_requests_total`,
+    'IndianAPI upstream requests dispatched by the ingestion layer.',
+    'counter',
+    [{ labels: baseLabels, value: ia.requests_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_failures_total`,
+    'IndianAPI requests that failed (all causes).',
+    'counter',
+    [{ labels: baseLabels, value: ia.failures_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_rate_limited_total`,
+    'IndianAPI 429 responses observed.',
+    'counter',
+    [{ labels: baseLabels, value: ia.rate_limited_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_circuit_opens_total`,
+    'IndianAPI ingestion circuit-breaker trips.',
+    'counter',
+    [{ labels: baseLabels, value: ia.circuit_opens_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_overlap_skips_total`,
+    'IndianAPI ingestion runs skipped because the distributed lock was held.',
+    'counter',
+    [{ labels: baseLabels, value: ia.overlap_skips_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_budget_blocks_total`,
+    'IndianAPI calls blocked by daily/monthly/per-run budget caps.',
+    'counter',
+    [{ labels: baseLabels, value: ia.budget_blocks_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_ingestion_runs_total`,
+    'IndianAPI ingestion runs started.',
+    'counter',
+    [{ labels: baseLabels, value: ia.runs_total }],
+  );
+  e.metric(`${NAMESPACE}_indianapi_ingestion_runs_failed_total`,
+    'IndianAPI ingestion runs that aborted/failed.',
+    'counter',
+    [{ labels: baseLabels, value: ia.runs_failed_total }],
+  );
+  if (ia.last_quote_success_at != null) {
+    e.metric(`${NAMESPACE}_indianapi_quote_sync_age_seconds`,
+      'Seconds since the last successful IndianAPI quote ingestion run — alert on lag.',
+      'gauge',
+      [{
+        labels: baseLabels,
+        value: Math.max(0, Math.round((Date.now() - Date.parse(ia.last_quote_success_at)) / 1000)),
+      }],
+    );
+  }
+
   // ── Candle freshness ───────────────────────────────────────────
   if (ctx.candle) {
     if (ctx.candle.candle_age_seconds != null) {

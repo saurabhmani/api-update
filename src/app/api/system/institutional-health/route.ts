@@ -87,11 +87,7 @@ export async function GET(): Promise<NextResponse> {
   //   - approved_ratio < 0.001 over a >100-row sample
   const fallbackHealthy = snapshot.providers.some((p) => p.fallback_success > 0)
     || snapshot.providers.every((p) => !p.fallback_triggered);
-  const kitePrimaryBroken =
-    composite.current_provider === 'kite'
-    && composite.kite.configured
-    && !composite.kite.available
-    && !fallbackHealthy;
+  const kitePrimaryBroken = false;
   const lastScanOk =
     snapshot.full_scan.completes > 0
     && (snapshot.full_scan.last_completed_at != null);
@@ -120,8 +116,8 @@ export async function GET(): Promise<NextResponse> {
       label:      market.label ?? null,
     },
     provider: {
-      kite: {
-        ...composite.kite,
+      indianapi: {
+        ...composite.indianapi,
       },
       yahoo:              composite.yahoo,
       nse:                composite.nse,

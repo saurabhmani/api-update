@@ -1,9 +1,9 @@
 /**
- * Phase 9/11 — user-facing market API helpers.
+ * User-facing market API helpers — IndianAPI warehouse mode.
  *
- * Flow: authenticate → resolveUserLiveProvider → adapter → normalize → respond
- * Never uses MARKET_DATA_PROVIDER. Never exposes tokens.
- * Never silently returns another provider's live data.
+ * Auth → session only. Market data is served from Redis/DB warehouse
+ * (populated by IndianAPI ingestion). Broker OAuth is not required and
+ * never used for quotes/candles.
  */
 
 import { NextResponse } from 'next/server';
@@ -15,53 +15,54 @@ import type { DataSourceBroker } from '@/lib/broker/connections/types';
 import type { SessionUser } from '@/lib/session';
 import { requireSession } from '@/lib/session';
 import { AuthenticationError } from '@/lib/errors';
-import type {
-  BrokerConnectionContext,
-  BrokerMarketDataProvider,
-  NormalizedInstrument,
-} from '@/lib/marketData/brokerProvider/types';
+import type { NormalizedInstrument } from '@/lib/marketData/brokerProvider/types';
 import { normalizeInstrument } from '@/lib/marketData/brokerProvider/instruments/normalize';
 import {
-  getLiveFeedStateFor,
-  type LiveFeedStatus,
-} from '@/lib/marketData/liveFeedState';
-import {
-  resolveUserLiveProvider,
-  type UserFacingProviderStatus,
-  type UserLiveResolutionCode,
-} from '@/lib/broker/connections/userProviderResolution';
+  indianApiCredentialsPresent,
+  isIndianApiEnabled,
+} from '@/lib/marketData/providerFlags';
+import type { UserFacingProviderStatus } from '@/lib/broker/connections/userProviderResolution';
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
+export type MarketDataProviderLabel = DataSourceBroker | 'indianapi';
+
 export type ProviderResponseStatus =
-  | LiveFeedStatus
-  | UserLiveResolutionCode
+  | UserFacingProviderStatus
+  | 'indianapi_ready'
+  | 'indianapi_not_configured'
+  | 'not_connected'
   | 'needs_selection'
-  | UserFacingProviderStatus;
+  | 'fresh'
+  | 'delayed'
+  | 'stale'
+  | 'waiting_for_data'
+  | 'connecting'
+  | 'connected'
+  | 'closed_market'
+  | 'login_required'
+  | 'error';
 
 export interface UserMarketDataContext {
   user: SessionUser;
   active: UserActiveDataSource;
-  providerName: DataSourceBroker;
-  provider: BrokerMarketDataProvider;
-  ctx: BrokerConnectionContext;
-  /** Keyed feed freshness status for this user+provider. */
-  status: LiveFeedStatus;
+  /** Always indianapi for market-data routes. */
+  providerName: 'indianapi';
+  status: ProviderResponseStatus;
 }
 
 /** Envelope shape for user-facing market responses. */
 export interface ProviderDataEnvelope<T> {
-  provider: DataSourceBroker | null;
+  provider: MarketDataProviderLabel | null;
   status: ProviderResponseStatus;
   data: T;
-  /** When warehouse/Yahoo is used deliberately — never mutates selected source. */
   dataOrigin?: string;
   fallbackUsed?: boolean;
   fallbackSource?: string;
 }
 
 export function providerDataJson<T>(
-  provider: DataSourceBroker | null,
+  provider: MarketDataProviderLabel | null,
   status: ProviderResponseStatus,
   data: T,
   init?: {
@@ -90,7 +91,7 @@ export function providerDataJson<T>(
 export function withProviderMeta<T extends Record<string, unknown>>(
   payload: T,
   meta: {
-    provider: DataSourceBroker | null;
+    provider: MarketDataProviderLabel | null;
     status: ProviderResponseStatus;
     dataOrigin?: string;
     liveEnrichmentOrigin?: string | null;
@@ -99,7 +100,7 @@ export function withProviderMeta<T extends Record<string, unknown>>(
     provenanceNote?: string;
   },
 ): T & {
-  provider: DataSourceBroker | null;
+  provider: MarketDataProviderLabel | null;
   status: typeof meta.status;
   dataOrigin?: string;
   liveEnrichmentOrigin?: string | null;
@@ -120,28 +121,27 @@ export function withProviderMeta<T extends Record<string, unknown>>(
   };
 }
 
+function indianApiStatus(): ProviderResponseStatus {
+  if (isIndianApiEnabled() && indianApiCredentialsPresent()) return 'indianapi_ready';
+  if (indianApiCredentialsPresent()) return 'connected';
+  return 'indianapi_not_configured';
+}
+
 export async function resolveUserFeedMeta(userId: number): Promise<{
-  provider: DataSourceBroker | null;
+  provider: MarketDataProviderLabel | null;
   status: ProviderResponseStatus;
   active: UserActiveDataSource;
 }> {
   const active = await getUserActiveDataSource(userId);
-  if (active.needsSelection) {
-    return { provider: null, status: 'needs_selection', active };
-  }
-  if (!active.provider || !active.isConnected) {
-    return { provider: active.provider, status: 'not_connected', active };
-  }
-  const feed = getLiveFeedStateFor({
-    userId: String(userId),
-    provider: active.provider,
-  });
-  return { provider: active.provider, status: feed.status, active };
+  return {
+    provider: 'indianapi',
+    status: indianApiStatus(),
+    active,
+  };
 }
 
 /**
- * Full gate for market-data fetches that require an active broker adapter.
- * Uses resolveUserLiveProvider — never MARKET_DATA_PROVIDER.
+ * Session gate for market-data fetches. Does not require a broker connection.
  */
 export async function resolveUserMarketDataContext(): Promise<
   UserMarketDataContext | NextResponse
@@ -159,43 +159,12 @@ export async function resolveUserMarketDataContext(): Promise<
     throw err;
   }
 
-  const resolution = await resolveUserLiveProvider(user.id);
-
-  if (resolution.ok === false) {
-    const http =
-      resolution.code === 'needs_selection' ? 409
-        : resolution.code === 'not_connected' ? 403
-          : 502;
-    return providerDataJson(
-      resolution.provider,
-      resolution.code,
-      {
-        error: resolution.message,
-        code: resolution.code,
-        redirectTo:
-          resolution.code === 'needs_selection'
-            ? '/data-source?reason=select_data_source'
-            : resolution.code === 'not_connected'
-              ? '/data-source'
-              : undefined,
-        connectedProviders: resolution.active.connectedProviders,
-      },
-      { status: http },
-    );
-  }
-
-  const feed = getLiveFeedStateFor({
-    userId: String(user.id),
-    provider: resolution.provider,
-  });
-
+  const active = await getUserActiveDataSource(user.id);
   return {
     user,
-    active: resolution.active,
-    providerName: resolution.provider,
-    provider: resolution.adapter,
-    ctx: resolution.ctx,
-    status: feed.status,
+    active,
+    providerName: 'indianapi',
+    status: indianApiStatus(),
   };
 }
 
@@ -203,7 +172,7 @@ export async function resolveUserMarketDataContext(): Promise<
 export async function resolveOptionalUserMarketMeta(): Promise<
   | {
       user: SessionUser;
-      provider: DataSourceBroker | null;
+      provider: MarketDataProviderLabel | null;
       status: ProviderResponseStatus;
     }
   | NextResponse
@@ -249,26 +218,28 @@ export function instrumentFromQuery(raw: string): NormalizedInstrument {
 }
 
 export function refreshFeedStatus(
-  userId: number | string,
-  provider: DataSourceBroker,
-): LiveFeedStatus {
-  return getLiveFeedStateFor({
-    userId: String(userId),
-    provider,
-  }).status;
+  _userId: number | string,
+  _provider?: MarketDataProviderLabel | DataSourceBroker,
+): ProviderResponseStatus {
+  return indianApiStatus();
 }
 
-/** Classify warehouse / Yahoo chart fills without misrepresenting the broker. */
+/** Classify candle origins without implying live broker ticks. */
 export function labelCandleDataOrigin(source: string): {
   dataOrigin: string;
   fallbackUsed: boolean;
   fallbackSource?: string;
 } {
   const s = source.toLowerCase();
+  if (s === 'indianapi' || s === 'cache') {
+    return { dataOrigin: 'indianapi_warehouse', fallbackUsed: false };
+  }
   if (s === 'zerodha' || s === 'kite' || s === 'shoonya') {
+    // Legacy stored source labels — treat as warehouse historical.
     return {
-      dataOrigin: s === 'shoonya' ? 'shoonya_live' : 'zerodha_live',
-      fallbackUsed: false,
+      dataOrigin: 'legacy_broker_source',
+      fallbackUsed: true,
+      fallbackSource: s,
     };
   }
   if (s === 'yahoo' || s.includes('yahoo')) {

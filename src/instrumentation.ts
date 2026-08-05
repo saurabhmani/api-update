@@ -47,8 +47,12 @@ export async function register() {
     MYSQL_HOST: !!process.env.MYSQL_HOST,
     SESSION_SECRET: !!process.env.SESSION_SECRET,
     REDIS_HOST: !!process.env.REDIS_HOST,
-    KITE_API_KEY: !!process.env.KITE_API_KEY,
-    KITE_ACCESS_TOKEN: !!process.env.KITE_ACCESS_TOKEN,
+    INDIANAPI_API_KEY: !!(
+      process.env.INDIANAPI_API_KEY
+      || process.env.INDIANAPI_KEY
+      || process.env.INDIAN_API_KEY
+    ),
+    INDIANAPI_ENABLED: process.env.INDIANAPI_ENABLED ?? '(unset)',
   });
 
   // PROD-PARITY 2026-05 — single-line stamp of every knob that materially
@@ -348,6 +352,22 @@ export async function register() {
     bootInProcScheduler();
     return true;
   });
+
+
+
+  // Empty q365_signals bootstrap (non-blocking).
+  void (async () => {
+    try {
+      const { scheduleSignalsDatabaseBootstrap } = await import(
+        '@/lib/startup/signalsDatabaseBootstrap'
+      );
+      scheduleSignalsDatabaseBootstrap({ trigger: 'startup' });
+    } catch (err) {
+      log.warn('Signals database bootstrap scheduling failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  })();
 
   log.info('Boot sequence complete');
 }

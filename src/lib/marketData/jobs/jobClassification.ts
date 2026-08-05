@@ -10,7 +10,7 @@
 import {
   getSystemMarketDataUserId,
   isSystemFeedOwner,
-} from '@/lib/marketData/connectionManager/systemFeed';
+} from '@/lib/marketData/systemFeed';
 import type { DataSourceBroker } from '@/lib/broker/connections/types';
 
 /** How a scheduled / background job relates to broker credentials. */

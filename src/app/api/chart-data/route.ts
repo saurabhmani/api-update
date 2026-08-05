@@ -1,28 +1,18 @@
 /**
  * GET /api/chart-data
  *
- * Session required. Warehouse candles are always served when present.
- * Active broker is only used to fill empty warehouse series.
+ * Session required. Candles from IndianAPI warehouse only.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { getChartData, type ChartInterval, type OhlcvBar } from '@/services/chartService';
+import { getChartData, type ChartInterval } from '@/services/chartService';
 import { requireSession } from '@/lib/session';
 import { AuthenticationError } from '@/lib/errors';
 import {
-  instrumentFromQuery,
   isMarketApiGateResponse,
   labelCandleDataOrigin,
-  mapBrokerFetchError,
   providerDataJson,
-  refreshFeedStatus,
-  resolveUserMarketDataContext,
   resolveOptionalUserMarketMeta,
 } from '@/lib/broker/connections';
-import {
-  BrokerMarketDataError,
-  type BrokerCandleInterval,
-} from '@/lib/marketData/brokerProvider/types';
-import { recordLiveFeedPollSuccess } from '@/lib/marketData/liveFeedState';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -31,19 +21,6 @@ const VALID_INTERVALS = new Set<ChartInterval>([
   '1minute', '5minute', '15minute', '30minute', '60minute',
   '1day', '1week', '1month',
 ]);
-
-function toBrokerInterval(interval: ChartInterval): BrokerCandleInterval {
-  switch (interval) {
-    case '1minute': return '1minute';
-    case '5minute': return '5minute';
-    case '15minute': return '15minute';
-    case '30minute': return '30minute';
-    case '60minute': return '60minute';
-    case '1week': return 'week';
-    case '1month': return 'month';
-    default: return 'day';
-  }
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -85,91 +62,30 @@ export async function GET(req: NextRequest) {
 
   try {
     const warehouse = await getChartData(symbol, interval, from, to, limit);
-    let candles: OhlcvBar[] = warehouse.candles;
-    let instrument_key = warehouse.instrument_key;
-    let outSymbol = warehouse.symbol;
-    let source: string = warehouse.source;
-    let cached = warehouse.cached;
-
     const meta = await resolveOptionalUserMarketMeta();
     const metaOk = !isMarketApiGateResponse(meta);
-    const providerName = metaOk ? meta.provider : null;
-    const feedStatus = metaOk ? meta.status : 'not_connected';
+    const providerName = metaOk ? meta.provider : 'indianapi';
+    const status = metaOk ? meta.status : 'indianapi_ready';
+    const origin = labelCandleDataOrigin(warehouse.source);
 
-    if (candles.length === 0) {
-      const resolved = await resolveUserMarketDataContext();
-      if (!isMarketApiGateResponse(resolved)) {
-        try {
-          await resolved.provider.connect(resolved.ctx);
-          const instrument = instrumentFromQuery(symbol);
-          const toDate = to ? new Date(to) : new Date();
-          const fromDate = from
-            ? new Date(from)
-            : new Date(toDate.getTime() - 120 * 86_400_000);
-          const brokerCandles = await resolved.provider.fetchHistoricalCandles(resolved.ctx, {
-            instrument,
-            interval: toBrokerInterval(interval),
-            from: fromDate,
-            to: toDate,
-            limit,
-          });
-          if (brokerCandles.length > 0) {
-            recordLiveFeedPollSuccess({
-              userId: String(resolved.user.id),
-              provider: resolved.providerName,
-            });
-            candles = brokerCandles.map((c) => ({
-              ts: c.ts,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-              volume: c.volume,
-              oi: 0,
-            }));
-            instrument_key = instrument.instrumentKey;
-            outSymbol = instrument.symbol;
-            source = resolved.providerName;
-            cached = false;
-          }
-        } catch (err) {
-          const mapped = mapBrokerFetchError(resolved.providerName, err);
-          if (!(
-            err instanceof BrokerMarketDataError &&
-            (err.code === 'session_expired' || mapped.code === 'login_required')
-          )) {
-            console.warn('[/api/chart-data] broker fill failed:', mapped.message);
-          }
-        }
-      }
-    }
-
-    const status = metaOk && providerName
-      ? refreshFeedStatus(meta.user.id, providerName)
-      : feedStatus;
-    const origin = labelCandleDataOrigin(source);
     return providerDataJson(
       providerName,
       status,
       {
-        symbol: outSymbol,
-        instrument_key,
+        symbol: warehouse.symbol,
+        instrument_key: warehouse.instrument_key,
         interval,
         from: warehouse.from,
         to: warehouse.to,
-        candles,
-        count: candles.length,
-        source,
-        cached,
-        ...(candles.length === 0
+        candles: warehouse.candles,
+        count: warehouse.candles.length,
+        source: warehouse.source,
+        cached: warehouse.cached,
+        ...(warehouse.candles.length === 0
           ? {
-              note: 'No candle data found. Candles are populated by the scheduler each market session, or from the active broker on first access.',
+              note: 'No candle data in IndianAPI warehouse yet. Populated by scheduled candle ingestion.',
             }
-          : origin.fallbackUsed
-            ? {
-                note: `Candles from ${origin.fallbackSource ?? 'warehouse'}; not live ticks from active broker`,
-              }
-            : {}),
+          : {}),
       },
       {
         dataOrigin: origin.dataOrigin,

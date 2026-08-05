@@ -76,13 +76,9 @@ const COOKIE_OPTS = {
 async function redirectPayload(userId: number) {
   try {
     const dest = await resolvePostLoginDestination(userId);
-    const redirectTo =
-      dest.path === '/data-source' && dest.reason
-        ? `/data-source?reason=${dest.reason}`
-        : dest.path;
-    return { redirectTo };
+    return { redirectTo: dest.path };
   } catch {
-    return { redirectTo: '/data-source' };
+    return { redirectTo: '/dashboard' };
   }
 }
 
@@ -148,8 +144,7 @@ export async function POST(req: NextRequest) {
       if ('error' in result) {
         return NextResponse.json({ error: result.error }, { status: 400 });
       }
-      // New users never have a broker connection yet
-      const res = NextResponse.json({ user: result.user, redirectTo: '/data-source' });
+      const res = NextResponse.json({ user: result.user, redirectTo: '/dashboard' });
       res.cookies.set(COOKIE, result.sessionToken, COOKIE_OPTS);
       return res;
     }

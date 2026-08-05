@@ -1,8 +1,6 @@
 // Safe broker connection status + post-login routing helpers
 
 import { getUserActiveDataSource } from './activeDataSource';
-import { listBrokerConnectionsForUser } from './repository';
-import { isBrokerTokenExpired } from './expiry';
 import {
   BROKER_DISPLAY_NAMES,
   type BrokerConnectionRecord,
@@ -41,34 +39,14 @@ export type PostLoginDestination =
   | { path: '/dashboard' }
   | { path: '/data-source'; reason?: 'session_expired' | 'select_data_source' };
 
+/**
+ * Post-login destination. Market data uses IndianAPI warehouse — a broker
+ * connection is optional. Always allow entry to the dashboard.
+ */
 export async function resolvePostLoginDestination(
-  userId: number,
+  _userId: number,
 ): Promise<PostLoginDestination> {
-  try {
-    const active = await getUserActiveDataSource(userId);
-    if (active.provider && !active.needsSelection) {
-      return { path: '/dashboard' };
-    }
-    if (active.needsSelection) {
-      return { path: '/data-source', reason: 'select_data_source' };
-    }
-
-    const connections = await listBrokerConnectionsForUser(userId);
-    const expiredPrimary = connections.find(
-      (c) =>
-        c.status === 'expired'
-        || c.status === 'reauth_required'
-        || c.status === 'revoked'
-        || (c.status === 'active' && isBrokerTokenExpired(c.tokenExpiresAt)),
-    );
-    if (expiredPrimary || active.reason === 'expired') {
-      return { path: '/data-source', reason: 'session_expired' };
-    }
-
-    return { path: '/data-source' };
-  } catch {
-    return { path: '/data-source' };
-  }
+  return { path: '/dashboard' };
 }
 
 export function brokerDisplayName(broker: DataSourceBroker): string {

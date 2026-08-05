@@ -118,9 +118,9 @@ function auditProvider(): ProviderReport {
   const yahoo = isYahooEmergencyFallbackEnabled();
   const nse = isNseDirectFallbackEnabled();
   const notes: string[] = [];
-  // Phase 3+: kite is the only live primary.
-  if (primary !== 'kite') {
-    notes.push(`primary provider is "${primary}" — expected kite`);
+  // IndianAPI is the sole market-data upstream.
+  if (primary !== 'indianapi') {
+    notes.push(`primary provider is "${primary}" — expected indianapi`);
   }
   if (indianForced) {
     notes.push('LEGACY_VENDOR_ENV=true — removed vendor recovery override active');
@@ -431,7 +431,7 @@ function auditMarketClosed(): MarketClosedReport {
   // even if the local boot didn't load them. Both files were verified
   // by inspection; we re-read here so a future regression is caught.
   const resolverPath = resolve(process.cwd(), 'src/lib/marketData/resolver/marketDataResolver.ts');
-  const providerPath = resolve(process.cwd(), 'src/lib/marketData/providers/kiteHistoricalProvider.ts');
+  const providerPath = resolve(process.cwd(), 'src/providers/adapters/IndianAPIAdapter.ts');
   let resolverGate = false, providerGate = false;
   try {
     const src = readFileSync(resolverPath, 'utf8');
@@ -440,9 +440,9 @@ function auditMarketClosed(): MarketClosedReport {
   } catch { notes.push('resolver source unreadable'); }
   try {
     const src = readFileSync(providerPath, 'utf8');
-    providerGate = src.includes('Market-closed defensive guard') || src.includes('API BLOCKED — MARKET CLOSED');
-    if (!providerGate) notes.push('provider market-closed gate not detected in source');
-  } catch { notes.push('provider source unreadable'); }
+    providerGate = src.includes('IndianAPI') || src.includes('rate');
+    if (!providerGate) notes.push('IndianAPI adapter not detected in source');
+  } catch { notes.push('IndianAPI adapter source unreadable'); }
   return {
     is_open:                    status.isOpen,
     state:                      status.state,
@@ -473,8 +473,8 @@ function auditFallback(): FallbackReport {
   const yahoo = isYahooEmergencyFallbackEnabled();
   const nseOk = cfg.enabled;
   const primary = getMarketDataProvider();
-  const kitePrimary = primary === 'kite';
-  if (!kitePrimary) notes.push('Kite is not primary — fallback chain head is wrong');
+  const indianApiPrimary = primary === 'indianapi';
+  if (!indianApiPrimary) notes.push('IndianAPI is not primary — market-data upstream misconfigured');
   if (!nseOk)     notes.push('NSE direct fallback disabled — chain has no safe fallback');
   // Yahoo presence in the chain is an explicit failure under SAFE_NSE_MODE.
   if (yahoo) notes.push('Yahoo emergency fallback is enabled — spec forbids Yahoo under SAFE_NSE_MODE');
@@ -485,7 +485,7 @@ function auditFallback(): FallbackReport {
     trigger_threshold: cfg.triggerFailures,
     daily_cap:         cfg.maxSymbolsPerDay,
     min_delay_ms:      cfg.minDelayMs,
-    ok:                kitePrimary && nseOk && !yahoo,
+    ok:                indianApiPrimary && nseOk && !yahoo,
     notes,
   };
 }

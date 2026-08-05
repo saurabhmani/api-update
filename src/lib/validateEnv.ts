@@ -63,13 +63,53 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
   }
 
   const provider = (process.env.MARKET_DATA_PROVIDER ?? '').trim().toLowerCase();
-  const kitePrimary = !provider || provider === 'kite';
-  if (kitePrimary) {
-    const key = (process.env.KITE_API_KEY ?? '').trim();
-    if (!key) {
+  const indianApiEnabledRaw = (process.env.INDIANAPI_ENABLED ?? '').trim().toLowerCase();
+  const indianApiEnabled =
+    indianApiEnabledRaw === 'true' || indianApiEnabledRaw === '1'
+    || indianApiEnabledRaw === 'yes' || indianApiEnabledRaw === 'on';
+  const indianApiKey = (
+    process.env.INDIANAPI_API_KEY?.trim()
+    || process.env.INDIANAPI_KEY?.trim()
+    || process.env.INDIAN_API_KEY?.trim()
+    || ''
+  );
+
+  // MARKET_DATA_PROVIDER=kite|zerodha is unsupported (resolves to none).
+  if (provider === 'kite' || provider === 'zerodha' || provider === 'shoonya' || provider === 'finvasia') {
+    warnings.push(
+      `MARKET_DATA_PROVIDER=${provider} is unsupported for market data. `
+      + 'Set MARKET_DATA_PROVIDER=indianapi and configure INDIANAPI_API_KEY.',
+    );
+  }
+
+  // IndianAPI: explicit selection or bootstrap-default need a key.
+  const wantsIndianApi =
+    provider === 'indianapi'
+    || (!provider && indianApiEnabled);
+
+  if (wantsIndianApi || (isProd && !provider)) {
+    if (!indianApiKey) {
+      if (isProd && process.env.INDIANAPI_OPTIONAL !== 'true') {
+        errors.push(
+          'IndianAPI is the market-data upstream but INDIANAPI_API_KEY is not set. '
+          + 'Set INDIANAPI_API_KEY (or INDIANAPI_KEY / INDIAN_API_KEY).',
+        );
+      } else if (!provider && indianApiEnabled) {
+        warnings.push(
+          'MARKET_DATA_PROVIDER is unset and INDIANAPI_ENABLED=true, but no INDIANAPI_API_KEY is set — '
+          + 'system provider resolves to none. Set the key to activate the IndianAPI bootstrap default.',
+        );
+      } else {
+        warnings.push(
+          'IndianAPI credentials are not set — '
+          + 'ingestion will refuse to run until INDIANAPI_API_KEY is configured.',
+        );
+      }
+    }
+    if (!indianApiEnabled && provider === 'indianapi') {
       warnings.push(
-        'MARKET_DATA_PROVIDER defaults to kite but KITE_API_KEY looks unset — '
-        + 'expect yahoo/nse/db cascade until Kite app credentials and a dashboard session exist.',
+        'MARKET_DATA_PROVIDER selects IndianAPI but INDIANAPI_ENABLED is not true — '
+        + 'ingestion jobs are feature-flag gated and will not run until INDIANAPI_ENABLED=true.',
       );
     }
   }
@@ -85,19 +125,39 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
 
   const brokerEnc = process.env.BROKER_TOKEN_ENCRYPTION_KEY?.trim();
   if (brokerEnc && !/^[0-9a-fA-F]{64}$/.test(brokerEnc)) {
-    errors.push(
-      'BROKER_TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes).',
+    warnings.push(
+      'BROKER_TOKEN_ENCRYPTION_KEY must be exactly 64 hex characters if set '
+      + '(legacy broker token encryption; not required for IndianAPI market data).',
     );
   } else if (!brokerEnc) {
-    if (isProd && process.env.BROKER_TOKEN_ALLOW_LEGACY_KEY !== '1') {
-      errors.push(
-        'BROKER_TOKEN_ENCRYPTION_KEY is required in production (64 hex chars).',
-      );
-    } else {
-      warnings.push(
-        'BROKER_TOKEN_ENCRYPTION_KEY unset — broker tokens will fall back to ENCRYPTION_KEY / SESSION_SECRET.',
-      );
-    }
+    warnings.push(
+      'BROKER_TOKEN_ENCRYPTION_KEY unset — obsolete for IndianAPI market data '
+      + '(only needed for legacy broker_connections rows).',
+    );
+  }
+
+  const obsoleteBrokerEnv = [
+    'KITE_API_KEY',
+    'KITE_API_SECRET',
+    'KITE_REDIRECT_URL',
+    'KITE_ACCESS_TOKEN',
+    'KITE_ENABLED',
+    'ZERODHA_API_KEY',
+    'ZERODHA_API_SECRET',
+    'SHOONYA_ENABLED',
+    'SHOONYA_CLIENT_ID',
+    'SHOONYA_SECRET_CODE',
+    'SHOONYA_UID',
+    'SHOONYA_PASSWORD',
+    'SHOONYA_TOTP',
+    'FINVASIA_API_KEY',
+  ].filter((k) => Boolean(process.env[k]?.trim()));
+
+  if (obsoleteBrokerEnv.length > 0) {
+    warnings.push(
+      `Obsolete broker env vars present (${obsoleteBrokerEnv.join(', ')}) — `
+      + 'Kite/Zerodha/Shoonya are not used for market data. Remove them from deployment config.',
+    );
   }
 
   const shoonyaEnabled = (process.env.SHOONYA_ENABLED ?? '').trim() === '1'
@@ -105,15 +165,8 @@ export function validateEnv(): { valid: boolean; errors: string[]; warnings: str
     || Boolean(process.env.SHOONYA_CLIENT_ID?.trim());
 
   if (shoonyaEnabled) {
-    if (!process.env.SHOONYA_CLIENT_ID?.trim()) {
-      errors.push('SHOONYA_CLIENT_ID is required when Shoonya is enabled.');
-    }
-    if (!process.env.SHOONYA_SECRET_CODE?.trim()) {
-      errors.push('SHOONYA_SECRET_CODE is required when Shoonya is enabled.');
-    }
-  } else if (!process.env.SHOONYA_CLIENT_ID?.trim() || !process.env.SHOONYA_SECRET_CODE?.trim()) {
     warnings.push(
-      'SHOONYA_CLIENT_ID / SHOONYA_SECRET_CODE unset — Shoonya data-source login will be unavailable.',
+      'SHOONYA_* is set but Shoonya is no longer used for market data (IndianAPI only).',
     );
   }
 

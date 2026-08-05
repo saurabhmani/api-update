@@ -123,7 +123,7 @@ async function findSkipCandidate(symbols: string[]): Promise<{
       return { symbol: sym, stats };
     }
   }
-  return { symbol: null, stats: { barCount: 0, latestTs: null, ageDays: null } };
+  return { symbol: null, stats: { barCount: 0, latestTs: null, ageDays: null, avgVolume: 0 } };
 }
 
 function parseArgs(): { microBackfill: boolean; limit: number } {

@@ -373,20 +373,6 @@ export async function migrateSignalEngine(): Promise<void> {
   await ensureIndex('q365_signals', 'idx_q365sig_rescore',      '(last_rescored_at)');
   await ensureIndex('q365_signals', 'idx_q365sig_invalidation', '(invalidation_reason)');
 
-  // Compound index for the route's hot path. Every poll runs:
-  //   WHERE batch_id = ? AND status IN (...) AND classification = ...
-  //   ORDER BY final_score DESC, opportunity_score DESC, generated_at DESC
-  // Without a compound index MySQL falls back to the single-column
-  // batch_id index then sorts in memory, which under load produces the
-  // "query exceeded 10000ms" + "Queue limit reached" cascade. Leading
-  // with batch_id keeps each batch's rows physically contiguous so the
-  // sort can stream off the index without a filesort.
-  await ensureIndex(
-    'q365_signals',
-    'idx_q365sig_batch_score_class',
-    '(batch_id, final_score DESC, confidence_score DESC, classification)',
-  );
-
   // ── Phase-4 scoring columns (calculateFinalScore + 6-band) ────
   // Additive — does NOT replace `final_score` (which holds the
   // dynamic ranker's freshness-aware score that Phase-1 filters on).
@@ -400,10 +386,29 @@ export async function migrateSignalEngine(): Promise<void> {
   //   phase4_factor_scores_json  — per-factor breakdown for explainability
   // Nullable so historical rows are preserved untouched; saveSignals
   // populates them on every new INSERT post-Phase-4.
+  //
+  // IMPORTANT: add these columns BEFORE any index that references
+  // `classification` (idx_q365sig_batch_score_class below). Otherwise
+  // MySQL aborts with "Key column 'classification' doesn't exist" and
+  // the rest of this migration (including composite_final_score) never runs.
   await ensureColumn('q365_signals', 'composite_final_score',     "DECIMAL(6,2) NULL");
   await ensureColumn('q365_signals', 'classification',            "VARCHAR(40) NULL");
   await ensureColumn('q365_signals', 'phase4_factor_scores_json', "JSON NULL");
   await ensureIndex ('q365_signals', 'idx_q365sig_classification', '(classification)');
+
+  // Compound index for the route's hot path. Every poll runs:
+  //   WHERE batch_id = ? AND status IN (...) AND classification = ...
+  //   ORDER BY final_score DESC, opportunity_score DESC, generated_at DESC
+  // Without a compound index MySQL falls back to the single-column
+  // batch_id index then sorts in memory, which under load produces the
+  // "query exceeded 10000ms" + "Queue limit reached" cascade. Leading
+  // with batch_id keeps each batch's rows physically contiguous so the
+  // sort can stream off the index without a filesort.
+  await ensureIndex(
+    'q365_signals',
+    'idx_q365sig_batch_score_class',
+    '(batch_id, final_score DESC, confidence_score DESC, classification)',
+  );
 
   // ── Phase-11 unified row block ──────────────────────────────
   // Materialises the 16 fields the API/UI now treats as canonical

@@ -1,5 +1,6 @@
 /**
  * Phase 10 — signal data-origin classification + live enrich rules.
+ * Broker quote enrichment retired — warehouse via MarketDataProvider.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,42 +12,32 @@ vi.mock('@/lib/marketData/marketHours', () => ({
 vi.mock('@/lib/broker/connections/activeDataSource', () => ({
   getUserActiveDataSource: vi.fn(async () => ({
     userId: 7,
-    provider: 'shoonya',
-    connection: { id: 'c1' },
-    connectionId: 'c1',
-    isConnected: true,
-    isActiveDataSource: true,
+    provider: null,
+    connection: null,
+    connectionId: null,
+    isConnected: false,
+    isActiveDataSource: false,
     needsSelection: false,
-    reason: 'primary',
-    connectedProviders: ['shoonya'],
+    reason: 'none',
+    connectedProviders: [],
     updatedAt: null,
   })),
 }));
 
-const fetchQuote = vi.fn(async () => [
-  {
-    symbol: 'RELIANCE',
-    exchange: 'NSE',
+const getLiveSnapshot = vi.fn(async (sym: string) => ({
+  data: {
+    symbol: sym,
     ltp: 2500,
-    open: null,
-    high: null,
-    low: null,
-    close: 2480,
-    prevClose: 2480,
-    volume: null,
-    change: 20,
+    price: 2500,
     changePercent: 0.8,
-    asOfMs: Date.now(),
-    quality: 'live' as const,
+    timestamp: Date.now(),
   },
-]);
+  fetched_at: Date.now(),
+}));
 
-vi.mock('@/lib/marketData/brokerProvider', () => ({
-  getBrokerMarketDataProvider: vi.fn(() => ({
-    name: 'shoonya',
-    connect: vi.fn(async () => undefined),
-    fetchQuote,
-  })),
+vi.mock('@/providers/MarketDataProvider', () => ({
+  getLiveSnapshot: (...args: unknown[]) =>
+    getLiveSnapshot(args[0] as string),
 }));
 
 vi.mock('@/lib/marketData/resolver/marketDataResolver', () => ({
@@ -64,17 +55,19 @@ vi.mock('@/lib/marketData/liveFeedState', () => ({
 }));
 
 describe('dataOrigin helpers', () => {
-  it('maps broker to live origin tags', async () => {
-    const { liveOriginForBroker, buildSignalProvenance } = await import(
+  it('maps indianapi warehouse stamps and keeps legacy broker labels readable', async () => {
+    const { liveOriginForBroker, buildSignalProvenance, originFromLiveSource } = await import(
       '@/lib/signals/dataOrigin'
     );
     expect(liveOriginForBroker('zerodha')).toBe('zerodha_live');
     expect(liveOriginForBroker('shoonya')).toBe('shoonya_live');
+    expect(originFromLiveSource('indianapi_warehouse')).toBe('indianapi_warehouse');
+    expect(originFromLiveSource('kite')).toBeNull();
     const p = buildSignalProvenance({
       generation: 'database',
-      liveEnrichment: 'shoonya_live',
+      liveEnrichment: 'indianapi_warehouse',
     });
-    expect(p.note).toMatch(/Shoonya/);
+    expect(p.note).toMatch(/IndianAPI/i);
     expect(p.generation).toBe('database');
   });
 
@@ -87,10 +80,10 @@ describe('dataOrigin helpers', () => {
     expect(originFromLiveSource('zerodha_live')).toBe('zerodha_live');
     expect(
       dominantLiveOrigin([
-        { liveSource: 'shoonya_live', livePrice: 10 },
+        { liveSource: 'indianapi_warehouse', livePrice: 10 },
         { liveSource: 'fallback', livePrice: 11 },
       ]),
-    ).toBe('shoonya_live');
+    ).toBe('indianapi_warehouse');
   });
 });
 
@@ -107,21 +100,21 @@ describe('enrichWithLiveLtp Phase 10', () => {
     liveSource?: string | null;
   };
 
-  it('uses Shoonya broker quotes for a Shoonya user and stamps shoonya_live', async () => {
+  it('fills from IndianAPI warehouse via MarketDataProvider', async () => {
     const { enrichWithLiveLtpDetailed } = await import(
       '@/lib/signals/confirmedSignalsService'
     );
     const rows: LiveRow[] = [{ tradingsymbol: 'RELIANCE', ltp: 2400 }];
     const result = await enrichWithLiveLtpDetailed(rows, { userId: 7 });
     expect(result.rows[0].livePrice).toBe(2500);
-    expect(result.rows[0].liveSource).toBe('shoonya_live');
-    expect(result.liveOrigin).toBe('shoonya_live');
+    expect(result.rows[0].liveSource).toBe('indianapi_warehouse');
+    expect(result.liveOrigin).toBe('indianapi_warehouse');
     expect(result.fallbackUsed).toBe(false);
-    expect(fetchQuote).toHaveBeenCalled();
+    expect(getLiveSnapshot).toHaveBeenCalled();
   });
 
-  it('does not silently use Yahoo/Kite when broker miss and fallback disabled', async () => {
-    fetchQuote.mockResolvedValueOnce([]);
+  it('does not silently use Yahoo when warehouse miss and fallback disabled', async () => {
+    getLiveSnapshot.mockRejectedValueOnce(new Error('miss'));
     const { enrichWithLiveLtpDetailed } = await import(
       '@/lib/signals/confirmedSignalsService'
     );
@@ -138,7 +131,7 @@ describe('enrichWithLiveLtp Phase 10', () => {
 
   it('uses fallback only when SIGNALS_LIVE_FALLBACK is enabled', async () => {
     process.env.SIGNALS_LIVE_FALLBACK = 'true';
-    fetchQuote.mockResolvedValueOnce([]);
+    getLiveSnapshot.mockRejectedValueOnce(new Error('miss'));
     const { enrichWithLiveLtpDetailed } = await import(
       '@/lib/signals/confirmedSignalsService'
     );

@@ -27,27 +27,27 @@
 import { logger } from '@/lib/logger';
 import type { MarketSnapshot } from '@/types/market';
 import {
-  fetchNseDirectQuotes,
-  type NseDirectResult,
-} from '../providers/nseDirectProvider';
+  KiteAuthenticationError,
+  KiteRateLimitError,
+} from '@/lib/marketData/retiredBrokerErrors';
+import { UnsupportedFeatureError } from '@/providers/adapters/UnsupportedFeatureError';
 import {
   cache,
   quoteCacheKey,
   QUOTE_TTL_S,
 } from '@/lib/cache';
+import { cacheGet as redisCacheGet } from '@/lib/redis';
 import {
-  isYahooEmergencyFallbackEnabled, // @deprecated marker
   getMarketDataProvider,
   getPrimaryFallbackProvider,
-  isLegacyRollbackActive,
   getNseDirectFallbackConfig,
-} from '../providerFlags';
-import * as Kite from '@/providers/adapters/KiteAdapter';
-import { UnsupportedFeatureError } from '@/providers/adapters/UnsupportedFeatureError';
+  isYahooEmergencyFallbackEnabled,
+  isLegacyRollbackActive,
+} from '@/lib/marketData/providerFlags';
 import {
-  KiteAuthenticationError,
-  KiteRateLimitError,
-} from '@/lib/kite/errors';
+  fetchNseDirectQuotes,
+  type NseDirectResult,
+} from '@/lib/marketData/providers/nseDirectProvider';
 import * as YahooEmergency from '@/providers/adapters/YahooAdapter'; // @deprecated marker
 import { logFeedHealth } from '../feedHealthLog';
 import { isMarketOpen, getMarketStatus } from '../marketHours';
@@ -266,35 +266,15 @@ interface KiteBatchAttempt {
 /** Invoke KiteAdapter.getBatchQuotes; never throws — maps failures
  *  into a recoverable/true-failure verdict for the cascade ladder. */
 async function tryKiteBatchQuotes(symbols: string[]): Promise<KiteBatchAttempt> {
-  const t0 = Date.now();
-  try {
-    const batch = await Kite.getBatchQuotes(symbols);
-    const snaps = (batch.snapshots ?? []).filter(
-      (s) => Number.isFinite(s.price) && s.price > 0,
-    );
-    return {
-      ok: snaps.length > 0,
-      snapshots: snaps,
-      missing: batch.missing ?? [],
-      errorCode: snaps.length === 0 ? 'KITE_EMPTY' : null,
-      errorMessage: snaps.length === 0 ? 'Kite batch returned no priced snapshots' : null,
-      latencyMs: Date.now() - t0,
-      recoverable: snaps.length === 0,
-    };
-  } catch (err) {
-    const recoverable = isRecoverableKiteError(err);
-    const name = err instanceof Error ? err.name : 'KiteError';
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      snapshots: [],
-      missing: symbols,
-      errorCode: name,
-      errorMessage: message,
-      latencyMs: Date.now() - t0,
-      recoverable,
-    };
-  }
+  return {
+    ok: false,
+    snapshots: [],
+    missing: symbols.map((s) => s.toUpperCase()),
+    errorCode: 'KITE_REMOVED',
+    errorMessage: 'KiteAdapter removed — IndianAPI warehouse only',
+    latencyMs: 0,
+    recoverable: false,
+  };
 }
 
 function snapshotsToMap(arr: MarketSnapshot[]): Map<string, MarketSnapshot> {
@@ -363,7 +343,11 @@ async function readCacheBatch(symbols: string[]): Promise<{
   const hits: MarketSnapshot[] = [];
   const misses: string[] = [];
   await Promise.all(symbols.map(async (sym) => {
-    const v = await cache.get<MarketSnapshot>(quoteCacheKey(sym));
+    // In-process tier first, then Redis — cross-process writers (the
+    // IndianAPI ingestion orchestrator, batch tier in another worker)
+    // publish quote:<SYMBOL> via Redis.
+    const v = await cache.get<MarketSnapshot>(quoteCacheKey(sym))
+      ?? await redisCacheGet<MarketSnapshot>(quoteCacheKey(sym));
     if (v && Number.isFinite(v.price) && v.price > 0) hits.push(v);
     else misses.push(sym);
   }));
@@ -661,6 +645,76 @@ export async function resolveBatch(
       symbolsCount: symbols.length,
     });
     return result;
+  }
+
+  // ── IndianAPI mode gate (ingestion-first architecture) ─────────
+  // Serve path is cache-only: the ingestion orchestrator (batch tier)
+  // is the sole IndianAPI caller and publishes quote:<SYMBOL> to
+  // Redis. The resolver NEVER calls Kite / NSE direct / Yahoo in this
+  // mode — an empty cache is a loud degraded envelope, not a hidden
+  // provider switch.
+  if (getMarketDataProvider() === 'indianapi') {
+    const { hits, misses } = await readCacheBatch(symbols);
+    if (hits.length === symbols.length) {
+      logProviderEvent('success', {
+        provider: 'cache',
+        selected: 'indianapi',
+        fallback: 'none',
+        cache_hit: 'full',
+        latency_ms: Date.now() - startTs,
+      });
+      const r = assembleResultFromCache(hits, symbols, startedAt, startTs, opts);
+      logResolverOutcome(symbols.length, r, null);
+      return r;
+    }
+    if (hits.length > 0) {
+      const responseReceivedAt = nowIso();
+      const coverage = Math.round((hits.length / symbols.length) * 100);
+      const r: ResolverResult = {
+        provider: 'cache',
+        status: 'partial',
+        dataQuality: 'LOW',
+        requestStartedAt: startedAt,
+        responseReceivedAt,
+        latencyMs: Date.now() - startTs,
+        symbolsRequested: symbols.length,
+        symbolsReturned: hits.length,
+        coveragePercent: coverage,
+        staleSymbols: [],
+        failedSymbols: misses,
+        errorCode: null,
+        errorMessage: null,
+        fallbackUsed: false,
+        snapshots: snapshotsToMap(hits),
+        data: snapshotsToDataRecord(hits, 'cache'),
+      };
+      if (!opts.quiet) {
+        void logFeedHealth({
+          provider: 'cache',
+          endpoint: 'indianapi_warehouse_cache',
+          request_started_at: startedAt,
+          response_received_at: responseReceivedAt,
+          status: 'partial',
+          latency_ms: r.latencyMs,
+          symbols_requested: symbols.length,
+          symbols_returned: hits.length,
+          coverage_percent: coverage,
+          data_quality: 'LOW',
+          error_code: null,
+          error_message: null,
+        });
+      }
+      logResolverOutcome(symbols.length, r, null);
+      return r;
+    }
+    const r = emptyResult({
+      provider: 'none', status: 'degraded',
+      errorCode: 'INDIANAPI_WAREHOUSE_EMPTY',
+      errorMessage: 'MARKET_DATA_PROVIDER=indianapi — cache empty; check ingestion scheduler / [INDIANAPI_INGEST] logs',
+      symbolsAsked: symbols, startedAt, startTs,
+    });
+    logResolverOutcome(symbols.length, r, 'INDIANAPI_WAREHOUSE_EMPTY');
+    return r;
   }
 
   // Tracks whether the cascade (NSE direct → Yahoo) is allowed to
@@ -1155,55 +1209,21 @@ export async function resolveSingle(
     return { ...r, snapshot: null };
   }
 
-  // Always try Kite getQuote first (Phase 1 — no vendor stock-details path).
-  logProviderEvent('attempt', {
-    provider: 'kite',
-    method: 'getQuote',
-    symbol: sym,
-  });
-  try {
-    const snap = await Kite.getQuote(sym);
-    if (snap && Number.isFinite(snap.price) && snap.price > 0) {
-      await writeCacheBatch([snap]);
-      notePrimaryOutcome(true);
-      logProviderEvent('success', {
-        provider: 'kite',
-        selected: getMarketDataProvider(),
-        fallback: 'none',
-        symbol: sym,
-      });
-      const result: ResolverResult = {
-        provider: 'kite',
-        status: 'success',
-        dataQuality: 'HIGH',
-        requestStartedAt: startedAt,
-        responseReceivedAt: nowIso(),
-        latencyMs: Date.now() - startTs,
-        symbolsRequested: 1,
-        symbolsReturned: 1,
-        coveragePercent: 100,
-        staleSymbols: [],
-        failedSymbols: [],
-        errorCode: null,
-        errorMessage: null,
-        fallbackUsed: false,
-        snapshots: snapshotsToMap([snap]),
-        data: snapshotsToDataRecord([snap], 'kite'),
-      };
-      return { ...result, snapshot: snap };
-    }
-  } catch (err) {
-    notePrimaryOutcome(false);
-    logProviderEvent('fallback', {
-      from: 'kite',
-      to: 'resolveBatch',
-      symbol: sym,
-      reason: err instanceof Error ? err.name : 'error',
-      recoverable: isRecoverableKiteError(err),
-    });
-    // Fall through to resolveBatch cascade (cache → NSE → Yahoo).
+  // IndianAPI mode: no request-path upstream — resolveBatch serves
+  // the cache-only chain and returns a loud degraded result on miss.
+  if (getMarketDataProvider() === 'indianapi') {
+    const batch = await resolveBatch([sym], { signal });
+    return { ...batch, snapshot: batch.snapshots.get(sym) ?? null };
   }
 
+  // Kite getQuote removed — warehouse cascade via resolveBatch.
+  notePrimaryOutcome(false);
+  logProviderEvent('fallback', {
+    from: 'kite',
+    to: 'resolveBatch',
+    symbol: sym,
+    reason: 'kite_removed',
+  });
   const batch = await resolveBatch([sym], { signal });
   return { ...batch, snapshot: batch.snapshots.get(sym) ?? null };
 }

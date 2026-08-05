@@ -31,7 +31,8 @@ export async function GET() {
 
     let lastLiveDataAt: number | null = null;
     let feedError: string | null = null;
-    if (feedMeta.provider) {
+    // Live broker feed keys are zerodha|shoonya only — IndianAPI has no WS tick state.
+    if (feedMeta.provider === 'zerodha' || feedMeta.provider === 'shoonya') {
       const feed = getLiveFeedStateFor({
         userId: String(user.id),
         provider: feedMeta.provider,
@@ -42,6 +43,8 @@ export async function GET() {
       });
       lastLiveDataAt = isValidTimestamp(ref) ? ref : null;
       feedError = feed.lastError ?? null;
+    } else {
+      feedError = 'Live broker ticks unsupported — quotes come from IndianAPI warehouse';
     }
 
     return providerDataJson(feedMeta.provider, feedMeta.status, {

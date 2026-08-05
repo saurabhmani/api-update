@@ -9,7 +9,6 @@ const mockMarkRemaining = vi.fn();
 const mockMergeMeta = vi.fn();
 const mockUpsert = vi.fn();
 const mockMigrate = vi.fn();
-const mockKiteSession = vi.fn();
 
 vi.mock('@/lib/broker/connections/repository', () => ({
   listBrokerConnectionsForUser: (...args: unknown[]) => mockList(...args),
@@ -40,12 +39,10 @@ vi.mock('@/lib/broker/connections/migrate', () => ({
   migrateLegacyBrokerDataForUser: (...args: unknown[]) => mockMigrate(...args),
 }));
 
-vi.mock('@/lib/kite/active-session-store', () => ({
-  getActiveKiteSession: (...args: unknown[]) => mockKiteSession(...args),
-}));
-
 vi.mock('@/lib/marketData/brokerProvider', () => ({
-  getBrokerMarketDataProvider: (broker: string) => ({ name: broker }),
+  getBrokerMarketDataProvider: () => {
+    throw new Error('Broker market-data providers removed');
+  },
 }));
 
 function conn(partial: Record<string, unknown>) {
@@ -80,7 +77,6 @@ describe('getUserActiveDataSource', () => {
     mockMergeMeta.mockResolvedValue(undefined);
     mockUpsert.mockReset();
     mockMigrate.mockResolvedValue(undefined);
-    mockKiteSession.mockResolvedValue(null);
   });
 
   it('uses sole connected broker and auto-promotes primary', async () => {
@@ -202,7 +198,6 @@ describe('resolvePrimaryFlagOnConnect', () => {
     vi.resetModules();
     mockList.mockReset();
     mockMigrate.mockResolvedValue(undefined);
-    mockKiteSession.mockResolvedValue(null);
   });
 
   it('marks first broker as primary', async () => {

@@ -4,13 +4,11 @@ import { ensureUniverseReady } from '@/lib/startup/ensureUniverseReady';
 import {
   instrumentFromQuery,
   isMarketApiGateResponse,
-  mapBrokerFetchError,
   providerDataJson,
-  refreshFeedStatus,
   resolveUserMarketDataContext,
 } from '@/lib/broker/connections';
-import { BrokerMarketDataError } from '@/lib/marketData/brokerProvider/types';
-import { recordLiveFeedTick } from '@/lib/marketData/liveFeedState';
+import { getLiveSnapshot } from '@/providers/MarketDataProvider';
+import { StaleDataError } from '@/types/market';
 
 const log = logger.child({ route: '/api/market/quote' });
 
@@ -20,7 +18,7 @@ export const runtime = 'nodejs';
 /**
  * GET /api/market/quote?symbol=RELIANCE
  *
- * auth → active provider → broker adapter → normalize → respond
+ * Session → IndianAPI warehouse (cache → DB via MarketDataProvider).
  */
 export async function GET(req: NextRequest): Promise<Response> {
   const resolved = await resolveUserMarketDataContext();
@@ -43,48 +41,58 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   try {
-    await resolved.provider.connect(resolved.ctx);
     const instrument = instrumentFromQuery(symbol);
-    const quotes = await resolved.provider.fetchQuote(resolved.ctx, [instrument]);
-    const quote = quotes[0] ?? null;
+    const resp = await getLiveSnapshot(instrument.symbol);
+    const snap = resp.data;
+    const quote = {
+      symbol: instrument.symbol,
+      exchange: instrument.exchange,
+      ltp: snap.ltp ?? snap.price ?? 0,
+      change: snap.change ?? 0,
+      changePercent: snap.changePercent ?? 0,
+      volume: snap.volume ?? 0,
+      open: snap.open ?? 0,
+      high: snap.high ?? 0,
+      low: snap.low ?? 0,
+      prevClose: snap.prevClose ?? 0,
+      asOfMs: snap.timestamp ?? resp.vendor_timestamp ?? resp.fetched_at,
+    };
 
-    if (quote && Number.isFinite(quote.ltp) && quote.ltp > 0) {
-      recordLiveFeedTick(Date.now(), quote.asOfMs, {
-        userId: String(resolved.user.id),
-        provider: resolved.providerName,
-      });
-    }
-
-    const status = refreshFeedStatus(resolved.user.id, resolved.providerName);
-    return providerDataJson(resolved.providerName, status, {
+    return providerDataJson('indianapi', resolved.status, {
       symbol: instrument.symbol,
       instrumentKey: instrument.instrumentKey,
       quote,
-      quotes,
+      quotes: [quote],
+      source: resp.source,
+      data_quality: resp.data_quality,
+    }, {
+      dataOrigin: 'indianapi_warehouse',
+      fallbackUsed: resp.source === 'db',
+      fallbackSource: resp.source === 'db' ? 'database' : undefined,
     });
   } catch (err) {
-    const mapped = mapBrokerFetchError(resolved.providerName, err);
-    if (err instanceof BrokerMarketDataError && err.code === 'instrument_unresolved') {
+    if (err instanceof StaleDataError) {
       return providerDataJson(
-        resolved.providerName,
-        mapped.code,
-        { error: mapped.message, code: err.code },
+        'indianapi',
+        'stale',
+        {
+          error: 'Quote not yet available in IndianAPI warehouse',
+          code: 'warehouse_empty',
+          symbol,
+        },
         { status: 404 },
       );
     }
-    const http = mapped.code === 'login_required' ? 401 : 502;
     log.error('quote route error', {
       symbol,
       userId: resolved.user.id,
-      provider: resolved.providerName,
-      code: mapped.code,
-      error: mapped.message,
+      error: err instanceof Error ? err.message : String(err),
     });
     return providerDataJson(
-      resolved.providerName,
-      mapped.code,
-      { error: mapped.message, code: mapped.code },
-      { status: http },
+      'indianapi',
+      'error',
+      { error: err instanceof Error ? err.message : String(err), code: 'quote_failed' },
+      { status: 502 },
     );
   }
 }

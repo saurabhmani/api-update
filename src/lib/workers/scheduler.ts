@@ -270,6 +270,21 @@ log.info('worker-scheduler starting', { timezone: IST });
 // 1. Market-data ingestion — canonical 10-minute IST cadence.
 startMarketDataScheduler();
 
+// Empty q365_signals bootstrap — same path as Next instrumentation boot.
+// Standalone PM2/scheduler workers must not rely on broker OAuth events.
+void (async () => {
+  try {
+    const { scheduleSignalsDatabaseBootstrap } = await import(
+      '@/lib/startup/signalsDatabaseBootstrap'
+    );
+    scheduleSignalsDatabaseBootstrap({ trigger: 'startup' });
+  } catch (err) {
+    log.warn('Signals database bootstrap scheduling failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+})();
+
 // 2. Daily scan schedule — controlled IST cadence (see docs/DAILY_SCAN_SCHEDULE.md).
 startDailyScanSchedule();
 

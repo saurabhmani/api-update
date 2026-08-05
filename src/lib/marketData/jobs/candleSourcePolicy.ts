@@ -1,33 +1,29 @@
 /**
  * Phase 13 — Shared warehouse candle source rules.
  *
- * Multiple writers (system Kite, NSE bhavcopy, future Shoonya) must not
- * blindly overwrite the same (instrument_key, candle_type, interval, ts).
- *
  * Precedence (higher wins on conflict):
  *   nse_bhavcopy  100  — official exchange EOD
- *   kite           80  — system Zerodha historical (SYSTEM_MARKET_DATA_USER_ID)
+ *   indianapi      90  — sole active upstream ingest
+ *   kite           80  — legacy rows only (no new writes preferred)
  *   shoonya        0   — blocked from shared warehouse by default
  *   yahoo          20  — emergency only
  *   unknown        10
- *
- * Shoonya (or any user broker) must not write shared candles unless
- * SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST=1 AND the job is explicitly
- * classified as system_owned with a system Shoonya service account.
  */
 
 export type WarehouseCandleSource =
   | 'kite'
   | 'nse_bhavcopy'
   | 'shoonya'
+  | 'indianapi'
   | 'yahoo'
   | 'unknown';
 
 const PRECEDENCE: Record<WarehouseCandleSource, number> = {
   nse_bhavcopy: 100,
+  indianapi: 90,
+  /** Legacy Zerodha historical rows — kept for upsert conflict rules only. */
   kite: 80,
-  /** Connected Shoonya ingest (enabled via CANDLE_INGEST_USE_CONNECTED_BROKER / SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST). */
-  shoonya: 70,
+  shoonya: 0,
   yahoo: 20,
   unknown: 10,
 };
@@ -43,6 +39,7 @@ export function normalizeWarehouseCandleSource(
   if (v === 'kite' || v === 'zerodha') return 'kite';
   if (v === 'nse_bhavcopy' || v === 'nse' || v === 'bhavcopy') return 'nse_bhavcopy';
   if (v === 'shoonya') return 'shoonya';
+  if (v === 'indianapi') return 'indianapi';
   if (v === 'yahoo') return 'yahoo';
   return 'unknown';
 }
@@ -53,12 +50,15 @@ export function isWarehouseCandleSourceAllowed(
 ): boolean {
   if (source === 'shoonya') {
     const allow = (process.env.SYSTEM_ALLOW_SHOONYA_CANDLE_INGEST ?? '').trim().toLowerCase();
-    if (allow === '1' || allow === 'true' || allow === 'yes' || allow === 'on') return true;
-    // Single-tenant / connected-broker ingest path (default on).
-    const connected = (process.env.CANDLE_INGEST_USE_CONNECTED_BROKER ?? '1').trim().toLowerCase();
-    return connected === '1' || connected === 'true' || connected === 'yes' || connected === 'on';
+    return allow === '1' || allow === 'true' || allow === 'yes' || allow === 'on';
   }
-  return source === 'kite' || source === 'nse_bhavcopy' || source === 'yahoo' || source === 'unknown';
+  // Kite/Zerodha no longer write new warehouse rows on the main path.
+  if (source === 'kite') {
+    const allow = (process.env.SYSTEM_ALLOW_KITE_CANDLE_INGEST ?? '').trim().toLowerCase();
+    return allow === '1' || allow === 'true' || allow === 'yes' || allow === 'on';
+  }
+  return source === 'nse_bhavcopy' || source === 'indianapi'
+    || source === 'yahoo' || source === 'unknown';
 }
 
 /**

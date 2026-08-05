@@ -22,14 +22,9 @@
 
 import { resolveBatch }               from '@/lib/marketData/resolver/marketDataResolver';
 import { getMarketStatus }            from '@/lib/marketData/marketHours';
-import { getUserActiveDataSource }    from '@/lib/broker/connections/activeDataSource';
-import { getBrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
-import { normalizeInstrument }        from '@/lib/marketData/brokerProvider/instruments/normalize';
-import { recordLiveFeedTick }         from '@/lib/marketData/liveFeedState';
 import {
   dominantLiveOrigin,
   isSignalLiveFallbackEnabled,
-  liveOriginForBroker,
   type DataOrigin,
 }                                     from '@/lib/signals/dataOrigin';
 
@@ -182,8 +177,8 @@ export async function enrichWithLiveLtpDetailed<
 
   const marketOpen = opts.marketOpen ?? getMarketStatus().isOpen;
   console.log(
-    `[DATA SOURCE] path=LIVE  channel=${brokerFilled > 0 ? 'USER_BROKER' : fallbackUsed ? 'FALLBACK' : 'NONE'}  ` +
-    `rows=${rows.length} live=${totalLive} brokerFilled=${brokerFilled} ` +
+    `[DATA SOURCE] path=LIVE  channel=${brokerFilled > 0 ? 'INDIANAPI_WAREHOUSE' : fallbackUsed ? 'FALLBACK' : 'NONE'}  ` +
+    `rows=${rows.length} live=${totalLive} warehouseFilled=${brokerFilled} ` +
     `fallbackUsed=${fallbackUsed} origin=${liveOrigin ?? 'none'} ` +
     `market=${marketOpen ? 'OPEN' : 'CLOSED'} elapsed=${Date.now() - t0}ms ` +
     `sources=${JSON.stringify(bySource)}`,
@@ -199,62 +194,28 @@ async function enrichFromUserBroker<
     liveSource?: string | null;
     liveTickTs?: number | null;
   },
->(targets: Array<{ row: T; sym: string }>, userId: number): Promise<number> {
+>(targets: Array<{ row: T; sym: string }>, _userId: number): Promise<number> {
+  // Broker quote enrichment retired — fill from IndianAPI warehouse.
   try {
-    const active = await getUserActiveDataSource(userId);
-    if (!active.provider || active.needsSelection || !active.isConnected) {
-      return 0;
-    }
-    const provider = getBrokerMarketDataProvider(active.provider);
-    const ctx = {
-      userId,
-      connectionId: active.connectionId ?? undefined,
-    };
-    await provider.connect(ctx);
-    const instruments = targets.map(({ sym }) =>
-      normalizeInstrument({ exchange: 'NSE', symbol: sym, instrumentType: 'EQ' }),
-    );
-
-    const ENRICH_TIMEOUT_MS = Math.max(
-      1_000,
-      Number(process.env.SIGNALS_ENRICH_TIMEOUT_MS) || 5_000,
-    );
-    const quotes = await Promise.race([
-      provider.fetchQuote(ctx, instruments),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), ENRICH_TIMEOUT_MS)),
-    ]);
-    if (!quotes) {
-      console.warn(
-        `[DATA SOURCE] user broker quote timeout userId=${userId} provider=${active.provider}`,
-      );
-      return 0;
-    }
-
-    const bySym = new Map(quotes.map((q) => [q.symbol.toUpperCase(), q]));
-    const originTag = liveOriginForBroker(active.provider);
+    const { getLiveSnapshot } = await import('@/providers/MarketDataProvider');
     let filled = 0;
     for (const { row, sym } of targets) {
-      const q = bySym.get(sym);
-      if (q && Number.isFinite(q.ltp) && q.ltp > 0) {
-        row.livePrice = q.ltp;
-        row.livePChange = q.changePercent;
-        row.liveSource = originTag;
-        row.liveTickTs = q.asOfMs || Date.now();
-        filled += 1;
+      try {
+        const resp = await getLiveSnapshot(sym);
+        const ltp = resp.data.ltp ?? resp.data.price;
+        if (Number.isFinite(ltp) && (ltp as number) > 0) {
+          row.livePrice = ltp as number;
+          row.livePChange = resp.data.changePercent ?? null;
+          row.liveSource = 'indianapi_warehouse';
+          row.liveTickTs = resp.data.timestamp ?? resp.fetched_at ?? null;
+          filled += 1;
+        }
+      } catch {
+        // skip symbol
       }
     }
-    if (filled > 0) {
-      recordLiveFeedTick(Date.now(), undefined, {
-        userId: String(userId),
-        provider: active.provider,
-      });
-    }
     return filled;
-  } catch (err) {
-    console.warn(
-      `[DATA SOURCE] user broker enrich failed userId=${userId}:`,
-      err instanceof Error ? err.message : String(err),
-    );
+  } catch {
     return 0;
   }
 }

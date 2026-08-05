@@ -24,7 +24,6 @@ import { renderPrometheusMetrics } from '@/lib/monitor/prometheus';
 import { flushHealthToRedis } from '@/lib/monitor/redisCounters';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
-import { getKiteHealth } from '@/lib/kite/health';
 import { db } from '@/lib/db';
 import { renderApiPerformanceMetrics } from '@/lib/monitor/apiPerformanceMetrics';
 
@@ -44,11 +43,11 @@ async function probeLatestCandleMs(): Promise<number | null> {
 
 export async function GET(): Promise<Response> {
   const market = getMarketStatus();
-  const [snapshot, kite, latestMs] = await Promise.all([
+  const [snapshot, latestMs] = await Promise.all([
     Promise.resolve(getInstitutionalHealthSnapshot()),
-    Promise.resolve(safe(() => getKiteHealth(), null)),
     probeLatestCandleMs(),
   ]);
+  const kite = null;
   const candleReport = classifyCandleFreshness({
     latest_candle_ms: latestMs,
     market_open:      market.isOpen,

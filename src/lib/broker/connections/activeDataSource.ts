@@ -1,20 +1,13 @@
 /**
- * Per-user active data-source resolution.
+ * Per-user active broker connection status (optional for market data).
+ *
+ * Market data uses the IndianAPI warehouse — product use does not require
+ * Zerodha/Shoonya. Broker connections remain for paper/live trading UX.
  *
  * Reuses `broker_connections.is_primary` as the explicit
  * `is_active_data_source` preference. Never reads MARKET_DATA_PROVIDER.
- *
- * Rules:
- *  - Exactly one usable connection → that broker (auto-promote primary if needed)
- *  - Multiple usable + one is_primary → that broker
- *  - Multiple usable + no primary → needsSelection
- *  - Remaining connections flagged pendingActiveSelection after
- *    disconnecting the active source → needsSelection (no silent switch)
  */
 
-import { getActiveKiteSession } from '@/lib/kite/active-session-store';
-import { getBrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
-import type { BrokerMarketDataProvider } from '@/lib/marketData/brokerProvider';
 import { isBrokerTokenExpired } from './expiry';
 import {
   effectiveCredentialStatus,
@@ -94,30 +87,8 @@ function toSummary(
   };
 }
 
-async function maybeBridgeRedisKite(userId: number): Promise<void> {
-  try {
-    const kite = await getActiveKiteSession();
-    if (kite && kite.quantorusUserId === String(userId) && kite.accessToken) {
-      const existing = (await listBrokerConnectionsForUser(userId)).find(
-        (c) => c.broker === 'zerodha' && c.status === 'active',
-      );
-      if (existing) return;
-      const expires = new Date(kite.authenticatedAt);
-      expires.setHours(expires.getHours() + 20);
-      await upsertBrokerConnectionRecord({
-        userId,
-        broker: 'zerodha',
-        accessToken: kite.accessToken,
-        brokerAccountId: kite.kiteUserId,
-        tokenExpiresAt: expires,
-        status: 'active',
-        isPrimary: true,
-        metadata: { source: 'redis_active_session' },
-      });
-    }
-  } catch {
-    // Redis optional
-  }
+async function maybeBridgeRedisKite(_userId: number): Promise<void> {
+  // Kite Redis session bridge removed — IndianAPI-only market data.
 }
 
 /**
@@ -395,29 +366,15 @@ export async function hasActiveBrokerConnection(userId: number): Promise<boolean
 }
 
 /**
- * Broker-scoped market-data provider for this user.
- * Throws if the user has no explicit active data source.
+ * @deprecated Broker market-data providers removed.
  */
 export async function getUserBrokerMarketDataProvider(
-  userId: number,
-): Promise<{ active: UserActiveDataSource; provider: BrokerMarketDataProvider }> {
-  const active = await getUserActiveDataSource(userId);
-  if (active.needsSelection) {
-    throw new ActiveDataSourceError(
-      'needs_selection',
-      'Select an active data source before requesting market data',
-    );
-  }
-  if (!active.provider) {
-    throw new ActiveDataSourceError(
-      'none',
-      'No active data source — connect a broker on /data-source',
-    );
-  }
-  return {
-    active,
-    provider: getBrokerMarketDataProvider(active.provider),
-  };
+  _userId: number,
+): Promise<never> {
+  throw new ActiveDataSourceError(
+    'none',
+    'Broker market-data providers removed — use IndianAPI warehouse via MarketDataProvider',
+  );
 }
 
 export type ActiveDataSourceErrorCode = 'none' | 'needs_selection' | 'not_connected' | 'unauthorized';

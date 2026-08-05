@@ -84,27 +84,39 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function runPreflight(symbol = 'RELIANCE'): Promise<boolean> {
-  const { ensureCandleIngestConfigured, fetchConnectedBrokerDailyCandles } = await import(
+  const { ensureCandleIngestConfigured } = await import(
     '@/lib/marketData/jobs/candleIngestBroker'
   );
   const gate = await ensureCandleIngestConfigured();
-  if (!gate.ok || !gate.ingest) {
+  if (!gate.ok) {
     console.error(`[CANDLE BACKFILL PREFLIGHT] ${gate.message}`);
     return false;
   }
-  console.log(
-    `[CANDLE BACKFILL PREFLIGHT] probing ${symbol} via ${gate.ingest.broker} ` +
-    `(userId=${gate.ingest.userId}) ...`,
-  );
-  const result = await fetchConnectedBrokerDailyCandles(symbol, '1y', gate.ingest);
-  if (result.ok) {
-    console.log(
-      `[CANDLE BACKFILL PREFLIGHT] OK (${result.warehouseSource}) — ${result.validBarCount} bars returned`,
+
+  // IndianAPI is the sole warehouse upstream — probe it directly.
+  // Connected-broker ingest is retired (gate.ingest is intentionally null).
+  if (gate.provider === 'indianapi' || !gate.ingest) {
+    console.log(`[CANDLE BACKFILL PREFLIGHT] ${gate.message}`);
+    const { fetchUpstreamDailyCandles } = await import(
+      '@/lib/marketData/candleFallbackChain'
     );
-    return true;
+    const result = await fetchUpstreamDailyCandles(symbol, '1mo');
+    if (result.ok && result.candles.length > 0) {
+      const withVol = result.candles.filter((c) => Number(c.volume) > 0).length;
+      console.log(
+        `[CANDLE BACKFILL PREFLIGHT] OK (indianapi) — ${result.candles.length} bars ` +
+        `(${withVol} with volume) for ${symbol}`,
+      );
+      return true;
+    }
+    console.error(
+      `[CANDLE BACKFILL PREFLIGHT] FAIL — ${result.errorCode}: ${result.errorMessage}`,
+    );
+    return false;
   }
+
   console.error(
-    `[CANDLE BACKFILL PREFLIGHT] FAIL — ${result.errorCode}: ${result.errorMessage}`,
+    '[CANDLE BACKFILL PREFLIGHT] No IndianAPI provider configured for warehouse ingest',
   );
   return false;
 }
@@ -125,7 +137,8 @@ async function main(): Promise<void> {
     if (!ok) {
       console.error(
         '[CANDLE BACKFILL] preflight failed — aborting live run. ' +
-        'Fix Kite credentials/token or set CANDLE_BACKFILL_SKIP_PREFLIGHT=true to override.',
+        'Fix IndianAPI credentials (INDIANAPI_ENABLED / INDIANAPI_API_KEY) ' +
+        'or set CANDLE_BACKFILL_SKIP_PREFLIGHT=true to override.',
       );
       process.exit(1);
     }

@@ -1598,20 +1598,9 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
     })),
   );
 
-  // Warm THIS user's active broker stream in the background.
-  // Never await on the request path — reconnecting Shoonya/Zerodha
-  // on every poll was pushing /api/dashboard past its 12s/18s budgets
-  // and flipping the UI into Partial Intelligence Mode.
-  if (feedMeta.provider) {
-    void import('@/lib/marketData/ensureBrokerStreaming')
-      .then(({ ensureStreamingAfterBrokerConnect }) =>
-        ensureStreamingAfterBrokerConnect({
-          userId: sessionUserId,
-          broker: feedMeta.provider!,
-        }),
-      )
-      .catch(() => { /* enrichment still runs via REST quote path */ });
-  }
+  // Broker WebSocket warm retired — IndianAPI warehouse has no live tick stream.
+  // Quotes enrich from cache/DB via MarketDataProvider on the REST path.
+  void feedMeta.provider;
 
   // Boot live feed stack so freshness + engine-health preview see the
   // same WS poll state as /api/market-data/live-feed-status.
@@ -2790,6 +2779,34 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
           inProgressEnriched.length === 0 &&
           (!Number.isFinite(totalTrackers) || totalTrackers === 0) &&
           (freshnessRaw?.total_lifetime ?? 0) === 0;
+
+        // Empty product DB → immediately schedule IndianAPI candle fill +
+        // morning/evening scans (coalesced / lock-guarded). Independent of
+        // SIGNALS_AUTO_RECOVERY_* so /signals does not stay empty forever
+        // while waiting on cron alone.
+        void (async () => {
+          try {
+            const {
+              countQ365Signals,
+              scheduleSignalsDatabaseBootstrap,
+            } = await import('@/lib/startup/signalsDatabaseBootstrap');
+            if ((await countQ365Signals()) === 0) {
+              console.log(
+                '[EMPTY-DB] q365_signals empty — scheduling IndianAPI candle fill + scans',
+              );
+              scheduleSignalsDatabaseBootstrap({
+                trigger: 'api-empty-read',
+                userId: sessionUserId ?? undefined,
+              });
+            }
+          } catch (err) {
+            console.warn(
+              '[EMPTY-DB] bootstrap schedule failed:',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        })();
+
         await triggerAutoScanIfEmpty(
           isColdStart
             ? 'cold-start — snapshots + tracker both empty'

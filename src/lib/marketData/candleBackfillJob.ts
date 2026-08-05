@@ -164,6 +164,8 @@ interface SymbolCandleStats {
   barCount: number;
   latestTs: Date | null;
   ageDays: number | null;
+  /** Mean daily volume over stored bars (0 ⇒ treat as needing repair). */
+  avgVolume: number;
 }
 
 // ── Universe + stats ──────────────────────────────────────────────
@@ -272,6 +274,8 @@ export async function getUniverseBackfillStats(
            WHEN d.bar_count >= ?
             AND d.latest_ts IS NOT NULL
             AND TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) <= ?
+            AND d.avg_vol IS NOT NULL
+            AND d.avg_vol > 0
            THEN 1 ELSE 0
          END
        ) AS already_sufficient,
@@ -281,6 +285,8 @@ export async function getUniverseBackfillStats(
             OR d.bar_count < ?
             OR d.latest_ts IS NULL
             OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
+            OR d.avg_vol IS NULL
+            OR d.avg_vol <= 0
            THEN 1 ELSE 0
          END
        ) AS needing_backfill
@@ -288,7 +294,10 @@ export async function getUniverseBackfillStats(
        ${poolSql}
      ) u
      LEFT JOIN (
-       SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
+       SELECT symbol,
+              COUNT(*) AS bar_count,
+              MAX(ts) AS latest_ts,
+              AVG(volume) AS avg_vol
          FROM market_data_daily
         GROUP BY symbol
      ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci`,
@@ -340,7 +349,10 @@ export async function loadSymbolsNeedingBackfill(
        FROM ${fromClause}
        ${liquidityJoin}
        LEFT JOIN (
-         SELECT symbol, COUNT(*) AS bar_count, MAX(ts) AS latest_ts
+         SELECT symbol,
+                COUNT(*) AS bar_count,
+                MAX(ts) AS latest_ts,
+                AVG(volume) AS avg_vol
            FROM market_data_daily
           GROUP BY symbol
        ) d ON d.symbol COLLATE utf8mb4_unicode_ci = u.symbol COLLATE utf8mb4_unicode_ci
@@ -350,6 +362,8 @@ export async function loadSymbolsNeedingBackfill(
           OR d.bar_count < ?
           OR d.latest_ts IS NULL
           OR TIMESTAMPDIFF(DAY, d.latest_ts, UTC_TIMESTAMP()) > ?
+          OR d.avg_vol IS NULL
+          OR d.avg_vol <= 0
         )
       ORDER BY ${queueOrder}
       LIMIT ?`,
@@ -365,13 +379,21 @@ export async function loadSymbolsNeedingBackfill(
  */
 export async function getSymbolCandleStats(symbol: string): Promise<SymbolCandleStats> {
   try {
-    const { rows } = await db.query<{ cnt: number; latest: Date | string | null }>(
-      `SELECT COUNT(*) AS cnt, MAX(ts) AS latest
+    const { rows } = await db.query<{
+      cnt: number;
+      latest: Date | string | null;
+      avg_vol: number | string | null;
+    }>(
+      `SELECT COUNT(*) AS cnt, MAX(ts) AS latest, AVG(volume) AS avg_vol
          FROM market_data_daily
         WHERE symbol = ?`,
       [symbol.toUpperCase()],
     );
-    const row = (rows[0] as { cnt?: number; latest?: Date | string | null }) ?? {};
+    const row = (rows[0] as {
+      cnt?: number;
+      latest?: Date | string | null;
+      avg_vol?: number | string | null;
+    }) ?? {};
     const barCount = Number(row.cnt) || 0;
     const latestRaw = row.latest;
     const latestTs = latestRaw instanceof Date
@@ -380,9 +402,10 @@ export async function getSymbolCandleStats(symbol: string): Promise<SymbolCandle
     const ageDays = latestTs && !Number.isNaN(latestTs.getTime())
       ? Math.round((Date.now() - latestTs.getTime()) / 86_400_000 * 10) / 10
       : null;
-    return { barCount, latestTs, ageDays };
+    const avgVolume = Number(row.avg_vol) || 0;
+    return { barCount, latestTs, ageDays, avgVolume };
   } catch {
-    return { barCount: 0, latestTs: null, ageDays: null };
+    return { barCount: 0, latestTs: null, ageDays: null, avgVolume: 0 };
   }
 }
 
@@ -391,6 +414,9 @@ function shouldSkipSymbol(
   minBars: number,
   maxAgeDays: number,
 ): boolean {
+  // Close-only / zero-volume warehouse rows fail the signal liquidity
+  // gate — always re-fetch until volume is present.
+  if (!(stats.avgVolume > 0)) return false;
   if (stats.barCount < minBars) return false;
   if (stats.ageDays == null) return false;
   return stats.ageDays <= maxAgeDays;
@@ -406,7 +432,7 @@ async function upsertDailyCandle(
   low: number,
   close: number,
   volume: number,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' | 'indianapi' = 'kite',
 ): Promise<'inserted' | 'updated' | 'unchanged' | 'skipped'> {
   const { upsertWarehouseCandle } = await import('@/lib/marketData/jobs/candleWarehouseUpsert');
   return upsertWarehouseCandle({
@@ -426,7 +452,7 @@ async function upsertDailyCandle(
 export async function persistBarsForSymbol(
   symbol: string,
   bars: Array<{ ts: string | Date; open: number; high: number; low: number; close: number; volume: number }>,
-  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' = 'kite',
+  source: 'kite' | 'nse_bhavcopy' | 'yahoo' | 'shoonya' | 'indianapi' = 'kite',
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
   let inserted = 0;
   let updated = 0;
@@ -544,12 +570,17 @@ async function backfillOneSymbol(
     };
   }
 
+  const warehouseSource =
+    (fetch as { warehouseSource?: 'kite' | 'shoonya' | 'indianapi' }).warehouseSource;
+  const persistSource =
+    warehouseSource === 'indianapi' ? 'indianapi'
+      : warehouseSource === 'shoonya' ? 'shoonya'
+        : warehouseSource === 'kite' ? 'kite'
+          : 'indianapi';
   const { inserted, updated } = await persistBarsForSymbol(
     symbol,
     fetch.candles,
-    (fetch as { warehouseSource?: 'kite' | 'shoonya' }).warehouseSource === 'shoonya'
-      ? 'shoonya'
-      : 'kite',
+    persistSource,
   );
   if (inserted === 0 && updated === 0) {
     return {

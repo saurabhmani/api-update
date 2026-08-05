@@ -62,7 +62,7 @@ async function candleCoverageSufficient(): Promise<{ ok: boolean; pct: number }>
        SELECT u.symbol
          FROM q365_universe u
          JOIN candles c
-           ON c.instrument_key = CONCAT('NSE_EQ|', u.symbol)
+           ON c.instrument_key = CONCAT('NSE_EQ|', u.symbol) COLLATE utf8mb4_unicode_ci
           AND c.candle_type = 'eod'
           AND c.interval_unit = '1day'
         WHERE u.is_active = 1

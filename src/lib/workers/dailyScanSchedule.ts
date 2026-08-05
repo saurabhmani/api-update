@@ -102,7 +102,7 @@ export function isManipulationScheduledAfterEodUpdate(
 }
 
 export type DailyJobMode = 'scan' | 'incremental-update' | 'readiness' | 'rescore';
-export type DailyJobDataSource = 'db' | 'kite';
+export type DailyJobDataSource = 'db' | 'indianapi';
 
 export interface DailyJobLogEntry {
   job_name: string;
@@ -324,7 +324,7 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
   logDailyJobStart({
     job_name: jobName,
     mode: 'incremental-update',
-    data_source: 'kite',
+    data_source: 'indianapi',
     start_time: startTime,
   });
 
@@ -374,7 +374,7 @@ async function executeEveningUpdateJob(): Promise<DailyScanJobResult> {
   const entry: DailyScanJobResult = {
     job_name: jobName,
     mode: 'incremental-update',
-    data_source: 'kite',
+    data_source: 'indianapi',
     start_time: startTime,
     end_time: new Date(endMs).toISOString(),
     duration_ms: endMs - startMs,
@@ -409,7 +409,7 @@ function guardJob<T extends DailyScanJobResult>(
       const failed: DailyScanJobResult = {
         job_name: jobName,
         mode: jobName === 'evening-update' ? 'incremental-update' : 'scan',
-        data_source: jobName === 'evening-update' ? 'kite' : 'db',
+        data_source: jobName === 'evening-update' ? 'indianapi' : 'db',
         start_time: new Date(endMs).toISOString(),
         end_time: new Date(endMs).toISOString(),
         duration_ms: 0,

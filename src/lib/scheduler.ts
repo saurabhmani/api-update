@@ -35,6 +35,7 @@ import {
   runHeartbeatTier,
 } from '@/lib/marketData/providers/batchScheduler';
 import { isPreopenCandleWarmupEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
+import { getSystemMarketDataProvider } from '@/lib/marketData/providerFlags';
 
 const log = logger.child({ component: 'marketScheduler' });
 
@@ -168,6 +169,33 @@ export function startScheduler(): void {
       log.error('weekend intel failed', { err: String(err) }),
     );
   }, { timezone: IST }));
+
+  // ── IndianAPI slow-lane ingestion (indianapi mode only) ──────────
+  // Repair (dead-letter drain) and profile rotation run off-peak so
+  // they never compete with the market-hours quote budget. Both are
+  // lock-guarded internally — duplicate registration across processes
+  // degrades to a skipped run, not a double-spend.
+  if (getSystemMarketDataProvider() === 'indianapi') {
+    // 17:30 IST weekdays — retry failed symbols (capped, budget-gated).
+    tasks.push(cron.schedule('30 17 * * 1-5', () => {
+      void (async () => {
+        const { runRepairIngestion } = await import(
+          '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
+        );
+        await runRepairIngestion();
+      })().catch(err => log.error('indianapi repair ingestion failed', { err: String(err) }));
+    }, { timezone: IST }));
+
+    // 06:30 IST Sunday — weekly company-profile rotation.
+    tasks.push(cron.schedule('30 6 * * 0', () => {
+      void (async () => {
+        const { runProfileIngestion } = await import(
+          '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
+        );
+        await runProfileIngestion(200);
+      })().catch(err => log.error('indianapi profile ingestion failed', { err: String(err) }));
+    }, { timezone: IST }));
+  }
 
   // Evening candle update + morning/evening DB scans are registered by
   // startDailyScanSchedule() in src/lib/workers/dailyScanSchedule.ts

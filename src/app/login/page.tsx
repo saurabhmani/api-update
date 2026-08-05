@@ -68,7 +68,7 @@ export default function LoginPage() {
     } catch {
       // fall through
     }
-    return '/data-source';
+    return '/dashboard';
   }
 
   async function handleLogin(e: FormEvent) {

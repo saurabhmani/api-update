@@ -37,15 +37,15 @@ const VIOLATIONS: Array<{ pattern: RegExp; reason: string }> = [
   },
   {
     pattern: /from\s+['"]@\/lib\/marketData\/kiteTicker['"]/,
-    reason: 'Direct import from kiteTicker — use MarketDataProvider (KiteAdapter).',
+    reason: 'Direct import from deleted kiteTicker — market data is IndianAPI-only.',
   },
   {
     pattern: /from\s+['"]@\/lib\/marketData\/kiteRest['"]/,
-    reason: 'Direct import from kiteRest — use MarketDataProvider.',
+    reason: 'Direct import from deleted kiteRest — market data is IndianAPI-only.',
   },
   {
     pattern: /from\s+['"]kiteconnect['"]/,
-    reason: 'Direct kiteconnect dependency — must be inside src/providers/adapters or src/lib/marketData.',
+    reason: 'kiteconnect must not be imported — broker MD SDK removed.',
   },
   {
     pattern: /axios\.(get|post|put|delete)\s*\(\s*['"`]https:\/\/(query[12]\.)?finance\.yahoo\.com/,

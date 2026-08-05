@@ -26,7 +26,6 @@ import { evaluateAlerts, summariseAlerts } from '@/lib/monitor/alertRules';
 import { getMarketStatus } from '@/lib/marketData/marketHours';
 import { classifyCandleFreshness } from '@/lib/marketData/candleFreshness';
 import { db } from '@/lib/db';
-import { getKiteHealth } from '@/lib/kite/health';
 import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
 
 export const runtime = 'nodejs';
@@ -54,7 +53,7 @@ export async function GET(): Promise<NextResponse> {
     latest_candle_ms: latestMs,
     market_open:      market.isOpen,
   });
-  const kite = safe(() => getKiteHealth(), null);
+  const kite = null;
 
   const alerts = evaluateAlerts({
     snapshot,

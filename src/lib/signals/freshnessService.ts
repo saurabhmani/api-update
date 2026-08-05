@@ -238,9 +238,7 @@ function probeKiteHealth(): KiteHealth { // @deprecated marker
   if (h.health === 'FAIL' && h.source === 'none') {
     status_label = h.ws.loginRequired ? 'login_required' : 'no_credentials';
     message = h.reason;
-  } else if (h.source === 'kite') {
-    // Post-removed vendor cutover: an removed vendor source maps to streaming-
-    // equivalent for the legacy status_label union.
+  } else if (h.source === 'indianapi') {
     status_label = h.health === 'OK' ? 'streaming' : 'rest_only';
     message = h.reason;
   } else if (h.source === 'yahoo') { // @deprecated marker
@@ -253,7 +251,7 @@ function probeKiteHealth(): KiteHealth { // @deprecated marker
 
   return {
     health:               h.health,
-    source:               h.source,
+    source:               h.source === 'indianapi' ? 'kite_rest' : h.source,
     login_required:       h.ws.loginRequired,
     ws_state:             h.ws.state,
     last_tick_age_ms:     h.lastTickAgeMs,

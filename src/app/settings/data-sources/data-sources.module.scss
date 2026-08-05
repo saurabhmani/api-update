@@ -44,6 +44,29 @@
   border: 1px solid #e2e8f0;
   border-radius: 14px;
   padding: 1.25rem;
+  margin-bottom: 1rem;
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+  }
+
+  p {
+    margin: 0 0 0.75rem;
+    color: #475569;
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+}
+
+.link {
+  color: #2563eb;
+  font-size: 0.9rem;
+  text-decoration: none;
+  &:hover { text-decoration: underline; }
 }
 
 .details {

@@ -282,42 +282,17 @@ async function fromMySQL(
   }
 }
 
-// ── Layer 3: Kite historical ───────────────────────────────────────
+// ── Layer 3: upstream historical fill retired (IndianAPI ingest → DB) ──
 
-import {
-  getHistoricalForInterval as kiteHistoricalForInterval,
-} from '@/lib/marketData/providers/kiteHistoricalProvider';
-
-async function fromKite(
-  symbol:   string,
-  interval: ChartInterval,
-  from?:    string,
-  to?:      string,
-  limit     = 200,
-): Promise<OhlcvBar[]> {
-  const inv = await kiteHistoricalForInterval(symbol, interval, from, to);
-  if (inv.status === 'failed' || !inv.data) return [];
-  const bars = inv.data.candles.map((c) => ({
-    ts:     new Date(c.t).toISOString(),
-    open:   c.o,
-    high:   c.h,
-    low:    c.l,
-    close:  c.c,
-    volume: c.v,
-    oi:     0,
-  }));
-  return bars.slice(-limit);
-}
-
-/** Upstream chart fill: Kite only (DB remains Layer 2). */
 async function fromUpstreamHistorical(
-  symbol:   string,
-  interval: ChartInterval,
-  from?:    string,
-  to?:      string,
-  limit     = 200,
+  _symbol: string,
+  _interval: ChartInterval,
+  _from?: string,
+  _to?: string,
+  _limit = 200,
 ): Promise<OhlcvBar[]> {
-  return fromKite(symbol, interval, from, to, limit);
+  // Broker historical fill removed — charts serve warehouse only.
+  return [];
 }
 
 async function fromMarketDataDaily(

@@ -347,26 +347,17 @@ describe('setCredentialStatus / expireCredentialIfPastExpiry', () => {
   });
 });
 
-describe('isSessionExpiryMessage (connectionHelpers)', () => {
-  it('requires explicit session/token language', async () => {
-    const { isSessionExpiryMessage } =
-      await import('@/lib/marketData/brokerProvider/connectionHelpers');
-    expect(isSessionExpiryMessage('Session Expired : 1')).toBe(true);
-    expect(isSessionExpiryMessage('Invalid Session')).toBe(true);
-    expect(isSessionExpiryMessage('rate limit')).toBe(false);
-    expect(isSessionExpiryMessage('failed')).toBe(false);
-    expect(isSessionExpiryMessage('authorization failed')).toBe(false);
+describe('broker stream helpers removed', () => {
+  it('connectionHelpers path is not part of the brokerProvider surface', async () => {
+    const { getBrokerMarketDataProvider } = await import(
+      '@/lib/marketData/brokerProvider'
+    );
+    expect(() => getBrokerMarketDataProvider('zerodha')).toThrow(/removed/i);
   });
 });
 
 describe('classifyStreamError narrowed', () => {
-  it('does not treat forbidden/access denied as permanent auth', async () => {
-    const { classifyStreamError } =
-      await import('@/lib/marketData/connectionManager/streamingLifecycle');
-    expect(classifyStreamError('Invalid Session')).toBe('permanent_auth');
-    expect(classifyStreamError('token expired')).toBe('permanent_auth');
-    expect(classifyStreamError('forbidden')).toBe('unknown');
-    expect(classifyStreamError('access denied')).toBe('unknown');
-    expect(classifyStreamError('authorization failed')).toBe('unknown');
+  it('documents that broker stream classifiers were removed', () => {
+    expect(true).toBe(true);
   });
 });

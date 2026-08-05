@@ -1,26 +1,30 @@
 /**
- * Phase 5 provider selection — kite primary (removed vendor removed).
+ * Phase 5 provider selection — IndianAPI-only (broker primaries removed).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-vi.mock('@/lib/marketData/providers/kiteHistoricalProvider', () => ({
-  getHistorical: vi.fn(),
-  isKiteHistoricalConfigured: () => true,
-}));
-
-vi.mock('@/lib/marketData/providers/nseDirectProvider', () => ({
-  getNseDirectStatus: vi.fn(async () => ({ available: false })),
-  fetchNseDirectQuote: vi.fn(),
-}));
-
-describe('resolver Phase 5 — kite primary', () => {
+describe('resolver Phase 5 — IndianAPI primary', () => {
   beforeEach(() => {
     delete process.env.LEGACY_VENDOR_ENV;
-    process.env.MARKET_DATA_PROVIDER = 'kite';
+    delete process.env.MARKET_DATA_PROVIDER;
+    delete process.env.INDIANAPI_ENABLED;
+    delete process.env.INDIANAPI_API_KEY;
   });
 
-  it('selects kite as MARKET_DATA_PROVIDER', async () => {
+  it('MARKET_DATA_PROVIDER=kite resolves to none (unsupported)', async () => {
+    process.env.MARKET_DATA_PROVIDER = 'kite';
     const { getMarketDataProvider } = await import('@/lib/marketData/providerFlags');
-    expect(getMarketDataProvider()).toBe('kite');
+    expect(getMarketDataProvider()).toBe('none');
+  });
+
+  it('MARKET_DATA_PROVIDER=indianapi selects indianapi', async () => {
+    process.env.MARKET_DATA_PROVIDER = 'indianapi';
+    process.env.INDIANAPI_ENABLED = 'true';
+    process.env.INDIANAPI_API_KEY = 'k';
+    const { getMarketDataProvider, isIndianApiPrimary } = await import(
+      '@/lib/marketData/providerFlags'
+    );
+    expect(getMarketDataProvider()).toBe('indianapi');
+    expect(isIndianApiPrimary()).toBe(true);
   });
 });

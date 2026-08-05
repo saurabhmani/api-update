@@ -1,34 +1,9 @@
 /**
  * Phase 10 — Signal data-origin classification.
  *
- * Signal paths fall into four buckets:
- *
- * 1. Live / broker-driven
- *    - enrichWithLiveLtp (user active broker quotes)
- *    - liveSignalRecalc ticks (when keyed to user broker)
- *    - revalidateInstrument live recompute enrichment
- *
- * 2. Poll-driven
- *    - /api/signals list enrich on each request
- *    - /api/signals/stream enrichment
- *    - rescoreActiveSignals / confirmedSnapshotLifecycle (system jobs)
- *
- * 3. Candle-database-driven (broker-neutral warehouse)
- *    - Phase 4 generatePhase4Signals (market_data_daily)
- *    - Closed-market signal loader
- *    - Maturity promotion from stored q365_signals
- *
- * 4. Scheduled / background
- *    - dailyScanSchedule, cron:signal-generation
- *    - candle EOD ingest → scheduled_ingestion
- *    - market-close snapshot
- *
- * Rules:
- *  - Live signals for a Zerodha user → Zerodha-originated normalized data
- *  - Live signals for a Shoonya user → Shoonya-originated normalized data
- *  - Historical / evening signals may use the common candle warehouse
- *  - Never claim Shoonya/Zerodha live when data came from Yahoo/Kite/DB
- *  - Fallback only when explicitly configured and visible
+ * Live enrichment uses the IndianAPI warehouse via MarketDataProvider.
+ * Legacy zerodha_live / shoonya_live stamps remain readable on old rows
+ * but are never written by the enrich path.
  */
 
 import type { DataSourceBroker } from '@/lib/broker/connections/types';
@@ -36,6 +11,7 @@ import type { DataSourceBroker } from '@/lib/broker/connections/types';
 export type DataOrigin =
   | 'zerodha_live'
   | 'shoonya_live'
+  | 'indianapi_warehouse'
   | 'database'
   | 'scheduled_ingestion'
   | 'fallback';
@@ -134,6 +110,7 @@ export const SIGNAL_PATH_CATALOG: ReadonlyArray<{
 ];
 
 export function liveOriginForBroker(broker: DataSourceBroker): DataOrigin {
+  // Broker live ticks retired — retained for reading legacy provenance only.
   return broker === 'shoonya' ? 'shoonya_live' : 'zerodha_live';
 }
 
@@ -141,11 +118,12 @@ export function originFromLiveSource(
   liveSource: string | null | undefined,
 ): DataOrigin | null {
   const s = String(liveSource ?? '').toLowerCase();
-  if (s === 'zerodha' || s === 'zerodha_live' || s === 'kite') {
-    // 'kite' alone is ambiguous — only map when already stamped zerodha_live
-    if (s === 'kite') return null;
-    return 'zerodha_live';
+  if (s === 'indianapi' || s === 'indianapi_warehouse' || s === 'warehouse_live') {
+    return 'indianapi_warehouse';
   }
+  if (s === 'zerodha' || s === 'zerodha_live') return 'zerodha_live';
+  // 'kite' alone is ambiguous — never treat as broker live.
+  if (s === 'kite') return null;
   if (s === 'shoonya' || s === 'shoonya_live') return 'shoonya_live';
   if (s === 'database' || s === 'warehouse' || s === 'mysql') return 'database';
   if (s === 'scheduled_ingestion' || s === 'ingest') return 'scheduled_ingestion';
@@ -185,12 +163,14 @@ export function buildSignalProvenance(input: {
   const liveEnrichment = input.liveEnrichment ?? null;
   const fallbackUsed = Boolean(input.fallbackUsed);
   let note: string;
-  if (liveEnrichment === 'zerodha_live') {
-    note = 'Live prices from the user\'s Zerodha connection; signal rows from the candle warehouse.';
+  if (liveEnrichment === 'indianapi_warehouse') {
+    note = 'Live prices from the IndianAPI warehouse (cache→DB); signal rows from the candle warehouse.';
+  } else if (liveEnrichment === 'zerodha_live') {
+    note = 'Legacy Zerodha live stamp on persisted rows; new enrichment uses IndianAPI warehouse.';
   } else if (liveEnrichment === 'shoonya_live') {
-    note = 'Live prices from the user\'s Shoonya connection; signal rows from the candle warehouse.';
+    note = 'Legacy Shoonya live stamp on persisted rows; new enrichment uses IndianAPI warehouse.';
   } else if (liveEnrichment === 'fallback') {
-    note = 'Live prices used an explicitly enabled fallback cascade (not the user\'s broker).';
+    note = 'Live prices used an explicitly enabled fallback cascade (not broker live ticks).';
   } else if (generation === 'database') {
     note = input.marketOpen === false
       ? 'Broker-neutral warehouse / last-close signals (market closed or no live enrich).'

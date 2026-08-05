@@ -17,19 +17,30 @@ const SRC_ROOT = join(process.cwd(), 'src');
 
 // Contiguous names are assembled at runtime so static greps for the
 // deleted modules stay clean after Phase 3.
+//
+// IndianAPI modules were reintroduced (ingestion-first architecture) —
+// they are governed by FORBIDDEN_ADAPTER_IMPORTS containment below,
+// not by the decommission ban.
 const DECOMMISSIONED_MODULES = [
-  ['Indian', 'APIAdapter'].join(''),
-  ['indian', 'ApiProvider'].join(''),
-  ['indian', 'ApiEndpoints'].join(''),
-  ['indian', 'ApiUsageTracker'].join(''),
   ['api', 'BudgetGuard'].join(''),
   ['api', 'Quota'].join(''),
 ].map((name) => name); // keep list explicit for reviews
 
-const FORBIDDEN_ADAPTER_IMPORTS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+const FORBIDDEN_ADAPTER_IMPORTS: ReadonlyArray<{
+  pattern: RegExp;
+  reason: string;
+  /** Additional path prefixes exempt from this rule only. */
+  extraExemptPrefixes?: ReadonlyArray<string>;
+}> = [
   {
     pattern: /from ['"]@\/providers\/adapters\/(YahooAdapter|KiteAdapter)['"]/,
-    reason: 'Direct vendor adapter import — route the call through MarketDataProvider instead.',
+    reason: 'Direct vendor adapter import — route through MarketDataProvider. KiteAdapter is deleted.',
+  },
+  {
+    pattern: /from ['"]@\/providers\/adapters\/(IndianAPIAdapter|indianApiUsageTracker)['"]/,
+    reason: 'IndianAPI adapter is ingestion-only — clients read through MarketDataProvider (cache/DB); never call the upstream on the request path.',
+    // Unit tests exercise the adapter directly with mocked HTTP.
+    extraExemptPrefixes: [join('src', '__tests__')],
   },
 ];
 
@@ -37,6 +48,7 @@ const EXEMPT_PREFIXES: ReadonlyArray<string> = [
   join('src', 'providers'),
   join('src', 'lib', 'marketData', 'providers'),
   join('src', 'lib', 'marketData', 'resolver'),
+  join('src', 'lib', 'marketData', 'ingestion'),
   join('src', '__tests__', 'architectureFreeze.vitest.ts'),
 ];
 
@@ -90,6 +102,10 @@ describe('architecture freeze', () => {
       if (isExempt(rel)) continue;
       const text = readFileSync(full, 'utf8');
       for (const rule of FORBIDDEN_ADAPTER_IMPORTS) {
+        const ruleExempt = rule.extraExemptPrefixes?.some(
+          prefix => rel === prefix || rel.startsWith(prefix + sep),
+        );
+        if (ruleExempt) continue;
         if (rule.pattern.test(text)) {
           violations.push(`${rel}: ${rule.reason}`);
         }

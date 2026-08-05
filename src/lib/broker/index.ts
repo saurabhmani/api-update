@@ -1,4 +1,5 @@
-// Broker Integration Layer — public exports
+// Broker Integration Layer — paper trading + narrow legacy connection status.
+// Market-data broker SDKs (Kite/Shoonya) are NOT re-exported from this barrel.
 
 export * from './types';
 export { getBrokerAdapter, registerBrokerAdapter, listBrokerAdapters, defaultBrokerName } from './adapter/registry';
@@ -14,7 +15,7 @@ export { withRetry } from './sdk/retry';
 export { ensureBrokerTables, acceptDisclaimer, hasAcceptedDisclaimer } from './repository/brokerRepository';
 export { LIVE_DISCLAIMER_VERSION, MIN_PAPER_TRADES_FOR_LIVE } from './types';
 
-// Data-source login (Zerodha / Shoonya)
+// Legacy data-source connection rows (ignored for market data; IndianAPI is sole upstream)
 export {
   ensureBrokerConnectionTables,
   hasActiveBrokerConnection,
@@ -23,28 +24,8 @@ export {
   getUserActiveDataSource,
   setUserActiveDataSource,
   disconnectDataSourceBroker,
-  getUserBrokerMarketDataProvider,
   ActiveDataSourceError,
   encryptBrokerCredential,
   decryptBrokerCredential,
 } from './connections';
 export type { UserActiveDataSource } from './connections';
-export { getDataSourceBrokerAdapter } from './oauth/registry';
-
-// Broker-scoped market-data providers (Phase 2 contract)
-export {
-  getBrokerMarketDataProvider,
-  listBrokerMarketDataProviders,
-  BrokerMarketDataError,
-} from '@/lib/marketData/brokerProvider';
-export type {
-  BrokerMarketDataProvider,
-  BrokerProviderName,
-  BrokerConnectionContext,
-  NormalizedInstrument,
-  NormalizedInstrumentInput,
-  NormalizedQuote,
-  NormalizedCandle,
-  NormalizedTick,
-  ProviderConnectionStatus,
-} from '@/lib/marketData/brokerProvider';
