@@ -55,6 +55,22 @@ import {
   resolveControlledSignalCrons,
   SIGNAL_SCHEDULE_TIMEZONE,
 } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
+import { logRuntimeIdentity } from '@/lib/diagnostics/runtimeIdentity';
+import {
+  assertSignalSchemaHealthy,
+  checkSignalSchemaHealth,
+  logSchemaHealth,
+} from '@/lib/diagnostics/signalSchemaHealth';
+import {
+  assertWarehouseHealthy,
+  checkWarehouseHealth,
+  logWarehouseHealth,
+} from '@/lib/diagnostics/scanWarehouseHealth';
+import {
+  markScanCompleted,
+  markScanStarted,
+  setSchedulerProcessRole,
+} from '@/lib/diagnostics/schedulerScanHealth';
 
 const log = logger.child({ component: 'dailyScanSchedule' });
 export const DAILY_SCAN_TIMEZONE = SIGNAL_SCHEDULE_TIMEZONE;
@@ -127,6 +143,12 @@ export interface DailyScanJobResult extends DailyJobLogEntry {
   target_trading_day?: string;
   skipped_already_updated?: number;
   candles_fetched?: number;
+  /** Phase-4 candidates that entered saveSignals. */
+  signals_accepted?: number;
+  /** Rows actually inserted into q365_signals. */
+  signals_persisted?: number;
+  signals_duplicates?: number;
+  signals_failed?: number;
 }
 
 const tasks: ScheduledTask[] = [];
@@ -261,6 +283,19 @@ async function runDbScanJob(opts: {
     data_source: 'db',
     start_time: startTime,
   });
+  await markScanStarted(opts.jobName);
+  logRuntimeIdentity({
+    component: 'dailyScanSchedule',
+    processRole: process.env.Q365_PROCESS_ROLE === 'scan-cli' ? 'scan-cli' : 'scheduler',
+  });
+
+  const schema = await checkSignalSchemaHealth();
+  logSchemaHealth(schema);
+  assertSignalSchemaHealthy(schema);
+
+  const warehouse = await checkWarehouseHealth();
+  logWarehouseHealth(warehouse);
+  assertWarehouseHealthy(warehouse);
 
   resetCandleSourceCounters();
   const universe = await prepareUniverse();
@@ -287,6 +322,32 @@ async function runDbScanJob(opts: {
   const scannedSymbols = Math.max(0, result.meta.scanned - insufficient);
   const requestsUsed = getUpstreamCandleRequestCount();
   const failedSymbols = insufficient;
+  const generated = result.signals.length;
+  const persisted = result.meta.signalsSaved;
+  const accepted = generated;
+  const duplicates = Math.max(0, generated - persisted);
+  const failed = generated > 0 && persisted === 0 ? generated : 0;
+
+  console.log(
+    `[SCAN_PERSIST_SUMMARY] job=${opts.jobName} ` +
+    `generated=${generated} accepted=${accepted} persisted=${persisted} ` +
+    `duplicates=${duplicates} failed=${failed}`,
+  );
+
+  if (generated > 0 && persisted === 0) {
+    const err = new Error(
+      `SCAN_PERSIST_ZERO: generated=${generated} persisted=0 — ` +
+      `refusing to mark scan success (see [PERSIST_FUNNEL] / schema errors)`,
+    );
+    await markScanCompleted({
+      jobName: opts.jobName,
+      persisted: 0,
+      generated,
+      ok: false,
+      error: err.message,
+    });
+    throw err;
+  }
 
   try {
     await markPipelineHeartbeat(opts.generationSource);
@@ -308,11 +369,21 @@ async function runDbScanJob(opts: {
     total_symbols: totalSymbols,
     scanned_symbols: scannedSymbols,
     requests_used: requestsUsed,
-    signals_generated: result.signals.length,
+    signals_generated: generated,
+    signals_accepted: accepted,
+    signals_persisted: persisted,
+    signals_duplicates: duplicates,
+    signals_failed: failed,
     failed_symbols: failedSymbols,
     ok: true,
     generation_source: opts.generationSource,
   };
+  await markScanCompleted({
+    jobName: opts.jobName,
+    persisted,
+    generated,
+    ok: true,
+  });
   logDailyJobComplete(entry);
   return entry;
 }
@@ -575,6 +646,15 @@ export function startDailyScanSchedule(): void {
     log.warn('daily scan schedule already started — ignoring duplicate start');
     return;
   }
+
+  setSchedulerProcessRole(
+    process.env.Q365_PROCESS_ROLE
+      || (process.env.Q365_INPROC_SCHEDULER === '1' ? 'inproc-scheduler' : 'scheduler-worker'),
+  );
+  logRuntimeIdentity({
+    component: 'dailyScanSchedule:start',
+    processRole: 'scheduler',
+  });
 
   const crons = resolveControlledSignalCrons();
   const manipulationDailyScanCron = envCron(

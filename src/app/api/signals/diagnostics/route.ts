@@ -183,6 +183,38 @@ export async function GET(): Promise<Response> {
 
   // 5. Final body
   const market = getMarketStatus();
+  let schedulerHealth: Record<string, unknown> | null = null;
+  let runtimeIdentity: Record<string, unknown> | null = null;
+  let warehouseHealth: Record<string, unknown> | null = null;
+  let signalSchemaHealth: Record<string, unknown> | null = null;
+  try {
+    const { getSchedulerScanHealth } = await import('@/lib/diagnostics/schedulerScanHealth');
+    const { resolveRuntimeIdentity } = await import('@/lib/diagnostics/runtimeIdentity');
+    const { checkWarehouseHealth } = await import('@/lib/diagnostics/scanWarehouseHealth');
+    const { checkSignalSchemaHealth } = await import('@/lib/diagnostics/signalSchemaHealth');
+    schedulerHealth = await getSchedulerScanHealth() as unknown as Record<string, unknown>;
+    runtimeIdentity = resolveRuntimeIdentity({
+      component: 'api/signals/diagnostics',
+      processRole: 'web',
+    }) as unknown as Record<string, unknown>;
+    const wh = await checkWarehouseHealth();
+    warehouseHealth = {
+      ok: wh.ok,
+      universeCount: wh.universeCount,
+      symbolsWithEnoughBars: wh.symbolsWithEnoughBars,
+      latestCandleDate: wh.latestCandleDate,
+      staleSymbolCount: wh.staleSymbolCount,
+      indianApiBreakerState: wh.indianApiBreakerState,
+      reason: wh.reason,
+    };
+    const sh = await checkSignalSchemaHealth();
+    signalSchemaHealth = {
+      ok: sh.ok,
+      missingColumns: sh.missingColumns,
+      missingIndexes: sh.missingIndexes,
+    };
+  } catch { /* optional enrichment */ }
+
   return NextResponse.json(
     {
       server_now: new Date().toISOString(),
@@ -191,6 +223,10 @@ export async function GET(): Promise<Response> {
         state:      market.state,
         label:      market.label,
       },
+      runtime_identity: runtimeIdentity,
+      warehouse_health: warehouseHealth,
+      signal_schema_health: signalSchemaHealth,
+      scheduler_scan_health: schedulerHealth,
       schema: {
         ready:                                  schemaReady,
         q365_signals_exists:                    signalsExists,

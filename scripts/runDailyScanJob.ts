@@ -12,10 +12,17 @@
  */
 
 import { config as dotenvConfig } from 'dotenv';
-import { resolve as resolvePath } from 'node:path';
+import { resolveEnvFilePath } from '@/lib/envPath';
+import { logRuntimeIdentity } from '@/lib/diagnostics/runtimeIdentity';
 
-dotenvConfig({ path: resolvePath(process.cwd(), '.env.local') });
-dotenvConfig({ path: resolvePath(process.cwd(), '.env') });
+const envFile = resolveEnvFilePath();
+dotenvConfig({ path: envFile });
+process.env.Q365_PROCESS_ROLE = process.env.Q365_PROCESS_ROLE || 'scan-cli';
+logRuntimeIdentity({
+  component: 'runDailyScanJob',
+  processRole: 'scan-cli',
+  envFileHint: envFile,
+});
 
 import {
   runReadinessCheckJob,

@@ -58,6 +58,7 @@
     "candles:daily:plan": "tsx scripts/updateDailyCandles.ts --plan",
     "candles:daily:preflight": "tsx scripts/updateDailyCandles.ts --preflight",
     "scans:morning": "tsx scripts/runDailyScanJob.ts morning-scan",
+    "diagnostics:signals": "tsx scripts/diagnosticsSignals.ts",
     "scans:evening-update": "tsx scripts/runDailyScanJob.ts evening-update",
     "scans:evening": "tsx scripts/runDailyScanJob.ts evening-scan",
     "quota:migrate": "tsx src/lib/db/migrateProviderRequestLogs.ts",

@@ -402,7 +402,15 @@ export async function migrateSignalEngine(): Promise<void> {
   await ensureColumn('q365_signals', 'composite_final_score',     "DECIMAL(6,2) NULL");
   await ensureColumn('q365_signals', 'classification',            "VARCHAR(40) NULL");
   await ensureColumn('q365_signals', 'phase4_factor_scores_json', "JSON NULL");
+  // Older CREATE TABLE omitted updated_at; diagnostics + operators expect it.
+  await ensureColumn(
+    'q365_signals',
+    'updated_at',
+    'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+  );
   await ensureIndex ('q365_signals', 'idx_q365sig_classification', '(classification)');
+  await ensureIndex ('q365_signals', 'idx_q365sig_batch', '(batch_id)');
+  await ensureIndex ('q365_signals', 'idx_q365sig_status', '(status)');
 
   // Compound index for the route's hot path. Every poll runs:
   //   WHERE batch_id = ? AND status IN (...) AND classification = ...
@@ -583,12 +591,8 @@ async function ensureColumn(table: string, column: string, definition: string): 
 // active here. Mirror the scheduler's approach so the migration
 // can be run as a standalone one-liner on a fresh clone.
 if (require.main === module) {
-  const path = require('path');
-  if (process.env.NODE_ENV !== 'production') {
-    require('dotenv').config({
-      path: process.env.DOTENV_CONFIG_PATH || path.resolve(process.cwd(), '.env.local'),
-    });
-  }
+  const { resolveEnvFilePath } = require('../envPath');
+  require('dotenv').config({ path: resolveEnvFilePath() });
 
   migrateSignalEngine()
     .then(() => process.exit(0))

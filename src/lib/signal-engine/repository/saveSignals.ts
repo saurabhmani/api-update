@@ -192,8 +192,9 @@ export async function saveSignals(
   const tally: Record<string, number> = {
     saved: 0, live_gap: 0, low_confidence: 0,
     momentum_contradiction: 0, duplicate_in_batch: 0,
-    duplicate_in_db: 0, no_direction: 0,
+    duplicate_in_db: 0, no_direction: 0, insert_error: 0,
   };
+  let fatalSchemaError: Error | null = null;
 
   for (const signal of signals) {
     try {
@@ -214,7 +215,17 @@ export async function saveSignals(
         tally[outcome.reason]++;
       }
     } catch (err) {
+      tally.insert_error++;
+      const msg = err instanceof Error ? err.message : String(err);
       console.error(`[SignalEngine] Failed to save signal for ${signal.symbol}:`, err);
+      // Schema / unknown-column failures must fail the batch — otherwise
+      // scans report success while persisting zero rows.
+      if (
+        /Unknown column|ER_BAD_FIELD_ERROR|doesn't exist|SIGNAL_SCHEMA/i.test(msg)
+        && !fatalSchemaError
+      ) {
+        fatalSchemaError = err instanceof Error ? err : new Error(msg);
+      }
     }
   }
 
@@ -222,7 +233,7 @@ export async function saveSignals(
     `[saveSignals] batch summary  in=${signals.length}  saved=${tally.saved}  ` +
     `live_gap=${tally.live_gap}  low_conf=${tally.low_confidence}  ` +
     `momentum=${tally.momentum_contradiction}  dup_batch=${tally.duplicate_in_batch}  ` +
-    `dup_db=${tally.duplicate_in_db}  no_dir=${tally.no_direction}`
+    `dup_db=${tally.duplicate_in_db}  no_dir=${tally.no_direction}  insert_error=${tally.insert_error}`
   );
   // Spec "FIX ZERO SIGNALS" §1 + §5 — explicit [DB] line so operators
   // grepping for "[DB]" can see at a glance whether q365_signals
@@ -245,7 +256,8 @@ export async function saveSignals(
     `[PERSIST_FUNNEL] table=q365_signals source=${sourceTag} ` +
     `attempted=${signals.length} persisted=${tally.saved} ` +
     `rejected_before_save=${tally.live_gap + tally.low_confidence + tally.momentum_contradiction + tally.no_direction} ` +
-    `deduped=${tally.duplicate_in_batch + tally.duplicate_in_db}`,
+    `deduped=${tally.duplicate_in_batch + tally.duplicate_in_db} ` +
+    `insert_error=${tally.insert_error}`,
   );
   if (tally.saved === 0 && signals.length > 0) {
     console.warn(
@@ -256,6 +268,15 @@ export async function saveSignals(
   }
   if (tally.saved > 0) {
     await invalidateSignalGeneratedCaches();
+  }
+  if (fatalSchemaError) {
+    throw fatalSchemaError;
+  }
+  if (tally.saved === 0 && signals.length > 0 && tally.insert_error > 0) {
+    throw new Error(
+      `SAVE_SIGNALS_INSERT_ERRORS: attempted=${signals.length} saved=0 ` +
+      `insert_error=${tally.insert_error} — see per-row errors above`,
+    );
   }
   return idMap;
 }

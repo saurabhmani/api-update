@@ -218,7 +218,18 @@ export function getDb(): mysql.Pool {
           }
         },
       );
+      connection.query("SET time_zone = '+05:30'", (err: Error | null) => {
+        if (err) {
+          console.warn('[db] SET time_zone +05:30 failed:', err.message);
+        }
+      });
     });
+    // Safe one-shot identity (no secrets).
+    console.log(
+      `[DB_POOL_INIT] databaseHost=${cfg.host} databaseName=${cfg.database} ` +
+      `databasePort=${cfg.port} poolSize=${poolSize} nodeEnv=${process.env.NODE_ENV || 'undefined'} ` +
+      `timezone=Asia/Kolkata processTz=${process.env.TZ || 'unset'}`,
+    );
   }
   return g.__mysqlPool;
 }

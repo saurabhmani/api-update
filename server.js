@@ -46,6 +46,20 @@ function resolveEnvFilePath() {
 
 require('dotenv').config({ path: resolveEnvFilePath() });
 
+// Prefer explicit IST for scan dates / cron child inheritance.
+if (!process.env.TZ) process.env.TZ = 'Asia/Kolkata';
+
+// Safe identity (no secrets) — helps catch wrong DB on boot.
+console.log(
+  `[RUNTIME_IDENTITY] component=server.js processRole=web ` +
+  `databaseHost=${process.env.MYSQL_HOST || 'unset'} ` +
+  `databaseName=${process.env.MYSQL_DATABASE || 'unset'} ` +
+  `redisHost=${process.env.REDIS_HOST || 'unset'} ` +
+  `nodeEnv=${process.env.NODE_ENV || 'undefined'} ` +
+  `timezone=Asia/Kolkata processTz=${process.env.TZ || 'unset'} ` +
+  `envFileHint=${resolveEnvFilePath()}`,
+);
+
 // server.js is the production custom entry (`start:server` / PM2). Local
 // `.env.local` often sets NODE_ENV=development for `next dev` — if we keep
 // that here, Next boots in *dev* mode through the custom server (turbopack

@@ -24,13 +24,25 @@
  *   5001 → WS stream (nginx: location /ws)
  */
 
+const path = require('path');
+const fs = require('fs');
+
 const APP_DIR = process.env.APP_DIR || '/var/www/api-update';
+
+function resolveProdEnvPath() {
+  const production = path.join(APP_DIR, '.env.production');
+  const flat = path.join(APP_DIR, '.env');
+  if (fs.existsSync(production)) return production;
+  return flat;
+}
 
 const SHARED_ENV = {
   NODE_ENV: 'production',
-  DOTENV_CONFIG_PATH: `${APP_DIR}/.env`,
+  // Prefer .env.production (matches server.js); fall back to `.env`.
+  DOTENV_CONFIG_PATH: resolveProdEnvPath(),
   PORT: 5000,
   STREAM_WS_PORT: 5001,
+  TZ: 'Asia/Kolkata',
 };
 
 module.exports = {

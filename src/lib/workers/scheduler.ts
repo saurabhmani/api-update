@@ -39,7 +39,6 @@
  * PM2:    pm2 start src/lib/workers/scheduler.ts --name quantorus365-scheduler
  */
 
-// ── Load project env (`.env` on prod, `.env.local` in dev when present) ─
 import { config as dotenvConfig } from 'dotenv';
 import { resolveEnvFilePath } from '@/lib/envPath';
 dotenvConfig({ path: resolveEnvFilePath() });
@@ -53,6 +52,8 @@ import { logger } from '@/lib/logger';
 import { startScheduler as startMarketDataScheduler } from '@/lib/scheduler';
 import { startDailyScanSchedule } from '@/lib/workers/dailyScanSchedule';
 import { startWeeklyUniverseSchedule } from '@/lib/marketData/weeklyUniverseSchedule';
+import { logRuntimeIdentity } from '@/lib/diagnostics/runtimeIdentity';
+import { setSchedulerProcessRole } from '@/lib/diagnostics/schedulerScanHealth';
 import {
   generatePhase4Signals,
   DEFAULT_PHASE3_CONFIG,
@@ -286,6 +287,13 @@ void (async () => {
 })();
 
 // 2. Daily scan schedule — controlled IST cadence (see docs/DAILY_SCAN_SCHEDULE.md).
+process.env.TZ = process.env.TZ || 'Asia/Kolkata';
+setSchedulerProcessRole('scheduler-worker');
+logRuntimeIdentity({
+  component: 'worker-scheduler',
+  processRole: 'scheduler',
+  envFileHint: resolveEnvFilePath(),
+});
 startDailyScanSchedule();
 
 // 2b. Weekly NSE 1000 universe rebuild — Sunday 22:00 IST by default.
