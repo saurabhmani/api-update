@@ -953,9 +953,17 @@ async function runCandleBackfillJobInner(ctx: {
         const remaining = symbols.length - processed;
         summary.deferred += remaining;
         summary.status = 'paused';
-        summary.pauseReason = result.reason?.includes('nse_')
-          ? 'nse_historical_circuit_open'
-          : 'indianapi_circuit_open';
+        // Source attribution for paused runs should follow the actual
+        // open circuit state, not just the free-form error text.
+        if (isNseHistoricalFetchEnabled() && isNseHistoricalCircuitOpen()) {
+          summary.pauseReason = 'nse_historical_circuit_open';
+        } else if (isIndianApiHistoricalCircuitOpen()) {
+          summary.pauseReason = 'indianapi_circuit_open';
+        } else if (result.reason?.includes('nse_')) {
+          summary.pauseReason = 'nse_historical_circuit_open';
+        } else {
+          summary.pauseReason = 'indianapi_circuit_open';
+        }
         summary.resumeAfter =
           getNseHistoricalResumeAfterIso()
           ?? getIndianApiHistoricalCircuitState().resumeAfterIso;
