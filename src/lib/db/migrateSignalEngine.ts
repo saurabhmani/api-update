@@ -243,6 +243,7 @@ const TABLES = [
     id                       BIGINT AUTO_INCREMENT PRIMARY KEY,
     source_signal_id         BIGINT         NULL,
     symbol                   VARCHAR(50)    NOT NULL,
+    instrument_key           VARCHAR(100)   NULL,
     exchange                 VARCHAR(10)    NOT NULL DEFAULT 'NSE',
     direction                VARCHAR(10)    NOT NULL,
     strategy                 VARCHAR(60)    NULL,
@@ -303,6 +304,13 @@ export async function migrateSignalEngine(): Promise<void> {
   for (const ddl of TABLES) {
     await db.query(ddl);
   }
+
+  // ── Core identity columns (idempotent ALTERs) ───────────────
+  // Older production tables may predate instrument_key on signals /
+  // confirmed snapshots. liveSignalRecalc SELECTs it from both; missing
+  // column → "Unknown column 'instrument_key'" and Recovery Mode.
+  await ensureColumn('q365_signals', 'instrument_key', "VARCHAR(100) NULL");
+  await ensureColumn('q365_confirmed_signal_snapshots', 'instrument_key', "VARCHAR(100) NULL");
 
   // ── Live-snapshot columns (idempotent ALTERs) ───────────────
   // Present in this file's inline CREATE TABLE above (lines 43-44),
