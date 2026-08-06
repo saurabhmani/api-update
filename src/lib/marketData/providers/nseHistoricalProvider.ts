@@ -1,26 +1,24 @@
 // ════════════════════════════════════════════════════════════════
 //  NSE Historical Provider — OPT-IN FALLBACK FOR CANDLES
 //
-//  Hits www.nseindia.com/api/historical/cm/equity for daily OHLCV
-//  bars. Used by the candle chain ONLY when:
-//    1. removed vendor fetch failed/empty AND
-//    2. NSE_HISTORICAL_FETCH_ENABLED=true is set in env (default OFF).
-//  scrapers, so this provider mirrors `nseDirectProvider`'s
-//  conservative contract:
-//    • Cookie acquisition before the API call (NSE 403s without it).
-//    • Hard trip on 403/429/503/captcha — stays tripped until IST
-//      midnight.
-//    • Soft-failure exponential backoff (5s → 5min cap).
-//    • Daily cap (default 50) — after that the provider is
-//      "exhausted" until IST midnight. Counter is per-process; in
-//      multi-instance deployments callers MUST coordinate via the
-//      shared Redis key in nseDirectProvider if they want a
-//      cluster-wide cap.
-//    • Min 7 s gap between requests.
+//  Hits www.nseindia.com/api/historical/cm/equity for daily OHLCV.
+//  Used ONLY when IndianAPI fails AND NSE_HISTORICAL_FETCH_ENABLED=true.
+//
+//  Circuit policy (2026-08):
+//    • HTTP 503/502/504 + network → transient soft failure with
+//      bounded retries / short cooldown. NEVER IST-midnight.
+//    • HTTP 403 / captcha / bot challenge → hard trip (short
+//      configurable cooldown, default 15 min — not midnight).
+//    • HTTP 429 → honor Retry-After when present; else soft backoff.
+//    • One 503 does not disable the whole backfill day.
 // ════════════════════════════════════════════════════════════════
 
 import { logger } from '@/lib/logger';
 import type { Candle } from '@/lib/signal-engine';
+import {
+  logSymbolNormalizeIfChanged,
+  normalizeNseUniverseSymbol,
+} from '@/lib/marketData/providers/nseSymbolNormalize';
 
 const log = logger.child({ component: 'nseHistoricalProvider' });
 
@@ -31,10 +29,14 @@ export interface NseHistoricalResult {
   candles:      Candle[];
   errorCode:    string | null;
   errorMessage: string | null;
-  /** True when NSE returned a hard block (403/429/captcha) and the
-   *  provider should NOT be retried until IST midnight. */
+  /** True when a hard block is active — callers should pause globally. */
   tripped:      boolean;
+  /** True when rejection was local (open breaker) — no upstream call. */
+  locallyBlocked?: boolean;
   latencyMs:    number;
+  universeSymbol?: string;
+  providerSymbol?: string;
+  series?: string;
 }
 
 // ── Config ─────────────────────────────────────────────────────────
@@ -53,47 +55,76 @@ function envNum(name: string, lo: number, hi: number, fallback: number): number 
   return Math.max(lo, Math.min(hi, raw));
 }
 
-// Default OFF — NSE scraping is opt-in via NSE_HISTORICAL_FETCH_ENABLED=true.
-// removed vendor is the primary upstream for daily candle backfill; NSE is a
-// last-resort fallback when explicitly enabled by the operator.
 const NSE_HISTORICAL_ENABLED = () => envBool('NSE_HISTORICAL_FETCH_ENABLED', false);
 
-/** Whether the NSE historical fallback leg is enabled. */
 export function isNseHistoricalFetchEnabled(): boolean {
   return NSE_HISTORICAL_ENABLED();
 }
+
 const NSE_REQUEST_TIMEOUT_MS = () => envNum('NSE_HISTORICAL_TIMEOUT_MS', 3_000, 30_000, 8_000);
 const NSE_MIN_GAP_MS         = () => envNum('NSE_HISTORICAL_MIN_GAP_MS', 1_000, 60_000, 7_000);
 const NSE_DAILY_CAP          = () => envNum('NSE_HISTORICAL_DAILY_CAP', 1, 500, 50);
 const NSE_HISTORICAL_DAYS    = () => envNum('NSE_HISTORICAL_DAYS', 30, 730, 365);
 
+/** Consecutive soft 5xx before opening the short circuit. */
+const NSE_SOFT_FAILURE_THRESHOLD = () =>
+  envNum('NSE_HISTORICAL_CIRCUIT_FAILURE_THRESHOLD', 1, 20, 3);
+/** Soft-circuit cooldown (seconds). Default 60s — not IST midnight. */
+const NSE_SOFT_COOLDOWN_MS = () =>
+  envNum('NSE_HISTORICAL_CIRCUIT_COOLDOWN_SECONDS', 5, 3600, 60) * 1000;
+/** Hard-block (403/captcha) cooldown. Default 15 min. */
+const NSE_HARD_COOLDOWN_MS = () =>
+  envNum('NSE_HISTORICAL_HARD_COOLDOWN_SECONDS', 60, 86_400, 900) * 1000;
+const NSE_503_MAX_RETRIES = () =>
+  envNum('NSE_HISTORICAL_503_MAX_RETRIES', 0, 8, 2);
+
 // ── State (per-process) ────────────────────────────────────────────
 
 let lastRequestAt = 0;
-let trippedUntil  = 0;     // epoch ms; non-zero = blocked until that ms
+let trippedUntil  = 0;
+let tripReason: string | null = null;
 let consecutiveSoftFailures = 0;
-let backoffUntilMs          = 0;
+let softBackoffUntilMs = 0;
+let breakerTrips = 0;
+let locallyBlocked = 0;
+let upstreamRequests = 0;
+
 const SOFT_BACKOFF_BASE_MS  = 5_000;
 const SOFT_BACKOFF_MAX_MS   = 5 * 60_000;
 
-// Daily cap counter — per-process (no Redis to keep the surface
-// minimal; if needed, swap to cacheGet/cacheSet matching
-// nseDirectProvider).
-let dailyKey   = '';
-let dailyCount = 0;
-
-function noteSoftFailure(): void {
+function noteSoftFailure(): number {
   consecutiveSoftFailures += 1;
   const delay = Math.min(
     SOFT_BACKOFF_MAX_MS,
     SOFT_BACKOFF_BASE_MS * 2 ** (consecutiveSoftFailures - 1),
   );
-  backoffUntilMs = Date.now() + delay;
+  // Per-request retry delay only — do NOT freeze the whole provider
+  // behind softBackoffUntilMs here. Global pause uses openCircuit().
+  if (consecutiveSoftFailures >= NSE_SOFT_FAILURE_THRESHOLD()) {
+    openCircuit('soft_5xx_threshold', NSE_SOFT_COOLDOWN_MS());
+    consecutiveSoftFailures = 0;
+  }
+  return delay;
+}
+
+/** 429 / Retry-After: pause provider briefly without IST-midnight trip. */
+function noteRateLimitBackoff(retryMs: number): void {
+  softBackoffUntilMs = Math.max(softBackoffUntilMs, Date.now() + retryMs);
 }
 
 function noteSuccess(): void {
   consecutiveSoftFailures = 0;
-  backoffUntilMs          = 0;
+  softBackoffUntilMs = 0;
+}
+
+function openCircuit(reason: string, cooldownMs: number): void {
+  trippedUntil = Date.now() + cooldownMs;
+  tripReason = reason;
+  breakerTrips += 1;
+  console.warn(
+    `[NSE CIRCUIT] OPEN reason=${reason} cooldown_ms=${cooldownMs} ` +
+    `resume_after=${new Date(trippedUntil).toISOString()} trips=${breakerTrips}`,
+  );
 }
 
 function istDayKey(d = new Date()): string {
@@ -101,12 +132,8 @@ function istDayKey(d = new Date()): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function nextIstMidnightMs(d = new Date()): number {
-  const ms = d.getTime() + 5.5 * 60 * 60 * 1000;
-  const ist = new Date(ms);
-  ist.setUTCHours(24, 0, 0, 0);
-  return ist.getTime() - 5.5 * 60 * 60 * 1000;
-}
+let dailyKey   = '';
+let dailyCount = 0;
 
 function bumpDailyCount(): number {
   const k = istDayKey();
@@ -124,17 +151,36 @@ function readDailyCount(): number {
   return dailyCount;
 }
 
+function parseRetryAfterMs(res: Response): number | null {
+  const raw = res.headers.get('retry-after');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, 5 * 60_000);
+  }
+  const dateMs = Date.parse(raw);
+  if (Number.isFinite(dateMs)) {
+    return Math.min(Math.max(0, dateMs - Date.now()), 5 * 60_000);
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function jitter(ms: number): number {
+  return Math.floor(ms * (0.5 + Math.random() * 0.5));
+}
+
 // ── HTTP plumbing ──────────────────────────────────────────────────
 
 const NSE_BASE = 'https://www.nseindia.com';
 const HOME_URL = `${NSE_BASE}/`;
-// Daily OHLCV: NSE's historical endpoint. We pull a window (default
-// ~365 days) so the engine has enough bars for ema200/sma200 plus
-// some headroom.
-const HIST_PATH = (sym: string, fromDDMMYYYY: string, toDDMMYYYY: string) =>
+const HIST_PATH = (sym: string, series: string, fromDDMMYYYY: string, toDDMMYYYY: string) =>
   `${NSE_BASE}/api/historical/cm/equity` +
   `?symbol=${encodeURIComponent(sym)}` +
-  `&series=[%22EQ%22]` +
+  `&series=[%22${encodeURIComponent(series)}%22]` +
   `&from=${fromDDMMYYYY}` +
   `&to=${toDDMMYYYY}`;
 
@@ -175,7 +221,6 @@ const BLOCK_BODY_MARKERS = [
   /access\s*denied/i,
   /captcha/i,
   /bot\s*detected/i,
-  /resource\s*not\s*found/i,
 ];
 
 function ddmmyyyy(d: Date): string {
@@ -195,11 +240,10 @@ interface NseHistoricalRow {
 }
 
 function parseRows(raw: unknown): Candle[] {
-  // NSE wraps the array under `data` in modern responses.
   const arr: NseHistoricalRow[] = Array.isArray(raw)
     ? (raw as NseHistoricalRow[])
-    : Array.isArray((raw as any)?.data)
-      ? ((raw as any).data as NseHistoricalRow[])
+    : Array.isArray((raw as { data?: unknown })?.data)
+      ? ((raw as { data: NseHistoricalRow[] }).data)
       : [];
   const out: Candle[] = [];
   for (const r of arr) {
@@ -214,186 +258,304 @@ function parseRows(raw: unknown): Candle[] {
     if (o <= 0 || h <= 0 || l <= 0 || c <= 0) continue;
     out.push({ ts, open: o, high: h, low: l, close: c, volume: Number.isFinite(v) ? v : 0 });
   }
-  // ASC order — same convention as Phase 3.
-  out.sort((a, b) => new Date(a.ts as any).getTime() - new Date(b.ts as any).getTime());
+  out.sort((a, b) => new Date(a.ts as string).getTime() - new Date(b.ts as string).getTime());
   return out;
 }
 
-// ── Public entry point ─────────────────────────────────────────────
-
-/**
- * Fetch ~1 year of daily OHLCV bars for `symbol` via NSE direct.
- * Spec "FIX NSE FALLBACK" — emits [NSE FETCH SUCCESS] / [NSE FETCH FAIL]
- * loud-and-greppable so an operator can correlate what the chain saw.
- *
- * Returns a clean envelope; never throws. The fallback chain decides
- * whether to surface failure to the caller (typically: try the next
- * source).
- */
-export async function fetchNseHistoricalCandles(symbol: string): Promise<NseHistoricalResult> {
-  const t0 = Date.now();
-
-  // Disabled by default. Operators must explicitly opt in.
-  if (!NSE_HISTORICAL_ENABLED()) {
-    const msg = 'NSE_HISTORICAL_FETCH_ENABLED!=true (default-off)';
-    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-    return {
-      ok: false, candles: [], errorCode: 'DISABLED',
-      errorMessage: msg, tripped: false, latencyMs: 0,
-    };
-  }
-
-  // Hard-trip cooldown (403/429/captcha hit earlier in the day).
-  if (trippedUntil > 0 && Date.now() < trippedUntil) {
-    const remainingMs = trippedUntil - Date.now();
-    const msg = `tripped (${Math.round(remainingMs / 1000)}s remaining)`;
-    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-    return {
-      ok: false, candles: [], errorCode: 'TRIPPED',
-      errorMessage: msg, tripped: true, latencyMs: 0,
-    };
-  }
-
-  // Soft-failure backoff window.
-  if (backoffUntilMs > 0 && Date.now() < backoffUntilMs) {
-    const remainingMs = backoffUntilMs - Date.now();
-    const msg = `soft_backoff (${Math.round(remainingMs / 1000)}s remaining)`;
-    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-    return {
-      ok: false, candles: [], errorCode: 'SOFT_BACKOFF',
-      errorMessage: msg, tripped: false, latencyMs: 0,
-    };
-  }
-
-  // Daily cap.
-  const cap = NSE_DAILY_CAP();
-  const used = readDailyCount();
-  if (used >= cap) {
-    const msg = `daily_cap_hit (${used}/${cap})`;
-    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-    return {
-      ok: false, candles: [], errorCode: 'CAP_EXHAUSTED',
-      errorMessage: msg, tripped: false, latencyMs: 0,
-    };
-  }
-
-  // Min-gap between requests (rate-limit friendliness).
-  const minGap = NSE_MIN_GAP_MS();
-  const sinceLast = Date.now() - lastRequestAt;
-  if (sinceLast < minGap) {
-    await new Promise((r) => setTimeout(r, minGap - sinceLast));
-  }
-  lastRequestAt = Date.now();
-
-  await refreshCookie();
-  bumpDailyCount();
-
-  const days = NSE_HISTORICAL_DAYS();
-  const to   = new Date();
-  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-  const url  = HIST_PATH(symbol, ddmmyyyy(from), ddmmyyyy(to));
-
-  try {
-    const res = await fetch(url, {
-      method:  'GET',
-      headers: { ...COMMON_HEADERS, ...(cookieJar ? { Cookie: cookieJar } : {}) },
-      signal:  AbortSignal.timeout(NSE_REQUEST_TIMEOUT_MS()),
-    });
-
-    if (res.status === 403 || res.status === 429 || res.status === 503) {
-      trippedUntil = nextIstMidnightMs();
-      const msg = `HTTP_${res.status} (tripped until IST midnight)`;
-      console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-      return {
-        ok: false, candles: [], errorCode: `HTTP_${res.status}`,
-        errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
-      };
-    }
-    if (!res.ok) {
-      noteSoftFailure();
-      const msg = `HTTP_${res.status} ${res.statusText}`;
-      console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-      return {
-        ok: false, candles: [], errorCode: `HTTP_${res.status}`,
-        errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
-      };
-    }
-
-    const ct = res.headers.get('content-type') ?? '';
-    if (!ct.includes('application/json')) {
-      trippedUntil = nextIstMidnightMs();
-      const peek = (await res.text().catch(() => '')).slice(0, 120);
-      const msg  = `non-JSON response content-type="${ct.slice(0, 60)}" body="${peek.replace(/\s+/g, ' ').slice(0, 80)}"`;
-      console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-      return {
-        ok: false, candles: [], errorCode: 'BOT_CHALLENGE',
-        errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
-      };
-    }
-
-    const text = await res.text();
-    for (const re of BLOCK_BODY_MARKERS) {
-      if (re.test(text)) {
-        trippedUntil = nextIstMidnightMs();
-        const msg = `block_marker (${re.source})`;
-        console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-        return {
-          ok: false, candles: [], errorCode: 'BLOCK_MARKER',
-          errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
-        };
-      }
-    }
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch (e) {
-      noteSoftFailure();
-      const msg = `parse_error: ${(e as Error).message}`;
-      console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-      return {
-        ok: false, candles: [], errorCode: 'PARSE_ERROR',
-        errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
-      };
-    }
-
-    const candles = parseRows(raw);
-    if (candles.length === 0) {
-      noteSoftFailure();
-      const msg = 'empty_payload (no parseable rows)';
-      console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
-      return {
-        ok: false, candles: [], errorCode: 'EMPTY_PAYLOAD',
-        errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
-      };
-    }
-
-    noteSuccess();
-    const elapsed = Date.now() - t0;
-    console.log(`[NSE FETCH SUCCESS] symbol=${symbol} bars=${candles.length} latency_ms=${elapsed}`);
-    return {
-      ok: true, candles, errorCode: null,
-      errorMessage: null, tripped: false, latencyMs: elapsed,
-    };
-  } catch (err) {
-    noteSoftFailure();
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="network: ${msg}"`);
-    return {
-      ok: false, candles: [], errorCode: 'NETWORK',
-      errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
-    };
-  }
+export function isNseHistoricalCircuitOpen(): boolean {
+  return trippedUntil > Date.now();
 }
 
-/** Operator visibility into per-process state. Used by debugPipeline. */
+export function getNseHistoricalResumeAfterIso(): string | null {
+  return isNseHistoricalCircuitOpen() ? new Date(trippedUntil).toISOString() : null;
+}
+
+export function resetNseHistoricalStateForTests(): void {
+  lastRequestAt = 0;
+  trippedUntil = 0;
+  tripReason = null;
+  consecutiveSoftFailures = 0;
+  softBackoffUntilMs = 0;
+  breakerTrips = 0;
+  locallyBlocked = 0;
+  upstreamRequests = 0;
+  dailyKey = '';
+  dailyCount = 0;
+  cookieJar = '';
+  cookieAt = 0;
+}
+
+/** Operator visibility into per-process state. */
 export function getNseHistoricalState() {
   return {
     enabled:       NSE_HISTORICAL_ENABLED(),
     tripped:       trippedUntil > Date.now(),
     tripped_until: trippedUntil > 0 ? new Date(trippedUntil).toISOString() : null,
-    soft_backoff_remaining_ms: Math.max(0, backoffUntilMs - Date.now()),
+    trip_reason:   tripReason,
+    soft_backoff_remaining_ms: Math.max(0, softBackoffUntilMs - Date.now()),
+    consecutive_soft_failures: consecutiveSoftFailures,
     daily_used:    readDailyCount(),
     daily_cap:     NSE_DAILY_CAP(),
+    breaker_trips: breakerTrips,
+    locally_blocked: locallyBlocked,
+    upstream_requests: upstreamRequests,
+  };
+}
+
+async function fetchOnce(
+  url: string,
+  symbol: string,
+  attempt: number,
+): Promise<{ res: Response; text?: string } | NseHistoricalResult> {
+  const t0 = Date.now();
+  upstreamRequests += 1;
+  const res = await fetch(url, {
+    method:  'GET',
+    headers: { ...COMMON_HEADERS, ...(cookieJar ? { Cookie: cookieJar } : {}) },
+    signal:  AbortSignal.timeout(NSE_REQUEST_TIMEOUT_MS()),
+  });
+
+  // Hard auth / bot blocks
+  if (res.status === 403) {
+    openCircuit(`HTTP_403`, NSE_HARD_COOLDOWN_MS());
+    const msg = `HTTP_403 (hard circuit ${NSE_HARD_COOLDOWN_MS()}ms)`;
+    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'HTTP_403',
+      errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
+    };
+  }
+
+  // Rate limit — honor Retry-After; do not trip until midnight
+  if (res.status === 429) {
+    const retryMs = parseRetryAfterMs(res) ?? noteSoftFailure();
+    noteRateLimitBackoff(retryMs);
+    const msg = `HTTP_429 retry_after_ms=${retryMs}`;
+    console.warn(
+      `[NSE FETCH RETRY] symbol=${symbol} attempt=${attempt} statusCode=429 ` +
+      `waitMs=${retryMs} breakerFailureCount=${consecutiveSoftFailures}`,
+    );
+    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'HTTP_429',
+      errorMessage: msg, tripped: isNseHistoricalCircuitOpen(), latencyMs: Date.now() - t0,
+    };
+  }
+
+  // Transient 502/503/504
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    const retryMs = parseRetryAfterMs(res) ?? jitter(
+      Math.min(SOFT_BACKOFF_MAX_MS, SOFT_BACKOFF_BASE_MS * 2 ** attempt),
+    );
+    noteSoftFailure();
+    console.warn(
+      `[NSE FETCH RETRY] symbol=${symbol} attempt=${attempt} statusCode=${res.status} ` +
+      `waitMs=${retryMs} breakerFailureCount=${consecutiveSoftFailures}`,
+    );
+    return {
+      ok: false, candles: [], errorCode: `HTTP_${res.status}`,
+      errorMessage: `transient_upstream_${res.status} waitMs=${retryMs}`,
+      tripped: isNseHistoricalCircuitOpen(), latencyMs: Date.now() - t0,
+      // attach wait hint via errorMessage for caller retry
+    };
+  }
+
+  if (!res.ok) {
+    noteSoftFailure();
+    const msg = `HTTP_${res.status} ${res.statusText}`;
+    console.warn(`[NSE FETCH FAIL] symbol=${symbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: `HTTP_${res.status}`,
+      errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
+    };
+  }
+
+  return { res };
+}
+
+/**
+ * Fetch ~1 year of daily OHLCV bars for `symbol` via NSE direct.
+ */
+export async function fetchNseHistoricalCandles(symbol: string): Promise<NseHistoricalResult> {
+  const t0 = Date.now();
+  const norm = normalizeNseUniverseSymbol(symbol);
+  logSymbolNormalizeIfChanged(norm);
+
+  if (!NSE_HISTORICAL_ENABLED()) {
+    const msg = 'NSE_HISTORICAL_FETCH_ENABLED!=true (default-off)';
+    console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'DISABLED',
+      errorMessage: msg, tripped: false, latencyMs: 0,
+      universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+    };
+  }
+
+  if (trippedUntil > 0 && Date.now() < trippedUntil) {
+    locallyBlocked += 1;
+    const remainingMs = trippedUntil - Date.now();
+    const msg = `circuit_open (${Math.round(remainingMs / 1000)}s remaining; reason=${tripReason ?? 'unknown'})`;
+    console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'CIRCUIT_OPEN',
+      errorMessage: msg, tripped: true, locallyBlocked: true, latencyMs: 0,
+      universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+    };
+  }
+
+  if (softBackoffUntilMs > 0 && Date.now() < softBackoffUntilMs) {
+    const remainingMs = softBackoffUntilMs - Date.now();
+    const msg = `soft_backoff (${Math.round(remainingMs / 1000)}s remaining)`;
+    console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'SOFT_BACKOFF',
+      errorMessage: msg, tripped: false, locallyBlocked: true, latencyMs: 0,
+      universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+    };
+  }
+
+  const cap = NSE_DAILY_CAP();
+  const used = readDailyCount();
+  if (used >= cap) {
+    const msg = `daily_cap_hit (${used}/${cap})`;
+    console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+    return {
+      ok: false, candles: [], errorCode: 'CAP_EXHAUSTED',
+      errorMessage: msg, tripped: false, latencyMs: 0,
+      universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+    };
+  }
+
+  const minGap = NSE_MIN_GAP_MS();
+  const sinceLast = Date.now() - lastRequestAt;
+  if (sinceLast < minGap) {
+    await sleep(minGap - sinceLast);
+  }
+
+  await refreshCookie();
+
+  const days = NSE_HISTORICAL_DAYS();
+  const to   = new Date();
+  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  const url  = HIST_PATH(norm.providerSymbol, norm.series, ddmmyyyy(from), ddmmyyyy(to));
+
+  const maxAttempts = 1 + NSE_503_MAX_RETRIES();
+  let lastFail: NseHistoricalResult | null = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    lastRequestAt = Date.now();
+    bumpDailyCount();
+
+    try {
+      const outcome = await fetchOnce(url, norm.universeSymbol, attempt + 1);
+      if ('ok' in outcome) {
+        lastFail = {
+          ...outcome,
+          universeSymbol: norm.universeSymbol,
+          providerSymbol: norm.providerSymbol,
+          series: norm.series,
+        };
+        // Retry only transient 5xx / 429
+        const code = outcome.errorCode ?? '';
+        const transient = code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504' || code === 'HTTP_429';
+        if (!transient || attempt >= maxAttempts - 1 || isNseHistoricalCircuitOpen()) {
+          return lastFail;
+        }
+        const waitMatch = /waitMs=(\d+)/.exec(outcome.errorMessage ?? '');
+        const waitMs = waitMatch ? Number(waitMatch[1]) : jitter(SOFT_BACKOFF_BASE_MS * 2 ** attempt);
+        await sleep(waitMs);
+        continue;
+      }
+
+      const { res } = outcome;
+      const ct = res.headers.get('content-type') ?? '';
+      if (!ct.includes('application/json')) {
+        openCircuit('BOT_CHALLENGE', NSE_HARD_COOLDOWN_MS());
+        const peek = (await res.text().catch(() => '')).slice(0, 120);
+        const msg  = `non-JSON response content-type="${ct.slice(0, 60)}" body="${peek.replace(/\s+/g, ' ').slice(0, 80)}"`;
+        console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+        return {
+          ok: false, candles: [], errorCode: 'BOT_CHALLENGE',
+          errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
+          universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+        };
+      }
+
+      const text = await res.text();
+      for (const re of BLOCK_BODY_MARKERS) {
+        if (re.test(text)) {
+          openCircuit(`block_marker:${re.source}`, NSE_HARD_COOLDOWN_MS());
+          const msg = `block_marker (${re.source})`;
+          console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+          return {
+            ok: false, candles: [], errorCode: 'BLOCK_MARKER',
+            errorMessage: msg, tripped: true, latencyMs: Date.now() - t0,
+            universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+          };
+        }
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(text);
+      } catch (e) {
+        noteSoftFailure();
+        const msg = `parse_error: ${(e as Error).message}`;
+        console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+        return {
+          ok: false, candles: [], errorCode: 'PARSE_ERROR',
+          errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
+          universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+        };
+      }
+
+      const candles = parseRows(raw);
+      if (candles.length === 0) {
+        // Empty for this series is a symbol-level miss — do not trip breaker.
+        const msg = norm.isSpecialSeries
+          ? `unsupported_symbol_series series=${norm.series} (empty NSE payload)`
+          : 'empty_payload (no parseable rows)';
+        console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="${msg}"`);
+        return {
+          ok: false, candles: [],
+          errorCode: norm.isSpecialSeries ? 'UNSUPPORTED_SERIES' : 'EMPTY_PAYLOAD',
+          errorMessage: msg, tripped: false, latencyMs: Date.now() - t0,
+          universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+        };
+      }
+
+      noteSuccess();
+      const elapsed = Date.now() - t0;
+      console.log(
+        `[NSE FETCH SUCCESS] symbol=${norm.universeSymbol} providerSymbol=${norm.providerSymbol} ` +
+        `series=${norm.series} bars=${candles.length} latency_ms=${elapsed}`,
+      );
+      return {
+        ok: true, candles, errorCode: null,
+        errorMessage: null, tripped: false, latencyMs: elapsed,
+        universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+      };
+    } catch (err) {
+      const delay = noteSoftFailure();
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[NSE FETCH RETRY] symbol=${norm.universeSymbol} attempt=${attempt + 1} ` +
+        `statusCode=network waitMs=${delay} breakerFailureCount=${consecutiveSoftFailures}`,
+      );
+      console.warn(`[NSE FETCH FAIL] symbol=${norm.universeSymbol} reason="network: ${msg}"`);
+      lastFail = {
+        ok: false, candles: [], errorCode: 'NETWORK',
+        errorMessage: msg, tripped: isNseHistoricalCircuitOpen(), latencyMs: Date.now() - t0,
+        universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
+      };
+      if (attempt >= maxAttempts - 1 || isNseHistoricalCircuitOpen()) return lastFail;
+      await sleep(delay);
+    }
+  }
+
+  return lastFail ?? {
+    ok: false, candles: [], errorCode: 'UNKNOWN',
+    errorMessage: 'exhausted retries', tripped: false, latencyMs: Date.now() - t0,
+    universeSymbol: norm.universeSymbol, providerSymbol: norm.providerSymbol, series: norm.series,
   };
 }

@@ -13,13 +13,20 @@
 import { db } from '@/lib/db';
 import {
   fetchUpstreamDailyCandles,
-  getKiteCandleRequestCount,
+  getCandleSourceCounters,
+  getUpstreamCandleRequestCount,
   resetCandleSourceCounters,
 } from '@/lib/marketData/candleFallbackChain';
 import {
   fetchNseHistoricalCandles,
+  getNseHistoricalResumeAfterIso,
+  isNseHistoricalCircuitOpen,
   isNseHistoricalFetchEnabled,
 } from '@/lib/marketData/providers/nseHistoricalProvider';
+import {
+  getIndianApiHistoricalCircuitState,
+  isIndianApiHistoricalCircuitOpen,
+} from '@/lib/marketData/providers/indianApiHistoricalCircuit';
 import { assertQuotaForJob } from '@/lib/marketData/providerRequestLog';
 import { runWithProviderRequestContext } from '@/lib/marketData/providerRequestContext';
 import {
@@ -100,6 +107,12 @@ export interface UniverseBackfillStats {
   needingBackfill: number;
 }
 
+export type CandleBackfillRunStatus =
+  | 'completed'
+  | 'paused'
+  | 'aborted_auth'
+  | 'aborted_budget';
+
 export interface CandleBackfillJobSummary {
   totalSymbols: number;
   /** Active universe size (q365_universe), regardless of resume queue. */
@@ -111,10 +124,20 @@ export interface CandleBackfillJobSummary {
   failed: number;
   /** Symbols not attempted because per-run upstream budget was exhausted. */
   deferredDueToBudget: number;
+  /** Symbols left unprocessed because a global breaker opened mid-run. */
+  deferred: number;
+  unsupported: number;
   candlesInserted: number;
   candlesUpdated: number;
-  /** Kite historical requests used this run (field name kept for summary shape). */
+  /** Upstream historical requests used this run (IndianAPI). */
   upstreamVendor: number;
+  upstreamRequests: number;
+  locallyBlockedRequests: number;
+  retries: number;
+  breakerTrips: number;
+  status: CandleBackfillRunStatus;
+  pauseReason: string | null;
+  resumeAfter: string | null;
   failures: SymbolBackfillFailure[];
   durationMs: number;
   dryRun: boolean;
@@ -133,7 +156,50 @@ function isUpstreamOutage(reason: string | undefined): boolean {
     || reason.includes('EMPTY_RESPONSE')
     || reason.includes('HTTP_5')
     || reason.includes('tripped')
+    || reason.includes('circuit_open')
+    || reason.includes('CIRCUIT_OPEN')
+    || reason.includes('transient_upstream')
   );
+}
+
+function isCircuitOpenReason(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return (
+    reason.includes('CIRCUIT_OPEN')
+    || reason.includes('circuit_open')
+    || reason.includes('indianapi_circuit_open')
+  );
+}
+
+function isUnsupportedReason(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return (
+    reason.includes('UNSUPPORTED_SERIES')
+    || reason.includes('unsupported_symbol_series')
+  );
+}
+
+function globalBreakerPause(): {
+  paused: boolean;
+  reason: string | null;
+  resumeAfter: string | null;
+} {
+  if (isIndianApiHistoricalCircuitOpen()) {
+    const st = getIndianApiHistoricalCircuitState();
+    return {
+      paused: true,
+      reason: 'indianapi_circuit_open',
+      resumeAfter: st.resumeAfterIso,
+    };
+  }
+  if (isNseHistoricalFetchEnabled() && isNseHistoricalCircuitOpen()) {
+    return {
+      paused: true,
+      reason: 'nse_historical_circuit_open',
+      resumeAfter: getNseHistoricalResumeAfterIso(),
+    };
+  }
+  return { paused: false, reason: null, resumeAfter: null };
 }
 
 function isAbortReason(reason: string | undefined): 'budget' | 'auth' | 'upstream' | null {
@@ -492,7 +558,7 @@ async function backfillOneSymbol(
     dryRun: boolean;
   },
 ): Promise<{
-  status: 'skipped' | 'fetched' | 'failed';
+  status: 'skipped' | 'fetched' | 'failed' | 'deferred' | 'unsupported';
   inserted: number;
   updated: number;
   reason?: string;
@@ -516,6 +582,16 @@ async function backfillOneSymbol(
     };
   }
 
+  const preBreaker = globalBreakerPause();
+  if (preBreaker.paused) {
+    return {
+      status: 'deferred',
+      inserted: 0,
+      updated: 0,
+      reason: `${preBreaker.reason} resume_after=${preBreaker.resumeAfter}`,
+    };
+  }
+
   if (isPerRunBudgetExhausted()) {
     return {
       status: 'failed',
@@ -526,8 +602,21 @@ async function backfillOneSymbol(
   }
 
   let fetch = await fetchUpstreamDailyCandles(symbol, '1y');
+  if (
+    !fetch.ok
+    && (fetch.errorCode === 'CIRCUIT_OPEN' || isCircuitOpenReason(fetch.errorMessage ?? undefined))
+  ) {
+    return {
+      status: 'deferred',
+      inserted: 0,
+      updated: 0,
+      reason: fetch.errorMessage ?? 'CIRCUIT_OPEN',
+    };
+  }
+
   const isRetryable = (code: string | null | undefined) =>
     code === 'RATE_LIMITED'
+    || code === 'UPSTREAM_5XX'
     || code === 'API_KEY_INVALID'
     || code === 'KiteRateLimitError'
     || code === 'KiteAuthenticationError';
@@ -536,17 +625,61 @@ async function backfillOneSymbol(
       fetch.errorCode === 'RATE_LIMITED' || fetch.errorCode === 'KiteRateLimitError'
     )
       ? RATE_LIMIT_BACKOFF_MS()
-      : 60_000;
+      : 5_000;
     console.warn(
       `[CANDLE BACKFILL] ${symbol} ${fetch.errorCode} — sleeping ${backoffMs}ms then one retry`,
     );
     await sleep(backoffMs);
     fetch = await fetchUpstreamDailyCandles(symbol, '1y');
+    if (
+      !fetch.ok
+      && (fetch.errorCode === 'CIRCUIT_OPEN' || isCircuitOpenReason(fetch.errorMessage ?? undefined))
+    ) {
+      return {
+        status: 'deferred',
+        inserted: 0,
+        updated: 0,
+        reason: fetch.errorMessage ?? 'CIRCUIT_OPEN',
+      };
+    }
   }
 
   if (!fetch.ok || fetch.candles.length === 0) {
+    if (fetch.errorCode === 'UNSUPPORTED_SERIES' || isUnsupportedReason(fetch.errorMessage ?? undefined)) {
+      return {
+        status: 'unsupported',
+        inserted: 0,
+        updated: 0,
+        reason: fetch.errorMessage ?? 'UNSUPPORTED_SERIES',
+      };
+    }
+
     if (isNseHistoricalFetchEnabled()) {
+      if (isNseHistoricalCircuitOpen()) {
+        return {
+          status: 'deferred',
+          inserted: 0,
+          updated: 0,
+          reason: `nse_historical_circuit_open resume_after=${getNseHistoricalResumeAfterIso()}`,
+        };
+      }
       const nse = await fetchNseHistoricalCandles(symbol);
+      if (nse.locallyBlocked || nse.errorCode === 'CIRCUIT_OPEN' || nse.tripped) {
+        return {
+          status: 'deferred',
+          inserted: 0,
+          updated: 0,
+          reason: nse.errorMessage ?? 'nse_historical_circuit_open',
+        };
+      }
+      if (nse.errorCode === 'UNSUPPORTED_SERIES') {
+        return {
+          status: 'unsupported',
+          inserted: 0,
+          updated: 0,
+          reason: nse.errorMessage ?? 'UNSUPPORTED_SERIES',
+        };
+      }
       if (nse.ok && nse.candles.length > 0) {
         const { inserted, updated } = await persistBarsForSymbol(
           symbol,
@@ -726,9 +859,18 @@ async function runCandleBackfillJobInner(ctx: {
     fetched: 0,
     failed: 0,
     deferredDueToBudget: 0,
+    deferred: 0,
+    unsupported: 0,
     candlesInserted: 0,
     candlesUpdated: 0,
     upstreamVendor: 0,
+    upstreamRequests: 0,
+    locallyBlockedRequests: 0,
+    retries: 0,
+    breakerTrips: 0,
+    status: 'completed',
+    pauseReason: null,
+    resumeAfter: null,
     failures: [],
     durationMs: 0,
     dryRun,
@@ -766,8 +908,22 @@ async function runCandleBackfillJobInner(ctx: {
   let processed = 0;
   let consecutiveUpstreamFailures = 0;
   for (const symbol of symbols) {
+    // Global breaker check before each symbol — stop looping immediately.
+    const breaker = globalBreakerPause();
+    if (breaker.paused) {
+      summary.status = 'paused';
+      summary.pauseReason = breaker.reason;
+      summary.resumeAfter = breaker.resumeAfter;
+      summary.deferred = symbols.length - processed;
+      console.warn(
+        `[CANDLE BACKFILL] status=paused reason=${breaker.reason} ` +
+        `resume_after=${breaker.resumeAfter} deferred=${summary.deferred}`,
+      );
+      break;
+    }
+
     processed++;
-    let lastStatus: 'skipped' | 'fetched' | 'failed' = 'failed';
+    let lastStatus: 'skipped' | 'fetched' | 'failed' | 'deferred' | 'unsupported' = 'failed';
     try {
       const result = await backfillOneSymbol(symbol, { minBars, maxAgeDays, dryRun });
       lastStatus = result.status;
@@ -791,12 +947,36 @@ async function runCandleBackfillJobInner(ctx: {
           );
           break;
         }
+      } else if (result.status === 'deferred') {
+        summary.deferred += 1;
+        // Treat remaining queue as deferred — do not mark them failed.
+        const remaining = symbols.length - processed;
+        summary.deferred += remaining;
+        summary.status = 'paused';
+        summary.pauseReason = result.reason?.includes('nse_')
+          ? 'nse_historical_circuit_open'
+          : 'indianapi_circuit_open';
+        summary.resumeAfter =
+          getNseHistoricalResumeAfterIso()
+          ?? getIndianApiHistoricalCircuitState().resumeAfterIso;
+        console.warn(
+          `[CANDLE BACKFILL] status=paused reason=${summary.pauseReason} ` +
+          `resume_after=${summary.resumeAfter} deferred=${summary.deferred} ` +
+          `trigger=${symbol}`,
+        );
+        break;
+      } else if (result.status === 'unsupported') {
+        consecutiveUpstreamFailures = 0;
+        summary.unsupported++;
+        summary.failures.push({ symbol, reason: result.reason ?? 'unsupported' });
+        console.warn(`[CANDLE BACKFILL] ${symbol} unsupported: ${result.reason}`);
       } else {
         summary.failed++;
         summary.failures.push({ symbol, reason: result.reason ?? 'unknown' });
         console.warn(`[CANDLE BACKFILL] ${symbol} failed: ${result.reason}`);
         const abort = isAbortReason(result.reason);
         if (abort === 'budget') {
+          summary.status = 'aborted_budget';
           summary.deferredDueToBudget = symbols.length - processed;
           console.warn(
             `[CANDLE BACKFILL] per-run budget exhausted — stopping early ` +
@@ -806,17 +986,18 @@ async function runCandleBackfillJobInner(ctx: {
           break;
         }
         if (abort === 'auth') {
-          // Per-symbol auth failure — continue queue to avoid deferring the whole batch.
-          // backfillOneSymbol already slept + retried once; skip burns no extra API quota.
+          summary.status = 'aborted_auth';
           console.warn(
             `[CANDLE BACKFILL] ${symbol} auth rejected after retry — skipping ` +
-            `(verify Kite credentials if failures cluster)`,
+            `(verify IndianAPI credentials if failures cluster)`,
           );
         } else if (isUpstreamOutage(result.reason)) {
           consecutiveUpstreamFailures++;
           const threshold = UPSTREAM_ABORT_THRESHOLD();
           if (consecutiveUpstreamFailures >= threshold) {
-            summary.deferredDueToBudget = symbols.length - processed;
+            summary.deferred = symbols.length - processed;
+            summary.status = 'paused';
+            summary.pauseReason = 'upstream_outage_threshold';
             console.error(
               `[CANDLE BACKFILL] upstream outage — ${consecutiveUpstreamFailures} consecutive ` +
               `failures (e.g. "${result.reason?.slice(0, 80)}"). Aborting to preserve API quota. ` +
@@ -836,10 +1017,14 @@ async function runCandleBackfillJobInner(ctx: {
     }
 
     if (processed % 25 === 0 || processed === symbols.length) {
+      const counters = getCandleSourceCounters();
       console.log(
         `[CANDLE BACKFILL] progress ${processed}/${symbols.length} ` +
         `skipped=${summary.skippedSufficient} fetched=${summary.fetched} ` +
-        `failed=${summary.failed} kite_requests=${getKiteCandleRequestCount()}`,
+        `failed=${summary.failed} deferred=${summary.deferred} ` +
+        `unsupported=${summary.unsupported} ` +
+        `upstream_requests=${counters.upstream_requests} ` +
+        `locally_blocked=${counters.locally_blocked_requests}`,
       );
     }
 
@@ -848,16 +1033,33 @@ async function runCandleBackfillJobInner(ctx: {
     }
   }
 
-  const budget = null;
-  summary.upstreamVendor = getKiteCandleRequestCount();
+  const counters = getCandleSourceCounters();
+  const iaCircuit = getIndianApiHistoricalCircuitState();
+  summary.upstreamVendor = getUpstreamCandleRequestCount();
+  summary.upstreamRequests = counters.upstream_requests;
+  summary.locallyBlockedRequests = counters.locally_blocked_requests + iaCircuit.locallyBlockedRequests;
+  summary.retries = counters.retries;
+  summary.breakerTrips = iaCircuit.breakerTrips;
   summary.durationMs = Date.now() - t0;
 
   console.log('[CANDLE BACKFILL] complete', {
-    ...summary,
+    status: summary.status,
+    pauseReason: summary.pauseReason,
+    resumeAfter: summary.resumeAfter,
+    fetched: summary.fetched,
+    failed: summary.failed,
+    deferred: summary.deferred,
+    unsupported: summary.unsupported,
+    upstream_requests: summary.upstreamRequests,
+    locally_blocked_requests: summary.locallyBlockedRequests,
+    retries: summary.retries,
+    breaker_trips: summary.breakerTrips,
+    candlesInserted: summary.candlesInserted,
+    candlesUpdated: summary.candlesUpdated,
+    durationMs: summary.durationMs,
     failures: summary.failures.length <= 10
       ? summary.failures
       : [...summary.failures.slice(0, 10), { symbol: '...', reason: `+${summary.failures.length - 10} more` }],
-    per_run_budget: budget,
   });
 
   return summary;

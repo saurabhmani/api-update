@@ -50,7 +50,9 @@ let _apiUsed = 0;
 let _kiteUsed = 0;
 let _dbUsed  = 0;
 let _failed  = 0;
-let _kiteRequestCount = 0;
+let _upstreamRequestCount = 0;
+let _retries = 0;
+let _locallyBlocked = 0;
 
 export function resetCandleSourceCounters(): void {
   _nseUsed = 0;
@@ -58,7 +60,9 @@ export function resetCandleSourceCounters(): void {
   _kiteUsed = 0;
   _dbUsed  = 0;
   _failed  = 0;
-  _kiteRequestCount = 0;
+  _upstreamRequestCount = 0;
+  _retries = 0;
+  _locallyBlocked = 0;
 }
 
 export function getCandleSourceCounters(): {
@@ -67,9 +71,12 @@ export function getCandleSourceCounters(): {
   kite_used: number;
   db_used: number;
   failed: number;
-  /** @deprecated Always 0 — kept for summary shape. */
   upstream_candle_requests: number;
+  /** @deprecated Alias of upstream_requests — Kite removed from path. */
   kite_requests: number;
+  upstream_requests: number;
+  retries: number;
+  locally_blocked_requests: number;
 } {
   return {
     nse_used: _nseUsed,
@@ -77,19 +84,30 @@ export function getCandleSourceCounters(): {
     kite_used: _kiteUsed,
     db_used: _dbUsed,
     failed: _failed,
-    upstream_candle_requests: 0,
-    kite_requests: _kiteRequestCount,
+    upstream_candle_requests: _upstreamRequestCount,
+    kite_requests: _upstreamRequestCount,
+    upstream_requests: _upstreamRequestCount,
+    retries: _retries,
+    locally_blocked_requests: _locallyBlocked,
   };
 }
 
-
-/** @deprecated Always 0 — use getKiteCandleRequestCount. Kept for call-site compat. */
+/** Count of IndianAPI / upstream historical requests this run. */
 export function getUpstreamCandleRequestCount(): number {
-  return 0;
+  return _upstreamRequestCount;
 }
 
+/** @deprecated Use getUpstreamCandleRequestCount. */
 export function getKiteCandleRequestCount(): number {
-  return _kiteRequestCount;
+  return _upstreamRequestCount;
+}
+
+export function noteUpstreamRetry(): void {
+  _retries += 1;
+}
+
+export function noteLocallyBlockedRequest(): void {
+  _locallyBlocked += 1;
 }
 
 // ── Public types ───────────────────────────────────────────────────
@@ -250,40 +268,149 @@ function normalizeHistoricalCandles(
 export async function fetchIndianApiDailyCandles(
   symbol: string,
   range: HistoricalRange = '1y',
-): Promise<UpstreamCandleFetchResult> {
-  const sym = symbol.toUpperCase();
+): Promise<UpstreamCandleFetchResult & {
+  category?: string;
+  universeSymbol?: string;
+  providerSymbol?: string;
+  series?: string;
+}> {
+  const {
+    assertIndianApiHistoricalCircuitAllows,
+    classifyIndianApiCandleError,
+    feedsIndianApiHistoricalCircuit,
+    getIndianApiHistoricalCircuitConfig,
+    noteIndianApiHistoricalSuccess,
+    noteIndianApiHistoricalTransientFailure,
+    IndianApiCircuitOpenError,
+  } = await import('@/lib/marketData/providers/indianApiHistoricalCircuit');
+  const {
+    normalizeNseUniverseSymbol,
+    logSymbolNormalizeIfChanged,
+  } = await import('@/lib/marketData/providers/nseSymbolNormalize');
+
+  const norm = normalizeNseUniverseSymbol(symbol);
+  logSymbolNormalizeIfChanged(norm);
+
   try {
-    const { fetchHistoricalSeries } = await import(
-      '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
-    );
-    const series = await fetchHistoricalSeries(sym, range, 'candle-ingestion');
-    const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(series.candles);
-    if (candles.length === 0) {
+    assertIndianApiHistoricalCircuitAllows();
+  } catch (err) {
+    if (err instanceof IndianApiCircuitOpenError) {
+      noteLocallyBlockedRequest();
       return {
-        ok: false, candles: [], errorCode: 'EMPTY_RESPONSE',
-        errorMessage: 'IndianAPI returned no valid daily bars',
-        rawBarCount, validBarCount, provider: null,
+        ok: false, candles: [], errorCode: 'CIRCUIT_OPEN',
+        errorMessage: err.message,
+        rawBarCount: 0, validBarCount: 0, provider: 'indianapi',
+        category: 'circuit_open',
+        universeSymbol: norm.universeSymbol,
+        providerSymbol: norm.providerSymbol,
+        series: norm.series,
       };
     }
-    _apiUsed++;
-    return {
-      ok: true, candles, errorCode: null, errorMessage: null,
-      rawBarCount, validBarCount, provider: 'indianapi',
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const name = err instanceof Error ? err.name : '';
-    const code =
-      name === 'IndianApiRateLimitError' ? 'RATE_LIMITED'
+    throw err;
+  }
+
+  const cfg = getIndianApiHistoricalCircuitConfig();
+  const { fetchHistoricalSeries } = await import(
+    '@/lib/marketData/ingestion/indianApiIngestionOrchestrator'
+  );
+
+  let lastErr: unknown;
+  const maxAttempts = 1 + cfg.maxRetries503;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      _upstreamRequestCount += 1;
+      const series = await fetchHistoricalSeries(
+        norm.providerSymbol,
+        range,
+        'candle-ingestion',
+      );
+      const { candles, rawBarCount, validBarCount } = normalizeHistoricalCandles(series.candles);
+      if (candles.length === 0) {
+        const unsupported = norm.isSpecialSeries;
+        const code = unsupported ? 'UNSUPPORTED_SERIES' : 'EMPTY_RESPONSE';
+        const message = unsupported
+          ? `unsupported_symbol_series series=${norm.series}`
+          : 'IndianAPI returned no valid daily bars';
+        // Symbol-level miss — never trips the global breaker.
+        console.warn(
+          `[INDIANAPI FETCH FAIL] symbol=${norm.universeSymbol} ` +
+          `providerSymbol=${norm.providerSymbol} code=${code} reason="${message}"`,
+        );
+        return {
+          ok: false, candles: [], errorCode: code, errorMessage: message,
+          rawBarCount, validBarCount, provider: 'indianapi',
+          category: unsupported ? 'unsupported_symbol_series' : 'symbol_not_found',
+          universeSymbol: norm.universeSymbol,
+          providerSymbol: norm.providerSymbol,
+          series: norm.series,
+        };
+      }
+      noteIndianApiHistoricalSuccess();
+      _apiUsed++;
+      return {
+        ok: true, candles, errorCode: null, errorMessage: null,
+        rawBarCount, validBarCount, provider: 'indianapi',
+        universeSymbol: norm.universeSymbol,
+        providerSymbol: norm.providerSymbol,
+        series: norm.series,
+      };
+    } catch (err) {
+      lastErr = err;
+      const category = classifyIndianApiCandleError(err);
+      const statusCode = typeof (err as { statusCode?: number })?.statusCode === 'number'
+        ? (err as { statusCode: number }).statusCode
+        : null;
+      const message = err instanceof Error ? err.message : String(err);
+
+      if (feedsIndianApiHistoricalCircuit(category)) {
+        const { opened, consecutiveFailures } = noteIndianApiHistoricalTransientFailure();
+        const waitMs = Math.min(
+          60_000,
+          500 * 2 ** attempt + Math.floor(Math.random() * 250),
+        );
+        console.warn(
+          `[INDIANAPI FETCH RETRY] symbol=${norm.universeSymbol} attempt=${attempt + 1} ` +
+          `statusCode=${statusCode ?? 'n/a'} waitMs=${waitMs} ` +
+          `breakerFailureCount=${consecutiveFailures}`,
+        );
+        if (opened || attempt >= maxAttempts - 1) {
+          break;
+        }
+        _retries += 1;
+        noteUpstreamRetry();
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+
+      // Permanent / non-breaker errors — do not retry (except 429 once via orchestrator).
+      break;
+    }
+  }
+
+  const err = lastErr;
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : '';
+  const category = classifyIndianApiCandleError(err);
+  const code =
+    category === 'circuit_open' ? 'CIRCUIT_OPEN'
+      : name === 'IndianApiRateLimitError' ? 'RATE_LIMITED'
         : name === 'ApiBudgetExceededError' ? 'BUDGET_EXCEEDED'
           : name === 'IndianApiConfigError' ? 'API_KEY_MISSING'
-            : mapProviderErrorCode(null);
-    console.warn(`[INDIANAPI FETCH FAIL] symbol=${sym} code=${code} reason="${message}"`);
-    return {
-      ok: false, candles: [], errorCode: code, errorMessage: message,
-      rawBarCount: 0, validBarCount: 0, provider: 'indianapi',
-    };
-  }
+            : category === 'transient_upstream_503' ? 'UPSTREAM_5XX'
+              : mapProviderErrorCode(null);
+  console.warn(
+    `[INDIANAPI FETCH FAIL] symbol=${norm.universeSymbol} ` +
+    `providerSymbol=${norm.providerSymbol} code=${code} category=${category} reason="${message}"`,
+  );
+  return {
+    ok: false, candles: [], errorCode: code, errorMessage: message,
+    rawBarCount: 0, validBarCount: 0, provider: 'indianapi',
+    category,
+    universeSymbol: norm.universeSymbol,
+    providerSymbol: norm.providerSymbol,
+    series: norm.series,
+  };
 }
 
 /**

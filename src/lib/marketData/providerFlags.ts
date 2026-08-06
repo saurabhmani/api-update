@@ -294,15 +294,28 @@ export function getIndianApiIngestConfig(): IndianApiIngestConfig {
     batchSize: asInt(process.env.INDIANAPI_BATCH_SIZE, 25, 1),
     batchMode,
     rpsGlobal: getIndianApiRequestsPerSecond(),
-    maxRetries: asInt(process.env.INDIANAPI_MAX_RETRIES, 3, 0),
+    maxRetries: asInt(
+      process.env.INDIANAPI_503_MAX_RETRIES ?? process.env.INDIANAPI_MAX_RETRIES,
+      3,
+      0,
+    ),
     retryBaseMs: asInt(process.env.INDIANAPI_RETRY_BASE_MS, 500, 100),
     perRunLimit: asInt(process.env.INDIANAPI_PER_RUN_LIMIT, 1500, 1),
     dailySoftLimit: asInt(process.env.INDIANAPI_DAILY_SOFT_LIMIT, 4500, 1),
     monthlyLimit: asInt(process.env.INDIANAPI_MONTHLY_LIMIT, 100_000, 1),
     ingestSymbolLimit: asInt(process.env.INDIANAPI_INGEST_SYMBOL_LIMIT, 0, 0),
     lockTtlS: asInt(process.env.INDIANAPI_LOCK_TTL_S, 900, 60),
-    circuitFailures: asInt(process.env.INDIANAPI_CIRCUIT_FAILURES, 5, 1),
-    circuitCooldownMs: asInt(process.env.INDIANAPI_CIRCUIT_COOLDOWN_MS, 30_000, 1_000),
+    circuitFailures: asInt(
+      process.env.INDIANAPI_CIRCUIT_BREAKER_FAILURE_THRESHOLD
+        ?? process.env.INDIANAPI_CIRCUIT_FAILURES,
+      5,
+      1,
+    ),
+    circuitCooldownMs: (() => {
+      const sec = Number(process.env.INDIANAPI_CIRCUIT_BREAKER_COOLDOWN_SECONDS);
+      if (Number.isFinite(sec) && sec > 0) return Math.max(1_000, Math.floor(sec * 1000));
+      return asInt(process.env.INDIANAPI_CIRCUIT_COOLDOWN_MS, 60_000, 1_000);
+    })(),
   };
 }
 

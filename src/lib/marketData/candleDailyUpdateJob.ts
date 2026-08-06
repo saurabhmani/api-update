@@ -366,7 +366,7 @@ async function runCandleDailyUpdateJobInner(
       console.log(
         `[CANDLE DAILY UPDATE] progress ${processed}/${symbols.length} ` +
         `skipped=${summary.skippedAlreadyUpdated} fetched=${summary.fetched} ` +
-        `failed=${summary.failed} requests=${getKiteCandleRequestCount()}`,
+        `failed=${summary.failed} upstream_requests=${getKiteCandleRequestCount()}`,
       );
     }
 

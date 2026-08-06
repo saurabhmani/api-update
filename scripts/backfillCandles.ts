@@ -187,17 +187,24 @@ async function main(): Promise<void> {
 
   console.log('\n[CANDLE BACKFILL SUMMARY]');
   console.log(JSON.stringify({
+    status: summary.status,
+    pause_reason: summary.pauseReason,
+    resume_after: summary.resumeAfter,
     universe_total: summary.universeTotal,
     already_sufficient: summary.alreadySufficient,
-    symbols_attempted: summary.universeTotal,
     queue_this_run: summary.totalSymbols,
     skipped_already_sufficient: summary.skippedSufficient,
-    fetched: summary.fetched,
-    failed: summary.failed,
-    deferred_remaining: summary.deferredDueToBudget,
+    symbols_fetched: summary.fetched,
+    symbols_permanently_failed: summary.failed,
+    symbols_deferred: summary.deferred,
+    symbols_unsupported: summary.unsupported,
+    deferred_budget: summary.deferredDueToBudget,
     candles_inserted: summary.candlesInserted,
     candles_updated: summary.candlesUpdated,
-    kite_requests_used: summary.upstreamVendor,
+    upstream_requests: summary.upstreamRequests,
+    locally_blocked_requests: summary.locallyBlockedRequests,
+    retries: summary.retries,
+    breaker_trips: summary.breakerTrips,
     duration_ms: summary.durationMs,
     dry_run: summary.dryRun,
   }, null, 2));
@@ -217,6 +224,16 @@ async function main(): Promise<void> {
     }
   }
 
+  if (summary.status === 'paused') {
+    console.warn(
+      `\n[CANDLE BACKFILL] status=paused reason=${summary.pauseReason} ` +
+      `resume_after=${summary.resumeAfter}`,
+    );
+    process.exit(2);
+  }
+  if (summary.status === 'aborted_auth') {
+    process.exit(3);
+  }
   process.exit(summary.failed > 0 && summary.fetched === 0 ? 1 : 0);
 }
 
