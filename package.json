@@ -60,6 +60,7 @@
     "scans:morning": "tsx scripts/runDailyScanJob.ts morning-scan",
     "diagnostics:signals": "tsx scripts/diagnosticsSignals.ts",
     "diagnostics:maturity": "tsx scripts/diagnosticsMaturity.ts",
+    "diagnostics:maturity:symbol": "tsx scripts/diagnosticsMaturity.ts --symbol",
     "scans:evening-update": "tsx scripts/runDailyScanJob.ts evening-update",
     "scans:evening": "tsx scripts/runDailyScanJob.ts evening-scan",
     "quota:migrate": "tsx src/lib/db/migrateProviderRequestLogs.ts",

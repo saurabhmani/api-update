@@ -17,7 +17,21 @@ const envFile = resolveEnvFilePath();
 dotenvConfig({ path: envFile });
 process.env.TZ = process.env.TZ || 'Asia/Kolkata';
 
+function parseCliArgs(argv: string[]): { symbol: string | null } {
+  let symbol: string | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--symbol' && argv[i + 1]) {
+      symbol = String(argv[++i]).trim().toUpperCase();
+    } else if (a.startsWith('--symbol=')) {
+      symbol = a.slice('--symbol='.length).trim().toUpperCase();
+    }
+  }
+  return { symbol };
+}
+
 async function main(): Promise<void> {
+  const cli = parseCliArgs(process.argv.slice(2));
   const { db } = await import('@/lib/db');
   const { MAIN_TABLE_CLASSIFICATIONS } = await import(
     '@/lib/signal-engine/pipeline/phase12Routing'
@@ -31,6 +45,7 @@ async function main(): Promise<void> {
 
   const SINCE = process.env.MATURITY_DIAG_SINCE || '2026-07-24';
   const SAMPLE_LIMIT = Math.max(5, Math.min(50, Number(process.env.MATURITY_DIAG_SAMPLE || 25)));
+  const SYMBOL_FILTER = cli.symbol;
 
   type TrackerRow = {
     id: number;
@@ -172,9 +187,14 @@ async function main(): Promise<void> {
     const risk = Math.abs(entry - stop);
     const reward = Math.abs(t1 - entry);
     if (!(risk > 0 && reward > 0)) return 'writer:invalid_plan';
-    const rr = reward / risk;
+    const computedRr = reward / risk;
+    const storedRr = numOrNull(row.risk_reward);
+    const rr = storedRr != null && storedRr > 0 ? storedRr : computedRr;
     const minRr = Number(process.env.PROMOTE_MIN_RR || 1.5);
-    if (rr < minRr) return `writer:low_rr(${rr.toFixed(2)}<${minRr})`;
+    if (rr < minRr) {
+      return `writer:low_rr(${rr.toFixed(2)}<${minRr}` +
+        (storedRr != null ? `;computed=${computedRr.toFixed(4)}` : '') + ')';
+    }
     const edge = (reward / entry) * 100;
     const minEdge = Number(process.env.PROMOTE_MIN_EDGE_PCT || 1.0);
     if (!(edge > minEdge)) return `writer:no_edge(${edge.toFixed(2)}<=${minEdge})`;
@@ -209,7 +229,58 @@ async function main(): Promise<void> {
   console.log('  diagnostics:maturity');
   console.log(`  env_file=${envFile}`);
   console.log(`  since=${SINCE}`);
+  if (SYMBOL_FILTER) console.log(`  symbol=${SYMBOL_FILTER}`);
   console.log('════════════════════════════════════════════════════════════');
+
+  if (SYMBOL_FILTER) {
+    const { rows: symSigs } = await db.query(
+      `SELECT id, created_at, generated_at, generation_source, status,
+              classification, signal_status, confidence_score,
+              composite_final_score, final_score, market_regime,
+              risk_reward, entry_price, stop_loss, target1,
+              LEFT(CAST(rejection_codes_json AS CHAR), 160) rejection_codes
+         FROM q365_signals
+        WHERE symbol = ?
+        ORDER BY created_at DESC
+        LIMIT 15`,
+      [SYMBOL_FILTER],
+    );
+    const { rows: symTrack } = await db.query(
+      `SELECT id, direction, stage, validation_cycles_passed, maturity_score,
+              last_signal_id, promoted_snapshot_id, first_detected_at,
+              last_seen_at, last_evaluated_at
+         FROM q365_signal_maturity_tracker
+        WHERE symbol = ?`,
+      [SYMBOL_FILTER],
+    );
+    const { rows: symSnap } = await db.query(
+      `SELECT confirmed_at, status, classification, confidence_score, maturity_score
+         FROM q365_confirmed_signal_snapshots
+        WHERE symbol = ?
+        ORDER BY confirmed_at DESC
+        LIMIT 5`,
+      [SYMBOL_FILTER],
+    );
+    console.log('\n[SYMBOL TRACE] signals');
+    console.log(JSON.stringify(symSigs, null, 2));
+    console.log('\n[SYMBOL TRACE] tracker');
+    console.log(JSON.stringify(symTrack, null, 2));
+    console.log('\n[SYMBOL TRACE] snapshots');
+    console.log(JSON.stringify(symSnap, null, 2));
+  }
+
+  const { rows: rejectCodeHist } = await db.query<{ codes: string | null; c: number }>(
+    `SELECT LEFT(CAST(rejection_codes_json AS CHAR), 160) AS codes, COUNT(*) AS c
+       FROM q365_signals
+      WHERE created_at >= ?
+        AND UPPER(COALESCE(signal_status,'')) = 'NO_TRADE'
+      GROUP BY 1
+      ORDER BY c DESC
+      LIMIT 15`,
+    [SINCE],
+  );
+  console.log('\n[NO_TRADE rejection_codes_json TOP]');
+  console.log(JSON.stringify(rejectCodeHist, null, 2));
 
   const thresholdReport = {
     MATURITY_MATURE_THRESHOLD: process.env.MATURITY_MATURE_THRESHOLD ?? '(default 70)',
@@ -286,15 +357,24 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(classHist, null, 2));
 
   const { rows: matureTrackers } = await db.query<TrackerRow>(
-    `SELECT id, symbol, direction, stage, maturity_score,
-            validation_cycles_passed, stable, conviction_level,
-            first_detected_at, last_seen_at, stability_history_json
-       FROM q365_signal_maturity_tracker
-      WHERE stage = 'mature'
-        AND first_detected_at >= ?
-      ORDER BY maturity_score DESC, validation_cycles_passed DESC
-      LIMIT 500`,
-    [SINCE],
+    SYMBOL_FILTER
+      ? `SELECT id, symbol, direction, stage, maturity_score,
+                validation_cycles_passed, stable, conviction_level,
+                first_detected_at, last_seen_at, stability_history_json
+           FROM q365_signal_maturity_tracker
+          WHERE stage = 'mature'
+            AND symbol = ?
+          ORDER BY maturity_score DESC, validation_cycles_passed DESC
+          LIMIT 500`
+      : `SELECT id, symbol, direction, stage, maturity_score,
+                validation_cycles_passed, stable, conviction_level,
+                first_detected_at, last_seen_at, stability_history_json
+           FROM q365_signal_maturity_tracker
+          WHERE stage = 'mature'
+            AND first_detected_at >= ?
+          ORDER BY maturity_score DESC, validation_cycles_passed DESC
+          LIMIT 500`,
+    SYMBOL_FILTER ? [SYMBOL_FILTER] : [SINCE],
   );
 
   const { rows: matureAll } = await db.query<{ c: number }>(

@@ -347,9 +347,25 @@ export async function insertConfirmedSnapshotIfEligible(
   if (lossPct <= 0 || profitPct <= 0) {
     return reject('invalid_prices', `profitPct=${profitPct.toFixed(2)} lossPct=${lossPct.toFixed(2)}`);
   }
-  const rrRatio = profitPct / lossPct;
+  // Prefer the engine-persisted risk_reward when present. Recomputing
+  // from prices can disagree with the rounded plan that already cleared
+  // Phase-4 (e.g. stored RR=1.50 vs recomputed 1.48) and falsely block
+  // otherwise-eligible promotions without changing PROMOTE_MIN_RR.
+  const gateRr = (() => {
+    const g = input.gate_details;
+    if (!g || typeof g !== 'object' || Array.isArray(g)) return null;
+    const raw = (g as Record<string, unknown>).risk_reward;
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
+  const computedRr = profitPct / lossPct;
+  const rrRatio = gateRr ?? computedRr;
   if (rrRatio < MIN_RR_RATIO) {
-    return reject('low_rr', `${rrRatio.toFixed(2)} < ${MIN_RR_RATIO} (PROMOTE_MIN_RR)`);
+    return reject(
+      'low_rr',
+      `${rrRatio.toFixed(2)} < ${MIN_RR_RATIO} (PROMOTE_MIN_RR)` +
+      (gateRr != null ? ` stored_rr=${gateRr} computed_rr=${computedRr.toFixed(4)}` : ''),
+    );
   }
 
   const winProb = estimateWinProbability(input.confidence_score, input.final_score ?? null);
