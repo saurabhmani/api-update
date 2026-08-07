@@ -1620,13 +1620,40 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
   if (!universeReady.ok) {
     return NextResponse.json(
       {
-        error:  'Universe not ready',
+        error:  'Universe initializing or unavailable',
         code:   'UNIVERSE_NOT_READY',
+        status: 'universe_initializing',
         detail: universeReady.error,
+        message:
+          'Stock universe cache is not ready yet. This is not an empty-signal condition — retry shortly.',
       },
       { status: 503 },
     );
   }
+
+  const bootstrapEarly = req.nextUrl.searchParams.get('bootstrap') === 'true';
+  // API fallback freshness (scheduler remains primary). Non-blocking unless bootstrap.
+  const tradingDataFreshness = await profile.time('trading_data_freshness', async () => {
+    try {
+      const { ensureTradingDataFresh } = await import(
+        '@/lib/marketData/tradingDataFreshness'
+      );
+      return await ensureTradingDataFresh({
+        refreshCandles: true,
+        refreshScan: true,
+        awaitWork: bootstrapEarly,
+        maxWaitMs: bootstrapEarly ? 60_000 : 8_000,
+      });
+    } catch (err) {
+      return {
+        session: null as null,
+        candleAction: 'failed' as const,
+        scanAction: 'failed' as const,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+  void tradingDataFreshness;
 
   // Spec DISTRIBUTED-ROTATION-2026-05 — pull peer rotation state into
   // local cooldownState before the response is assembled. Throttled
@@ -4525,6 +4552,7 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
         //   last_error        message from the failure if the last run threw
         //   last_result       counts from the last successful run
         auto_recovery: autoScanEnvelope(),
+        trading_data_freshness: tradingDataFreshness,
         // FIX-PIPELINE-NOT-TRIGGERING §5 + §8 — explicit diagnostic
         // envelope. `recommendation` tells the operator the next
         // concrete action when the pipeline isn't producing data.

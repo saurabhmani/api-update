@@ -215,7 +215,33 @@ export async function GET(req: NextRequest): Promise<Response> {
     databaseName: process.env.MYSQL_DATABASE || 'unknown',
     nodeEnv: process.env.NODE_ENV || 'undefined',
     timezone: 'Asia/Kolkata',
+    envFileHint:
+      process.env.DOTENV_CONFIG_PATH ||
+      (process.env.NODE_ENV === 'production' ? '.env' : '.env.local'),
   };
+
+  // Separate freshness timestamps — never conflate with Last Confirmed.
+  let tradingFreshness: Awaited<
+    ReturnType<typeof import('@/lib/marketData/tradingDataFreshness').getTradingSessionFreshness>
+  > | null = null;
+  let maturityLastEval: string | null = null;
+  try {
+    const { getTradingSessionFreshness } = await import(
+      '@/lib/marketData/tradingDataFreshness'
+    );
+    tradingFreshness = await getTradingSessionFreshness();
+  } catch {
+    tradingFreshness = null;
+  }
+  try {
+    const { rows: mat } = await db.query<{ mx: Date | string | null }>(
+      `SELECT MAX(last_evaluated_at) AS mx FROM q365_signal_maturity_tracker`,
+    );
+    const v = mat[0]?.mx;
+    maturityLastEval = v ? new Date(v as Date | string).toISOString() : null;
+  } catch {
+    maturityLastEval = null;
+  }
 
   const summary = {
     dataSource,
@@ -230,6 +256,8 @@ export async function GET(req: NextRequest): Promise<Response> {
     lastSnapshotLifecycleUpdateAt,
     confirmedSnapshotCounts,
     runtimeIdentity,
+    tradingSessionFreshness:     tradingFreshness,
+    latestMaturityEvaluationAt:  maturityLastEval,
     coveragePercent:             coverage,
     freshness,
     fallbackUsed,

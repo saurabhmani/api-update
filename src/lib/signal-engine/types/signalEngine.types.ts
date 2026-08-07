@@ -397,6 +397,12 @@ export interface RegimeDetectionOptions {
     confirmationBarsHeld?: number;
     candidateLabel?: MarketRegimeLabel;
   } | null;
+  /**
+   * When true, reuse process-local last published regime for hysteresis.
+   * Default false — scheduled scans must be deterministic from candles
+   * alone so local and production cannot diverge via in-memory state.
+   */
+  useProcessMemory?: boolean;
   external?: RegimeExternalEvidence | null;
 }
 

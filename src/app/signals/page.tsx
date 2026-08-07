@@ -3207,6 +3207,10 @@ export default function SignalsPage() {
                     ? `${(counters?.watchlistTotal ?? 0) + (counters?.highPotentialTotal ?? 0)} opportunities remain on the watchlist awaiting confirmation.`
                     : 'Scarcity is intentional — Quantorus will not fill this page with synthetic or relaxed signals.')
                 : 'Click "Run Pipeline" to generate fresh signals';
+              if (emptyStateMessage && /universe/i.test(emptyStateMessage)) {
+                title = 'Universe initializing';
+                subtitle = emptyStateMessage;
+              }
               // Market-closed mode wins over the stored-signal heuristics
               // below — without this, the page reports "Stored signals are
               // stale (37h since last pipeline)" off-hours, which is

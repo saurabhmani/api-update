@@ -871,7 +871,6 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
       const url = `/api/signals?action=all&limit=20&request_id=${encodeURIComponent(reqId)}`;
       const res = await fetch(url, { cache: 'no-store', signal: myController.signal });
       const data = await res.json();
-      const rows: SignalRow[] = data.signals ?? [];
 
       if (mySeq !== reqSeqRef.current) {
         if (heavy) {
@@ -879,6 +878,19 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
         }
         return;
       }
+
+      if (res.status === 503 && data?.code === 'UNIVERSE_NOT_READY') {
+        setEmptyStateMessage(
+          typeof data.message === 'string'
+            ? data.message
+            : 'Universe is initializing — not an empty-signal condition. Retry shortly.',
+        );
+        setLoading(false);
+        pushLog(`[API] GET /api/signals  503 UNIVERSE_NOT_READY  ${Date.now() - t0}ms`);
+        return;
+      }
+
+      const rows: SignalRow[] = data.signals ?? [];
 
       // Surface the market-closed envelope (or clear it when live)
       // so the page can render market_data immediately on this poll.

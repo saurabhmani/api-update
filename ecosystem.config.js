@@ -30,15 +30,17 @@ const fs = require('fs');
 const APP_DIR = process.env.APP_DIR || '/var/www/api-update';
 
 function resolveProdEnvPath() {
-  const production = path.join(APP_DIR, '.env.production');
+  // Production VPS loads `.env`. Keep `.env.production` only as legacy fallback.
   const flat = path.join(APP_DIR, '.env');
-  if (fs.existsSync(production)) return production;
+  const legacyProduction = path.join(APP_DIR, '.env.production');
+  if (fs.existsSync(flat)) return flat;
+  if (fs.existsSync(legacyProduction)) return legacyProduction;
   return flat;
 }
 
 const SHARED_ENV = {
   NODE_ENV: 'production',
-  // Prefer .env.production (matches server.js); fall back to `.env`.
+  // Prefer .env (matches server.js / VPS); fall back to legacy `.env.production`.
   DOTENV_CONFIG_PATH: resolveProdEnvPath(),
   PORT: 5000,
   STREAM_WS_PORT: 5001,

@@ -61,19 +61,26 @@ export function detectEnhancedRegime(
 ): EnhancedMarketRegime {
   const evidence = buildRegimeEvidence(benchmarkCandles, options.external);
 
+  // Deterministic default: do NOT pull process-local hysteresis memory.
+  // Local vs production previously diverged (e.g. Sideways vs High Vol)
+  // solely because each Node process remembered a different last label.
+  // Opt in with useProcessMemory=true for live tick continuity only.
   const prev =
-    options.previous ??
-    (() => {
-      const mem = getLastPublishedRegime();
-      return mem
-        ? {
-            label: mem.label,
-            dimensions: mem.dimensions,
-            confirmationBarsHeld: mem.confirmationBarsHeld,
-            candidateLabel: mem.candidateLabel,
-          }
+    options.previous !== undefined
+      ? options.previous
+      : options.useProcessMemory
+        ? (() => {
+            const mem = getLastPublishedRegime();
+            return mem
+              ? {
+                  label: mem.label,
+                  dimensions: mem.dimensions,
+                  confirmationBarsHeld: mem.confirmationBarsHeld,
+                  candidateLabel: mem.candidateLabel,
+                }
+              : null;
+          })()
         : null;
-    })();
 
   const previousTrend = prev?.dimensions?.trend_state ?? (prev ? trendStateFromLabel(prev.label) : null);
   const rawDimensions = classifyAllDimensions(evidence, previousTrend);
@@ -131,12 +138,14 @@ export function detectEnhancedRegime(
     modelVersion: REGIME_MODEL_VERSION,
   };
 
-  setLastPublishedRegime({
-    label: result.label,
-    dimensions: result.dimensions,
-    confirmationBarsHeld: result.hysteresis.confirmationBarsHeld,
-    candidateLabel: result.hysteresis.candidateLabel,
-  });
+  if (options.useProcessMemory) {
+    setLastPublishedRegime({
+      label: result.label,
+      dimensions: result.dimensions,
+      confirmationBarsHeld: result.hysteresis.confirmationBarsHeld,
+      candidateLabel: result.hysteresis.candidateLabel,
+    });
+  }
 
   return result;
 }

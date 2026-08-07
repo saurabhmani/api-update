@@ -190,12 +190,27 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
   if (!universeReady.ok) {
     return NextResponse.json(
       {
-        error:  'Universe not ready',
+        error:  'Universe initializing or unavailable',
         code:   'UNIVERSE_NOT_READY',
+        status: 'universe_initializing',
         detail: universeReady.error,
+        message:
+          'Stock universe cache is not ready yet. This is not an empty-signal condition — retry shortly.',
+        items: [],
+        count: 0,
       },
       { status: 503 },
     );
+  }
+
+  // Lightweight candle freshness probe only (no scan on ticker path).
+  try {
+    const { ensureMarketDataFresh } = await import(
+      '@/lib/marketData/tradingDataFreshness'
+    );
+    void ensureMarketDataFresh({ refreshCandles: true, awaitWork: false });
+  } catch {
+    /* non-fatal */
   }
 
   const market = getMarketEnvelope();

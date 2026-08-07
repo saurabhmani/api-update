@@ -55,7 +55,7 @@ describe('runtimeIdentity', () => {
 });
 
 describe('envPath production preference', () => {
-  it('prefers .env.production when NODE_ENV=production and file exists', () => {
+  it('prefers .env over .env.production when NODE_ENV=production', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'q365-env-'));
     fs.writeFileSync(path.join(dir, '.env.production'), 'X=1\n');
     fs.writeFileSync(path.join(dir, '.env'), 'X=2\n');
@@ -64,7 +64,7 @@ describe('envPath production preference', () => {
     const prevDot = process.env.DOTENV_CONFIG_PATH;
     delete process.env.DOTENV_CONFIG_PATH;
     (process.env as Record<string, string>).NODE_ENV = 'production';
-    expect(resolveEnvFilePath(dir)).toBe(path.resolve(dir, '.env.production'));
+    expect(resolveEnvFilePath(dir)).toBe(path.resolve(dir, '.env'));
     (process.env as Record<string, string | undefined>).NODE_ENV = prev;
     if (prevDot) process.env.DOTENV_CONFIG_PATH = prevDot;
     fs.rmSync(dir, { recursive: true, force: true });

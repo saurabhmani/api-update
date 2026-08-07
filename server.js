@@ -39,9 +39,19 @@
 const path = require('path');
 
 function resolveEnvFilePath() {
+  // Keep in sync with src/lib/envPath.ts — production prefers `.env`.
+  const fs = require('fs');
   if (process.env.DOTENV_CONFIG_PATH) return process.env.DOTENV_CONFIG_PATH;
-  if (process.env.NODE_ENV === 'production') return path.resolve(process.cwd(), '.env.production');
-  return path.resolve(process.cwd(), '.env.local');
+  if (process.env.NODE_ENV === 'production') {
+    const flat = path.resolve(process.cwd(), '.env');
+    if (fs.existsSync(flat)) return flat;
+    const legacy = path.resolve(process.cwd(), '.env.production');
+    if (fs.existsSync(legacy)) return legacy;
+    return flat;
+  }
+  const local = path.resolve(process.cwd(), '.env.local');
+  if (fs.existsSync(local)) return local;
+  return path.resolve(process.cwd(), '.env');
 }
 
 require('dotenv').config({ path: resolveEnvFilePath() });

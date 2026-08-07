@@ -84,6 +84,14 @@ function computeContextScore(regime: MarketRegime): number {
 export interface Phase1RunOptions {
   /** String tag persisted to q365_signals.generation_source for audit. */
   generationSource?: string;
+  /**
+   * Persist ranked rows into q365_signals. Default FALSE — Phase 1 is
+   * diagnostic / backtest only. Production writers must use Phase 4
+   * scheduled scans. Opt-in prevents backtest/replay/API spam from
+   * flooding q365_signals every ~30s with generation_source
+   * `signal-engine:generatePhase1Signals`.
+   */
+  persistSignals?: boolean;
 }
 
 export async function generatePhase1Signals(
@@ -92,6 +100,7 @@ export async function generatePhase1Signals(
   options: Phase1RunOptions = {},
 ): Promise<PipelineResult> {
   const generationSource = options.generationSource ?? 'signal-engine:generatePhase1Signals';
+  const persistSignals = options.persistSignals === true;
   const now = new Date().toISOString();
   const rejected: { symbol: string; reason: string }[] = [];
 
@@ -305,24 +314,30 @@ export async function generatePhase1Signals(
   // ── Step 4: Rank signals ───────────────────────────────────
   const ranked = rankSignals(surviving);
 
-  // ── Step 5: Persist to database ────────────────────────────
-  try {
-    const idMap = await saveSignals(ranked, generationSource);
-    // Persist penalty rows now that we have real DB ids.
-    for (const s of ranked) {
-      const i = signals.indexOf(s);
-      const applied = penaltyByIndex.get(i);
-      const dbId = idMap.get(s.symbol);
-      if (applied && dbId) {
-        const record = buildPenaltyRecord(applied, dbId);
-        if (record) {
-          try { await saveManipulationPenalty(record); }
-          catch (e) { console.error('[ManipulationEngine] saveManipulationPenalty failed:', e); }
+  // ── Step 5: Persist to database (opt-in only) ──────────────
+  if (persistSignals) {
+    try {
+      const idMap = await saveSignals(ranked, generationSource);
+      // Persist penalty rows now that we have real DB ids.
+      for (const s of ranked) {
+        const i = signals.indexOf(s);
+        const applied = penaltyByIndex.get(i);
+        const dbId = idMap.get(s.symbol);
+        if (applied && dbId) {
+          const record = buildPenaltyRecord(applied, dbId);
+          if (record) {
+            try { await saveManipulationPenalty(record); }
+            catch (e) { console.error('[ManipulationEngine] saveManipulationPenalty failed:', e); }
+          }
         }
       }
+    } catch (err) {
+      console.error('[SignalEngine] Failed to persist signals:', err);
     }
-  } catch (err) {
-    console.error('[SignalEngine] Failed to persist signals:', err);
+  } else {
+    console.log(
+      `[SignalEngine] Phase1 persist skipped (persistSignals=false) source=${generationSource} matched=${ranked.length}`,
+    );
   }
 
   phaseSpan.end({
