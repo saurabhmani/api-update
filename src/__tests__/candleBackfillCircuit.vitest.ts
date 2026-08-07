@@ -17,6 +17,7 @@ import {
   resetIndianApiHistoricalCircuitForTests,
 } from '@/lib/marketData/providers/indianApiHistoricalCircuit';
 import {
+  isUnsupportedEquitySeries,
   normalizeNseUniverseSymbol,
 } from '@/lib/marketData/providers/nseSymbolNormalize';
 import {
@@ -79,6 +80,15 @@ describe('normalizeNseUniverseSymbol', () => {
     const bz = normalizeNseUniverseSymbol('FEL-BZ');
     expect(bz.providerSymbol).toBe('FEL');
     expect(bz.series).toBe('BZ');
+    expect(bz.isSpecialSeries).toBe(true);
+  });
+
+  it('flags unsupported equity series for scan short-circuit', () => {
+    expect(isUnsupportedEquitySeries('UNIDT-BE')).toBe(true);
+    expect(isUnsupportedEquitySeries('SANWARIA-BZ')).toBe(true);
+    expect(isUnsupportedEquitySeries('VALIANTORG-BE')).toBe(true);
+    expect(isUnsupportedEquitySeries('RELIANCE')).toBe(false);
+    expect(isUnsupportedEquitySeries('BAJAJ-AUTO')).toBe(false);
   });
 
   it('does not strip hyphenated EQ names without series', () => {

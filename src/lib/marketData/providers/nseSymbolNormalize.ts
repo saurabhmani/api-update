@@ -66,6 +66,12 @@ export function normalizeNseUniverseSymbol(raw: string): NormalizedNseSymbol {
   };
 }
 
+/** True for trade-to-trade / SME / other non-EQ scrips that must never
+ *  enter IndianAPI/NSE historical during scans or backfill loops. */
+export function isUnsupportedEquitySeries(symbol: string): boolean {
+  return normalizeNseUniverseSymbol(symbol).isSpecialSeries;
+}
+
 /** Log when universe and provider symbols differ. */
 export function logSymbolNormalizeIfChanged(n: NormalizedNseSymbol): void {
   if (!n.seriesStripped) return;

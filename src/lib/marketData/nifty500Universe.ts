@@ -528,7 +528,7 @@ async function loadFromDb(): Promise<LoadResult> {
     `SELECT symbol FROM q365_universe WHERE is_active = 1`,
   );
 
-  // Dedupe + uppercase + placeholder filter, preserve DB order.
+  // Dedupe + uppercase + placeholder / non-EQ series filter, preserve DB order.
   // Spec "FIX UNIVERSE NOISE" — q365_universe sometimes contains
   // placeholder rows (DUMMYVEDL1..N, TEMP_*, TEST_*) that have no
   // candle data anywhere upstream. They burn removed vendor budget on
@@ -536,10 +536,14 @@ async function loadFromDb(): Promise<LoadResult> {
   // back to removed vendor live` round-trip that returns `status:failed`)
   // and add real wall-clock time when the breaker is closed. Filter
   // them out at load time.
+  // Also drop *-BE / *-BZ / SME series — morning scans were looping
+  // IndianAPI→NSE→circuit on these forever.
   const PLACEHOLDER_SYMBOL_RE = /^(DUMMY|TEST_|TEMP_|PLACEHOLDER_|XX_)/;
+  const NON_EQ_SERIES_RE = /-(BE|BZ|BL|SM|ST|IL|RR|GB|GS)$/;
   const seen = new Set<string>();
   const symbols: string[] = [];
   let droppedPlaceholders = 0;
+  let droppedNonEq = 0;
   for (const r of rows as Array<{ symbol: string }>) {
     const raw = r?.symbol;
     if (!raw) continue;
@@ -549,6 +553,10 @@ async function loadFromDb(): Promise<LoadResult> {
       droppedPlaceholders++;
       continue;
     }
+    if (NON_EQ_SERIES_RE.test(sym)) {
+      droppedNonEq++;
+      continue;
+    }
     seen.add(sym);
     symbols.push(sym);
   }
@@ -556,6 +564,12 @@ async function loadFromDb(): Promise<LoadResult> {
     console.warn(
       `[UNIVERSE] dropped ${droppedPlaceholders} placeholder symbols matching ` +
       `${PLACEHOLDER_SYMBOL_RE} from q365_universe — clean these up to remove the warning`,
+    );
+  }
+  if (droppedNonEq > 0) {
+    console.warn(
+      `[UNIVERSE] dropped ${droppedNonEq} non-EQ series symbols (*-BE/*-BZ/…) ` +
+      `from scan universe — they have no IndianAPI EQ historical coverage`,
     );
   }
 

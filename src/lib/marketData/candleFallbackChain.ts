@@ -291,6 +291,28 @@ export async function fetchIndianApiDailyCandles(
   const norm = normalizeNseUniverseSymbol(symbol);
   logSymbolNormalizeIfChanged(norm);
 
+  // Special series (BE/BZ/…) — never call IndianAPI / NSE historical.
+  if (norm.isSpecialSeries) {
+    console.warn(
+      `[INDIANAPI FETCH FAIL] symbol=${norm.universeSymbol} ` +
+      `providerSymbol=${norm.providerSymbol} code=UNSUPPORTED_SERIES ` +
+      `reason="unsupported_symbol_series series=${norm.series}"`,
+    );
+    return {
+      ok: false,
+      candles: [],
+      errorCode: 'UNSUPPORTED_SERIES',
+      errorMessage: `unsupported_symbol_series series=${norm.series}`,
+      rawBarCount: 0,
+      validBarCount: 0,
+      provider: 'indianapi',
+      category: 'unsupported_symbol_series',
+      universeSymbol: norm.universeSymbol,
+      providerSymbol: norm.providerSymbol,
+      series: norm.series,
+    };
+  }
+
   try {
     assertIndianApiHistoricalCircuitAllows();
   } catch (err) {
@@ -483,11 +505,30 @@ export async function fetchDailyCandlesWithFallback(
   const sym = symbol.toUpperCase();
   const dbOnly = shouldUseDbOnly({ ...opts, evaluationRead: true });
 
-  // Market-open: warehouse history + in-memory live session bar (no upstream).
+  // Trade-to-trade / SME series never have EQ historical coverage.
+  // Reject immediately so morning scans cannot loop IndianAPI→NSE→circuit.
+  const {
+    isUnsupportedEquitySeries,
+    normalizeNseUniverseSymbol,
+  } = await import('@/lib/marketData/providers/nseSymbolNormalize');
+  if (isUnsupportedEquitySeries(sym)) {
+    const norm = normalizeNseUniverseSymbol(sym);
+    _failed++;
+    console.warn(
+      `[CANDLE SKIP] symbol=${sym} reason=UNSUPPORTED_SERIES series=${norm.series} ` +
+      `mode=${dbOnly ? 'scan_db_only' : 'ingest'}`,
+    );
+    throw new Error(
+      `CANDLE_NO_DATA symbol=${sym} reason=UNSUPPORTED_SERIES series=${norm.series}`,
+    );
+  }
+
+  // Market-open: warehouse + in-memory live session bar only.
+  // forceDaily during dbOnly scans so we never re-enter an ingest path.
   if (isMarketOpen()) {
     try {
       const live = await resolveMarketCandles(sym, {
-        forceDaily: false,
+        forceDaily: dbOnly,
         quiet: true,
       });
       if (live.candles.length >= (dbOnly ? 1 : min)) {
@@ -566,6 +607,12 @@ export async function fetchDailyCandlesWithFallback(
   }
   const upErr = up.errorCode ?? 'unknown';
   console.warn(`[UPSTREAM FETCH FAIL] symbol=${sym} reason="${upErr}"`);
+
+  // Permanent miss — do not burn NSE circuit on known unsupported series.
+  if (upErr === 'UNSUPPORTED_SERIES') {
+    _failed++;
+    throw new Error(`CANDLE_NO_DATA symbol=${sym} reason=UNSUPPORTED_SERIES`);
+  }
 
   // 3) NSE — opt-in fallback only
   if (isNseHistoricalFetchEnabled()) {

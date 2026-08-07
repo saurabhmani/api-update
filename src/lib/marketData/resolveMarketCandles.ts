@@ -19,10 +19,6 @@ import {
   getLiveSessionBar,
   getLiveSessionCandle,
 } from '@/lib/marketData/liveSessionBarStore';
-import {
-  fetchDailyCandlesWithFallback,
-  type CandleFetchResult,
-} from '@/lib/marketData/candleFallbackChain';
 
 export type MarketCandleSource = 'live_tick' | 'daily';
 
@@ -101,6 +97,10 @@ export interface ResolveMarketCandlesOpts {
 /**
  * Primary entry for signal generation and live analysis.
  * Never mixes stale live ticks when feed is classified stale.
+ *
+ * IMPORTANT: thin-warehouse fallback must NOT call the ingest chain
+ * during scans. Doing so re-entered fetchDailyCandlesWithFallback
+ * without dbOnly and hammered IndianAPI/NSE for every *-BE/*-BZ row.
  */
 export async function resolveMarketCandles(
   symbol: string,
@@ -136,29 +136,18 @@ export async function resolveMarketCandles(
     };
   }
 
-  // Off-hours or feed unhealthy — daily warehouse path.
-  if (warehouse.length >= 30) {
-    return {
-      candles:          warehouse,
-      source:           'daily',
-      livePrice:        liveBar?.close ?? null,
-      sessionBar:       liveBar,
-      feedQuality:      feed.quality,
-      approvalsBlocked: marketOpen && liveFeedBlocksApprovals(),
-      warehouseBars:    warehouse.length,
-    };
-  }
-
-  // Thin warehouse — fall back to upstream daily chain (ingest only).
-  const chain: CandleFetchResult = await fetchDailyCandlesWithFallback(sym);
+  // Off-hours, forceDaily, or feed unhealthy — warehouse only.
+  // Thin history is the caller's problem (scan rejects insufficient
+  // candles). Upstream ingest belongs in candleBackfillJob / getCandles,
+  // never in the evaluation hot path.
   return {
-    candles:          chain.candles,
+    candles:          warehouse,
     source:           'daily',
     livePrice:        liveBar?.close ?? null,
     sessionBar:       liveBar,
     feedQuality:      feed.quality,
     approvalsBlocked: marketOpen && liveFeedBlocksApprovals(),
-    warehouseBars:    chain.candles.length,
+    warehouseBars:    warehouse.length,
   };
 }
 
