@@ -871,12 +871,23 @@ export default function SignalsPage() {
     lastSuccessAt:               string | null;
     lastPipelineRunAt:           string | null;
     lastConfirmedSignalUpdateAt: string | null;
+    lastConfirmedAt?:            string | null;
+    lastSnapshotLifecycleUpdateAt?: string | null;
+    confirmedSnapshotCounts?:    { total: number; active: number } | null;
+    runtimeIdentity?:            {
+      databaseHost: string;
+      databaseName: string;
+      nodeEnv: string;
+      timezone: string;
+    } | null;
     freshness:                   string | null;
     fallbackUsed:                string | null;
     healthLoaded:                boolean;
   }>({
     dataSource: null, lastApiRequestAt: null, lastSuccessAt: null,
     lastPipelineRunAt: null, lastConfirmedSignalUpdateAt: null,
+    lastConfirmedAt: null, lastSnapshotLifecycleUpdateAt: null,
+    confirmedSnapshotCounts: null, runtimeIdentity: null,
     freshness: null, fallbackUsed: null, healthLoaded: false,
   });
 
@@ -893,7 +904,11 @@ export default function SignalsPage() {
             lastApiRequestAt:            j.lastApiRequestAt ?? null,
             lastSuccessAt:               j.lastSuccessAt ?? null,
             lastPipelineRunAt:           j.lastPipelineRunAt ?? null,
-            lastConfirmedSignalUpdateAt: j.lastConfirmedSignalUpdateAt ?? null,
+            lastConfirmedSignalUpdateAt: j.lastConfirmedSignalUpdateAt ?? j.lastConfirmedAt ?? null,
+            lastConfirmedAt:             j.lastConfirmedAt ?? j.lastConfirmedSignalUpdateAt ?? null,
+            lastSnapshotLifecycleUpdateAt: j.lastSnapshotLifecycleUpdateAt ?? null,
+            confirmedSnapshotCounts:     j.confirmedSnapshotCounts ?? null,
+            runtimeIdentity:             j.runtimeIdentity ?? null,
             freshness:                   j.freshness ?? null,
             fallbackUsed:                j.fallbackUsed ?? null,
             healthLoaded:                true,
@@ -1954,7 +1969,22 @@ export default function SignalsPage() {
                 <span><strong>Last API Request:</strong> {fmtIst(feedHealth.lastApiRequestAt)}</span>
                 <span><strong>Last Success:</strong> {fmtIst(feedHealth.lastSuccessAt)}</span>
                 <span><strong>Last Pipeline Run:</strong> {fmtIst(feedHealth.lastPipelineRunAt)}</span>
-                <span><strong>Last Confirmed Signal:</strong> {fmtIst(feedHealth.lastConfirmedSignalUpdateAt)}</span>
+                <span title="MAX(confirmed_at) from q365_confirmed_signal_snapshots — promotion time, not lifecycle expiry">
+                  <strong>Last Confirmed Signal:</strong> {fmtIst(feedHealth.lastConfirmedAt ?? feedHealth.lastConfirmedSignalUpdateAt)}
+                </span>
+                {feedHealth.confirmedSnapshotCounts != null && (
+                  <span title="ACTIVE rows with valid_until in the future">
+                    <strong>Confirmed ACTIVE:</strong>{' '}
+                    {feedHealth.confirmedSnapshotCounts.active}/{feedHealth.confirmedSnapshotCounts.total}
+                  </span>
+                )}
+                {feedHealth.runtimeIdentity && (
+                  <span title="Safe DB identity — localhost and production use separate databases">
+                    <strong>DB:</strong>{' '}
+                    {feedHealth.runtimeIdentity.databaseHost}/{feedHealth.runtimeIdentity.databaseName}
+                    {' '}({feedHealth.runtimeIdentity.nodeEnv})
+                  </span>
+                )}
                 <span
                   style={{
                     padding: '2px 8px',

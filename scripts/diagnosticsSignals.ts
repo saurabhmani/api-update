@@ -149,6 +149,35 @@ async function main(): Promise<void> {
   const scanHealth = await getSchedulerScanHealth();
   const cacheAge = await probeCacheAge();
 
+  let confirmed: {
+    total: number;
+    active: number;
+    maxConfirmedAt: string | null;
+    maxUpdatedAt: string | null;
+  } = { total: 0, active: 0, maxConfirmedAt: null, maxUpdatedAt: null };
+  try {
+    const { rows } = await db.query<{
+      total: number;
+      active: number;
+      max_confirmed: string | null;
+      max_updated: string | null;
+    }>(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'ACTIVE' AND valid_until > NOW() THEN 1 ELSE 0 END) AS active,
+        MAX(confirmed_at) AS max_confirmed,
+        MAX(updated_at) AS max_updated
+      FROM q365_confirmed_signal_snapshots
+    `);
+    const r = rows[0] as any;
+    confirmed = {
+      total: Number(r?.total ?? 0),
+      active: Number(r?.active ?? 0),
+      maxConfirmedAt: r?.max_confirmed ? String(r.max_confirmed) : null,
+      maxUpdatedAt: r?.max_updated ? String(r.max_updated) : null,
+    };
+  } catch { /* table optional */ }
+
   const schedulerEnabled = isDailyScanScheduleEnabled();
   const inproc = String(process.env.Q365_INPROC_SCHEDULER ?? '').trim();
 
@@ -165,6 +194,14 @@ async function main(): Promise<void> {
     if (Number.isFinite(ageH) && ageH > 72) critical.push(`newest_signal_stale_hours=${ageH.toFixed(1)}`);
   } else if (signals.total > 0) {
     critical.push('newest_signal_timestamp_missing');
+  }
+  if (confirmed.maxConfirmedAt) {
+    const ageH = (Date.now() - Date.parse(String(confirmed.maxConfirmedAt))) / 3_600_000;
+    if (Number.isFinite(ageH) && ageH > 72) {
+      critical.push(`newest_confirmed_stale_hours=${ageH.toFixed(1)}`);
+    }
+  } else if (identity.nodeEnv === 'production') {
+    critical.push('no_confirmed_snapshots');
   }
 
   const report = {
@@ -188,6 +225,7 @@ async function main(): Promise<void> {
       activeCount: signals.activeCount,
       approvedCount: signals.approvedCount,
     },
+    confirmedSnapshots: confirmed,
     schema: {
       ok: schema.ok,
       missingColumns: schema.missingColumns,
@@ -203,7 +241,9 @@ async function main(): Promise<void> {
     architectureNote:
       'Local and live use separate databases by design. Identical code ' +
       'does not imply identical rows — each environment generates signals ' +
-      'from its own candle warehouse. Prefer production as canonical.',
+      'from its own candle warehouse. Prefer production as canonical. ' +
+      'Last Confirmed Signal = MAX(confirmed_at) on q365_confirmed_signal_snapshots; ' +
+      'pipeline runs do not create confirmed rows — only the maturity worker does.',
   };
 
   console.log('\n[DIAGNOSTICS_SIGNALS_REPORT]');

@@ -162,26 +162,60 @@ export async function GET(req: NextRequest): Promise<Response> {
     }
   }
 
-  // Manual run last timestamp — the dashboard renders these next to
-  // "Last Pipeline Run" so the operator sees the manual-vs-cron split.
-  // Last confirmed-signal write — the dashboard's "Last Confirmed
-  // Signal Update" field reads this. We pick MAX(updated_at) over
-  // active rows because the lifecycle worker bumps updated_at on
-  // status transitions (TARGET_HIT / STOP_LOSS_HIT / EXPIRED /
-  // INVALIDATED) and the maturity worker bumps it on insertion.
+  // "Last Confirmed Signal" must reflect when a snapshot was *confirmed*
+  // (inserted/promoted), NOT the last lifecycle touch. Lifecycle expiry
+  // bumps `updated_at` on EXPIRED rows — using MAX(updated_at) made the
+  // UI look freshly confirmed (e.g. 6 Aug) when the real confirmation
+  // was older (5 Aug) and production could still show July while local
+  // showed August after an expiry pass.
   let lastConfirmedSignalUpdateAt: string | null = null;
+  let lastConfirmedAt: string | null = null;
+  let lastSnapshotLifecycleUpdateAt: string | null = null;
+  let confirmedSnapshotCounts: {
+    total: number;
+    active: number;
+  } | null = null;
   try {
-    const { rows: cs } = await db.query<{ latest: Date | string | null }>(
-      `SELECT MAX(updated_at) AS latest FROM q365_confirmed_signal_snapshots`,
+    const { rows: cs } = await db.query<{
+      max_confirmed: Date | string | null;
+      max_updated: Date | string | null;
+      total: number;
+      active: number;
+    }>(
+      `SELECT
+         MAX(confirmed_at) AS max_confirmed,
+         MAX(updated_at) AS max_updated,
+         COUNT(*) AS total,
+         SUM(CASE WHEN status = 'ACTIVE' AND valid_until > NOW() THEN 1 ELSE 0 END) AS active
+       FROM q365_confirmed_signal_snapshots`,
     );
-    const v = (cs as any[])[0]?.latest;
-    if (v) {
-      lastConfirmedSignalUpdateAt =
-        v instanceof Date ? v.toISOString() : new Date(v).toISOString();
-    }
+    const row = (cs as any[])[0] ?? {};
+    const toIso = (v: unknown): string | null => {
+      if (!v) return null;
+      if (v instanceof Date) return v.toISOString();
+      const d = new Date(String(v));
+      return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+    };
+    lastConfirmedAt = toIso(row.max_confirmed);
+    lastSnapshotLifecycleUpdateAt = toIso(row.max_updated);
+    // Backward-compatible field name — now semantically "last confirmation".
+    lastConfirmedSignalUpdateAt = lastConfirmedAt;
+    confirmedSnapshotCounts = {
+      total: Number(row.total ?? 0),
+      active: Number(row.active ?? 0),
+    };
   } catch {
     // Table may not exist yet on a fresh DB; leave null.
   }
+
+  // Safe identity (no secrets) so operators can tell localhost DB from
+  // production when comparing screenshots of the same UI.
+  const runtimeIdentity = {
+    databaseHost: process.env.MYSQL_HOST || 'unknown',
+    databaseName: process.env.MYSQL_DATABASE || 'unknown',
+    nodeEnv: process.env.NODE_ENV || 'undefined',
+    timezone: 'Asia/Kolkata',
+  };
 
   const summary = {
     dataSource,
@@ -192,6 +226,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     lastSuccessAt:               lastSuc?.response_received_at ?? null,
     lastPipelineRunAt:           manual?.lastRunAt ?? null,
     lastConfirmedSignalUpdateAt,
+    lastConfirmedAt,
+    lastSnapshotLifecycleUpdateAt,
+    confirmedSnapshotCounts,
+    runtimeIdentity,
     coveragePercent:             coverage,
     freshness,
     fallbackUsed,
