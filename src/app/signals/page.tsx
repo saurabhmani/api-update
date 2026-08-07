@@ -1972,19 +1972,6 @@ export default function SignalsPage() {
                 <span title="MAX(confirmed_at) from q365_confirmed_signal_snapshots — promotion time, not lifecycle expiry">
                   <strong>Last Confirmed Signal:</strong> {fmtIst(feedHealth.lastConfirmedAt ?? feedHealth.lastConfirmedSignalUpdateAt)}
                 </span>
-                {feedHealth.confirmedSnapshotCounts != null && (
-                  <span title="ACTIVE rows with valid_until in the future">
-                    <strong>Confirmed ACTIVE:</strong>{' '}
-                    {feedHealth.confirmedSnapshotCounts.active}/{feedHealth.confirmedSnapshotCounts.total}
-                  </span>
-                )}
-                {feedHealth.runtimeIdentity && (
-                  <span title="Safe DB identity — localhost and production use separate databases">
-                    <strong>DB:</strong>{' '}
-                    {feedHealth.runtimeIdentity.databaseHost}/{feedHealth.runtimeIdentity.databaseName}
-                    {' '}({feedHealth.runtimeIdentity.nodeEnv})
-                  </span>
-                )}
                 <span
                   style={{
                     padding: '2px 8px',

@@ -164,15 +164,27 @@ function numOrNull(v: unknown): number | null {
  * lower it; pre-holiday windows can raise it. Floored at 1h, ceiling
  * 168h (one week — anything older is dead regardless of column state).
  *
- * History: was 24h originally; the production diagnostic showed
- * Sunday weekend trackers at ~30h, which the 24h cap dropped to zero
- * rows. The 72h default covers Friday close → Monday open without
- * needing an env override.
+ * History: was 24h originally; weekend trackers needed ~60h coverage.
+ * Default is 72h (Friday close → Monday open). A later edit silently
+ * raised the code default to 168h, which kept multi-day EXPIRED
+ * confirmed snapshots (e.g. Aug 5) lighting APPROVED on Aug 7 as if
+ * they were fresh — restored to 72h to match this contract.
  */
 export function resolveClosedSignalsMaxAgeHours(): number {
   const raw = Number(process.env.CLOSED_SIGNALS_MAX_AGE_HOURS);
-  if (!Number.isFinite(raw) || raw <= 0) return 168; // Default to 7 days
-  return Math.max(1, Math.min(720, Math.floor(raw))); // Cap at 30 days
+  if (!Number.isFinite(raw) || raw <= 0) return 72;
+  return Math.max(1, Math.min(168, Math.floor(raw)));
+}
+
+/**
+ * EXPIRED confirmed snapshots are only shown overnight after the same
+ * session's validity window (15:30 IST expiry). Multi-day-old EXPIRED
+ * rows must not inflate APPROVED TOTAL as "current" closed-market data.
+ */
+export function resolveClosedExpiredSnapshotMaxAgeHours(): number {
+  const raw = Number(process.env.CLOSED_EXPIRED_SNAPSHOT_MAX_AGE_HOURS);
+  if (!Number.isFinite(raw) || raw <= 0) return 24;
+  return Math.max(1, Math.min(72, Math.floor(raw)));
 }
 
 /** Stable discriminator on every closed-market row. The signals UI
@@ -696,17 +708,22 @@ async function loadConfirmedSnapshotsClosed(limit: number): Promise<ConfirmedSig
         )
       LEFT JOIN q365_signals q
         ON  q.id = s.source_signal_id
-     WHERE s.status IN ('ACTIVE', 'EXPIRED')
+     WHERE (
+           s.status = 'ACTIVE'
+           OR (
+             s.status = 'EXPIRED'
+             AND s.confirmed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+           )
+         )
        AND (s.invalidation_reason IS NULL
             OR s.invalidation_reason = 'validity_window_elapsed')
        AND s.direction IN ('BUY','SELL')
        AND s.confidence_score >= ?
        AND COALESCE(q.composite_final_score, s.final_score, s.confidence_score, 0) >= ?
        AND s.rr_ratio         >= ?
-       -- AND (s.valid_until IS NULL OR s.valid_until > NOW())
-       -- Spec "FIX SIGNAL VISIBILITY" — in market_closed mode, we ship the last active signals
-       -- even if they have technically expired (which usually happens at 15:30 IST).
-       -- s.status='ACTIVE' and s.invalidation_reason IS NULL already ensure they are not "dead" signals.
+       -- ACTIVE rows: keep within CLOSED_SIGNALS_MAX_AGE_HOURS (72h default).
+       -- EXPIRED rows: same-session only (CLOSED_EXPIRED_SNAPSHOT_MAX_AGE_HOURS,
+       -- 24h default) so multi-day-old promotions do not inflate APPROVED.
        AND s.confirmed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
        AND COALESCE(s.strategy, '') <> 'force_seed'
      ORDER BY COALESCE(q.composite_final_score, s.final_score, s.confidence_score, 0) DESC,
@@ -714,6 +731,7 @@ async function loadConfirmedSnapshotsClosed(limit: number): Promise<ConfirmedSig
      LIMIT ?`;
   try {
     const { rows } = await db.query<any>(sql, [
+      resolveClosedExpiredSnapshotMaxAgeHours(),
       STRICT_CONFIDENCE_FLOOR, STRICT_FINAL_FLOOR, STRICT_RR_FLOOR,
       resolveClosedSignalsMaxAgeHours(),
       Math.max(1, Math.min(limit, 200)),
@@ -1075,12 +1093,16 @@ async function loadQ365SignalsRelaxed(limit: number): Promise<ConfirmedSignalRow
       AND COALESCE(s.invalidation_reason, '') = ''
       AND UPPER(COALESCE(s.signal_status, '')) IN ('APPROVED_SIGNAL','DEVELOPING_SETUP')
       ${watchlistClause}
-      -- Include EXPIRED lifecycle rows — the rescore cron tags valid
-      -- APPROVED_SIGNAL / DEVELOPING_SETUP rows as status='expired'
-      -- once their validity window elapses, but they remain the best
-      -- institutional candidates until a fresher batch promotes.
-      -- Confirmed snapshots use the same ACTIVE|EXPIRED contract.
-      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'EXPIRED', '')
+      -- ACTIVE/watchlist: within CLOSED_SIGNALS_MAX_AGE_HOURS.
+      -- EXPIRED: same-session only — multi-day expired APPROVED_SIGNAL
+      -- rows were inflating closed-market APPROVED TOTAL with old data.
+      AND (
+            UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'WATCHLIST', '')
+            OR (
+              UPPER(s.status) = 'EXPIRED'
+              AND s.generated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+            )
+          )
       AND COALESCE(s.signal_type, '') <> 'force_seed'
       AND COALESCE(s.batch_id, '') NOT LIKE 'force_seed%'
       -- AND (s.expires_at IS NULL OR s.expires_at > NOW())
@@ -1100,6 +1122,7 @@ async function loadQ365SignalsRelaxed(limit: number): Promise<ConfirmedSignalRow
   try {
     const { rows } = await db.query<RawSignalRow>(sql, [
       RELAX_CONFIDENCE, RELAX_FINAL, RELAX_RR,
+      resolveClosedExpiredSnapshotMaxAgeHours(),
       resolveClosedSignalsMaxAgeHours(),
       Math.max(1, Math.min(limit, 200)),
     ]);
@@ -1155,7 +1178,13 @@ async function loadQ365SignalsStrict(limit: number): Promise<ConfirmedSignalRow[
       AND COALESCE(s.invalidation_reason, '') = ''
       AND UPPER(COALESCE(s.signal_status, '')) = 'APPROVED_SIGNAL'
       AND UPPER(COALESCE(s.classification, '')) <> 'WATCHLIST_ONLY'
-      AND UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'EXPIRED', '')
+      AND (
+            UPPER(COALESCE(s.status, 'ACTIVE')) IN ('ACTIVE', 'WATCHLIST', '')
+            OR (
+              UPPER(s.status) = 'EXPIRED'
+              AND s.generated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+            )
+          )
       AND COALESCE(s.signal_type, '') <> 'force_seed'
       AND COALESCE(s.batch_id, '') NOT LIKE 'force_seed%'
       -- AND (s.expires_at IS NULL OR s.expires_at > NOW())
@@ -1169,6 +1198,7 @@ async function loadQ365SignalsStrict(limit: number): Promise<ConfirmedSignalRow[
   try {
     const { rows } = await db.query<RawSignalRow>(sql, [
       STRICT_CONFIDENCE_FLOOR, STRICT_FINAL_FLOOR, STRICT_RR_FLOOR,
+      resolveClosedExpiredSnapshotMaxAgeHours(),
       resolveClosedSignalsMaxAgeHours(),
       Math.max(1, Math.min(limit, 200)),
     ]);

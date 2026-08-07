@@ -44,6 +44,12 @@ describe('closedMarketSignals — expiry guard on q365_signals fallback', () => 
   it('clamps the max-age helper to a sane window (1h..168h)', () => {
     expect(src).toMatch(/Math\.max\(1,\s*Math\.min\(168/);
   });
+
+  it('limits EXPIRED snapshots to a same-session window (default 24h)', () => {
+    expect(src).toMatch(/export function resolveClosedExpiredSnapshotMaxAgeHours/);
+    expect(src).toMatch(/CLOSED_EXPIRED_SNAPSHOT_MAX_AGE_HOURS/);
+    expect(src).toMatch(/return\s+24\s*;/);
+  });
 });
 
 describe('closedMarketSignals — source_kind discriminator', () => {

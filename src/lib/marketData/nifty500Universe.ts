@@ -573,10 +573,19 @@ async function loadFromDb(): Promise<LoadResult> {
     );
   }
 
-  if (symbols.length < getUniverseMinSize()) {
+  // Min size is calibrated against active_stocks.json (includes BE/BZ).
+  // Intentional non-EQ / placeholder drops must not trip the floor —
+  // that previously threw, ensureUniverseReady failed, and /api/signals
+  // + /api/ticker returned 503 → dashboard "recovery mode".
+  const effectiveMin = Math.max(
+    1,
+    getUniverseMinSize() - droppedNonEq - droppedPlaceholders,
+  );
+  if (symbols.length < effectiveMin) {
     throw new Error(
-      `[nifty500Universe] q365_universe(is_active=1) returned ${symbols.length} symbols, ` +
-      `minimum required is ${getUniverseMinSize()}. ` +
+      `[nifty500Universe] q365_universe(is_active=1) returned ${symbols.length} EQ symbols, ` +
+      `minimum required is ${effectiveMin} ` +
+      `(raw_min=${getUniverseMinSize()} after dropping ${droppedNonEq} non-EQ + ${droppedPlaceholders} placeholders). ` +
       `Refusing to boot with a degraded universe. ` +
       `To fix: run \`npx tsx scripts/buildNse1000Universe.ts\` or \`npx tsx scripts/loadNifty500.ts\`, then restart.`,
     );
@@ -592,8 +601,10 @@ async function loadFromDb(): Promise<LoadResult> {
   // Spec INSTITUTIONAL §C — single greppable final-count marker.
   console.log(
     `[UNIVERSE_FINAL] count=${symbols.length} ` +
-    `min=${getUniverseMinSize()} max=${getUniverseMaxSize()} ` +
+    `min=${getUniverseMinSize()} effective_min=${effectiveMin} ` +
+    `max=${getUniverseMaxSize()} ` +
     `placeholders_dropped=${droppedPlaceholders} ` +
+    `non_eq_dropped=${droppedNonEq} ` +
     `source=q365_universe(is_active=1)`,
   );
 

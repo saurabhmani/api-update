@@ -108,7 +108,7 @@ describe('nifty500Universe — DB load', () => {
 describe('nifty500Universe — validation', () => {
   it('throws when DB returns fewer than NIFTY500_MIN_SIZE symbols', async () => {
     mockRows = makeRows(100); // far below 480
-    await expect(initNifty500UniverseFromDb()).rejects.toThrow(/minimum required is 480/);
+    await expect(initNifty500UniverseFromDb()).rejects.toThrow(/minimum required is/);
   });
 
   it('throws when DB returns more than NIFTY500_MAX_SIZE symbols', async () => {
@@ -119,6 +119,27 @@ describe('nifty500Universe — validation', () => {
   it('throws when DB returns zero rows (table empty)', async () => {
     mockRows = [];
     await expect(initNifty500UniverseFromDb()).rejects.toThrow(/Refusing to boot/);
+  });
+
+  it('does not fail min-size when intentional *-BE/*-BZ drops leave enough EQ symbols', async () => {
+    // Test min=480. 450 EQ + 80 BE = 530 raw rows; after drop EQ=450,
+    // effective_min = 480 - 80 = 400 → 450 >= 400 must boot.
+    mockRows = [
+      ...makeRows(450),
+      ...Array.from({ length: 80 }, (_, i) => ({ symbol: `ILLIQ${i}-BE` })),
+    ];
+    const u = await initNifty500UniverseFromDb();
+    expect(u.symbols.length).toBe(450);
+    expect(u.symbols.some((s) => s.endsWith('-BE'))).toBe(false);
+  });
+
+  it('still throws when EQ count is below effective min after non-EQ drops', async () => {
+    // 200 EQ + 50 BE → effective_min = 480 - 50 = 430; 200 < 430 → fail.
+    mockRows = [
+      ...makeRows(200),
+      ...Array.from({ length: 50 }, (_, i) => ({ symbol: `BAD${i}-BZ` })),
+    ];
+    await expect(initNifty500UniverseFromDb()).rejects.toThrow(/minimum required is/);
   });
 });
 

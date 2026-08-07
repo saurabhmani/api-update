@@ -55,6 +55,8 @@ interface CurrentSignalRow {
   decay_state:         string | null;
   classification:      string | null;
   factor_scores_json:  unknown;
+  /** Phase-4 institutional factors (0–100). Preferred for multi-factor confluence. */
+  phase4_factor_scores_json: unknown;
   market_regime:       string | null;
   market_stance:       string | null;
   pct_change:          string | number | null;
@@ -181,7 +183,8 @@ async function fetchCurrentSignalRow(
               entry_price, stop_loss, target1, target2,
               confidence_score, final_score, composite_final_score,
               decay_state, classification,
-              factor_scores_json, market_regime, market_stance,
+              factor_scores_json, phase4_factor_scores_json,
+              market_regime, market_stance,
               pct_change, scenario_tag, signal_status,
               live_valid, rejection_codes_json, rejection_reasons_json,
               stress_survival_score, explanation_json,
@@ -367,7 +370,14 @@ async function processTracker(
     );
   }
 
-  const factorScores = parseObj(current.factor_scores_json);
+  // Multi-factor confluence expects Phase-4 factor scores on a 0–100
+  // scale (≥60 = aligned). `factor_scores_json` is confidenceBreakdown
+  // from saveSignals (often nested / sub-60), which falsely logged
+  // "insufficient factor confluence" and depressed the 0.12 weight.
+  // Prefer phase4_factor_scores_json; fall back to legacy column.
+  const factorScores =
+    parseObj(current.phase4_factor_scores_json) ??
+    parseObj(current.factor_scores_json);
 
   const result: MaturityScorerOutput = scoreMaturity({
     symbol:    tracker.symbol,
