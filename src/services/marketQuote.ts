@@ -230,15 +230,21 @@ async function enrichQuoteWith52Week(quote: Quote, sym: string): Promise<Quote> 
     };
   }
 
-  const fromYahoo = await fetchYahoo52WeekRange(sym);
-  if (fromYahoo) {
-    await cacheSet(cacheKey, fromYahoo, 6 * 3600).catch(() => {});
-    return {
-      ...quote,
-      fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh > 0 ? quote.fiftyTwoWeekHigh : fromYahoo.high,
-      fiftyTwoWeekLow:  quote.fiftyTwoWeekLow  > 0 ? quote.fiftyTwoWeekLow  : fromYahoo.low,
-    };
-  }
+  // Yahoo 52w is optional enrichment — skip if it stalls.
+  try {
+    const fromYahoo = await Promise.race([
+      fetchYahoo52WeekRange(sym),
+      new Promise<null>((r) => setTimeout(() => r(null), 4_000)),
+    ]);
+    if (fromYahoo) {
+      await cacheSet(cacheKey, fromYahoo, 6 * 3600).catch(() => {});
+      return {
+        ...quote,
+        fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh > 0 ? quote.fiftyTwoWeekHigh : fromYahoo.high,
+        fiftyTwoWeekLow:  quote.fiftyTwoWeekLow  > 0 ? quote.fiftyTwoWeekLow  : fromYahoo.low,
+      };
+    }
+  } catch { /* optional */ }
 
   return quote;
 }
@@ -388,13 +394,44 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
     if (cached?.lastPrice) return cached;
   }
 
-  // 1) Resolver path (Kite → Yahoo)
-  const resolved = await resolvePrice(sym);
+  // Fast path: warehouse/DB first so market-detail pages never hang on
+  // upstream Yahoo/IndianAPI when candles already exist locally.
+  const dbQuote = await buildQuoteFromDb(sym);
 
-  // 2) Yahoo public chart (~15 min delayed) when resolver is cold or market open
-  const yahooMeta = (!resolved.price || marketOpen)
-    ? await fetchYahooMeta(sym)
-    : null;
+  // Resolver (IndianAPI cache / legacy providers) — bounded.
+  let resolved: Awaited<ReturnType<typeof resolvePrice>>;
+  try {
+    resolved = await Promise.race([
+      resolvePrice(sym),
+      new Promise<Awaited<ReturnType<typeof resolvePrice>>>((r) =>
+        setTimeout(
+          () => r({
+            symbol: sym, price: null, source: null, fresh: false, ts: null, pChange: null, quality: 'LOW',
+          }),
+          4_000,
+        ),
+      ),
+    ]);
+  } catch {
+    resolved = {
+      symbol: sym, price: null, source: null, fresh: false, ts: null, pChange: null, quality: 'LOW',
+    };
+  }
+
+  // Yahoo enrichment is optional. Never block the page for more than a
+  // few seconds — market hours used to await Yahoo unconditionally and
+  // left /market/[key] spinning when the public chart endpoint stalled.
+  let yahooMeta: Partial<Quote> | null = null;
+  if (!resolved.price || (!dbQuote && marketOpen)) {
+    try {
+      yahooMeta = await Promise.race([
+        fetchYahooMeta(sym),
+        new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
+      ]);
+    } catch {
+      yahooMeta = null;
+    }
+  }
 
   if (resolved.price != null && resolved.price > 0) {
     const quote: Quote = {
@@ -411,7 +448,6 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
       fiftyTwoWeekHigh:  0,
       fiftyTwoWeekLow:   0,
     };
-    const dbQuote = await buildQuoteFromDb(sym);
     if (dbQuote) {
       quote.open              = dbQuote.open              || quote.open;
       quote.dayHigh           = dbQuote.dayHigh           || quote.dayHigh;
@@ -426,7 +462,6 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
         quote.change  = dbQuote.change;
       }
     }
-    // Prefer Yahoo day OHLC when resolver only returned a sparse LTP.
     if (yahooMeta?.lastPrice) {
       quote.open              = quote.open || yahooMeta.open || quote.open;
       quote.dayHigh           = Math.max(quote.dayHigh || 0, yahooMeta.dayHigh || 0) || quote.dayHigh;
@@ -453,7 +488,6 @@ export async function fetchQuote(symbol: string): Promise<Quote | null> {
     return quote;
   }
 
-  const dbQuote = await buildQuoteFromDb(sym);
   if (dbQuote) return enrichQuoteWith52Week(dbQuote, sym);
 
   return null;

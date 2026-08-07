@@ -103,11 +103,21 @@ export function proxy(req: NextRequest) {
     }
 
     const loginUrl = new URL('/login', req.url);
-    // Preserve path + query so post-login can restore error banners, etc.
+    // Preserve path + query so post-login can restore the destination.
+    // Use the decoded pathname so characters like `|` (instrument keys
+    // `NSE_EQ|SYMBOL`) are not double-encoded into `%257C`, which breaks
+    // post-login navigation and leaves the market detail page on a bad key.
+    const rawPath = (() => {
+      try {
+        return decodeURIComponent(pathname);
+      } catch {
+        return pathname;
+      }
+    })();
     const from =
       req.nextUrl.search && req.nextUrl.search.length > 1
-        ? `${pathname}${req.nextUrl.search}`
-        : pathname;
+        ? `${rawPath}${req.nextUrl.search}`
+        : rawPath;
     loginUrl.searchParams.set('from', from);
     const response = NextResponse.redirect(loginUrl);
     return withSecurity(req, response, nonce);

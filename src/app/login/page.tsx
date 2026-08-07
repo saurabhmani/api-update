@@ -22,7 +22,16 @@ type Step = 'login' | '2fa';
 /** Only allow same-origin relative paths (blocks open redirects). */
 function safeInternalPath(raw: string | null): string | null {
   if (!raw) return null;
-  const path = raw.trim();
+  let path = raw.trim();
+  // Undo one layer of accidental encoding (e.g. NSE_EQ%7CSYM → NSE_EQ|SYM)
+  // so router.push does not percent-encode `%` into `%25`.
+  try {
+    if (/%[0-9A-Fa-f]{2}/.test(path)) {
+      path = decodeURIComponent(path);
+    }
+  } catch {
+    // keep raw
+  }
   if (!path.startsWith('/')) return null;
   if (path.startsWith('//')) return null;
   if (path.includes('://')) return null;

@@ -294,19 +294,44 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
 
   // ── Load ───────────────────────────────────────────────────────
   useEffect(() => {
-    async function load() {
+    let cancelled = false;
+
+    async function timedJson(url: string, ms = 12_000): Promise<any> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      try {
+        const r = await fetch(url, { signal: ctrl.signal, credentials: 'include' });
+        if (!r.ok) return null;
+        return await r.json();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function loadCore() {
       setLoading(true);
       setMetaRefresh(false);
       setPortfolioFit(null);
-      const [iRes, cRes, qRes, sRes, stockRes] = await Promise.allSettled([
-        fetch(`/api/instruments?key=${encodeURIComponent(instrumentKey)}`).then(r => r.json()),
-        chartsApi.intraday(instrumentKey, '1minute'),
-        fetch(`/api/market?resource=quote&symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
-        fetch(`/api/signals?action=instrument&symbol=${encodeURIComponent(symbol)}`)
-          .then(r => r.ok ? r.json() : null),
-        fetch(`/api/stocks/${encodeURIComponent(symbol)}?interval=1day&limit=5`)
-          .then(r => r.ok ? r.json() : null),
+
+      const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+          p.then(
+            (v) => { clearTimeout(t); resolve(v); },
+            (e) => { clearTimeout(t); reject(e); },
+          );
+        });
+
+      // Core page data only — do NOT wait on live signal revalidation.
+      // `/api/signals?action=instrument` can run generateSignal() for a
+      // long time and previously kept the whole detail page on Loading.
+      const [iRes, cRes, qRes, stockRes] = await Promise.allSettled([
+        timedJson(`/api/instruments?key=${encodeURIComponent(instrumentKey)}`),
+        withTimeout(chartsApi.intraday(instrumentKey, '1minute'), 12_000),
+        timedJson(`/api/market?resource=quote&symbol=${encodeURIComponent(symbol)}`),
+        timedJson(`/api/stocks/${encodeURIComponent(symbol)}?interval=1day&limit=5`),
       ]);
+      if (cancelled) return;
 
       if (iRes.status === 'fulfilled' && iRes.value?.instrument) setInst(iRes.value.instrument);
       else setInst({ tradingsymbol: symbol, exchange, instrument_type: 'EQ', name: symbol });
@@ -339,9 +364,6 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
         setQuote(qRes.value.quote);
         if (qRes.value.meta) setMeta(qRes.value.meta);
       }
-      if (sRes.status === 'fulfilled' && sRes.value && !sRes.value.error) {
-        setSignal(sRes.value);
-      }
       if (stockRes.status === 'fulfilled' && stockRes.value && !stockRes.value.error) {
         setTrade({
           entry_price:  stockRes.value.entry_price ?? null,
@@ -356,7 +378,23 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
 
       setLoading(false);
     }
-    load();
+
+    async function loadSignal() {
+      try {
+        const sRes = await timedJson(
+          `/api/signals?action=instrument&symbol=${encodeURIComponent(symbol)}`,
+          20_000,
+        );
+        if (cancelled || !sRes || sRes.error) return;
+        setSignal(sRes);
+      } catch (err) {
+        console.warn('[MarketDetail] signal load failed', err);
+      }
+    }
+
+    void loadCore();
+    void loadSignal();
+    return () => { cancelled = true; };
   }, [instrumentKey, symbol, exchange]);
 
   // Lazy load per tab
