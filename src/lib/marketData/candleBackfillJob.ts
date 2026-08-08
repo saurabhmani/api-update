@@ -1070,5 +1070,32 @@ async function runCandleBackfillJobInner(ctx: {
       : [...summary.failures.slice(0, 10), { symbol: '...', reason: `+${summary.failures.length - 10} more` }],
   });
 
+  // One batch-level row so signals "Last API Request / Last Success"
+  // survive process restarts (per-symbol logging would flood the table).
+  if (!dryRun) {
+    const ended = new Date().toISOString();
+    const started = new Date(t0).toISOString();
+    const requested = Math.max(1, summary.fetched + summary.failed + summary.deferred);
+    const ok = summary.fetched > 0 && summary.status !== 'aborted_auth';
+    void import('@/lib/marketData/feedHealthLog').then(({ logFeedHealth }) => {
+      void logFeedHealth({
+        provider: 'indianapi',
+        endpoint: 'candle-backfill',
+        request_started_at: started,
+        response_received_at: ended,
+        status: ok ? (summary.failed > 0 ? 'partial' : 'success') : 'failed',
+        latency_ms: summary.durationMs,
+        symbols_requested: requested,
+        symbols_returned: summary.fetched,
+        coverage_percent: requested > 0
+          ? Math.round((summary.fetched / requested) * 1000) / 10
+          : 0,
+        data_quality: ok ? (summary.failed > 0 ? 'MEDIUM' : 'HIGH') : 'LOW',
+        error_code: summary.pauseReason,
+        error_message: summary.pauseReason,
+      });
+    }).catch(() => { /* non-fatal */ });
+  }
+
   return summary;
 }

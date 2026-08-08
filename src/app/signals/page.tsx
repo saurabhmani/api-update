@@ -1964,7 +1964,9 @@ export default function SignalsPage() {
                     ? 'Shoonya'
                     : dataProvider === 'zerodha'
                       ? 'Zerodha'
-                      : (feedHealth.dataSource ?? '—')}
+                      : dataProvider === 'indianapi'
+                        ? 'IndianAPI'
+                        : (feedHealth.dataSource ?? '—')}
                 </span>
                 <span><strong>Last API Request:</strong> {fmtIst(feedHealth.lastApiRequestAt)}</span>
                 <span><strong>Last Success:</strong> {fmtIst(feedHealth.lastSuccessAt)}</span>

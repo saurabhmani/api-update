@@ -374,3 +374,27 @@ export async function getManualRunStatus(): Promise<{
     nextAllowedAt: nextIstMidnightIso(),
   };
 }
+
+/**
+ * Latest pipeline activity across manual / scheduled / system locks.
+ * Used by /api/data-feed/health so "Last Pipeline Run" is not blank
+ * just because today's IST manual quota row is missing.
+ */
+export async function getLatestPipelineRunAt(): Promise<string | null> {
+  try {
+    const { rows } = await db.query<{ ts: Date | string | null }>(
+      `SELECT COALESCE(completed_at, started_at) AS ts
+         FROM q365_pipeline_run_locks
+        WHERE COALESCE(completed_at, started_at) IS NOT NULL
+        ORDER BY COALESCE(completed_at, started_at) DESC
+        LIMIT 1`,
+    );
+    const v = rows?.[0]?.ts;
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString();
+    const d = new Date(String(v));
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  } catch {
+    return null;
+  }
+}

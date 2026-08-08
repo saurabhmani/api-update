@@ -18,15 +18,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
   getFeedHealthRing,
-  getLastRequestRow,
-  getLastSuccessRow,
+  getLastRequestRowPersistent,
+  getLastSuccessRowPersistent,
 } from '@/lib/marketData/feedHealthLog';
 import { getMarketDataHealth } from '@/lib/marketData/marketDataHealth';
 import { getProviderFlagsSummary, isDualSourceEnabled } from '@/lib/marketData/providerFlags';
 import { getLiveFeedState, getLiveFeedStateFor } from '@/lib/marketData/liveFeedState';
-import { getManualRunStatus } from '@/lib/pipeline/runLockRepo';
+import {
+  getLatestPipelineRunAt,
+  getManualRunStatus,
+} from '@/lib/pipeline/runLockRepo';
 import { getSession } from '@/lib/session';
 import { getUserActiveDataSource } from '@/lib/broker/connections/activeDataSource';
+import { getPipelineHeartbeat } from '@/lib/marketData/providers/batchScheduler';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -74,12 +78,29 @@ function freshnessFromAgeMs(
   return 'Offline';
 }
 
+function labelSystemProvider(provider: string | null | undefined): string {
+  const p = String(provider ?? '').toLowerCase();
+  if (p === 'indianapi' || p === 'indian_api') return 'IndianAPI';
+  if (p === 'kite') return 'Kite';
+  if (p === 'cache') return 'Cache';
+  if (p === 'nse_direct') return 'NSE Direct';
+  if (p === 'nse_bhavcopy') return 'NSE Bhavcopy';
+  if (p === 'yahoo' || p === 'yahoo_emergency') return 'Yahoo';
+  if (p === 'snapshot') return 'DB Snapshot';
+  if (p === 'none' || !p) return 'None';
+  return String(provider);
+}
+
 export async function GET(req: NextRequest): Promise<Response> {
   const url = req.nextUrl;
   const wantHistory = Number(url.searchParams.get('history') ?? 0);
 
-  const lastReq = getLastRequestRow();
-  const lastSuc = getLastSuccessRow();
+  const [lastReq, lastSuc, manual, latestLockAt] = await Promise.all([
+    getLastRequestRowPersistent(),
+    getLastSuccessRowPersistent(),
+    getManualRunStatus().catch(() => null),
+    getLatestPipelineRunAt().catch(() => null),
+  ]);
   const now = Date.now();
   const ageSinceLastSuccessMs = lastSuc
     ? Math.max(0, now - new Date(lastSuc.response_received_at).getTime())
@@ -87,7 +108,6 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const flags = getProviderFlagsSummary();
   const coarse = getMarketDataHealth();
-  const manual = await getManualRunStatus().catch(() => null);
 
   // Prefer the authenticated user's active data source over system
   // MARKET_DATA_PROVIDER (often still "kite" for jobs only).
@@ -113,23 +133,54 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // System-job / ring-buffer label — never overrides an explicit
   // user active broker on the signals UI.
+  const configuredProvider =
+    typeof flags.marketDataProvider === 'string' ? flags.marketDataProvider : null;
   const systemDataSource =
-    lastReq?.provider === 'kite' ? 'Kite' :
-    lastReq?.provider === 'cache' ? 'Cache' :
-    lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
-    lastReq?.provider === 'yahoo' || lastReq?.provider === 'yahoo_emergency' ? 'Yahoo' :
-    lastReq?.provider === 'snapshot' ? 'DB Snapshot' :
-    flags.marketDataProvider === 'kite' ? 'Kite' :
-    flags.marketDataProvider === 'yahoo' ? 'Yahoo' :
-    flags.marketDataProvider === 'none' ? 'None' :
-    String(flags.marketDataProvider ?? 'None');
+    labelSystemProvider(lastReq?.provider) !== 'None'
+    && lastReq?.provider
+      ? labelSystemProvider(lastReq.provider)
+      : labelSystemProvider(configuredProvider);
 
-  const dataSource = userProviderLabel ?? systemDataSource;
+  // Prefer configured IndianAPI warehouse label when the last logged
+  // request was cache noise / unrelated and the system provider is IndianAPI.
+  const dataSource = userProviderLabel
+    ?? (configuredProvider === 'indianapi' ? 'IndianAPI' : systemDataSource);
 
   const fallbackUsed =
     lastReq?.provider === 'nse_direct' ? 'NSE Direct' :
     lastReq?.provider === 'yahoo' && !isDualSourceEnabled() ? 'Emergency Yahoo' : // @deprecated marker
     'No';
+
+  // Prefer any recent lock / heartbeat / signal write over "today's
+  // manual quota only" — scheduler runs never create a same-day manual row.
+  let lastPipelineRunAt: string | null = manual?.lastRunAt ?? latestLockAt ?? null;
+  try {
+    const hb = await getPipelineHeartbeat();
+    if (hb?.at) {
+      const hbIso = new Date(hb.at).toISOString();
+      if (!lastPipelineRunAt || hb.at > new Date(lastPipelineRunAt).getTime()) {
+        lastPipelineRunAt = hbIso;
+      }
+    }
+  } catch {
+    /* redis optional */
+  }
+  if (!lastPipelineRunAt) {
+    try {
+      const { rows } = await db.query<{ ts: Date | string | null }>(
+        `SELECT MAX(generated_at) AS ts FROM q365_signals
+          WHERE generated_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`,
+      );
+      const v = rows?.[0]?.ts;
+      if (v) {
+        lastPipelineRunAt = v instanceof Date
+          ? v.toISOString()
+          : new Date(String(v)).toISOString();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Coverage / freshness — computed from the most recent successful
   // batch. If the last invocation was a single-symbol call we surface
@@ -138,7 +189,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   let freshness = freshnessFromAgeMs(ageSinceLastSuccessMs, lastSuc?.data_quality ?? null, {
     marketOpen: coarse.market.isOpen,
     coarseHealth: coarse,
-    lastPipelineRunAt: manual?.lastRunAt ?? null,
+    lastPipelineRunAt,
   });
 
   // Market-closed mode: the resolver gate correctly suppresses upstream
@@ -243,14 +294,86 @@ export async function GET(req: NextRequest): Promise<Response> {
     maturityLastEval = null;
   }
 
+  // IndianAPI warehouse fallbacks when feed_health has no usable rows
+  // (common: candle job writes warehouse without per-call health rows).
+  let lastApiRequestAt = lastReq?.request_started_at ?? null;
+  let lastApiResponseAt = lastReq?.response_received_at ?? null;
+  let lastSuccessAt = lastSuc?.response_received_at ?? null;
+
+  const maxIso = (a: string | null, b: string | null): string | null => {
+    if (!a) return b;
+    if (!b) return a;
+    return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
+  };
+
+  if (!lastApiRequestAt || !lastSuccessAt) {
+    try {
+      const { rows: ing } = await db.query<{
+        started_at: Date | string | null;
+        finished_at: Date | string | null;
+        status: string | null;
+      }>(
+        `SELECT started_at, finished_at, status
+           FROM indianapi_ingestion_runs
+          ORDER BY started_at DESC
+          LIMIT 1`,
+      );
+      const r = ing?.[0];
+      if (r?.started_at) {
+        const started = r.started_at instanceof Date
+          ? r.started_at.toISOString()
+          : new Date(String(r.started_at)).toISOString();
+        lastApiRequestAt = maxIso(lastApiRequestAt, started);
+        if (r.finished_at && String(r.status ?? '').toLowerCase() === 'success') {
+          const finished = r.finished_at instanceof Date
+            ? r.finished_at.toISOString()
+            : new Date(String(r.finished_at)).toISOString();
+          lastSuccessAt = maxIso(lastSuccessAt, finished);
+          lastApiResponseAt = maxIso(lastApiResponseAt, finished);
+        }
+      }
+    } catch {
+      /* optional table */
+    }
+  }
+
+  if (!lastSuccessAt || !lastApiRequestAt) {
+    try {
+      const { rows: cnd } = await db.query<{ mx: Date | string | null }>(
+        `SELECT MAX(updated_at) AS mx FROM candles
+          WHERE source = 'indianapi' AND candle_type = 'eod'`,
+      );
+      const v = cnd?.[0]?.mx;
+      if (v) {
+        const iso = v instanceof Date ? v.toISOString() : new Date(String(v)).toISOString();
+        lastApiRequestAt = maxIso(lastApiRequestAt, iso);
+        lastSuccessAt = maxIso(lastSuccessAt, iso);
+        lastApiResponseAt = maxIso(lastApiResponseAt, iso);
+      }
+    } catch {
+      /* optional */
+    }
+  }
+
+  // Prefer scheduled scan / signal write when locks were never claimed.
+  if (!lastPipelineRunAt && tradingFreshness?.latestScheduledScanAt) {
+    lastPipelineRunAt = tradingFreshness.latestScheduledScanAt;
+  }
+  if (!lastPipelineRunAt && tradingFreshness?.latestSignalAt) {
+    lastPipelineRunAt = tradingFreshness.latestSignalAt;
+  }
+  if (!lastPipelineRunAt && maturityLastEval) {
+    lastPipelineRunAt = maturityLastEval;
+  }
+
   const summary = {
     dataSource,
     userProvider:                userProviderLabel,
     systemDataSource,
-    lastApiRequestAt:            lastReq?.request_started_at   ?? null,
-    lastApiResponseAt:           lastReq?.response_received_at ?? null,
-    lastSuccessAt:               lastSuc?.response_received_at ?? null,
-    lastPipelineRunAt:           manual?.lastRunAt ?? null,
+    lastApiRequestAt,
+    lastApiResponseAt,
+    lastSuccessAt,
+    lastPipelineRunAt,
     lastConfirmedSignalUpdateAt,
     lastConfirmedAt,
     lastSnapshotLifecycleUpdateAt,

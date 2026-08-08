@@ -94,6 +94,96 @@ export function getLastSuccessRow(): FeedHealthRow | null {
   return null;
 }
 
+function asFeedHealthRow(row: Record<string, unknown> | null | undefined): FeedHealthRow | null {
+  if (!row) return null;
+  const toIso = (v: unknown): string => {
+    if (v instanceof Date) return v.toISOString();
+    const s = String(v ?? '');
+    const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + (s.endsWith('Z') ? '' : 'Z'));
+    return Number.isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
+  };
+  return {
+    provider: String(row.provider ?? ''),
+    endpoint: String(row.endpoint ?? ''),
+    request_started_at: toIso(row.request_started_at),
+    response_received_at: toIso(row.response_received_at),
+    status: String(row.status ?? 'failed'),
+    latency_ms: Number(row.latency_ms ?? 0),
+    symbols_requested: Number(row.symbols_requested ?? 0),
+    symbols_returned: Number(row.symbols_returned ?? 0),
+    coverage_percent: Number(row.coverage_percent ?? 0),
+    data_quality: String(row.data_quality ?? 'LOW'),
+    error_code: row.error_code != null ? String(row.error_code) : null,
+    error_message: row.error_message != null ? String(row.error_message) : null,
+  };
+}
+
+/**
+ * Process-local ring is empty after every restart. Persist rows in
+ * q365_data_feed_health so the signals status bar still shows Last
+ * API Request / Last Success across boots and multi-process deploys.
+ * Prefer real upstream providers over cache/snapshot noise.
+ */
+export async function getLastRequestRowPersistent(): Promise<FeedHealthRow | null> {
+  const mem = getLastRequestRow();
+  if (mem) return mem;
+  try {
+    const { rows } = await db.query<Record<string, unknown>>(
+      `SELECT provider, endpoint, request_started_at, response_received_at,
+              status, latency_ms, symbols_requested, symbols_returned,
+              coverage_percent, data_quality, error_code, error_message
+         FROM q365_data_feed_health
+        WHERE LOWER(provider) NOT IN ('cache', 'snapshot', 'db snapshot')
+        ORDER BY request_started_at DESC
+        LIMIT 1`,
+    );
+    const upstream = asFeedHealthRow(rows?.[0]);
+    if (upstream) return upstream;
+    const { rows: anyRows } = await db.query<Record<string, unknown>>(
+      `SELECT provider, endpoint, request_started_at, response_received_at,
+              status, latency_ms, symbols_requested, symbols_returned,
+              coverage_percent, data_quality, error_code, error_message
+         FROM q365_data_feed_health
+        ORDER BY request_started_at DESC
+        LIMIT 1`,
+    );
+    return asFeedHealthRow(anyRows?.[0]);
+  } catch {
+    return null;
+  }
+}
+
+export async function getLastSuccessRowPersistent(): Promise<FeedHealthRow | null> {
+  const mem = getLastSuccessRow();
+  if (mem) return mem;
+  try {
+    const { rows } = await db.query<Record<string, unknown>>(
+      `SELECT provider, endpoint, request_started_at, response_received_at,
+              status, latency_ms, symbols_requested, symbols_returned,
+              coverage_percent, data_quality, error_code, error_message
+         FROM q365_data_feed_health
+        WHERE status IN ('success', 'partial')
+          AND LOWER(provider) NOT IN ('cache', 'snapshot', 'db snapshot')
+        ORDER BY response_received_at DESC
+        LIMIT 1`,
+    );
+    const upstream = asFeedHealthRow(rows?.[0]);
+    if (upstream) return upstream;
+    const { rows: anyRows } = await db.query<Record<string, unknown>>(
+      `SELECT provider, endpoint, request_started_at, response_received_at,
+              status, latency_ms, symbols_requested, symbols_returned,
+              coverage_percent, data_quality, error_code, error_message
+         FROM q365_data_feed_health
+        WHERE status IN ('success', 'partial')
+        ORDER BY response_received_at DESC
+        LIMIT 1`,
+    );
+    return asFeedHealthRow(anyRows?.[0]);
+  } catch {
+    return null;
+  }
+}
+
 // ── DB insert (best-effort) ────────────────────────────────────────
 
 let dbInsertSilenced = false;

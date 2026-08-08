@@ -25,6 +25,7 @@ export const PUBLIC_EXACT_PATHS = [
   '/api/auth',
   '/api/contact',
   '/api/health',
+  '/api/data-feed/health',
   '/api/engine-health/status',
   '/api/events',
   '/api/market-data/health',
