@@ -61,6 +61,7 @@
     "diagnostics:signals": "tsx scripts/diagnosticsSignals.ts",
     "diagnostics:maturity": "tsx scripts/diagnosticsMaturity.ts",
     "diagnostics:maturity:symbol": "tsx scripts/diagnosticsMaturity.ts --symbol",
+    "diagnostics:prod-funnel": "tsx scripts/diagnosticsProdPromotionFunnel.ts",
     "scans:evening-update": "tsx scripts/runDailyScanJob.ts evening-update",
     "scans:evening": "tsx scripts/runDailyScanJob.ts evening-scan",
     "quota:migrate": "tsx src/lib/db/migrateProviderRequestLogs.ts",
