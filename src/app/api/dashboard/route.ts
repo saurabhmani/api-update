@@ -46,6 +46,7 @@ import {
   createRequestStageProfiler,
   type RequestStageProfiler,
 }                                    from '@/lib/api/requestStageProfiler';
+import { db }                        from '@/lib/db';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -191,13 +192,105 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     () => cacheService.get<Record<string, unknown>>(responseCacheKey),
   );
   if (cached) {
-    profile.setCache('hit');
-    return NextResponse.json(cached, {
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate',
-        'X-Cache': 'HIT',
-      },
-    });
+    // Always refresh APPROVED snapshot counts on cache hit so a prior
+    // failed/null count cannot stick as "—" while DB has a real 0/N.
+    try {
+      const marketOpen = getMarketStatus().isOpen === true;
+      let expiredMaxAgeH = 24;
+      try {
+        const { resolveClosedExpiredSnapshotMaxAgeHours } = await import(
+          '@/lib/signals/closedMarketSignals'
+        );
+        expiredMaxAgeH = resolveClosedExpiredSnapshotMaxAgeHours();
+      } catch { /* default */ }
+      const sql = marketOpen
+        ? `SELECT
+             COUNT(*) AS active,
+             SUM(CASE WHEN UPPER(direction) = 'BUY' THEN 1 ELSE 0 END) AS buy,
+             SUM(CASE WHEN UPPER(direction) = 'SELL' THEN 1 ELSE 0 END) AS sell
+           FROM q365_confirmed_signal_snapshots
+           WHERE status = 'ACTIVE' AND valid_until > NOW()`
+        : `SELECT
+             COUNT(*) AS active,
+             SUM(CASE WHEN UPPER(direction) = 'BUY' THEN 1 ELSE 0 END) AS buy,
+             SUM(CASE WHEN UPPER(direction) = 'SELL' THEN 1 ELSE 0 END) AS sell
+           FROM q365_confirmed_signal_snapshots
+           WHERE (
+                 (status = 'ACTIVE' AND valid_until > NOW())
+              OR (
+                   status = 'EXPIRED'
+               AND confirmed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+               AND (invalidation_reason IS NULL
+                    OR invalidation_reason = 'validity_window_elapsed')
+                 )
+           )`;
+      const { rows } = await db.query<{
+        active: number | string | null;
+        buy: number | string | null;
+        sell: number | string | null;
+      }>(sql, marketOpen ? [] : [expiredMaxAgeH]);
+      const r = rows?.[0];
+      const active = Number(r?.active ?? 0);
+      const buy = Number(r?.buy ?? 0);
+      const sell = Number(r?.sell ?? 0);
+      const prev = (cached.signalSummary && typeof cached.signalSummary === 'object')
+        ? (cached.signalSummary as Record<string, unknown>)
+        : {};
+      const signalSummary = {
+        ...prev,
+        approvedTotal: Number.isFinite(active) ? active : 0,
+        approvedBuy: Number.isFinite(buy) ? buy : 0,
+        approvedSell: Number.isFinite(sell) ? sell : 0,
+        approvedDefinition: marketOpen
+          ? 'q365_confirmed_signal_snapshots ACTIVE+valid_until>NOW()'
+          : `q365_confirmed_signal_snapshots ACTIVE+valid OR recent EXPIRED (≤${expiredMaxAgeH}h)`,
+        approvedSource: 'confirmed_snapshots',
+        countsAvailable: true,
+      };
+      console.log('[DASHBOARD_COUNTS]', {
+        dbApprovedTotal: signalSummary.approvedTotal,
+        querySucceeded: true,
+        countsAvailable: true,
+        apiApprovedTotal: signalSummary.approvedTotal,
+        cache: 'hit_refreshed_approved',
+        mode: marketOpen ? 'live_active' : 'closed_active_or_recent_expired',
+      });
+      profile.setCache('hit');
+      return NextResponse.json(
+        { ...cached, signalSummary },
+        {
+          headers: {
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-Cache': 'HIT',
+            'X-Approved-Counts': 'refreshed',
+          },
+        },
+      );
+    } catch (err) {
+      // Keep cached body but mark approved unavailable if refresh fails
+      // and cached approved looks missing/non-numeric.
+      const prev = (cached.signalSummary && typeof cached.signalSummary === 'object')
+        ? (cached.signalSummary as Record<string, unknown>)
+        : null;
+      const cachedTotal = prev ? num(prev.approvedTotal) : null;
+      if (cachedTotal == null) {
+        console.log('[DASHBOARD_COUNTS]', {
+          dbApprovedTotal: null,
+          querySucceeded: false,
+          countsAvailable: false,
+          apiApprovedTotal: null,
+          cache: 'hit_refresh_failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      profile.setCache('hit');
+      return NextResponse.json(cached, {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'X-Cache': 'HIT',
+        },
+      });
+    }
   }
   profile.setCache(bypassCache ? 'bypass' : 'miss');
 
@@ -207,6 +300,92 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     ok: boolean; status: number; error: string | null;
     timedOut: boolean; elapsedMs: number; timeoutMs: number;
   }> = {};
+
+  // ── APPROVED counts FIRST (before nested fan-out) ─────────────
+  // Must not compete with /api/signals + engine-health for the MySQL
+  // pool. A failed count under contention was incorrectly surfaced as
+  // "unavailable" (UI —) even when the real ACTIVE count was 0.
+  //
+  // Definition (aligned with Signals APPROVED tab):
+  //   Market open  → ACTIVE AND valid_until > NOW()
+  //   Market closed → same OR recent EXPIRED snapshots (weekend display)
+  // Never counts q365_signals APPROVED_SIGNAL scan rows.
+  const marketForCounts = getMarketStatus();
+  const marketOpenForCounts = marketForCounts.isOpen === true;
+  let expiredMaxAgeH = 24;
+  try {
+    const { resolveClosedExpiredSnapshotMaxAgeHours } = await import(
+      '@/lib/signals/closedMarketSignals'
+    );
+    expiredMaxAgeH = resolveClosedExpiredSnapshotMaxAgeHours();
+  } catch { /* keep default */ }
+
+  const confirmedSnap = await profile.time('confirmed_snapshot_counts', async () => {
+    const t0 = performance.now();
+    try {
+      const sql = marketOpenForCounts
+        ? `SELECT
+             COUNT(*) AS active,
+             SUM(CASE WHEN UPPER(direction) = 'BUY' THEN 1 ELSE 0 END) AS buy,
+             SUM(CASE WHEN UPPER(direction) = 'SELL' THEN 1 ELSE 0 END) AS sell,
+             MAX(confirmed_at) AS max_confirmed
+           FROM q365_confirmed_signal_snapshots
+           WHERE status = 'ACTIVE'
+             AND valid_until > NOW()`
+        : `SELECT
+             COUNT(*) AS active,
+             SUM(CASE WHEN UPPER(direction) = 'BUY' THEN 1 ELSE 0 END) AS buy,
+             SUM(CASE WHEN UPPER(direction) = 'SELL' THEN 1 ELSE 0 END) AS sell,
+             MAX(confirmed_at) AS max_confirmed
+           FROM q365_confirmed_signal_snapshots
+           WHERE (
+                 (status = 'ACTIVE' AND valid_until > NOW())
+              OR (
+                   status = 'EXPIRED'
+               AND confirmed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+               AND (invalidation_reason IS NULL
+                    OR invalidation_reason = 'validity_window_elapsed')
+                 )
+           )`;
+      const { rows } = await db.query<{
+        active: number | string | null;
+        buy: number | string | null;
+        sell: number | string | null;
+        max_confirmed: Date | string | null;
+      }>(sql, marketOpenForCounts ? [] : [expiredMaxAgeH]);
+      const r = rows?.[0];
+      const active = Number(r?.active ?? 0);
+      const buy = Number(r?.buy ?? 0);
+      const sell = Number(r?.sell ?? 0);
+      return {
+        ok: true as const,
+        active: Number.isFinite(active) ? active : 0,
+        buy: Number.isFinite(buy) ? buy : 0,
+        sell: Number.isFinite(sell) ? sell : 0,
+        maxConfirmed: r?.max_confirmed
+          ? (r.max_confirmed instanceof Date
+            ? r.max_confirmed.toISOString()
+            : new Date(String(r.max_confirmed)).toISOString())
+          : null,
+        elapsedMs: performance.now() - t0,
+        error: null as string | null,
+        mode: marketOpenForCounts ? 'live_active' as const : 'closed_active_or_recent_expired' as const,
+        expiredMaxAgeH,
+      };
+    } catch (err) {
+      return {
+        ok: false as const,
+        active: null as number | null,
+        buy: null as number | null,
+        sell: null as number | null,
+        maxConfirmed: null as string | null,
+        error: err instanceof Error ? err.message : String(err),
+        elapsedMs: performance.now() - t0,
+        mode: marketOpenForCounts ? 'live_active' as const : 'closed_active_or_recent_expired' as const,
+        expiredMaxAgeH,
+      };
+    }
+  });
 
   // ── Per-module timeout budgets ───────────────────────────────
   //
@@ -228,8 +407,8 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     backtestsList:  5_000, // /backtests list
   } as const;
 
-  // Fire all upstream calls concurrently. Each is independent — one
-  // failure must never block the response.
+  // Fire remaining upstream calls concurrently. Approved counts are
+  // already resolved above and do not depend on these.
   const [
     feedMetaResult,
     signalsRes,
@@ -240,8 +419,11 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     manipulationRes,
     optionsRes,
     backtestsListRes,
-  ] = await profile.time('dashboard_dependencies', () => Promise.allSettled([
-    resolveUserFeedMeta(userId),
+  ] = await profile.time('dashboard_dependencies', () => Promise.all([
+    resolveUserFeedMeta(userId).then(
+      (v) => ({ status: 'fulfilled' as const, value: v }),
+      (e) => ({ status: 'rejected' as const, reason: e }),
+    ),
     internalFetch<any>(req, `/api/signals?action=top&limit=20&request_id=dash-${Date.now()}`, { cookieHeader, timeoutMs: TIMEOUT.signals }).then(toFetchResult),
     internalFetch<any>(req, `/api/signals/engine-health`,                                     { cookieHeader, timeoutMs: TIMEOUT.engineHealth }).then(toFetchResult),
     internalFetch<any>(req, `/api/signals/daily-report`,                                      { cookieHeader, timeoutMs: TIMEOUT.dailyReport }).then(toFetchResult),
@@ -256,21 +438,15 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     ? feedMetaResult.value
     : { provider: null as null, status: 'not_connected' as const };
 
-  const rejectedShim: FetchResult<any> = {
-    ok: false, status: 0, data: null, error: 'settled-rejected',
-    timedOut: false, elapsedMs: 0, timeoutMs: 0,
-  };
-  const settled = <T,>(r: PromiseSettledResult<FetchResult<T>>): FetchResult<T> =>
-    r.status === 'fulfilled' ? r.value : (rejectedShim as FetchResult<T>);
-
-  const signals       = settled(signalsRes);
-  const engineHealth  = settled(engineHealthRes);
-  const dailyReport   = settled(dailyReportRes);
-  const backtest      = settled(backtestRes);
-  const newsSummary   = settled(newsSummaryRes);
-  const manipulation  = settled(manipulationRes);
-  const options       = settled(optionsRes);
-  const backtestsList = settled(backtestsListRes);
+  // Upstream module fetches already resolve to FetchResult (never reject).
+  const signals       = signalsRes;
+  const engineHealth  = engineHealthRes;
+  const dailyReport   = dailyReportRes;
+  const backtest      = backtestRes;
+  const newsSummary   = newsSummaryRes;
+  const manipulation  = manipulationRes;
+  const options       = optionsRes;
+  const backtestsList = backtestsListRes;
 
   const recordSource = (key: string, r: FetchResult<any>) => {
     sourceStatus[key] = {
@@ -373,34 +549,76 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
   // Latest confirmed signal timestamp — fall back through several
   // candidate fields the engine ships.
   const latestSignalAt: string | null =
+    confirmedSnap.maxConfirmed ??
     str(sigPayload.lastConfirmedSignalAt) ??
     str(sigPayload.last_pipeline_run) ??
     str(sigPayload.lastSuccessAt) ??
     null;
 
+  // APPROVED = ACTIVE confirmed snapshots (same as Signals APPROVED tab).
+  // Never substitute 0 when the snapshot query failed — expose null +
+  // availability so the UI can show "Unavailable" instead of a lie.
+  // Real zero (ACTIVE=0) MUST remain numeric 0 with countsAvailable=true.
+  const approvedFromSnapshots = confirmedSnap.ok === true;
+  const signalsOk = signals.ok === true;
+  const dbApprovedTotal = approvedFromSnapshots ? (confirmedSnap.active as number) : null;
   const signalSummary = {
-    approvedTotal:        displayableApproved.length,
-    approvedBuy:          approvedBuy,
-    approvedSell:         approvedSell,
-    highPotentialTotal:   num(counters.highPotentialTotal) ?? highPotentialSignals.length,
+    approvedTotal:        approvedFromSnapshots
+                            ? (confirmedSnap.active as number)
+                            : (signalsOk ? displayableApproved.length : null),
+    approvedBuy:          approvedFromSnapshots
+                            ? (confirmedSnap.buy as number)
+                            : (signalsOk ? approvedBuy : null),
+    approvedSell:         approvedFromSnapshots
+                            ? (confirmedSnap.sell as number)
+                            : (signalsOk ? approvedSell : null),
+    approvedDefinition:   (confirmedSnap.mode === 'closed_active_or_recent_expired'
+      ? `q365_confirmed_signal_snapshots ACTIVE+valid OR recent EXPIRED (≤${confirmedSnap.expiredMaxAgeH}h)`
+      : 'q365_confirmed_signal_snapshots ACTIVE+valid_until>NOW()') as string,
+    approvedSource:       approvedFromSnapshots
+                            ? 'confirmed_snapshots'
+                            : (signalsOk ? 'signals_payload_fallback' : 'unavailable'),
+    // countsAvailable reflects whether APPROVED counts are trustworthy.
+    // Query success with ACTIVE=0 → true. Query failure → false.
+    // Do NOT use Boolean(approvedTotal) — real zero must stay available.
+    countsAvailable:      approvedFromSnapshots || signalsOk,
+    signalsAvailable:     signalsOk,
+    signalsTimedOut:      signals.timedOut === true,
+    highPotentialTotal:   signalsOk
+                            ? (num(counters.highPotentialTotal) ?? highPotentialSignals.length)
+                            : null,
     // watchlistTotal: prefer the upstream counter when it's already
     // non-zero (post-fix /api/signals computes it from the full tier
     // union). Otherwise fall back to the de-duped local merge so an
     // unfixed upstream / older deploy still surfaces the rows.
-    watchlistTotal:       (num(counters.watchlistTotal) ?? 0) > 0
-                            ? num(counters.watchlistTotal)!
-                            : watchlistSignals.length,
-    rejectedTotal:        num(counters.rejectedTotal)      ?? rejectedSignals.length,
-    candidateTotal:       (num(counters.candidateTotal) ?? 0) > 0
-                            ? num(counters.candidateTotal)!
-                            : (highPotentialSignals.length + watchlistSignals.length + rejectedSignals.length),
+    watchlistTotal:       signalsOk
+                            ? ((num(counters.watchlistTotal) ?? 0) > 0
+                              ? num(counters.watchlistTotal)!
+                              : watchlistSignals.length)
+                            : null,
+    rejectedTotal:        signalsOk
+                            ? (num(counters.rejectedTotal) ?? rejectedSignals.length)
+                            : null,
+    candidateTotal:       signalsOk
+                            ? ((num(counters.candidateTotal) ?? 0) > 0
+                              ? num(counters.candidateTotal)!
+                              : (highPotentialSignals.length + watchlistSignals.length + rejectedSignals.length))
+                            : null,
     topBlockingReason:    topBlockReason,
     latestSignalAt,
   };
 
   console.log('[DASHBOARD_COUNTS]', {
-    final: signalSummary,
-    source: 'merged-counters-with-local-tier-union-fallback',
+    dbApprovedTotal,
+    querySucceeded: approvedFromSnapshots,
+    countsAvailable: signalSummary.countsAvailable,
+    apiApprovedTotal: signalSummary.approvedTotal,
+    approvedSource: signalSummary.approvedSource,
+    signalsOk,
+    signalsTimedOut: signals.timedOut === true,
+    signalsElapsedMs: signals.elapsedMs,
+    confirmedSnapError: confirmedSnap.error ?? null,
+    confirmedSnapMs: confirmedSnap.elapsedMs,
   });
 
   // ── Nearest opportunities (top 5) ─────────────────────────────
@@ -525,7 +743,7 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
       let overall = preview?.overallStatus ?? engineOverallStatus;
       const reason = String(preview?.primaryBlockingReason ?? '');
       const marketOpen = sigPayload.marketStatus?.isOpen === true;
-      const candidateTotal = signalSummary.candidateTotal;
+      const candidateTotal = signalSummary.candidateTotal ?? 0;
 
       // Benign states should not downgrade the Command Center chip.
       const benign =
@@ -550,10 +768,10 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
       else if (overall === 'BROKEN')   status = 'BROKEN';
       else                             status = 'UNKNOWN';
       const detail = preview?.primaryBlockingReason
-        ?? `${signalSummary.approvedTotal} approved · ${signalSummary.candidateTotal} candidates`;
+        ?? `${signalSummary.approvedTotal ?? '—'} approved · ${signalSummary.candidateTotal ?? '—'} candidates`;
       return {
         status, detail, reason: detail,
-        action: signalSummary.approvedTotal > 0 ? 'Review approved signals' : 'Open Signals',
+        action: (signalSummary.approvedTotal ?? 0) > 0 ? 'Review approved signals' : 'Open Signals',
         lastUpdated: latestSignalAt,
       };
     },
@@ -793,7 +1011,7 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
       if (m.label === 'Signal Engine') {
         const r = m.reason.toLowerCase();
         if (!r.includes('fallback') && !r.includes('frozen') && !r.includes('bootstrap')) {
-          if (r.includes('market closed') || signalSummary.candidateTotal > 0) return false;
+          if (r.includes('market closed') || (signalSummary.candidateTotal ?? 0) > 0) return false;
         }
       }
       return true;
@@ -818,11 +1036,14 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
 
   // Direction bias from approved signal distribution.
   let directionBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL' | 'UNKNOWN' = 'UNKNOWN';
-  if (signalSummary.approvedTotal > 0) {
-    if (signalSummary.approvedBuy > signalSummary.approvedSell * 1.4) directionBias = 'BULLISH';
-    else if (signalSummary.approvedSell > signalSummary.approvedBuy * 1.4) directionBias = 'BEARISH';
+  const approvedN = signalSummary.approvedTotal;
+  const buyN = signalSummary.approvedBuy ?? 0;
+  const sellN = signalSummary.approvedSell ?? 0;
+  if (approvedN != null && approvedN > 0) {
+    if (buyN > sellN * 1.4) directionBias = 'BULLISH';
+    else if (sellN > buyN * 1.4) directionBias = 'BEARISH';
     else directionBias = 'NEUTRAL';
-  } else if (signalSummary.candidateTotal > 0) {
+  } else if ((signalSummary.candidateTotal ?? 0) > 0) {
     const buyCand  = [...highPotentialSignals, ...watchlistSignals].filter((s) => String(s.direction ?? '').toUpperCase() === 'BUY').length;
     const sellCand = [...highPotentialSignals, ...watchlistSignals].filter((s) => String(s.direction ?? '').toUpperCase() === 'SELL').length;
     if (buyCand > sellCand * 1.4) directionBias = 'BULLISH';
@@ -888,12 +1109,14 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
 
   // ── Core: Approved signals (10) ──
   maxPoints += 10;
-  if (signalSummary.approvedTotal > 0) {
+  if (approvedN != null && approvedN > 0) {
     trustPoints += 10;
-    reasons.push(`${signalSummary.approvedTotal} approved signals available`);
-  } else if (signalSummary.candidateTotal > 0) {
+    reasons.push(`${approvedN} approved signals available`);
+  } else if ((signalSummary.candidateTotal ?? 0) > 0) {
     trustPoints += 5;
     reasons.push('Candidates available — none approved yet');
+  } else if (approvedN == null) {
+    reasons.push('Approved signal counts unavailable (upstream timeout/error)');
   } else if (signalEngineFusion.status === 'HEALTHY') {
     trustPoints += 2;
     reasons.push('No approved signals — engine ready');
@@ -1004,10 +1227,19 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
   // ── Recommended actions ───────────────────────────────────────
   const actions: RecommendedAction[] = [];
 
-  if (signalSummary.approvedTotal === 0 && signalSummary.candidateTotal > 0) {
+  if (approvedN === 0 && (signalSummary.candidateTotal ?? 0) > 0) {
     actions.push({
       title:    'Review nearest-to-approval candidates',
       reason:   `${nearestOpportunities.length} candidates within striking distance of approval thresholds.`,
+      priority: 'HIGH',
+      href:     '/signals',
+    });
+  }
+
+  if (approvedN == null && signalSummary.signalsTimedOut) {
+    actions.push({
+      title:    'Retry Signals — counts timed out',
+      reason:   'Dashboard could not load approved counts. This is not a confirmed zero.',
       priority: 'HIGH',
       href:     '/signals',
     });
@@ -1076,10 +1308,10 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     });
   }
 
-  if (signalSummary.approvedTotal > 0) {
+  if (approvedN != null && approvedN > 0) {
     actions.unshift({
-      title:    `Review ${signalSummary.approvedTotal} approved signal${signalSummary.approvedTotal === 1 ? '' : 's'}`,
-      reason:   `${signalSummary.approvedBuy} buy · ${signalSummary.approvedSell} sell ready for execution review.`,
+      title:    `Review ${approvedN} approved signal${approvedN === 1 ? '' : 's'}`,
+      reason:   `${buyN} buy · ${sellN} sell ready for execution review.`,
       priority: 'HIGH',
       href:     '/signals',
     });
@@ -1140,7 +1372,7 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
   };
   profile.mark('response_processing', performance.now() - responseProcessingStartedAt);
 
-  if (!bypassCache) {
+  if (!bypassCache && signalSummary.approvedTotal != null) {
     await profile.time('cache_write', () => cacheService.set(
       responseCacheKey,
       payload,

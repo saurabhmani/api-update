@@ -1632,23 +1632,33 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
   }
 
   const bootstrapEarly = req.nextUrl.searchParams.get('bootstrap') === 'true';
-  // API fallback freshness (scheduler remains primary). Non-blocking unless bootstrap.
-  // Hard-cap so a saturated DB cannot 504 the whole signals response.
+  // API fallback freshness (scheduler remains primary).
+  // Non-bootstrap GETs must NEVER wait on candle/scan repair — that path
+  // caused Nginx 504s and "reload until ready" UX. Fire-and-forget only;
+  // probe is already hard-capped inside ensureTradingDataFresh.
   const tradingDataFreshness = await profile.time('trading_data_freshness', async () => {
     try {
       const { ensureTradingDataFresh } = await import(
         '@/lib/marketData/tradingDataFreshness'
       );
+      if (bootstrapEarly) {
+        return await ensureTradingDataFresh({
+          refreshCandles: true,
+          refreshScan: true,
+          awaitWork: true,
+          maxWaitMs: 60_000,
+        });
+      }
+      // Kick freshness without awaiting repair work. Cap the whole call
+      // so a hung probe cannot stall the signals response.
       const work = ensureTradingDataFresh({
         refreshCandles: true,
         refreshScan: true,
-        awaitWork: bootstrapEarly,
-        maxWaitMs: bootstrapEarly ? 60_000 : 8_000,
+        awaitWork: false,
       });
-      if (bootstrapEarly) return await work;
       const raced = await Promise.race([
         work,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_200)),
       ]);
       return raced ?? {
         session: null as null,
@@ -2272,9 +2282,7 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
             closed_primary_from: closedPrimary.from,
           }));
           const closedDisplayableApproved = filterClosedDisplayable(
-            (closedPrimary.from === 'approved'
-              ? closedEnrichedApproved
-              : closedPrimaryTagged) as Array<Record<string, unknown>>,
+            closedEnrichedApproved as Array<Record<string, unknown>>,
             closedSignalQuality,
             { allowHistorical: true },
           );
@@ -2372,11 +2380,10 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
             // PHASE_1_RANKING + PHASE_2_DUE_DILIGENCE — each tier is
             // sorted by highest final score first and enriched with
             // per-row dueDiligence + performanceReview.
-            // Primary `signals[]` falls back to high_potential /
-            // developing / scanner when approved is empty so the UI
-            // never treats "market closed" as "no data" when last-
-            // session rows still exist.
-            signals:             closedPrimaryTagged as typeof closedTieredApproved,
+            // Primary `signals[]` is APPROVED-only (confirmed snapshots).
+            // Last-session scan rows live in high_potential / developing /
+            // scanner_candidates — do not inflate APPROVED with them.
+            signals:             closedDisplayableApproved as typeof closedTieredApproved,
             approved:            closedEnrichedApproved as typeof closedTieredApproved,
             developing:          closedEnrichedDeveloping as typeof closedTieredDeveloping,
             scanner_candidates:  closedEnrichedScanner as typeof closedTieredScanner,
@@ -2519,11 +2526,16 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
               state:  status.state,
             },
             dataFreshness: {
-              isStale:    true,
+              // Weekend/closed: do NOT hardcode isStale=true — that made
+              // Dashboard "Data Freshness" always STALE off-hours even when
+              // the last EOD candle is within daily-tolerant bands.
+              // Only freeze (>72h daily) is a true stale/blocked feed.
+              isStale:    closedCandleFreshness.feed_frozen === true,
               ageMinutes: candleAgeMinutes ?? ageMinutes,
               label:      closedCandleFreshness.freshness_quality,
               tradingDate: session.latestCompletedTradingDay,
               dataSource: closedSignalSourceMeta.dataSource,
+              marketClosed: true,
             },
             provider:             closedSignalSourceMeta.dataSource === 'persisted'
               ? 'last_close_signals'

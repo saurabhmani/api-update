@@ -62,9 +62,14 @@ interface DashboardPayload {
   };
   trustScore: { score: number | null; label: TrustLabel; reasons: string[] };
   signalSummary: {
-    approvedTotal: number; approvedBuy: number; approvedSell: number;
-    highPotentialTotal: number; watchlistTotal: number;
-    rejectedTotal: number; candidateTotal: number;
+    approvedTotal: number | null; approvedBuy: number | null; approvedSell: number | null;
+    approvedDefinition?: string;
+    approvedSource?: string;
+    countsAvailable?: boolean;
+    signalsAvailable?: boolean;
+    signalsTimedOut?: boolean;
+    highPotentialTotal: number | null; watchlistTotal: number | null;
+    rejectedTotal: number | null; candidateTotal: number | null;
     topBlockingReason: string | null; latestSignalAt: string | null;
   };
   nearestOpportunities: Array<{
@@ -347,8 +352,25 @@ interface FreshnessDescriptor {
 function describeFreshness(
   stale: boolean | undefined,
   latestSignalAt: string | null | undefined,
+  marketStatus?: string | null,
 ): FreshnessDescriptor {
-  if (stale) return { value: 'STALE', sub: 'Latest candle validation pending.', tone: 'amber' };
+  const closed = marketStatus === 'CLOSED' || marketStatus === 'WEEKEND' || marketStatus === 'HOLIDAY';
+  if (closed && !stale) {
+    return {
+      value: 'EOD',
+      sub: 'Market closed — using last session candles.',
+      tone: 'blue',
+    };
+  }
+  if (stale) {
+    return {
+      value: 'STALE',
+      sub: closed
+        ? 'Last session candles older than daily tolerance.'
+        : 'Latest candle validation pending.',
+      tone: 'amber',
+    };
+  }
   if (latestSignalAt) {
     return { value: 'FRESH', sub: `Last signal ${fmtRelative(latestSignalAt)}.`, tone: 'green' };
   }
@@ -679,7 +701,7 @@ export default function DashboardPage() {
     engineHealth?.canGenerateCandidates ?? (summary?.candidateTotal ?? 0) > 0,
     market?.status === 'OPEN',
   );
-  const freshnessDesc = describeFreshness(risk?.staleData, summary?.latestSignalAt);
+  const freshnessDesc = describeFreshness(risk?.staleData, summary?.latestSignalAt, market?.status);
   const trustDesc     = describeTrust(
     trust,
     !!risk?.staleData,
@@ -689,28 +711,49 @@ export default function DashboardPage() {
   // Signal Readiness — count of candidates the engine is actively
   // tracking but hasn't yet approved. Derived from the existing
   // signalSummary fields, no new data.
-  const readinessCount = (summary?.highPotentialTotal ?? 0) + (summary?.watchlistTotal ?? 0);
-  const readinessTone: 'blue' | 'grey' = readinessCount > 0 ? 'blue' : 'grey';
-  const readinessSub = readinessCount > 0
-    ? 'Candidates awaiting confirmation.'
-    : 'No active candidates this cycle.';
+  const signalsCountsOk = summary?.countsAvailable !== false
+    && summary?.signalsAvailable !== false
+    && !summary?.signalsTimedOut;
+  const readinessCount = signalsCountsOk
+    ? (summary?.highPotentialTotal ?? 0) + (summary?.watchlistTotal ?? 0)
+    : null;
+  const readinessTone: 'blue' | 'grey' = (readinessCount ?? 0) > 0 ? 'blue' : 'grey';
+  const readinessSub = readinessCount == null
+    ? (summary?.signalsTimedOut ? 'Signals API timed out — counts unavailable.' : 'Signals data unavailable.')
+    : readinessCount > 0
+      ? 'Candidates awaiting confirmation.'
+      : 'No active candidates this cycle.';
 
   // Risk Gate — surfaces the institutional gate state. Active when
   // the engine is currently blocking trades (rejected pool non-zero
   // or due-diligence has logged blocker reasons).
   const riskGateActive =
-    (summary?.rejectedTotal ?? 0) > 0 ||
-    (risk?.rejectedTopReasons?.length ?? 0) > 0;
+    signalsCountsOk && (
+      (summary?.rejectedTotal ?? 0) > 0 ||
+      (risk?.rejectedTopReasons?.length ?? 0) > 0
+    );
   const riskGateTone: 'amber' | 'green' = riskGateActive ? 'amber' : 'green';
-  const riskGateValue = riskGateActive ? 'ACTIVE' : 'OPEN';
-  const riskGateSub   = riskGateActive
-    ? 'Blocking low-confidence trades.'
-    : 'No active rejections this cycle.';
+  const riskGateValue = !signalsCountsOk
+    ? 'UNKNOWN'
+    : riskGateActive ? 'ACTIVE' : 'OPEN';
+  const riskGateSub   = !signalsCountsOk
+    ? 'Cannot evaluate — signals feed unavailable.'
+    : riskGateActive
+      ? 'Blocking low-confidence trades.'
+      : 'No active rejections this cycle.';
 
   const biasTone = directionTone(strategy?.directionBias);
 
-  const noApproved   = (summary?.approvedTotal ?? 0) === 0;
-  const hasCandidates = (summary?.candidateTotal ?? 0) > 0;
+  // Approved card: numeric 0 is valid. Only show — when the count
+  // query/API did not produce a finite number.
+  const approvedTotalNum = typeof summary?.approvedTotal === 'number'
+    && Number.isFinite(summary.approvedTotal)
+    ? summary.approvedTotal
+    : null;
+  const approvedCountsOk = summary?.countsAvailable !== false && approvedTotalNum != null;
+  const approvedAvailable = approvedCountsOk;
+  const noApproved   = approvedAvailable && approvedTotalNum === 0;
+  const hasCandidates = signalsCountsOk && (summary?.candidateTotal ?? 0) > 0;
 
   // Session / engine-mode chips for the header right cluster.
   const sessionPillTone: 'green' | 'blue' | 'grey' =
@@ -897,7 +940,7 @@ export default function DashboardPage() {
             tone={readinessTone}
             icon={Target}
             href="/signals"
-            value={`${readinessCount} Developing`}
+            value={readinessCount == null ? '—' : `${readinessCount} Developing`}
             sub={readinessSub}
           />
           <CommandTile
@@ -918,11 +961,19 @@ export default function DashboardPage() {
             tone="green"
             icon={CheckCircle2}
             label="Approved"
-            value={summary?.approvedTotal ?? 0}
+            value={approvedCountsOk ? approvedTotalNum! : '—'}
             sub={
-              (summary?.approvedTotal ?? 0) > 0
-                ? `${summary?.approvedBuy ?? 0} buy · ${summary?.approvedSell ?? 0} sell`
-                : 'No signals passed risk gate yet.'
+              !approvedCountsOk
+                ? (summary?.approvedSource === 'unavailable' || summary?.countsAvailable === false
+                  ? (summary?.signalsTimedOut
+                    ? 'Approved count unavailable (snapshot query failed; signals also timed out).'
+                    : 'Approved count unavailable.')
+                  : 'Approved count unavailable.')
+                : approvedTotalNum! > 0
+                  ? `${summary?.approvedBuy ?? 0} buy · ${summary?.approvedSell ?? 0} sell · confirmed snapshots`
+                  : (market?.status === 'CLOSED'
+                    ? 'No confirmed snapshots for the latest session (scan-approved q365 rows are not APPROVED).'
+                    : 'No ACTIVE confirmed snapshots right now.')
             }
             href="/signals"
           />
@@ -930,11 +981,13 @@ export default function DashboardPage() {
             tone="blue"
             icon={Target}
             label="High Potential"
-            value={summary?.highPotentialTotal ?? 0}
+            value={typeof summary?.highPotentialTotal === 'number' ? summary.highPotentialTotal : '—'}
             sub={
-              (summary?.highPotentialTotal ?? 0) > 0
-                ? 'Strong but unconfirmed setups.'
-                : 'Awaiting confirmation from fresh market data.'
+              typeof summary?.highPotentialTotal !== 'number'
+                ? 'Signals feed unavailable.'
+                : summary.highPotentialTotal > 0
+                  ? 'Strong but unconfirmed setups.'
+                  : 'Awaiting confirmation from fresh market data.'
             }
             href="/signals"
           />
@@ -942,11 +995,13 @@ export default function DashboardPage() {
             tone="amber"
             icon={ShieldAlert}
             label="Watchlist"
-            value={summary?.watchlistTotal ?? 0}
+            value={typeof summary?.watchlistTotal === 'number' ? summary.watchlistTotal : '—'}
             sub={
-              (summary?.watchlistTotal ?? 0) > 0
-                ? 'Developing setups under review.'
-                : 'No developing setups this cycle.'
+              typeof summary?.watchlistTotal !== 'number'
+                ? 'Signals feed unavailable.'
+                : summary.watchlistTotal > 0
+                  ? 'Developing setups under review.'
+                  : 'No developing setups this cycle.'
             }
             href="/watchlist"
           />
@@ -954,11 +1009,13 @@ export default function DashboardPage() {
             tone="red"
             icon={TrendingDown}
             label="Rejected"
-            value={summary?.rejectedTotal ?? 0}
+            value={typeof summary?.rejectedTotal === 'number' ? summary.rejectedTotal : '—'}
             sub={
-              (summary?.rejectedTotal ?? 0) > 0
-                ? 'Risk gate restricted these candidates.'
-                : 'No active rejected signals in current cycle.'
+              typeof summary?.rejectedTotal !== 'number'
+                ? 'Signals feed unavailable.'
+                : summary.rejectedTotal > 0
+                  ? 'Risk gate restricted these candidates.'
+                  : 'No active rejected signals in current cycle.'
             }
             href="/signals"
           />

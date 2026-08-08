@@ -83,6 +83,53 @@ export const revalidate = 0;
 const PER_SOURCE_LIMIT = Math.max(100, Number(process.env.NOTIFICATIONS_PER_SOURCE_LIMIT) || 500);
 const MAX_FEED_SIZE    = Math.max(300, Number(process.env.NOTIFICATIONS_MAX_FEED_SIZE) || 2000);
 
+/** Per-source wall-clock budget. A hung MySQL table must not 504 Nginx. */
+const SOURCE_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.NOTIFICATIONS_SOURCE_TIMEOUT_MS) || 2_500,
+);
+/** Full-feed overall budget (summary mode uses a tighter budget). */
+const FEED_BUDGET_MS = Math.max(
+  1_000,
+  Number(process.env.NOTIFICATIONS_FEED_BUDGET_MS) || 8_000,
+);
+const SUMMARY_BUDGET_MS = Math.max(
+  500,
+  Number(process.env.NOTIFICATIONS_SUMMARY_BUDGET_MS) || 3_000,
+);
+
+async function withSourceTimeout<T>(
+  label: string,
+  fn: () => Promise<T>,
+  fallback: T,
+  timeoutMs = SOURCE_TIMEOUT_MS,
+): Promise<{ value: T; timedOut: boolean; ms: number; error?: string }> {
+  const t0 = Date.now();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const value = await Promise.race([
+      fn(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`source_timeout:${label}`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+    return { value, timedOut: false, ms: Date.now() - t0 };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.startsWith('source_timeout:')) {
+      console.warn(`[/api/notifications] ${label} timed out after ${timeoutMs}ms`);
+      return { value: fallback, timedOut: true, ms: Date.now() - t0, error: msg };
+    }
+    console.warn(`[/api/notifications] ${label} failed:`, msg);
+    return { value: fallback, timedOut: false, ms: Date.now() - t0, error: msg };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // Bell-badge countability window. Manipulation events and breaches
 // older than this remain VISIBLE on the Notifications page (so the
 // audit trail is preserved) but stop contributing to the bell's
@@ -706,24 +753,95 @@ export async function GET(req: NextRequest) {
     req.nextUrl.searchParams.get('portfolioId'),
   ).catch(() => null);
 
-  // Run every source in parallel — independent queries, no shared
-  // state. A single source failure logs and returns [] so the feed
-  // never goes blank just because one table is missing. Each new
-  // source is wrapped in its own try/catch so a missing table just
-  // contributes 0 to counts_by_source.
-  const [manip, breaches, legacy, signals, rankingChanges, watchlist, marketCond, dataQuality] =
-    await Promise.all([
-      loadManipulationItems(),
-      loadBreachItems(portfolioId ?? null),
-      loadLegacyNotificationItems(user.id),
-      loadSignalItems(),
-      loadRankingChangeItems(),
-      loadWatchlistItems(user.id),
-      loadMarketConditionItems(),
-      loadDataQualityItems(),
-    ]);
+  // Run every source in parallel with per-source + overall budgets.
+  // A single slow table used to hang the whole route until Nginx 504.
+  const budgetMs = isSummary ? SUMMARY_BUDGET_MS : FEED_BUDGET_MS;
+  const feedStartedAt = Date.now();
+  const empty: AggregatedItem[] = [];
+
+  const sourceJobs = Promise.all([
+    withSourceTimeout('manipulation', () => loadManipulationItems(), empty),
+    withSourceTimeout('breaches', () => loadBreachItems(portfolioId ?? null), empty),
+    withSourceTimeout('legacy', () => loadLegacyNotificationItems(user.id), empty),
+    // Summary mode skips the heaviest optional feeds — bell only needs
+    // urgent countable alerts (manipulation/breaches/legacy + system).
+    isSummary
+      ? Promise.resolve({ value: empty, timedOut: false, ms: 0 })
+      : withSourceTimeout('signals', () => loadSignalItems(), empty),
+    isSummary
+      ? Promise.resolve({ value: empty, timedOut: false, ms: 0 })
+      : withSourceTimeout('rankings', () => loadRankingChangeItems(), empty),
+    withSourceTimeout('watchlist', () => loadWatchlistItems(user.id), empty),
+    isSummary
+      ? Promise.resolve({ value: empty, timedOut: false, ms: 0 })
+      : withSourceTimeout('market_condition', () => loadMarketConditionItems(), empty),
+    isSummary
+      ? Promise.resolve({ value: empty, timedOut: false, ms: 0 })
+      : withSourceTimeout('data_quality', () => loadDataQualityItems(), empty),
+  ]);
+
+  const sourcesSettled = await Promise.race([
+    sourceJobs,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs)),
+  ]);
+
+  const [
+    manipRes, breachesRes, legacyRes, signalsRes,
+    rankingRes, watchlistRes, marketCondRes, dataQualityRes,
+  ] = sourcesSettled ?? [
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+    { value: empty, timedOut: true, ms: budgetMs, error: 'feed_budget' },
+  ];
+
+  // Fire-and-forget: if we hit the overall budget, still let slow sources
+  // finish in the background so the next poll is warm — do not await.
+  if (!sourcesSettled) {
+    void sourceJobs.catch(() => undefined);
+    console.warn(
+      `[/api/notifications] feed budget ${budgetMs}ms exceeded — returning partial`,
+    );
+  }
+
+  const manip = manipRes.value;
+  const breaches = breachesRes.value;
+  const legacy = legacyRes.value;
+  const signals = signalsRes.value;
+  const rankingChanges = rankingRes.value;
+  const watchlist = watchlistRes.value;
+  const marketCond = marketCondRes.value;
+  const dataQuality = dataQualityRes.value;
   const system  = loadSystemItems();
-  const userReads = await loadUserReadSet(user.id);
+  const userReads = await withSourceTimeout(
+    'user_reads',
+    () => loadUserReadSet(user.id),
+    new Set<string>(),
+    Math.min(SOURCE_TIMEOUT_MS, 1_500),
+  ).then((r) => r.value);
+
+  const sourceTimings = {
+    manipulation: manipRes.ms,
+    breaches: breachesRes.ms,
+    legacy: legacyRes.ms,
+    signals: signalsRes.ms,
+    rankings: rankingRes.ms,
+    watchlist: watchlistRes.ms,
+    market_condition: marketCondRes.ms,
+    data_quality: dataQualityRes.ms,
+    total_ms: Date.now() - feedStartedAt,
+    budget_ms: budgetMs,
+    budget_hit: !sourcesSettled,
+    timed_out_sources: [
+      manipRes, breachesRes, legacyRes, signalsRes,
+      rankingRes, watchlistRes, marketCondRes, dataQualityRes,
+    ].filter((s) => s.timedOut).length,
+  };
+  console.log('[/api/notifications][PERF]', sourceTimings);
 
   // Merge + dedupe + apply per-user read overlay. Marking an item read
   // is now per-user, so the same global manipulation row can show
@@ -823,10 +941,19 @@ export async function GET(req: NextRequest) {
         mode,
         as_of: new Date().toISOString(),
         counts_by_source,
+        degraded: sourceTimings.budget_hit || sourceTimings.timed_out_sources > 0,
+        timings: sourceTimings,
       },
       {
         status:  200,
-        headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          'Server-Timing': `total;dur=${sourceTimings.total_ms}`,
+          'X-Notifications-Degraded':
+            sourceTimings.budget_hit || sourceTimings.timed_out_sources > 0
+              ? '1'
+              : '0',
+        },
       },
     );
   }
@@ -867,10 +994,19 @@ export async function GET(req: NextRequest) {
       data_source,
       as_of: new Date().toISOString(),
       counts_by_source,
+      degraded: sourceTimings.budget_hit || sourceTimings.timed_out_sources > 0,
+      timings: sourceTimings,
     },
     {
       status:  200,
-      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Server-Timing': `total;dur=${sourceTimings.total_ms}`,
+        'X-Notifications-Degraded':
+          sourceTimings.budget_hit || sourceTimings.timed_out_sources > 0
+            ? '1'
+            : '0',
+      },
     },
   );
 }

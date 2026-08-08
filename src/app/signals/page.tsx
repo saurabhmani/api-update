@@ -972,7 +972,7 @@ export default function SignalsPage() {
     directionFlips, termLogs, signalQuality, marketClosed,
     // INSTITUTIONAL_TIER_2026-05 + CONDITIONAL_FALLBACK_2026-05 fields.
     highPotential, developing, scannerCandidates, watchlist, riskRestricted,
-    conditionalModeActive, tierCounts, emptyStateMessage,
+    conditionalModeActive, tierCounts, emptyStateMessage, apiLoadStatus,
     defaultTab, conditionalFloors,
     // ── FIX FINAL SIGNAL VISIBILITY 2026-05 ──
     marketStatus, dataFreshness, reasonSummary, lastApiRequestAt, lastSuccessAt,
@@ -2350,13 +2350,17 @@ export default function SignalsPage() {
             Shows a tiny ready/partial chip so the operator can see
             whether the daily report is populated before clicking. */}
         {(() => {
-          const ready    = dailyReportPreview?.ready === true;
-          const status   = dailyReportPreview?.reportStatus ?? 'INSUFFICIENT_DATA';
+          const apiDown = apiLoadStatus != null && apiLoadStatus.ok === false;
+          const ready    = !apiDown && dailyReportPreview?.ready === true;
+          const status   = apiDown
+            ? 'API_UNAVAILABLE'
+            : (dailyReportPreview?.reportStatus ?? (loading ? 'PENDING' : 'INSUFFICIENT_DATA'));
           const chipPal: Record<string, { bg: string; color: string; border: string }> = {
             COMPLETE:          { bg: '#F0FDF4', color: '#15803D', border: '#BBF7D0' },
             PARTIAL:           { bg: '#FFFBEB', color: '#92400E', border: '#FDE68A' },
             PENDING:           { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' },
             INSUFFICIENT_DATA: { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
+            API_UNAVAILABLE:   { bg: '#FEF2F2', color: '#B91C1C', border: '#FECACA' },
           };
           const pal = chipPal[status] ?? chipPal.INSUFFICIENT_DATA;
           const subtext = status === 'COMPLETE'
@@ -2365,7 +2369,10 @@ export default function SignalsPage() {
               ? 'Daily report partial — outcome data still pending'
               : status === 'PENDING'
                 ? 'Daily report pending'
-                : 'Daily report awaiting post-signal data';
+                : status === 'API_UNAVAILABLE'
+                  ? `Signals API unavailable${apiLoadStatus?.httpStatus ? ` (HTTP ${apiLoadStatus.httpStatus})` : ''} — not insufficient data`
+                : (dailyReportPreview?.insufficientReason
+                  ?? 'Daily report awaiting post-signal outcome counters');
           return (
             <div style={{
               margin: '0 0 12px 0',
@@ -2386,10 +2393,18 @@ export default function SignalsPage() {
                 border: `1px solid ${pal.border}`,
                 fontSize: 10, fontWeight: 700, letterSpacing: 0.4,
               }}>
-                {status === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT DATA' : status}
+                {status === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT DATA'
+                  : status === 'API_UNAVAILABLE' ? 'API UNAVAILABLE'
+                  : status}
+              {dailyReportPreview?.insufficientReason && status === 'INSUFFICIENT_DATA' && (
+                <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.85 }}
+                  title={dailyReportPreview.insufficientReason}>
+                  (no outcome counters)
+                </span>
+              )}
               </span>
               <span style={{ color: '#475569' }}>{subtext}</span>
-              {dailyReportPreview?.topBlockReason && (
+              {dailyReportPreview?.topBlockReason && status !== 'API_UNAVAILABLE' && (
                 <span style={{ color: '#94A3B8', fontSize: 11 }}>
                   · Top block: <strong style={{ color: '#B91C1C' }}>{dailyReportPreview.topBlockReason}</strong>
                 </span>
@@ -3212,6 +3227,10 @@ export default function SignalsPage() {
               if (emptyStateMessage && /universe/i.test(emptyStateMessage)) {
                 title = 'Universe initializing';
                 subtitle = emptyStateMessage;
+              } else if (apiLoadStatus && apiLoadStatus.ok === false) {
+                title = 'Signals API unavailable';
+                subtitle = emptyStateMessage
+                  ?? `HTTP ${apiLoadStatus.httpStatus ?? '—'} — not an empty-signal condition. Retrying automatically.`;
               }
               // Market-closed mode wins over the stored-signal heuristics
               // below — without this, the page reports "Stored signals are

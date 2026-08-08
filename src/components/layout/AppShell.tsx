@@ -122,15 +122,29 @@ function useNotificationsBell(): NotifBellSummary {
     const fetchSummary = async () => {
       try {
         const res = await fetch('/api/notifications?summary=1', { cache: 'no-store' });
-        if (!res.ok) return;
+        if (!res.ok) {
+          // Do not reset unread to 0 on 5xx/504 — keep last known summary.
+          console.warn('[AppShell] notifications summary HTTP', res.status);
+          return;
+        }
         const json = await res.json();
         if (cancelled) return;
-        const u = Number(json?.unreadCount)   || 0;
-        const c = Number(json?.criticalCount) || 0;
+        if (json?.degraded) {
+          console.warn('[AppShell] notifications summary degraded', json?.timings);
+        }
+        const u = Number(json?.unreadCount);
+        const c = Number(json?.criticalCount);
         const isOpen = json?.marketStatus?.isOpen === true;
         isOpenRef.current = isOpen;
-        setSummary({ unreadCount: u, criticalCount: c, marketIsOpen: isOpen });
-      } catch { /* swallow — next tick will retry */ }
+        setSummary({
+          unreadCount: Number.isFinite(u) ? u : 0,
+          criticalCount: Number.isFinite(c) ? c : 0,
+          marketIsOpen: isOpen,
+        });
+      } catch (err) {
+        // Swallow network blips but never invent a zero unread count.
+        console.warn('[AppShell] notifications summary fetch failed', err);
+      }
     };
 
     const tick = async () => {

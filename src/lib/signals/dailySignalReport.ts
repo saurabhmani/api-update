@@ -1382,6 +1382,8 @@ export interface DailyReportPreview {
   topBlockReason:           string | null;
   dataStatus:               DailyReportDataStatus;
   ready:                    boolean;
+  /** Set when reportStatus is INSUFFICIENT_DATA — explains the gate. */
+  insufficientReason?:      string | null;
 }
 
 export function buildDailyReportPreview(
@@ -1436,10 +1438,15 @@ export function buildLightweightDailyReportPreview(
   // Mirrors buildDailySignalReport's status resolution: when we have
   // any outcome counter the preview is at least PARTIAL.
   const hasOutcome = input.approvedSuccess != null || input.highPotentialPerformed != null;
+  // INSUFFICIENT_DATA here means "no post-signal outcome counters yet"
+  // — NOT "API failed". With zero ACTIVE confirmed snapshots this is
+  // the expected state until maturity promotes again.
   const reportStatus: DailyReportStatus = hasOutcome ? 'PARTIAL' : 'INSUFFICIENT_DATA';
 
   const headline = input.approvedTotal === 0
-    ? 'No approved signals today — monitored candidates only.'
+    ? (hasOutcome
+      ? 'No approved signals today — monitored candidates only.'
+      : 'Insufficient outcome data — no approved/high-potential performance counters yet (0 ACTIVE confirmed snapshots is expected until promotion resumes).')
     : `${input.approvedTotal} approved signals — ${approvedWinRate != null ? `${approvedWinRate}% in-direction` : 'outcome data pending'}`;
 
   return {
@@ -1451,5 +1458,8 @@ export function buildLightweightDailyReportPreview(
     topBlockReason:         input.topBlockReason,
     dataStatus,
     ready:                  hasOutcome,
+    insufficientReason:     hasOutcome
+      ? null
+      : 'required: approvedSuccess or highPotentialPerformed outcome counters; received: both null (typical when ACTIVE confirmed snapshots = 0)',
   };
 }

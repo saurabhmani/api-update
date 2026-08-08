@@ -432,6 +432,8 @@ export interface DailyReportPreview {
   topBlockReason:         string | null;
   dataStatus:             DailyReportDataStatus;
   ready:                  boolean;
+  /** Explains INSUFFICIENT_DATA — not used for API timeouts. */
+  insufficientReason?:    string | null;
 }
 
 // ── PHASE_5_HEALTH_OBSERVABILITY_2026-05 ──
@@ -498,6 +500,17 @@ export interface UseSignalsPollingResult {
   conditionalModeActive:  boolean;
   tierCounts:             TierCounts | null;
   emptyStateMessage:      string | null;
+  /**
+   * Distinguishes transport failure from genuine empty data.
+   * null = last successful poll; otherwise HTTP status / code so the
+   * UI can show "API unavailable" instead of false zeros / INSUFFICIENT_DATA.
+   */
+  apiLoadStatus:          {
+    ok: boolean;
+    httpStatus: number | null;
+    code: string | null;
+    message: string | null;
+  } | null;
   /** Server's hint for which tab to land on when the page first
    *  renders — APPROVED when signals[] non-empty, HIGH_POTENTIAL
    *  when conditional fallback engaged, etc. */
@@ -610,6 +623,13 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
   const [conditionalModeActive, setConditionalModeActive] = useState<boolean>(false);
   const [tierCounts,            setTierCounts]            = useState<TierCounts | null>(null);
   const [emptyStateMessage,     setEmptyStateMessage]     = useState<string | null>(null);
+  const [apiLoadStatus,         setApiLoadStatus]         = useState<{
+    ok: boolean;
+    httpStatus: number | null;
+    code: string | null;
+    message: string | null;
+  } | null>(null);
+  const universeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [defaultTab,            setDefaultTab]            = useState<DashboardTab | null>(null);
   const [conditionalFloors,     setConditionalFloors]     = useState<ConditionalFloors | null>(null);
 
@@ -879,15 +899,37 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
         return;
       }
 
-      if (res.status === 503 && data?.code === 'UNIVERSE_NOT_READY') {
-        setEmptyStateMessage(
-          typeof data.message === 'string'
-            ? data.message
-            : 'Universe is initializing — not an empty-signal condition. Retry shortly.',
-        );
+      if (!res.ok) {
+        const code = typeof data?.code === 'string' ? data.code : null;
+        const message = typeof data?.message === 'string'
+          ? data.message
+          : (typeof data?.error === 'string' ? data.error : `HTTP ${res.status}`);
+        setApiLoadStatus({ ok: false, httpStatus: res.status, code, message });
+        if (res.status === 503 && code === 'UNIVERSE_NOT_READY') {
+          setEmptyStateMessage(
+            typeof data.message === 'string'
+              ? data.message
+              : 'Universe is initializing — not an empty-signal condition. Retry shortly.',
+          );
+          // Auto-retry so operators do not need manual reloads while boot finishes.
+          if (universeRetryRef.current) clearTimeout(universeRetryRef.current);
+          universeRetryRef.current = setTimeout(() => {
+            void load({ spinner: false, heavy: true });
+          }, 1_500);
+        } else {
+          setEmptyStateMessage(
+            `Signals API unavailable (${res.status}${code ? ` · ${code}` : ''}). Showing last known data if any — not a zero-signal result.`,
+          );
+        }
         setLoading(false);
-        pushLog(`[API] GET /api/signals  503 UNIVERSE_NOT_READY  ${Date.now() - t0}ms`);
+        pushLog(`[API] GET /api/signals  ${res.status} ${code ?? 'ERROR'}  ${Date.now() - t0}ms`);
         return;
+      }
+
+      setApiLoadStatus({ ok: true, httpStatus: res.status, code: null, message: null });
+      if (universeRetryRef.current) {
+        clearTimeout(universeRetryRef.current);
+        universeRetryRef.current = null;
       }
 
       const rows: SignalRow[] = data.signals ?? [];
@@ -1301,6 +1343,15 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
         String(e?.message ?? '').toLowerCase().includes('abort');
       if (isAbort) return;
       if (mySeq === reqSeqRef.current) {
+        setApiLoadStatus({
+          ok: false,
+          httpStatus: null,
+          code: 'NETWORK_ERROR',
+          message: e?.message ?? String(e),
+        });
+        setEmptyStateMessage(
+          'Signals API request failed (network). Showing last known data if any — not a zero-signal result.',
+        );
         pushLog(`[API] GET /api/signals FAILED  ${e?.message ?? e}`);
       }
     }
@@ -1724,7 +1775,7 @@ export function useSignalsPolling(opts: UseSignalsPollingOptions): UseSignalsPol
     directionFlips, termLogs, signalQuality, marketClosed,
     // INSTITUTIONAL_TIER_2026-05 + CONDITIONAL_FALLBACK_2026-05 fields.
     highPotential, developing, scannerCandidates, watchlist, riskRestricted,
-    conditionalModeActive, tierCounts, emptyStateMessage,
+    conditionalModeActive, tierCounts, emptyStateMessage, apiLoadStatus,
     defaultTab, conditionalFloors,
     // ── FIX FINAL SIGNAL VISIBILITY 2026-05 ──
     marketStatus, dataFreshness, reasonSummary, lastApiRequestAt, lastSuccessAt,

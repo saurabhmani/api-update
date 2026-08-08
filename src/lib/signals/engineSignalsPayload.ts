@@ -12,7 +12,10 @@ import { internalFetch, type InternalFetchResult } from '@/lib/api/internalFetch
 import type { ApiPerfTracker } from '@/lib/api/apiPerf';
 
 /** Nested signals fetch must leave headroom for candles/movers/report. */
-export const ENGINE_SIGNALS_FETCH_TIMEOUT_MS = 4_000;
+export const ENGINE_SIGNALS_FETCH_TIMEOUT_MS = Math.max(
+  2_000,
+  Number(process.env.ENGINE_SIGNALS_FETCH_TIMEOUT_MS) || 6_000,
+);
 
 /** Share concurrent parent calls (dashboard fires daily-report + backtest together). */
 const CACHE_TTL_MS = 5_000;
