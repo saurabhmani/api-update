@@ -280,7 +280,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     const { getTradingSessionFreshness } = await import(
       '@/lib/marketData/tradingDataFreshness'
     );
-    tradingFreshness = await getTradingSessionFreshness();
+    tradingFreshness = await Promise.race([
+      getTradingSessionFreshness(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+    ]);
   } catch {
     tradingFreshness = null;
   }

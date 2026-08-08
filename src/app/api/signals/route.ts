@@ -1633,17 +1633,29 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
 
   const bootstrapEarly = req.nextUrl.searchParams.get('bootstrap') === 'true';
   // API fallback freshness (scheduler remains primary). Non-blocking unless bootstrap.
+  // Hard-cap so a saturated DB cannot 504 the whole signals response.
   const tradingDataFreshness = await profile.time('trading_data_freshness', async () => {
     try {
       const { ensureTradingDataFresh } = await import(
         '@/lib/marketData/tradingDataFreshness'
       );
-      return await ensureTradingDataFresh({
+      const work = ensureTradingDataFresh({
         refreshCandles: true,
         refreshScan: true,
         awaitWork: bootstrapEarly,
         maxWaitMs: bootstrapEarly ? 60_000 : 8_000,
       });
+      if (bootstrapEarly) return await work;
+      const raced = await Promise.race([
+        work,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+      ]);
+      return raced ?? {
+        session: null as null,
+        candleAction: 'failed' as const,
+        scanAction: 'failed' as const,
+        error: 'freshness_probe_timeout',
+      };
     } catch (err) {
       return {
         session: null as null,

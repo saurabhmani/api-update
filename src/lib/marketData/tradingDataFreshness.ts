@@ -39,9 +39,11 @@ export type FreshnessAction =
   | 'candles_refreshed'
   | 'candles_refresh_in_progress'
   | 'candles_refresh_skipped_session_incomplete'
+  | 'candles_refresh_skipped_market_closed'
   | 'scan_triggered'
   | 'scan_in_progress'
   | 'scan_skipped_candles_stale'
+  | 'scan_skipped_market_closed'
   | 'failed'
   | 'disabled';
 
@@ -208,7 +210,7 @@ async function querySessionFreshness(): Promise<TradingSessionFreshness> {
 }
 
 export async function getTradingSessionFreshness(): Promise<TradingSessionFreshness> {
-  return querySessionFreshness();
+  return probeSessionFreshnessBounded(2_500);
 }
 
 async function withLock<T>(
@@ -295,12 +297,17 @@ export interface EnsureTradingDataFreshOptions {
 /**
  * Probe + optional self-heal. Safe for concurrent API hits (Redis/mem lock).
  * Does NOT promote confirmed snapshots / APPROVED rows.
+ *
+ * IMPORTANT: background candle/scan repair is ONLY allowed when the
+ * market is open, or when the caller explicitly awaits work (bootstrap).
+ * Off-hours fire-and-forget from /api/signals + /api/ticker polls was
+ * saturating MySQL/IndianAPI and producing production 504s.
  */
 export async function ensureTradingDataFresh(
   opts: EnsureTradingDataFreshOptions = {},
 ): Promise<EnsureTradingDataFreshResult> {
   if (!envFlag('API_FRESHNESS_FALLBACK_ENABLED', true)) {
-    const session = await querySessionFreshness();
+    const session = await probeSessionFreshnessBounded();
     return {
       session,
       candleAction: 'disabled',
@@ -312,8 +319,12 @@ export async function ensureTradingDataFresh(
   const refreshScan = opts.refreshScan !== false;
   const awaitWork = opts.awaitWork === true;
   const maxWaitMs = Math.max(1_000, Math.min(120_000, opts.maxWaitMs ?? 8_000));
+  const marketOpen = isMarketOpen();
+  // Scheduler owns closed-market / weekend repair. API polls must not
+  // spawn full candle jobs or evening scans in the background.
+  const allowBgRepair = awaitWork || marketOpen;
 
-  let session = await querySessionFreshness();
+  let session = await probeSessionFreshnessBounded();
   let candleAction: FreshnessAction = session.candlesFresh
     ? 'already_fresh'
     : 'failed';
@@ -323,22 +334,30 @@ export async function ensureTradingDataFresh(
   let error: string | undefined;
 
   // Before session close, do not demand today's EOD candle.
-  if (!session.candlesFresh && isMarketOpen()) {
+  if (!session.candlesFresh && marketOpen) {
     candleAction = 'candles_refresh_skipped_session_incomplete';
     // Treat prior completed day as the bar for scan freshness mid-session.
     scanAction = session.latestScheduledScanAt ? 'already_fresh' : scanAction;
   }
 
+  if (!session.candlesFresh && !marketOpen && !awaitWork) {
+    candleAction = 'candles_refresh_skipped_market_closed';
+  }
+
   if (
     refreshCandles &&
     !session.candlesFresh &&
-    candleAction !== 'candles_refresh_skipped_session_incomplete'
+    candleAction !== 'candles_refresh_skipped_session_incomplete' &&
+    candleAction !== 'candles_refresh_skipped_market_closed' &&
+    allowBgRepair
   ) {
     const work = async () => {
       log.info('API freshness candle repair starting', {
         expectedTradingDay: session.expectedTradingDay,
         coveragePct: session.coveragePct,
         maxFetch: repairMaxFetch(),
+        awaitWork,
+        marketOpen,
       });
       await runBoundedCandleRepair(session.expectedTradingDay);
     };
@@ -357,8 +376,11 @@ export async function ensureTradingDataFresh(
         candleAction = 'failed';
         error = 'error' in outcome ? outcome.error : 'candle_refresh_failed';
       }
+      session = await probeSessionFreshnessBounded();
+      if (session.candlesFresh) candleAction = 'candles_refreshed';
     } else {
-      // Fire-and-forget under lock — concurrent requests see "in progress".
+      // Fire-and-forget under lock — do NOT re-probe (avoids doubling
+      // DB load on every poll while a repair may already be running).
       void withLock(CANDLE_LOCK, CANDLE_LOCK_TTL_S, work).then((o) => {
         if (o.status === 'failed') {
           log.warn('background candle freshness repair failed', { error: o.error });
@@ -366,24 +388,30 @@ export async function ensureTradingDataFresh(
       });
       candleAction = 'candles_refresh_in_progress';
     }
-    session = await querySessionFreshness();
-    if (session.candlesFresh) candleAction = 'candles_refreshed';
   } else if (session.candlesFresh) {
     candleAction = 'already_fresh';
   }
 
-  if (refreshScan && !session.scanFresh) {
-    if (!session.candlesFresh && candleAction !== 'candles_refresh_skipped_session_incomplete') {
+  if (!allowBgRepair && refreshScan && !session.scanFresh) {
+    scanAction = 'scan_skipped_market_closed';
+  } else if (refreshScan && !session.scanFresh) {
+    if (
+      !session.candlesFresh
+      && candleAction !== 'candles_refresh_skipped_session_incomplete'
+      && candleAction !== 'candles_refresh_skipped_market_closed'
+    ) {
       scanAction = 'scan_skipped_candles_stale';
     } else if (
       candleAction === 'candles_refresh_skipped_session_incomplete' &&
       session.latestScheduledScanAt
     ) {
       scanAction = 'already_fresh';
-    } else {
+    } else if (allowBgRepair) {
       const work = async () => {
         log.info('API freshness session scan starting', {
           expectedTradingDay: session.expectedTradingDay,
+          awaitWork,
+          marketOpen,
         });
         await runSessionScanOnce();
       };
@@ -402,6 +430,7 @@ export async function ensureTradingDataFresh(
           scanAction = 'failed';
           error = ('error' in outcome ? outcome.error : undefined) ?? error ?? 'scan_failed';
         }
+        session = await probeSessionFreshnessBounded();
       } else {
         void withLock(SCAN_LOCK, SCAN_LOCK_TTL_S, work).then((o) => {
           if (o.status === 'failed') {
@@ -410,13 +439,45 @@ export async function ensureTradingDataFresh(
         });
         scanAction = 'scan_triggered';
       }
-      session = await querySessionFreshness();
     }
   } else if (session.scanFresh) {
     scanAction = 'already_fresh';
   }
 
   return { session, candleAction, scanAction, error };
+}
+
+async function probeSessionFreshnessBounded(
+  timeoutMs = 2_500,
+): Promise<TradingSessionFreshness> {
+  try {
+    const result = await Promise.race([
+      querySessionFreshness(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+    if (result) return result;
+  } catch (err) {
+    log.warn('session freshness probe failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const market = getMarketStatus();
+  const expectedTradingDay = getLatestCompletedTradingDay();
+  return {
+    expectedTradingDay,
+    marketOpen: market.isOpen,
+    marketState: market.state,
+    latestCandleDay: null,
+    latestIndianApiCandleDay: null,
+    latestBhavcopyCandleDay: null,
+    universeActive: 0,
+    symbolsOnExpectedDay: 0,
+    coveragePct: 0,
+    candlesFresh: false,
+    latestScheduledScanAt: null,
+    latestSignalAt: null,
+    scanFresh: false,
+  };
 }
 
 /** Alias helpers for call sites / docs. */

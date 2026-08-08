@@ -204,16 +204,19 @@ async function handleRequest(_req: NextRequest, signal?: AbortSignal) {
   }
 
   // Lightweight candle freshness probe only (no scan on ticker path).
-  try {
-    const { ensureMarketDataFresh } = await import(
-      '@/lib/marketData/tradingDataFreshness'
-    );
-    void ensureMarketDataFresh({ refreshCandles: true, awaitWork: false });
-  } catch {
-    /* non-fatal */
+  // Off-hours: never spawn background candle repairs from the strip poll.
+  const market = getMarketEnvelope();
+  if (market.isOpen) {
+    try {
+      const { ensureMarketDataFresh } = await import(
+        '@/lib/marketData/tradingDataFreshness'
+      );
+      void ensureMarketDataFresh({ refreshCandles: true, awaitWork: false });
+    } catch {
+      /* non-fatal */
+    }
   }
 
-  const market = getMarketEnvelope();
   const mode: 'live' | 'market_closed' = market.isOpen ? 'live' : 'market_closed';
 
   // ── Step 1: assembled strip cache ─────────────────────────────
