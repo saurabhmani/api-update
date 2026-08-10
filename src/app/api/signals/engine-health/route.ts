@@ -357,9 +357,9 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
     ctx.dailyReport = { available: false };
   }
 
-  // Honest backtest readiness from warehouse presence — does not claim
-  // COMPLETE (that requires /api/signals/backtest). PARTIAL = candles
-  // exist so backtests can run; INSUFFICIENT_DATA = no EOD bars.
+  // Warehouse readiness only — full outcome coverage requires /api/signals/backtest.
+  // PARTIAL + readiness warning maps to HEALTHY in buildBacktestingHealthNode
+  // (not "outcome data unavailable"). INSUFFICIENT_DATA = no EOD bars.
   ctx.backtest = hasCandleWarehouse
     ? {
         available:       true,

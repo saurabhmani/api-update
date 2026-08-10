@@ -1145,12 +1145,20 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
   };
 }
 
+/** Engine-health readiness note — not a real outcome-coverage gap. */
+function isBacktestReadinessProbeWarning(w: string): boolean {
+  return /candle warehouse readiness/i.test(w);
+}
+
 export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHealthNode {
   const diag = emptyDiagnostics();
   const bt = ctx.backtest;
   const allWarnings = bt?.warnings ?? [];
   const warehouseLagWarnings = allWarnings.filter(isExpectedBacktestWarehouseLagWarning);
-  const actionableWarnings = allWarnings.filter((w) => !isExpectedBacktestWarehouseLagWarning(w));
+  const readinessProbeWarnings = allWarnings.filter(isBacktestReadinessProbeWarning);
+  const actionableWarnings = allWarnings.filter(
+    (w) => !isExpectedBacktestWarehouseLagWarning(w) && !isBacktestReadinessProbeWarning(w),
+  );
 
   let status: EngineStatus;
   if (!bt || !bt.available) {
@@ -1160,11 +1168,22 @@ export function buildBacktestingHealthNode(ctx: EngineHealthContext): EngineHeal
   } else if (bt.status === 'COMPLETE') {
     status = 'HEALTHY';
   } else if (bt.status === 'PARTIAL') {
-    status = 'WARNING';
-    if (actionableWarnings.length > 0) {
-      diag.primaryIssue = 'Backtest partial — outcome data unavailable for some symbols.';
+    // Health map often probes warehouse presence only (no full /api/signals/backtest
+    // run). That is readiness, not a symbol-outcome gap — do not WARNING the fleet.
+    if (actionableWarnings.length === 0) {
+      status = 'HEALTHY';
+      if (readinessProbeWarnings.length > 0) {
+        diag.findings.push(
+          'Backtesting warehouse is ready — open Backtesting Lab for a full preview run.',
+        );
+      } else {
+        diag.findings.push(
+          'Backtest window clipped to latest warehouse EOD session — coverage otherwise ready.',
+        );
+      }
     } else {
-      diag.primaryIssue = 'Backtest partial — window clipped to latest warehouse EOD session.';
+      status = 'WARNING';
+      diag.primaryIssue = 'Backtest partial — outcome data unavailable for some symbols.';
     }
   } else if (bt.status === 'INSUFFICIENT_DATA') {
     status = 'INSUFFICIENT_DATA';

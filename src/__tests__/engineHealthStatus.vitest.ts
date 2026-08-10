@@ -317,6 +317,26 @@ describe('buildBacktestingHealthNode — warehouse EOD lag', () => {
     });
     expect(node.status).toBe('WARNING');
   });
+
+  it('treats engine-health warehouse readiness PARTIAL as HEALTHY', () => {
+    const node = buildBacktestingHealthNode({
+      ...baseFeedCtx({ staleMinutes: 10, candleAgeHours: 1 }),
+      backtest: {
+        available:       true,
+        status:          'PARTIAL',
+        window:          '7D',
+        generatedAt:     new Date().toISOString(),
+        symbolsWithData: 2700,
+        totalSymbols:    null,
+        warnings:        [
+          'Engine-health uses candle warehouse readiness — open Backtesting for the full preview.',
+        ],
+      },
+    });
+    expect(node.status).toBe('HEALTHY');
+    expect(node.diagnostics.primaryIssue).toBeNull();
+    expect(node.diagnostics.findings.some((f) => /warehouse is ready/i.test(f))).toBe(true);
+  });
 });
 
 describe('buildManipulationHealthNode — metadata-driven status (3.x)', () => {
