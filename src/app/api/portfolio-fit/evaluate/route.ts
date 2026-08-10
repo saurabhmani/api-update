@@ -5,6 +5,7 @@ import { ValidationError } from '@/lib/errors';
 import { getPortfolioContext, computePortfolioFit } from '@/services/portfolioFitService';
 import { requireSession } from '@/lib/session';
 import { db } from '@/lib/db';
+import { getSector } from '@/lib/signal-engine/constants/phase3.constants';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,12 +16,45 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   if (!ticker) throw new ValidationError('ticker is required');
 
-  // Resolve sector
+  const symbol = String(ticker).toUpperCase().trim();
+
+  // Resolve sector: instruments.sector → q365_universe.sector → SECTOR_MAP → Other
+  let sector: string | null = null;
+  let sectorSource: 'instruments' | 'q365_universe' | 'sector_map' | 'fallback' = 'fallback';
+
   const { rows: instRows } = await db.query(
     'SELECT sector FROM instruments WHERE tradingsymbol = ? LIMIT 1',
-    [ticker.toUpperCase()],
+    [symbol],
   );
-  const sector = (instRows[0] as any)?.sector ?? 'Other';
+  const instSector = String((instRows[0] as any)?.sector ?? '').trim();
+  if (instSector) {
+    sector = instSector;
+    sectorSource = 'instruments';
+  }
+
+  if (!sector) {
+    try {
+      const { rows: uniRows } = await db.query(
+        'SELECT sector FROM q365_universe WHERE symbol = ? LIMIT 1',
+        [symbol],
+      );
+      const uniSector = String((uniRows[0] as any)?.sector ?? '').trim();
+      if (uniSector) {
+        sector = uniSector;
+        sectorSource = 'q365_universe';
+      }
+    } catch { /* table/column may be missing */ }
+  }
+
+  if (!sector) {
+    const mapped = getSector(symbol);
+    if (mapped && mapped !== 'Other') {
+      sector = mapped;
+      sectorSource = 'sector_map';
+    }
+  }
+
+  if (!sector) sector = 'Other';
 
   const ctx = await getPortfolioContext(user.id);
   const fit = computePortfolioFit(
@@ -32,8 +66,9 @@ export const POST = withApiHandler(async (req: NextRequest) => {
 
   return {
     data: {
-      ticker: ticker.toUpperCase(),
+      ticker: symbol,
       sector,
+      sectorSource,
       fitScore: fit.portfolio_fit_score,
       sectorPenalty: fit.sector_penalty,
       correlationPenalty: fit.correlation_penalty,
@@ -48,6 +83,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
         drawdownPct: ctx.drawdown_pct,
         correlationAvg: ctx.correlation_avg,
       },
+      emptyPortfolio: ctx.total_positions === 0,
     },
   };
 });

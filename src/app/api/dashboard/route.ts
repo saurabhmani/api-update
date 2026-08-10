@@ -38,6 +38,10 @@ import {
   type InternalFetchResult,
 }                                    from '@/lib/api/internalFetch';
 import { resolveUserFeedMeta }       from '@/lib/broker/connections';
+import {
+  engineDebugger,
+  runWithEngineDebugAsync,
+}                                    from '@/lib/engineDebug/engineDebugger';
 import { withApiHandler }            from '@/lib/apiHandler';
 import { cacheService }              from '@/lib/cache/cacheService';
 import { cacheKeys }                 from '@/lib/cache/cacheKeys';
@@ -740,26 +744,13 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
     classifyTransport(signals, 'Signal Engine'),
     () => {
       const preview = sigPayload.healthPreview;
-      let overall = preview?.overallStatus ?? engineOverallStatus;
-      const reason = String(preview?.primaryBlockingReason ?? '');
-      const marketOpen = sigPayload.marketStatus?.isOpen === true;
-      const candidateTotal = signalSummary.candidateTotal ?? 0;
-
-      // Benign states should not downgrade the Command Center chip.
-      const benign =
-        (overall === 'WARNING' || overall === 'DEGRADED')
-        && candidateTotal > 0
-        && (
-          !marketOpen
-          || reason.toLowerCase().includes('market closed')
-          || (
-            !reason.toLowerCase().includes('fallback')
-            && !reason.toLowerCase().includes('bootstrap')
-            && !reason.toLowerCase().includes('frozen')
-            && preview?.canGenerateCandidates !== false
-          )
-        );
-      if (benign) overall = 'HEALTHY';
+      // Prefer the full engine-health map (same source as
+      // /signals/engine-health) whenever the nested fetch succeeded.
+      // Do NOT benign-upgrade DEGRADED/WARNING → HEALTHY — that caused
+      // Dashboard "Healthy" while Engine Health showed "Degraded".
+      const overall = (engineHealth.ok && engineOverallStatus && engineOverallStatus !== 'UNKNOWN')
+        ? engineOverallStatus
+        : (preview?.overallStatus ?? engineOverallStatus ?? 'UNKNOWN');
 
       let status: FusionStatus;
       if      (overall === 'HEALTHY')  status = 'HEALTHY';
@@ -767,7 +758,12 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
       else if (overall === 'DEGRADED') status = 'DEGRADED';
       else if (overall === 'BROKEN')   status = 'BROKEN';
       else                             status = 'UNKNOWN';
-      const detail = preview?.primaryBlockingReason
+      const detail =
+        (engineHealth.ok
+          ? (engineHealthPayload?.pipelineReadiness?.blockingReasons?.[0]
+            ?? engineHealthPayload?.overallSummary)
+          : null)
+        ?? preview?.primaryBlockingReason
         ?? `${signalSummary.approvedTotal ?? '—'} approved · ${signalSummary.candidateTotal ?? '—'} candidates`;
       return {
         status, detail, reason: detail,
@@ -1393,10 +1389,34 @@ async function handleDashboardGet(req: NextRequest, profile: RequestStageProfile
 
 export const GET = withApiHandler(async (req: NextRequest) => {
   const requestId = req.headers.get('X-Request-ID') ?? `dashboard-${Date.now().toString(36)}`;
-  const profile = createRequestStageProfiler({
-    route: '/api/dashboard', method: 'GET', requestId,
-  });
-  const response = await handleDashboardGet(req, profile);
-  await profile.finish(response);
-  return response;
+  return runWithEngineDebugAsync(
+    {
+      requestId,
+      engine: 'dashboard',
+      file: 'src/app/api/dashboard/route.ts',
+      function: 'GET',
+      route: 'GET /api/dashboard',
+    },
+    async () => {
+      const routeSpan = engineDebugger.routeStart({
+        route: 'GET /api/dashboard',
+        function: 'GET',
+        requestId,
+        engine: 'dashboard',
+        file: 'src/app/api/dashboard/route.ts',
+      });
+      const profile = createRequestStageProfiler({
+        route: '/api/dashboard', method: 'GET', requestId,
+      });
+      try {
+        const response = await handleDashboardGet(req, profile);
+        await profile.finish(response);
+        routeSpan.end(response.status);
+        return response;
+      } catch (err) {
+        routeSpan.error(err);
+        throw err;
+      }
+    },
+  );
 });

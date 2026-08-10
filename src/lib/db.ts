@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { recordDbOperation } from '@/lib/monitor/apiPerformanceMetrics';
+import { engineDebugger, getEngineDebugContext } from '@/lib/engineDebug/engineDebugger';
 
 // Persist pool across Next.js hot reloads in dev
 const g = global as any;
@@ -238,12 +239,28 @@ export const db = {
   query: async <T = any>(text: string, params?: any[]): Promise<{ rows: T[]; insertId?: number; affectedRows?: number }> => {
     const queryStartedAt = Date.now();
     let rowsReturned = 0;
+    const debugCtx = getEngineDebugContext();
+    const opName = (() => {
+      const m = text.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i);
+      return m ? m[1].toUpperCase() : 'QUERY';
+    })();
+    const dbSpan = debugCtx
+      ? engineDebugger.dbStart({
+          operation: opName,
+          function: debugCtx.function ?? 'db.query',
+          engine: debugCtx.engine,
+          requestId: debugCtx.requestId,
+          file: 'src/lib/db.ts',
+          meta: { sqlPreview: text.replace(/\s+/g, ' ').trim().slice(0, 80) },
+        })
+      : null;
     try {
     const p = getDb();
 
     if (/INSERT\s+INTO[\s\S]*RETURNING/i.test(text)) {
       const result = await handleReturning(p, text, params || []) as { rows: T[] };
       rowsReturned = result.rows.length;
+      dbSpan?.end('success', { rows: rowsReturned });
       return result;
     }
 
@@ -252,6 +269,7 @@ export const db = {
       const [mysqlSql, mysqlParams] = prepareSql(text, params);
       const [result] = await p.query(mysqlSql, mysqlParams);
       const header = result as unknown as ResultSetHeader;
+      dbSpan?.end('success', { affectedRows: header.affectedRows ?? 0 });
       return {
         rows: [] as T[],
         insertId: header.insertId ?? undefined,
@@ -261,7 +279,11 @@ export const db = {
 
     const { rows } = await executeQuery(p, text, params);
     rowsReturned = rows.length;
+    dbSpan?.end('success', { rows: rowsReturned });
     return { rows: rows as T[] };
+    } catch (err) {
+      dbSpan?.error(err);
+      throw err;
     } finally {
       recordDbOperation(Date.now() - queryStartedAt, rowsReturned);
     }

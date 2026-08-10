@@ -246,10 +246,12 @@ export function computePortfolioFit(
   const finalScore = Math.max(0, Math.min(100, Math.round(score)));
 
   const notes =
-    finalScore >= 80 ? 'Excellent portfolio fit — this setup diversifies well' :
-    finalScore >= 60 ? 'Acceptable fit — monitor sector as you scale' :
-    finalScore >= 40 ? 'Marginal fit — reduce size or wait for better conditions' :
-    'Poor portfolio fit — would overconcentrate or add risk';
+    context.total_positions === 0
+      ? `No open positions — fit is unconstrained for ${targetSector} (not the same as a diversified live book).`
+      : finalScore >= 80 ? 'Excellent portfolio fit — this setup diversifies well' :
+        finalScore >= 60 ? 'Acceptable fit — monitor sector as you scale' :
+        finalScore >= 40 ? 'Marginal fit — reduce size or wait for better conditions' :
+        'Poor portfolio fit — would overconcentrate or add risk';
 
   return {
     portfolio_fit_score: finalScore,

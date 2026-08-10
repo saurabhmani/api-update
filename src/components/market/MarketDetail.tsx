@@ -208,6 +208,7 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       correlationAvg?: number;
     };
   } | null>(null);
+  const [portfolioFitStatus, setPortfolioFitStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [sigHistory, setSigHist]  = useState<SignalHistory[]>([]);
   const [news, setNews]           = useState<NewsItem[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -266,25 +267,29 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
   const hasSignalData = signalData != null;
   const conf    = signalData?.confidence_score ?? sig?.confidence ?? 0;
   const risk    = signalData?.risk_score ?? sig?.risk_score ?? 0;
-  // Prefer live portfolio-fit evaluation, then signal payload, then
-  // the same min(100, conf+5) backfill used by /signals so the ring
-  // is never blank for an approved institutional row.
+  // Portfolio Fit tab must use the evaluate API result when present.
+  // Do NOT invent a score from confidence+5 — that lied as "fit" on
+  // empty/failed evaluate responses. Signal payload score is a
+  // secondary hint only until live evaluate returns.
   const fitFromSignal =
-    (signalData?.portfolio_fit_score != null && signalData.portfolio_fit_score > 0
-      ? signalData.portfolio_fit_score
+    (signalData?.portfolio_fit_score != null && Number.isFinite(Number(signalData.portfolio_fit_score))
+      ? Number(signalData.portfolio_fit_score)
       : null)
-    ?? (sig?.portfolio_fit != null && Number(sig.portfolio_fit) > 0
+    ?? (sig?.portfolio_fit != null && Number.isFinite(Number(sig.portfolio_fit))
       ? Number(sig.portfolio_fit)
       : null)
     ?? (tradeFallback && (tradeFallback as any).portfolio_fit != null
+      && Number.isFinite(Number((tradeFallback as any).portfolio_fit))
       ? Number((tradeFallback as any).portfolio_fit)
       : null);
-  const fitScore =
-    (portfolioFit?.fitScore != null && portfolioFit.fitScore > 0
+  const fitFromEvaluate =
+    portfolioFit?.fitScore != null && Number.isFinite(portfolioFit.fitScore)
       ? portfolioFit.fitScore
-      : null)
-    ?? fitFromSignal
-    ?? (conf > 0 ? Math.min(100, conf + 5) : 0);
+      : null;
+  // Allow real zero from evaluate; only fall back when evaluate missing.
+  const fitScore = fitFromEvaluate ?? fitFromSignal ?? 0;
+  const fitSource: 'evaluate' | 'signal' | 'none' =
+    fitFromEvaluate != null ? 'evaluate' : fitFromSignal != null ? 'signal' : 'none';
   const sigDir  = sig?.direction ?? tradeFallback?.signal_type ?? null;
   const entry   = tradeLevel(sig?.entry_price, signalData?.entry_price, tradeFallback?.entry_price);
   const sl      = tradeLevel(sig?.stop_loss, signalData?.stop_loss, tradeFallback?.stop_loss);
@@ -312,6 +317,7 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
       setLoading(true);
       setMetaRefresh(false);
       setPortfolioFit(null);
+      setPortfolioFitStatus('idle');
 
       const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
         new Promise<T>((resolve, reject) => {
@@ -423,25 +429,35 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
 
   // Portfolio Fit tab — evaluate against current holdings.
   useEffect(() => {
-    if (activeTab !== 'fit' || portfolioFit != null) return;
+    if (activeTab !== 'fit') return;
+    if (portfolioFitStatus === 'ok' || portfolioFitStatus === 'loading') return;
     let cancelled = false;
+    setPortfolioFitStatus('loading');
     (async () => {
       try {
         const res = await fetch('/api/portfolio-fit/evaluate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({
             ticker: symbol,
             strategy: signalData?.scenario_tag ?? sig?.scenario_tag ?? 'swing',
             direction: sigDir ?? 'BUY',
           }),
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setPortfolioFitStatus('error');
+          return;
+        }
         const body = await res.json();
         const data = body?.data ?? body;
-        if (cancelled || data?.fitScore == null) return;
+        if (cancelled) return;
+        if (data?.fitScore == null || !Number.isFinite(Number(data.fitScore))) {
+          setPortfolioFitStatus('error');
+          return;
+        }
         setPortfolioFit({
-          fitScore:             Number(data.fitScore) || 0,
+          fitScore:             Number(data.fitScore),
           sectorPenalty:        data.sectorPenalty,
           correlationPenalty:   data.correlationPenalty,
           strategyPenalty:      data.strategyPenalty,
@@ -452,10 +468,13 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
           sector:               data.sector,
           portfolioContext:     data.portfolioContext,
         });
-      } catch { /* keep signal-derived fallback */ }
+        setPortfolioFitStatus('ok');
+      } catch {
+        if (!cancelled) setPortfolioFitStatus('error');
+      }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, symbol, signalData?.scenario_tag, sig?.scenario_tag, sigDir, portfolioFit]);
+  }, [activeTab, symbol, signalData?.scenario_tag, sig?.scenario_tag, sigDir, portfolioFitStatus]);
 
   // Financials tab — retry fundamentals if the initial quote load had empty meta.
   useEffect(() => {
@@ -1084,55 +1103,89 @@ export default function MarketDetail({ instrumentKey, symbol, exchange }: Props)
                     <Card title="Fit Score">
                       <div className={s.fitCenter}>
                         <div className={s.fitRingWrap}>
-                          <Ring value={fitScore} size={100} color={fitScore >= 65 ? '#16A34A' : fitScore >= 40 ? '#D97706' : '#DC2626'} />
+                          <Ring
+                            value={fitScore}
+                            size={100}
+                            color={
+                              fitSource === 'none'
+                                ? '#94A3B8'
+                                : fitScore >= 65 ? '#16A34A' : fitScore >= 40 ? '#D97706' : '#DC2626'
+                            }
+                          />
                           <div className={s.fitRingVal}>
-                            {fitScore > 0 ? fitScore.toFixed(0) : '-'}
+                            {fitSource === 'none' ? '-' : fitScore.toFixed(0)}
                             <span className={s.fitRingSub}>/ 100</span>
                           </div>
                         </div>
                         <div className={s.fitRingCap}>
-                          {fitScore >= 65 ? 'Strong Fit' : fitScore >= 40 ? 'Moderate Fit' : fitScore > 0 ? 'Weak Fit' : 'Unavailable'}
+                          {fitSource === 'none'
+                            ? (portfolioFitStatus === 'loading' || portfolioFitStatus === 'idle'
+                              ? 'Evaluating…'
+                              : 'Unavailable')
+                            : fitScore >= 65 ? 'Strong Fit' : fitScore >= 40 ? 'Moderate Fit' : 'Weak Fit'}
                         </div>
+                        {portfolioFitStatus === 'error' && (
+                          <div style={{ fontSize: 11, color: '#B91C1C', marginTop: 6 }}>
+                            Portfolio evaluate failed — not using a synthetic fit score.
+                          </div>
+                        )}
                         {portfolioFit?.notes && (
                           <div style={{ fontSize: 12, color: '#64748B', marginTop: 8, textAlign: 'center', lineHeight: 1.4 }}>
                             {portfolioFit.notes}
                           </div>
                         )}
+                        {fitSource === 'signal' && (
+                          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 6 }}>
+                            Showing signal-stored fit (live portfolio evaluate not loaded).
+                          </div>
+                        )}
                       </div>
                     </Card>
                     <Card title="Factors">
-                      {([
-                        ['Sector Exposure', Math.max(0, 100 - (portfolioFit?.sectorPenalty ?? 0) * 2), portfolioFit?.sectorPenalty != null],
-                        ['Strategy Conc.', Math.max(0, 100 - (portfolioFit?.strategyPenalty ?? 0) * 4), portfolioFit?.strategyPenalty != null],
-                        ['Correlation Risk', Math.max(0, 100 - (portfolioFit?.correlationPenalty ?? 0) * 4), portfolioFit?.correlationPenalty != null],
-                        ['Capacity', portfolioFit?.capacityScore ?? Math.min(100, fitScore * 0.9), portfolioFit?.capacityScore != null],
-                        ['Drawdown Buffer', Math.max(0, 100 - (portfolioFit?.drawdownPenalty ?? 0) * 4), portfolioFit?.drawdownPenalty != null],
-                      ] as [string, number, boolean][]).map(([l, v]) => {
-                        const val = Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
-                        return (
-                          <div key={l} className={s.fitFactor}>
-                            <span className={s.fitFN}>{l}</span>
-                            <div className={s.fitFBar}>
-                              <div className={s.fitFBarFill} style={{ width: `${val}%`, background: val >= 55 ? '#16A34A' : '#D97706' }} />
+                      {portfolioFit == null ? (
+                        <div style={{ fontSize: 12, color: '#94A3B8', padding: '8px 0' }}>
+                          {portfolioFitStatus === 'error'
+                            ? 'Factors unavailable — evaluate API failed.'
+                            : 'Loading portfolio factors…'}
+                        </div>
+                      ) : (
+                        ([
+                          ['Sector Exposure', Math.max(0, 100 - (portfolioFit.sectorPenalty ?? 0) * 2)],
+                          ['Strategy Conc.', Math.max(0, 100 - (portfolioFit.strategyPenalty ?? 0) * 4)],
+                          ['Correlation Risk', Math.max(0, 100 - (portfolioFit.correlationPenalty ?? 0) * 4)],
+                          ['Capacity', portfolioFit.capacityScore ?? 0],
+                          ['Drawdown Buffer', Math.max(0, 100 - (portfolioFit.drawdownPenalty ?? 0) * 4)],
+                        ] as [string, number][]).map(([l, v]) => {
+                          const val = Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0;
+                          return (
+                            <div key={l} className={s.fitFactor}>
+                              <span className={s.fitFN}>{l}</span>
+                              <div className={s.fitFBar}>
+                                <div className={s.fitFBarFill} style={{ width: `${val}%`, background: val >= 55 ? '#16A34A' : '#D97706' }} />
+                              </div>
+                              <span className={s.fitFV}>{val.toFixed(0)}</span>
                             </div>
-                            <span className={s.fitFV}>{val.toFixed(0)}</span>
-                          </div>
-                        );
-                      })}
+                          );
+                        })
+                      )}
                     </Card>
                   </div>
 
                   <Card title="Capital Allocation">
                     {([
                       ['Sector', portfolioFit?.sector ?? meta?.sector ?? '-'],
-                      ['Recommended Size', fitScore >= 70 ? '2-3% of capital' : fitScore >= 40 ? '1-2% of capital' : 'Skip / size down'],
+                      ['Recommended Size', fitSource === 'none'
+                        ? '-'
+                        : fitScore >= 70 ? '2-3% of capital' : fitScore >= 40 ? '1-2% of capital' : 'Skip / size down'],
                       ['Open Positions', portfolioFit?.portfolioContext?.totalPositions != null
                         ? String(portfolioFit.portfolioContext.totalPositions)
                         : '-'],
                       ['Portfolio Corr.', portfolioFit?.portfolioContext?.correlationAvg != null
                         ? Number(portfolioFit.portfolioContext.correlationAvg).toFixed(2)
-                        : (risk < 40 ? 'Low' : risk < 60 ? 'Moderate' : 'High')],
-                      ['Portfolio Decision', fitScore >= 60 ? 'Approved' : fitScore >= 40 ? 'Review Required' : fitScore > 0 ? 'Blocked' : '-'],
+                        : '-'],
+                      ['Portfolio Decision', fitSource === 'none'
+                        ? '-'
+                        : fitScore >= 60 ? 'Approved' : fitScore >= 40 ? 'Review Required' : 'Blocked'],
                     ] as [string, string][]).map(([l, v]) => (
                       <div key={l} className={s.kv}>
                         <span className={s.kvL}>{l}</span>

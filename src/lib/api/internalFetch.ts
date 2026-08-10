@@ -22,6 +22,7 @@
 // ════════════════════════════════════════════════════════════════
 
 import type { NextRequest } from 'next/server';
+import { engineDebugger, getEngineDebugContext } from '@/lib/engineDebug/engineDebugger';
 
 export interface InternalFetchResult<T = unknown> {
   ok:         boolean;
@@ -105,11 +106,27 @@ export async function internalFetch<T = unknown>(
   const url    = path.startsWith('http') ? path : `${origin}${path}`;
   const t0     = Date.now();
 
+  const debugCtx = getEngineDebugContext();
+  const pathOnly = path.startsWith('http')
+    ? (() => { try { return new URL(path).pathname; } catch { return path; } })()
+    : path.split('?')[0];
+  const extSpan = debugCtx
+    ? engineDebugger.externalStart({
+        target: pathOnly,
+        function: debugCtx.function ?? 'internalFetch',
+        engine: debugCtx.engine,
+        requestId: debugCtx.requestId,
+        file: 'src/lib/api/internalFetch.ts',
+        meta: { timeoutMs },
+      })
+    : null;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const mergedHeaders: Record<string, string> = { ...headers };
   if (cookieHeader) mergedHeaders.cookie = cookieHeader;
+  // Never log cookie / auth headers — they stay in mergedHeaders only.
 
   try {
     const res = await fetch(url, {
@@ -129,6 +146,7 @@ export async function internalFetch<T = unknown>(
         const parsed = await res.clone().json();
         errBody = parsed?.error ?? parsed?.message ?? null;
       } catch { /* non-JSON error response */ }
+      extSpan?.end(res.status, { ok: false, elapsedMs });
       return {
         ok: false, status: res.status, data: null,
         error: errBody ?? `HTTP ${res.status}`,
@@ -136,6 +154,7 @@ export async function internalFetch<T = unknown>(
       };
     }
     const data = (await res.json()) as T;
+    extSpan?.end(res.status, { ok: true, elapsedMs });
     return {
       ok: true, status: res.status, data, error: null,
       timedOut: false, elapsedMs, timeoutMs, url,
@@ -149,6 +168,11 @@ export async function internalFetch<T = unknown>(
       controller.signal.aborted ||
       lower.includes('aborted') ||
       lower.includes('operation was aborted');
+    if (timedOut) {
+      extSpan?.end('timeout', { ok: false, elapsedMs });
+    } else {
+      extSpan?.error(err, { elapsedMs });
+    }
     return {
       ok: false, status: 0, data: null,
       error: timedOut ? 'TIMEOUT' : raw,

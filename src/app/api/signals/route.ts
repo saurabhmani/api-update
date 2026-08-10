@@ -2541,7 +2541,16 @@ async function executeSignalsGet(req: NextRequest, profile: SignalsApiProfiler) 
               ? 'last_close_signals'
               : 'market_close_snapshot',
             isBootstrap:          bootstrap,
-            isFallback:           closedPrimary.from !== 'approved' && closedPrimary.from !== 'none',
+            // isFallback means *provider* fallback (see engineHealthMap
+            // data_feed DEGRADED: "Provider running on fallback path").
+            // Closed-market primary selection (approved vs high_potential
+            // / scanner) is signal-source mode — already exposed via
+            // conditional_mode_active / data_source — NOT provider fallback.
+            // Previously this line set isFallback from closedPrimary.from,
+            // which falsely marked Data Feed DEGRADED and made
+            // /signals/engine-health disagree with Dashboard healthPreview
+            // (which correctly hardcoded isFallback: false).
+            isFallback:           false,
             lastApiRequestAt:     new Date().toISOString(),
             lastSuccessAt:        new Date().toISOString(),
             lastPipelineRunAt:    latestSnapshotIso,

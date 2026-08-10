@@ -37,6 +37,10 @@ import {
   type EngineHealthMap,
 }                                      from '@/lib/signals/engineHealthMap';
 import { probeLearningPersistence }    from '@/lib/learning/learningPersistenceProbe';
+import {
+  engineDebugger,
+  runWithEngineDebugAsync,
+}                                      from '@/lib/engineDebug/engineDebugger';
 
 export const dynamic    = 'force-dynamic';
 export const revalidate = 0;
@@ -198,6 +202,32 @@ function logModuleFail(stage: string, err: unknown, extra: Record<string, unknow
 }
 
 export async function GET(req: NextRequest) {
+  const requestId =
+    req.headers.get('x-request-id')
+    ?? req.nextUrl.searchParams.get('request_id')
+    ?? `engine-health-${Date.now().toString(36)}`;
+
+  return runWithEngineDebugAsync(
+    {
+      requestId,
+      engine: 'engine-health',
+      file: 'src/app/api/signals/engine-health/route.ts',
+      function: 'GET',
+      route: 'GET /api/signals/engine-health',
+    },
+    () => getEngineHealth(req, requestId),
+  );
+}
+
+async function getEngineHealth(req: NextRequest, requestId: string) {
+  const routeSpan = engineDebugger.routeStart({
+    route: 'GET /api/signals/engine-health',
+    function: 'GET',
+    requestId,
+    engine: 'engine-health',
+    file: 'src/app/api/signals/engine-health/route.ts',
+  });
+
   // MODULE-API-RESILIENCE-2026-05 — session check must never throw out
   // of this handler. A failed `requireSession()` (expired cookie, etc.)
   // would otherwise bubble as an unhandled rejection → 500 → dashboard
@@ -205,6 +235,8 @@ export async function GET(req: NextRequest) {
   try { await requireSession(); }
   catch (err) {
     logModuleFail('requireSession', err);
+    routeSpan.error(err, { stage: 'requireSession' });
+    routeSpan.end(401);
     return NextResponse.json(
       { ...FALLBACK_HEALTH_PAYLOAD, generatedAt: new Date().toISOString(),
         warnings: ['Authentication required for engine health'] },
@@ -397,8 +429,26 @@ export async function GET(req: NextRequest) {
     ctx.backtest = { available: false };
   }
 
+  const healthSpan = engineDebugger.start({
+    function: 'buildEngineHealthMap',
+    engine: 'engine-health',
+    file: 'src/lib/signals/engineHealthMap.ts',
+    meta: {
+      isFallback: ctx.feed.isFallback,
+      isBootstrap: ctx.feed.isBootstrap,
+      marketOpen: ctx.marketStatus.isOpen,
+      signalsOk: signals.ok,
+    },
+  });
   const health: EngineHealthMap = buildEngineHealthMap(ctx);
+  healthSpan.end(health.overallStatus, {
+    overallStatus: health.overallStatus,
+    canGenerateCandidates: health.pipelineReadiness.canGenerateCandidates,
+    canGenerateApprovedSignals: health.pipelineReadiness.canGenerateApprovedSignals,
+    degradedCount: health.degradedCount,
+  });
 
+  routeSpan.end(200, { overallStatus: health.overallStatus });
   return NextResponse.json(
     {
       ok:           true,
@@ -419,6 +469,7 @@ export async function GET(req: NextRequest) {
     // MODULE-API-RESILIENCE-2026-05 — never return health:null on throws.
     // Build a probe-based map so /signals/engine-health always renders.
     logModuleFail('GET-handler', err);
+    routeSpan.error(err, { stage: 'GET-handler' });
     let candleCoverage = { latestCandleDate: null as string | null, candleCount: 0, distinctSymbols: 0 };
     let learningPersistence = {
       tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
@@ -434,6 +485,7 @@ export async function GET(req: NextRequest) {
       learningPersistence,
     });
     const errMsg = err instanceof Error ? err.message : 'internal error';
+    routeSpan.end(200, { overallStatus: fallbackHealth.overallStatus, degraded: true });
     return NextResponse.json(
       {
         ok:           true,

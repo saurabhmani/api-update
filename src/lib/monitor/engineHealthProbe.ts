@@ -5,6 +5,7 @@ import { getInstitutionalHealthSnapshot } from '@/lib/monitor/institutionalHealt
 import { isExpectedDailySessionGap } from '@/lib/signals/engineHealthMap';
 import type { EngineHealthStatus } from '@/types/dashboard';
 import { getMarketDataProvider } from '@/lib/marketData/providerFlags';
+import { withEngineDebug } from '@/lib/engineDebug/engineDebugger';
 
 export interface EngineHealthProbeResult {
   status:      EngineHealthStatus;
@@ -52,6 +53,13 @@ async function isCandleFeedFrozen(marketOpen: boolean): Promise<boolean> {
  * Lightweight engine-health probe for public monitors and load balancers.
  */
 export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult> {
+  return withEngineDebug(
+    {
+      function: 'probeEngineHealthStatus',
+      engine: 'engine-health-probe',
+      file: 'src/lib/monitor/engineHealthProbe.ts',
+    },
+    async () => {
   const market = getMarketStatus();
   const snapshot = getInstitutionalHealthSnapshot();
   const current = safeProbe(() => getMarketDataProvider(), 'indianapi');
@@ -101,4 +109,6 @@ export async function probeEngineHealthStatus(): Promise<EngineHealthProbeResult
     marketOpen: market.isOpen,
     message:    null,
   };
+    },
+  );
 }

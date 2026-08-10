@@ -32,6 +32,7 @@ import { evaluateLearningPersistenceHealth } from '@/lib/learning/learningPersis
 import {
   classifyCandleFreshness,
 } from '@/lib/marketData/candleFreshness';
+import { engineDebugger } from '@/lib/engineDebug/engineDebugger';
 
 // ── Public contract ─────────────────────────────────────────────
 
@@ -1679,6 +1680,18 @@ function buildEdges(nodes: EngineHealthNode[]): EngineHealthEdge[] {
 // ── Master orchestrator ────────────────────────────────────────
 
 export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap {
+  const span = engineDebugger.start({
+    function: 'buildEngineHealthMap',
+    engine: 'engine-health',
+    file: 'src/lib/signals/engineHealthMap.ts',
+    meta: {
+      isFallback: ctx.feed.isFallback,
+      isBootstrap: ctx.feed.isBootstrap,
+      marketOpen: ctx.marketStatus.isOpen,
+      provider: ctx.feed.provider,
+    },
+  });
+
   const generatedAt = ctx.generatedAt ?? new Date().toISOString();
   const nodes: EngineHealthNode[] = [
     buildDataFeedHealthNode(ctx),
@@ -1711,6 +1724,20 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
   const edges     = buildEdges(nodes);
   const pipeline  = buildPipelineReadiness(nodes);
   const overall   = deriveOverallStatus(nodes, pipeline);
+
+  for (const n of nodes) {
+    if (n.status === 'HEALTHY' || n.status === 'WARNING') continue;
+    engineDebugger.emit('END', {
+      function: `evaluateNode:${n.id}`,
+      engine: n.id,
+      file: 'src/lib/signals/engineHealthMap.ts',
+      durationMs: 0,
+      status: n.status,
+      meta: n.diagnostics.primaryIssue
+        ? { primaryIssue: n.diagnostics.primaryIssue }
+        : undefined,
+    });
+  }
 
   // Issue collection.
   const criticalIssues: string[] = [];
@@ -1754,7 +1781,7 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
     return 'Pipeline status undetermined.';
   })();
 
-  return {
+  const result: EngineHealthMap = {
     generatedAt,
     overallStatus:               overall,
     overallSummary,
@@ -1771,6 +1798,13 @@ export function buildEngineHealthMap(ctx: EngineHealthContext): EngineHealthMap 
     pipelineReadiness:           pipeline,
     signalReadinessExplanation:  buildSignalReadinessExplanation(nodes, pipeline, ctx.counters),
   };
+  span.end(overall, {
+    canGenerateCandidates: pipeline.canGenerateCandidates,
+    canGenerateApprovedSignals: pipeline.canGenerateApprovedSignals,
+    degradedCount,
+    brokenCount,
+  });
+  return result;
 }
 
 // ── Lightweight preview ───────────────────────────────────────
