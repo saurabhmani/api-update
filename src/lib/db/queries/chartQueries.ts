@@ -60,6 +60,17 @@ export const IDX_CANDLES_COVERING = `
 `;
 
 /**
+ * Health / warehouse-wide EOD lookups: WHERE candle_type=? AND interval_unit=?
+ * (MAX(ts), existence). Without this leading filter, MySQL cannot use
+ * instrument_key-leading indexes for global MAX(ts) aggregates — production
+ * engine-health probes timed out at ~10s on COUNT(*)/COUNT(DISTINCT).
+ */
+export const IDX_CANDLES_TYPE_INTERVAL_TS = `
+  CREATE INDEX IF NOT EXISTS idx_candles_type_interval_ts
+  ON candles (candle_type, interval_unit, ts)
+`;
+
+/**
  * Instrument key resolution index — already on instruments table.
  * Covers: WHERE tradingsymbol = ? AND exchange = 'NSE'
  */
@@ -192,6 +203,8 @@ if (require.main === module) {
       console.log('✓ idx_candles_key_ts');
       await pool.execute(IDX_CANDLES_COVERING);
       console.log('✓ idx_candles_covering');
+      await pool.execute(IDX_CANDLES_TYPE_INTERVAL_TS);
+      console.log('✓ idx_candles_type_interval_ts');
       await pool.execute(IDX_INSTRUMENTS_SYMBOL);
       console.log('✓ idx_instruments_symbol');
       console.log('\n✅ Chart indexes ready.');

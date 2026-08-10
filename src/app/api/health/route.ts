@@ -99,22 +99,23 @@ export async function GET() {
 
   // ── Check 3: Candle data freshness ────────────────────────
   try {
-    const { rows } = await db.query<any>(
-      `SELECT COUNT(*) AS cnt, MAX(ts) AS latest
-       FROM candles WHERE candle_type = 'eod' AND interval_unit = '1day'`,
-    );
-    const cnt = Number((rows[0] as any)?.cnt ?? 0);
-    const latest = (rows[0] as any)?.latest;
-    const ageDays = latest
-      ? Math.floor((Date.now() - new Date(latest).getTime()) / (1000 * 60 * 60 * 24))
+    const { probeCandleWarehouse } = await import('@/lib/monitor/candleWarehouseProbe');
+    const t0 = Date.now();
+    const cov = await probeCandleWarehouse();
+    const ageDays = cov.latestCandleDate
+      ? Math.floor((Date.now() - new Date(`${cov.latestCandleDate}T00:00:00Z`).getTime()) / (1000 * 60 * 60 * 24))
       : null;
     checks.candleData = {
-      status: cnt > 0 ? 'ok' : 'warn',
-      totalCandles: cnt,
-      latestBar: latest,
+      status: cov.candleCount > 0 || cov.latestCandleDate ? 'ok' : 'warn',
+      totalCandles: cov.candleCount,
+      latestBar: cov.latestCandleDate,
       ageDays,
+      latencyMs: Date.now() - t0,
+      fromCache: cov.fromCache === true,
     };
-    if (cnt === 0) overallStatus = applyCheckResult(overallStatus, 'fail');
+    if (!(cov.candleCount > 0 || cov.latestCandleDate)) {
+      overallStatus = applyCheckResult(overallStatus, 'fail');
+    }
   } catch (err) {
     checks.candleData = {
       status: 'fail',

@@ -3,19 +3,21 @@
 //
 //  Phase 5 — Engine Health Map & Process Observability API.
 //
-//  Reads the same /api/signals envelope the dashboard polls, then
-//  augments it with optional daily-report + backtest signals so the
-//  health map can mark those engines accordingly. Pure builder lives
-//  in src/lib/signals/engineHealthMap.ts.
+//  Reads the /api/signals envelope (lite=true), then builds the
+//  health map. Pure builder lives in src/lib/signals/engineHealthMap.ts.
+//
+//  Performance (2026-08):
+//    - Does NOT fan out to /api/signals/daily-report or
+//      /api/signals/backtest (each re-fetched /api/signals and raced
+//      a 10s+ candles COUNT(*)/COUNT(DISTINCT) probe for pool slots).
+//    - Daily report node uses signals.dailyReportPreview.
+//    - Backtest readiness uses the cheap candle warehouse MAX(ts) probe.
+//    - Candle probe is TTL-cached + in-flight coalesced.
 //
 //  Safety:
-//   - Every internal call is wrapped in `internalFetch` with a strict
-//     timeout, so a slow upstream never hangs this route and the UI
-//     never sees a raw "fetch failed" message.
-//   - When the signals envelope is unavailable, we still probe the
-//     `candles` warehouse directly so the Data Feed Engine card
-//     reflects the real state of the system instead of defaulting to
-//     "No provider activity recorded."
+//   - Signals fetch is wrapped in `internalFetch` with a strict timeout.
+//   - When the signals envelope is unavailable, candle + learning probes
+//     still populate Data Feed / Learning cards.
 //   - Returns ok=true even when downstream calls fail; affected
 //     engines are marked NOT_CONFIGURED / INSUFFICIENT_DATA / STALE
 //     with explicit warnings, never fabricated as HEALTHY.
@@ -29,7 +31,6 @@
 import { NextRequest, NextResponse }   from 'next/server';
 import { requireSession }              from '@/lib/session';
 import { getMarketStatus }             from '@/lib/marketData/marketHours';
-import { db }                          from '@/lib/db';
 import { internalFetch }               from '@/lib/api/internalFetch';
 import {
   buildEngineHealthMap,
@@ -37,6 +38,7 @@ import {
   type EngineHealthMap,
 }                                      from '@/lib/signals/engineHealthMap';
 import { probeLearningPersistence }    from '@/lib/learning/learningPersistenceProbe';
+import { probeCandleWarehouse }        from '@/lib/monitor/candleWarehouseProbe';
 import {
   engineDebugger,
   runWithEngineDebugAsync,
@@ -47,26 +49,21 @@ export const revalidate = 0;
 
 const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
 
-function parseCandleCoverageFromWarnings(warnings: unknown): number | null {
-  if (!Array.isArray(warnings)) return null;
-  for (const w of warnings) {
-    const m = String(w).match(/Historical candle data available for (\d+)\//);
-    if (m) return Number(m[1]);
-  }
-  return null;
-}
-
 // ── Per-upstream timeout budgets ──────────────────────────────
 //
 // Tuned to the worst-case latency of each route under realistic load.
 // Keeping them tight ensures the health map itself never appears to
 // hang from the operator's perspective.
+//
+// PERF (2026-08): daily-report + backtest sibling HTTP removed from the
+// critical path. They each re-fetched /api/signals (~6–22s) and contended
+// with the candle warehouse probe for pool slots. Daily report status now
+// comes from signals.dailyReportPreview; backtest readiness from the
+// cheap candle warehouse probe.
 const TIMEOUT = {
   // /api/signals is heavy — lite=true keeps health aggregation under budget.
   signals:      30_000,
-  dailyReport:   8_000,
-  backtest:      8_000,
-  candleProbe:   3_000,
+  candleProbe:   2_000,
   learningProbe: 3_000,
 } as const;
 
@@ -135,46 +132,6 @@ function buildFallbackHealthContext(
       tableExists: false, observationCount: 0, distinctStrategies: 0, lastReviewedAt: null,
     },
   };
-}
-
-/** Direct DB probe — used as a fallback when /api/signals is unavailable
- *  so the Data Feed Engine card can show the real warehouse state.
- *  Pure read, single aggregate query, time-budget enforced by the
- *  caller via Promise.race. */
-async function probeCandleWarehouse(): Promise<{
-  latestCandleDate: string | null;
-  candleCount:      number;
-  distinctSymbols:  number;
-}> {
-  try {
-    const { rows } = await db.query<{
-      cnt:     number | string;
-      latest:  string | Date | null;
-      symbols: number | string;
-    }>(
-      `SELECT COUNT(*)                    AS cnt,
-              MAX(ts)                     AS latest,
-              COUNT(DISTINCT instrument_key) AS symbols
-         FROM candles
-        WHERE candle_type='eod' AND interval_unit='1day'`,
-    );
-    const r = rows?.[0];
-    if (!r) return { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
-    const rawLatest = r.latest ?? null;
-    const latestCandleDate = rawLatest == null
-      ? null
-      : typeof rawLatest === 'string'
-        ? rawLatest.split('T')[0]
-        : new Date(rawLatest).toISOString().split('T')[0];
-    return {
-      latestCandleDate,
-      candleCount:     Number(r.cnt ?? 0),
-      distinctSymbols: Number(r.symbols ?? 0),
-    };
-  } catch {
-    // Fresh DB without the candles table — soft-fail.
-    return { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
-  }
 }
 
 // MODULE-API-RESILIENCE-2026-05 — common safe-fallback envelope so the
@@ -252,20 +209,16 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
   const warnings: string[] = [];
   const cookieHeader = req.headers.get('cookie') ?? '';
 
-  // Fan-out — every upstream is independent so we run them in parallel
-  // and tolerate individual failures via Promise.allSettled.
-  const [signalsRes, dailyRes, backtestRes, candleProbeSettled, learningProbeSettled] = await Promise.allSettled([
+  // Fan-out — signals + cheap warehouse probes only.
+  // daily-report / backtest sibling HTTP removed: they each re-hit
+  // /api/signals and raced the candle COUNT(*) probe for pool slots
+  // (see engine-debug.log requestId=engine-health-msnc2f1g).
+  const [signalsRes, candleProbeSettled, learningProbeSettled] = await Promise.allSettled([
     internalFetch<any>(
       req,
       `/api/signals?action=all&limit=10&lite=true&request_id=health-${Date.now()}`,
       { cookieHeader, timeoutMs: TIMEOUT.signals },
     ),
-    internalFetch<any>(req, `/api/signals/daily-report`, {
-      cookieHeader, timeoutMs: TIMEOUT.dailyReport,
-    }),
-    internalFetch<any>(req, `/api/signals/backtest?window=7D`, {
-      cookieHeader, timeoutMs: TIMEOUT.backtest,
-    }),
     Promise.race([
       probeCandleWarehouse(),
       new Promise<{ latestCandleDate: null; candleCount: 0; distinctSymbols: 0 }>(
@@ -283,10 +236,6 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
 
   const signals = signalsRes.status === 'fulfilled' ? signalsRes.value
     : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.signals, url: '' };
-  const daily   = dailyRes.status === 'fulfilled' ? dailyRes.value
-    : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.dailyReport, url: '' };
-  const backtest = backtestRes.status === 'fulfilled' ? backtestRes.value
-    : { ok: false, status: 0, data: null, error: 'settled-rejected', timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.backtest, url: '' };
   const candleCoverage = candleProbeSettled.status === 'fulfilled'
     ? candleProbeSettled.value
     : { latestCandleDate: null, candleCount: 0, distinctSymbols: 0 };
@@ -304,22 +253,22 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
         : `Signal Engine summary unavailable (status ${signals.status || 'network'}). Health map will fall back to direct database probes.`,
     );
   }
-  if (!daily.ok) {
-    warnings.push(
-      daily.timedOut
-        ? `Daily Report summary did not respond within ${Math.round(daily.timeoutMs / 1000)}s.`
-        : `Daily Report summary unavailable (status ${daily.status || 'network'}).`,
-    );
-  }
-  if (!backtest.ok) {
-    warnings.push(
-      backtest.timedOut
-        ? `Backtest preview did not respond within ${Math.round(backtest.timeoutMs / 1000)}s.`
-        : `Backtest preview unavailable (status ${backtest.status || 'network'}).`,
-    );
-  }
 
   const payload = signals.data ?? null;
+
+  // Daily report: reuse lightweight preview already on the signals
+  // envelope — avoids a second /api/signals round-trip via daily-report.
+  const preview = payload?.dailyReportPreview as {
+    reportStatus?: 'COMPLETE' | 'PARTIAL' | 'PENDING' | 'INSUFFICIENT_DATA';
+    reportDate?: string;
+    insufficientReason?: string | null;
+  } | null | undefined;
+  const hasDailyPreview = preview != null && typeof preview === 'object';
+
+  // Backtest readiness: candle warehouse presence (optional node).
+  // Does not claim COMPLETE — that requires the full backtest preview.
+  const hasCandleWarehouse =
+    (candleCoverage.candleCount ?? 0) > 0 || candleCoverage.latestCandleDate != null;
 
   // Build the context the pure engineHealthMap builder needs. When the
   // signals envelope is missing, the fields below resolve to null and
@@ -359,8 +308,8 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
       signalsAvailable:     signals.ok,
       signalsTimedOut:      signals.timedOut,
       signalsErrorMessage:  signals.ok ? null : (signals.error ?? null),
-      dailyReportAvailable: daily.ok,
-      backtestAvailable:    backtest.ok,
+      dailyReportAvailable: hasDailyPreview,
+      backtestAvailable:    hasCandleWarehouse,
     },
     pipeline: {
       lastPipelineRunAt:     payload?.lastPipelineRunAt        ?? payload?.freshness?.last_pipeline_run ?? null,
@@ -393,41 +342,47 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
     learningPersistence,
   };
 
-  if (daily.ok && daily.data) {
-    const drJson = daily.data;
+  if (hasDailyPreview) {
     ctx.dailyReport = {
       available:    true,
-      reportStatus: drJson?.report?.reportStatus,
-      generatedAt:  drJson?.report?.generatedAt ?? drJson?.generatedAt ?? null,
-      warnings:     Array.isArray(drJson?.warnings) ? drJson.warnings : [],
+      reportStatus: preview?.reportStatus,
+      generatedAt:  preview?.reportDate
+        ? `${preview.reportDate}T00:00:00.000Z`
+        : (payload?.generatedAt ?? null),
+      warnings:     preview?.insufficientReason
+        ? [String(preview.insufficientReason)]
+        : [],
     };
   } else {
     ctx.dailyReport = { available: false };
   }
 
-  if (backtest.ok && backtest.data) {
-    const bt = backtest.data?.backtest;
-    const meta = backtest.data?.meta as {
-      symbolsWithCandles?: number;
-      symbolsQueried?: number;
-      outcomesAvailable?: number;
-      outcomesTotal?: number;
-    } | undefined;
-    ctx.backtest = bt
-      ? {
-          available:        true,
-          status:           bt.status,
-          window:           bt.window,
-          generatedAt:      bt.generatedAt,
-          symbolsWithData:  meta?.symbolsWithCandles
-            ?? parseCandleCoverageFromWarnings(bt.warnings),
-          totalSymbols:     meta?.symbolsQueried ?? bt.universe?.symbolsTested ?? null,
-          warnings:         Array.isArray(bt.warnings) ? bt.warnings : [],
-        }
-      : { available: false };
-  } else {
-    ctx.backtest = { available: false };
-  }
+  // Honest backtest readiness from warehouse presence — does not claim
+  // COMPLETE (that requires /api/signals/backtest). PARTIAL = candles
+  // exist so backtests can run; INSUFFICIENT_DATA = no EOD bars.
+  ctx.backtest = hasCandleWarehouse
+    ? {
+        available:       true,
+        status:          'PARTIAL',
+        window:          '7D',
+        generatedAt:     candleCoverage.latestCandleDate
+          ? `${candleCoverage.latestCandleDate}T00:00:00.000Z`
+          : null,
+        symbolsWithData: candleCoverage.distinctSymbols || null,
+        totalSymbols:    null,
+        warnings:        [
+          'Engine-health uses candle warehouse readiness — open Backtesting for the full preview.',
+        ],
+      }
+    : {
+        available:       true,
+        status:          'INSUFFICIENT_DATA',
+        window:          '7D',
+        generatedAt:     null,
+        symbolsWithData: 0,
+        totalSymbols:    null,
+        warnings:        ['No EOD candles in warehouse — import historical candle data.'],
+      };
 
   const healthSpan = engineDebugger.start({
     function: 'buildEngineHealthMap',
@@ -457,8 +412,8 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
       warnings,
       sourceStatus: {
         signals:     { ok: signals.ok,  status: signals.status,  timedOut: signals.timedOut,  elapsedMs: signals.elapsedMs,  timeoutMs: signals.timeoutMs },
-        dailyReport: { ok: daily.ok,    status: daily.status,    timedOut: daily.timedOut,    elapsedMs: daily.elapsedMs,    timeoutMs: daily.timeoutMs },
-        backtest:    { ok: backtest.ok, status: backtest.status, timedOut: backtest.timedOut, elapsedMs: backtest.elapsedMs, timeoutMs: backtest.timeoutMs },
+        dailyReport: { ok: hasDailyPreview, source: hasDailyPreview ? 'signals.dailyReportPreview' : 'unavailable' },
+        backtest:    { ok: true, source: 'candleWarehouseProbe', hasCandleWarehouse },
         candleProbe: candleCoverage,
       },
       verbose:      verbose ? { signalPayload: payload } : undefined,

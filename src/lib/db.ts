@@ -241,8 +241,17 @@ export const db = {
     let rowsReturned = 0;
     const debugCtx = getEngineDebugContext();
     const opName = (() => {
-      const m = text.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i);
-      return m ? m[1].toUpperCase() : 'QUERY';
+      const compact = text.replace(/\s+/g, ' ').trim();
+      const verbMatch = compact.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i);
+      const verb = verbMatch ? verbMatch[1].toUpperCase() : 'QUERY';
+      const tableMatch = compact.match(/\b(?:FROM|INTO|UPDATE)\s+`?([a-zA-Z0-9_]+)`?/i);
+      const table = tableMatch?.[1] ?? null;
+      let kind = verb.toLowerCase();
+      if (/\bCOUNT\s*\(\s*DISTINCT/i.test(compact)) kind = 'countDistinct';
+      else if (/\bCOUNT\s*\(/i.test(compact)) kind = 'count';
+      else if (/\bMAX\s*\(/i.test(compact)) kind = 'max';
+      else if (/\bMIN\s*\(/i.test(compact)) kind = 'min';
+      return table ? `${verb}:${table}.${kind}` : `${verb}.${kind}`;
     })();
     const dbSpan = debugCtx
       ? engineDebugger.dbStart({
