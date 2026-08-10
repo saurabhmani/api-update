@@ -50,6 +50,7 @@ import {
   type ScanOptions,
 } from '@/lib/manipulation-engine';
 import { loadDailyBars } from '@/lib/manipulation-engine/data/candleLoader';
+import { clearManipulationFreshnessCache } from '@/lib/manipulation-engine/manipulationSignalRisk';
 import type {
   ManipulationSnapshot,
   SuspicionBand,
@@ -386,6 +387,7 @@ export async function runManipulationScan(
   }
 
   result.durationMs = Date.now() - start;
+  clearManipulationFreshnessCache();
   console.log(`\n  duration: ${result.durationMs}ms\n`);
   return result;
 }

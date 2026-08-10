@@ -25,4 +25,13 @@ const fresh = resolveManipulationFreshnessStatus({
 });
 check('scan matches candle → FRESH', fresh.status === 'FRESH' && !fresh.isStale);
 
+// Fri event → Mon candle is 3 calendar days — still within threshold.
+const weekendLag = resolveManipulationFreshnessStatus({
+  latestEventDate: '2026-08-07',
+  latestCandleDate: '2026-08-10',
+  latestScanAt: '2026-08-10T08:59:51.000Z',
+  snapshotCount30d: 2057,
+});
+check('3-day weekend lag → FRESH', weekendLag.status === 'FRESH' && !weekendLag.isStale);
+
 console.log('\nManipulation freshness tests passed.\n');

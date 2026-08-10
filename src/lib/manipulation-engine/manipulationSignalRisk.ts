@@ -144,10 +144,27 @@ export function applyManipulationPolicy(risk: ManipulationRisk): ManipulationRis
 
 // ── Internal helpers ───────────────────────────────────────────────
 
+const IST_TZ = 'Asia/Kolkata';
+
+/** Calendar day in Asia/Kolkata — MySQL DATE values arrive as IST midnight. */
+function dateKeyIst(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: IST_TZ }).format(d);
+}
+
 function toIsoDate(v: unknown): string | null {
   if (!v) return null;
-  if (typeof v === 'string') return v.split('T')[0];
-  if (v instanceof Date) return v.toISOString().split('T')[0];
+  if (typeof v === 'string') {
+    // Already a bare date — trust it. Full timestamps go through IST so
+    // DATE columns (returned as previous-day 18:30Z) do not shift back a day.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return v.trim();
+    const d = new Date(v);
+    if (!Number.isFinite(d.getTime())) return v.split('T')[0] ?? null;
+    return dateKeyIst(d);
+  }
+  if (v instanceof Date) {
+    if (!Number.isFinite(v.getTime())) return null;
+    return dateKeyIst(v);
+  }
   return null;
 }
 
@@ -230,8 +247,10 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
   let snapshotCount30d = 0;
 
   try {
+    // DATE_FORMAT returns a bare YYYY-MM-DD string — avoids mysql2 DATE→JS
+    // timezone shifts that made event lag look one day worse than reality.
     const { rows } = await db.query<{ d: string | Date | null }>(
-      `SELECT MAX(event_date) AS d FROM q365_manipulation_events`,
+      `SELECT DATE_FORMAT(MAX(event_date), '%Y-%m-%d') AS d FROM q365_manipulation_events`,
     );
     latestEventDate = toIsoDate(rows?.[0]?.d ?? null);
   } catch {/* table may not exist on fresh DB — treat as no data */}
@@ -248,7 +267,7 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
 
   try {
     const { rows } = await db.query<{ d: string | Date | null }>(
-      `SELECT MAX(ts) AS d FROM candles
+      `SELECT DATE_FORMAT(MAX(ts), '%Y-%m-%d') AS d FROM candles
         WHERE candle_type = 'eod' AND interval_unit = '1day'`,
     );
     latestCandleDate = toIsoDate(rows?.[0]?.d ?? null);

@@ -24,7 +24,8 @@ export async function saveSnapshot(snapshot: ManipulationSnapshot): Promise<numb
        suspicion_band     = VALUES(suspicion_band),
        feature_json       = VALUES(feature_json),
        triggered_events_json = VALUES(triggered_events_json),
-       explanation        = VALUES(explanation)`,
+       explanation        = VALUES(explanation),
+       created_at         = CURRENT_TIMESTAMP`,
     [
       snapshot.symbol,
       snapshot.snapshotDate,

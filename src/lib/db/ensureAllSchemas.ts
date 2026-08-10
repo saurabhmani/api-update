@@ -433,11 +433,13 @@ const ALL_TABLES: string[] = [
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     snapshot_id BIGINT NOT NULL,
     detector_name VARCHAR(60) NOT NULL,
-    score INT NOT NULL DEFAULT 0,
     triggered BOOLEAN NOT NULL DEFAULT FALSE,
-    details_json JSON DEFAULT NULL,
+    severity VARCHAR(10) NOT NULL DEFAULT 'low',
+    score INT NOT NULL DEFAULT 0,
+    evidence_json JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_snapshot (snapshot_id)
+    INDEX idx_snapshot (snapshot_id),
+    INDEX idx_detector_name (detector_name)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
   `CREATE TABLE IF NOT EXISTS q365_manipulation_penalties (

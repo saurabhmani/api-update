@@ -249,6 +249,48 @@ export async function migrateManipulationEngineTables(): Promise<void> {
     console.warn('[migrate] snapshot schema repair failed:', (snapErr as any)?.message);
   }
 
+  // ── Idempotent detector_results schema repair ─────────────────
+  //
+  // ensureAllSchemas.ts created detector_results without `severity` /
+  // `evidence_json` (used `details_json` instead). persistence.ts
+  // INSERTs both columns — every symbol scan then failed with
+  // "Unknown column 'severity'", leaving snapshots stale and hard
+  // rejection disabled.
+  try {
+    const { rows: detCols } = await db.query<{ COLUMN_NAME: string }>(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'q365_manipulation_detector_results'`,
+    );
+    if (detCols.length > 0) {
+      const present = new Set(detCols.map((r) => String((r as any).COLUMN_NAME).toLowerCase()));
+      if (!present.has('severity')) {
+        await db.query(
+          `ALTER TABLE q365_manipulation_detector_results
+             ADD COLUMN severity VARCHAR(10) NOT NULL DEFAULT 'low' AFTER triggered`,
+        );
+        console.warn('[migrate] added q365_manipulation_detector_results.severity');
+      }
+      if (!present.has('evidence_json')) {
+        if (present.has('details_json')) {
+          await db.query(
+            `ALTER TABLE q365_manipulation_detector_results
+               CHANGE COLUMN details_json evidence_json JSON NULL`,
+          );
+          console.warn('[migrate] renamed q365_manipulation_detector_results.details_json → evidence_json');
+        } else {
+          await db.query(
+            `ALTER TABLE q365_manipulation_detector_results
+               ADD COLUMN evidence_json JSON NULL`,
+          );
+          console.warn('[migrate] added q365_manipulation_detector_results.evidence_json');
+        }
+      }
+    }
+  } catch (detErr) {
+    console.warn('[migrate] detector_results schema repair failed:', (detErr as any)?.message);
+  }
+
   // ── Idempotent ALTER: event triage status ─────────────────
   //
   // Added during the manipulation split-brain cleanup so the /api/manipulation
