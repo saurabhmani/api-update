@@ -303,9 +303,83 @@ export async function withEngineDebug<T>(
   }
 }
 
+/** Read engine-debug.log for the public API. Caps size; optional tail. */
+export function readEngineDebugLog(opts?: {
+  /** Max bytes to return (default 512 KiB). */
+  maxBytes?: number;
+  /** If set, return only the last N lines. */
+  lines?: number;
+}): {
+  path: string;
+  exists: boolean;
+  content: string;
+  truncated: boolean;
+  sizeBytes: number;
+  lineCount: number;
+} {
+  const logPath = resolveLogPath();
+  const maxBytes = Math.max(1_024, Math.min(opts?.maxBytes ?? 512 * 1024, 2 * 1024 * 1024));
+  try {
+    if (!fs.existsSync(logPath)) {
+      return {
+        path: logPath,
+        exists: false,
+        content: '',
+        truncated: false,
+        sizeBytes: 0,
+        lineCount: 0,
+      };
+    }
+    const stat = fs.statSync(logPath);
+    const sizeBytes = stat.size;
+    let raw: string;
+    let truncated = false;
+    if (sizeBytes <= maxBytes) {
+      raw = fs.readFileSync(logPath, 'utf8');
+    } else {
+      const fd = fs.openSync(logPath, 'r');
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        fs.readSync(fd, buf, 0, maxBytes, Math.max(0, sizeBytes - maxBytes));
+        raw = buf.toString('utf8');
+        // Drop partial first line after a mid-file seek.
+        const nl = raw.indexOf('\n');
+        if (nl >= 0 && nl < raw.length - 1) raw = raw.slice(nl + 1);
+        truncated = true;
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    let lines = raw.split(/\r?\n/);
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines = lines.slice(0, -1);
+    if (opts?.lines != null && opts.lines > 0 && lines.length > opts.lines) {
+      lines = lines.slice(-opts.lines);
+      truncated = true;
+    }
+    return {
+      path: logPath,
+      exists: true,
+      content: lines.join('\n') + (lines.length ? '\n' : ''),
+      truncated,
+      sizeBytes,
+      lineCount: lines.length,
+    };
+  } catch {
+    return {
+      path: logPath,
+      exists: false,
+      content: '',
+      truncated: false,
+      sizeBytes: 0,
+      lineCount: 0,
+    };
+  }
+}
+
 export const engineDebugger = {
   isEnabled,
   logPath: resolveLogPath,
+  readLog: readEngineDebugLog,
   getContext: getEngineDebugContext,
   runWith: runWithEngineDebug,
   runWithAsync: runWithEngineDebugAsync,
