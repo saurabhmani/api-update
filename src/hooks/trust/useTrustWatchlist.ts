@@ -9,10 +9,13 @@ export function useTrustWatchlist() {
     queryKey: ['trust', 'watchlist'],
     queryFn: async ({ signal }) => {
       const res = await fetch('/api/trust/watchlist', { cache: 'no-store', credentials: 'include', signal });
-      if (!res.ok) throw new Error('Watchlist fetch failed');
-      const body = await res.json();
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 401) throw new Error('Unauthorized — please sign in again');
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error ?? `Watchlist fetch failed (${res.status})`);
+      }
       return {
-        items: body.data as TrustWatchlistItem[],
+        items: (body.data ?? []) as TrustWatchlistItem[],
         count: body.count as number,
         categories: body.categories as Record<string, number>,
       };

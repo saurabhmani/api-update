@@ -953,10 +953,32 @@ const OPTION_INDEX_DB_ALIASES: Record<string, string[]> = {
   BANKEX:     ['BANKEX', 'BSE BANKEX'],
 };
 
+/**
+ * When index candles / Yahoo are unavailable, approximate spot from the
+ * tracking ETF close × scale. NIFTYBEES ≈ Nifty/100, BANKBEES ≈ Bank Nifty/100.
+ * Synthetic option chains need a positive spot; without this the Option
+ * Intelligence page permanently shows "no data".
+ */
+const OPTION_INDEX_ETF_PROXY: Record<string, { etf: string; scale: number }> = {
+  NIFTY:      { etf: 'NIFTYBEES',  scale: 100 },
+  BANKNIFTY:  { etf: 'BANKBEES',   scale: 100 },
+  FINNIFTY:   { etf: 'FINIETF',    scale: 100 },
+  MIDCPNIFTY: { etf: 'JUNIORBEES', scale: 100 },
+};
+
 const OPTION_STOCK_ALIASES: Record<string, string> = {};
 
 function normalizeOptionInputSymbol(symbol: string): string {
   return symbol.trim().toUpperCase().replace(/\.NS$/, '');
+}
+
+async function fetchIndexSpotFromEtfProxy(symbol: string): Promise<number | null> {
+  const proxy = OPTION_INDEX_ETF_PROXY[symbol.toUpperCase()];
+  if (!proxy) return null;
+  const etfSpot = await fetchStockSpotFromDb(proxy.etf);
+  if (!etfSpot || etfSpot <= 0) return null;
+  const spot = Math.round(etfSpot * proxy.scale * 100) / 100;
+  return spot > 0 ? spot : null;
 }
 
 async function fetchIndexSpotFromDb(symbol: string): Promise<number | null> {
@@ -989,6 +1011,12 @@ async function fetchIndexSpotFromDb(symbol: string): Promise<number | null> {
       return spot;
     }
   } catch { /* index candle fallback unavailable */ }
+
+  const proxied = await fetchIndexSpotFromEtfProxy(sym);
+  if (proxied && proxied > 0) {
+    await cacheSet(cacheKey, proxied, 300);
+    return proxied;
+  }
   return null;
 }
 

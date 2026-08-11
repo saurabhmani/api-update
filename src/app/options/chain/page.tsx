@@ -6,7 +6,7 @@ import { Activity, AlertTriangle, RefreshCw, Target } from 'lucide-react';
 import '@/styles/components/_intelligence.scss';
 import '@/styles/components/_ui.scss';
 
-const SOURCE_BACKED_SYMBOLS = ['NIFTY'];
+const SOURCE_BACKED_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY'];
 
 const BUILD_COLORS: Record<string, string> = {
   long_buildup:   '#DCFCE7',
@@ -142,7 +142,11 @@ export default function OptionChainPage() {
       const res = await fetch(`/api/options/intelligence?symbol=${encodeURIComponent(sym)}&expiry=${exp}`, { cache: 'no-store' });
       const d   = await res.json();
       if (!res.ok || !d.intelligence) {
-        setError(d.error || 'Option chain unavailable. Market may be closed or upstream is unreachable.');
+        setError(
+          d.error
+          || d.details
+          || 'Option chain unavailable — index spot could not be resolved (Yahoo removed; no NSE_INDEX candles). Retry after market data refresh.',
+        );
         setIntel(null);
       } else {
         setIntel(d.intelligence);

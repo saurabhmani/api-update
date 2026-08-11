@@ -35,7 +35,7 @@ export interface OutcomeEvaluationOptions {
   signalId?: number;
   /** Only consider signals generated within the last N days (default 30). */
   maxAgeDays?: number;
-  /** Minimum post-signal daily candles required to evaluate (default 5). */
+  /** Minimum post-signal daily candles required to evaluate (default 3). */
   minBarsSinceEntry?: number;
   /** Max signals to process per run (default 200, capped at 1000). */
   limit?: number;
@@ -105,7 +105,7 @@ export async function runOutcomeEvaluation(
   const start = Date.now();
   const signalId = opts.signalId;
   const maxAgeDays = opts.maxAgeDays ?? 30;
-  const minBarsSinceEntry = opts.minBarsSinceEntry ?? 5;
+  const minBarsSinceEntry = opts.minBarsSinceEntry ?? 3;
   const limit = Math.min(opts.limit ?? 200, 1000);
   const staleHours = opts.staleHours;
 
@@ -197,8 +197,7 @@ export async function runOutcomeEvaluation(
     const target3 = entryPrice + 2 * (target1 - entryPrice);
     const isBearish = sig.direction === 'SELL';
 
-    // Fetch post-signal candles strictly AFTER generated_at, capped
-    // at the evaluation horizon (15 bars).
+    // Fetch post-signal EOD candles after the signal's session day.
     const genAt =
       typeof sig.generated_at === 'string'
         ? sig.generated_at
@@ -206,7 +205,7 @@ export async function runOutcomeEvaluation(
     const { rows: candleRows } = await db.query<PostCandleRow>(
       `SELECT ts, high, low, close
          FROM market_data_daily
-        WHERE symbol = ? AND ts > ?
+        WHERE symbol = ? AND DATE(ts) > DATE(?)
         ORDER BY ts ASC
         LIMIT 15`,
       [sig.symbol, genAt],
@@ -237,7 +236,11 @@ export async function runOutcomeEvaluation(
         expectedRewardRisk: Math.abs(entryPrice - stopLoss) > 0
           ? Math.abs(target1 - entryPrice) / Math.abs(entryPrice - stopLoss)
           : 0,
-        evaluatedAt: String(candleRows.at(-1)?.ts ?? genAt),
+        evaluatedAt: (() => {
+          const raw = candleRows.at(-1)?.ts ?? genAt;
+          if (raw instanceof Date) return raw.toISOString();
+          return String(raw);
+        })(),
       },
     );
 

@@ -317,21 +317,30 @@ export async function loadDirectSignalOutcomes(
       const { rows } = await db.query<any>(
         `SELECT o.id, o.signal_id, o.source_snapshot_id,
                 COALESCE(NULLIF(o.symbol, ''), s.symbol) AS symbol,
-                COALESCE(NULLIF(NULLIF(o.strategy_id, ''), 'unclassified'),
-                         NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
-                         s.signal_type, 'unclassified') AS strategy_id,
+                COALESCE(
+                  NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
+                  s.signal_type,
+                  'unclassified'
+                ) AS strategy_id,
                 COALESCE(NULLIF(o.direction, ''), s.direction) AS direction,
                 COALESCE(o.sector, s.sector) AS sector,
                 COALESCE(o.regime, s.market_regime) AS market_regime,
                 COALESCE(o.confidence_score, s.confidence_score) AS confidence_score,
-                COALESCE(NULLIF(o.outcome, ''), o.outcome_label) AS outcome,
+                CASE
+                  WHEN o.outcome IS NULL
+                    OR TRIM(o.outcome) = ''
+                    OR UPPER(TRIM(o.outcome)) IN ('INSUFFICIENT_DATA', 'OPEN', 'ACTIVE', 'UNKNOWN')
+                  THEN o.outcome_label
+                  ELSE o.outcome
+                END AS outcome,
+                o.outcome_label,
                 o.return_pct, o.return_r, o.pnl_r,
                 o.target_hit, o.stop_hit, o.invalidated,
                 o.target1_hit, o.target2_hit, o.target3_hit,
                 o.max_fav_excursion_pct, o.max_adv_excursion_pct,
-                o.max_gain_pct, o.return_bar5_pct, o.return_bar10_pct,
-                o.mfe_pct, o.mae_pct, o.holding_period_bars, o.days_held,
-                o.approval_status, o.evaluated_at, o.outcome_at, o.resolved_at,
+                o.return_bar5_pct, o.return_bar10_pct,
+                o.mfe_pct, o.mae_pct, o.holding_period_bars,
+                o.approval_status, o.evaluated_at,
                 s.entry_price, s.stop_loss, s.target1, s.target2,
                 s.classification, s.rejection_codes_json
            FROM q365_signal_outcomes o
@@ -348,10 +357,13 @@ export async function loadDirectSignalOutcomes(
       const legacyWhere = cutoff ? `WHERE ${legacyEventAt} >= ?` : '';
       const { rows } = await db.query<any>(
         `SELECT o.id, o.signal_id, s.symbol,
-                COALESCE(NULLIF(NULLIF(o.strategy_id, ''), 'unclassified'),
-                         NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
-                         s.signal_type, 'unclassified') AS strategy_id,
-                o.outcome_label AS outcome,
+                COALESCE(
+                  NULLIF(NULLIF(o.strategy, ''), 'unclassified'),
+                  s.signal_type,
+                  'unclassified'
+                ) AS strategy_id,
+                COALESCE(NULLIF(o.outcome_label, ''), o.outcome) AS outcome,
+                o.outcome_label,
                 o.target1_hit, o.target2_hit, o.target3_hit, o.stop_hit,
                 o.max_fav_excursion_pct AS max_gain_pct, o.pnl_r,
                 o.max_fav_excursion_pct, o.max_adv_excursion_pct,
@@ -398,7 +410,14 @@ function normaliseOutcome(raw: string): OutcomeStatus {
 }
 
 function directOutcomeToRow(r: any): PerformanceOutcomeRow {
-  const outcome = normaliseOutcome(String(r.outcome ?? r.outcome_label ?? ''));
+  // Prefer authored outcome_label when the `outcome` column still holds a
+  // placeholder default (INSUFFICIENT_DATA / OPEN) written by older schemas.
+  const rawOutcome = String(r.outcome ?? '').trim();
+  const rawLabel = String(r.outcome_label ?? '').trim();
+  const placeholder =
+    !rawOutcome ||
+    ['INSUFFICIENT_DATA', 'OPEN', 'ACTIVE', 'UNKNOWN'].includes(rawOutcome.toUpperCase());
+  const outcome = normaliseOutcome(placeholder ? (rawLabel || rawOutcome) : rawOutcome);
   const dir: 'BUY' | 'SELL' =
     String(r.direction ?? 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
 

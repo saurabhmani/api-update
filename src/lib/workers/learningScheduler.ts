@@ -133,7 +133,8 @@ import { ensureAdaptiveParameterTables } from '@/lib/signal-engine/adaptive/adap
 // ════════════════════════════════════════════════════════════════
 
 const OUTCOME_LOOKBACK_DAYS      = 30;    // how far back to scan q365_signals
-const OUTCOME_MIN_POST_BARS      = 5;     // fewer → signal is too young to grade
+const OUTCOME_MIN_POST_BARS      = 3;     // bar-count gate (authoritative); stop/target can resolve early
+const OUTCOME_MIN_AGE_DAYS       = 3;     // coarse calendar prefilter only — must not exceed available history
 const OUTCOME_MAX_POST_BARS      = 12;    // enough to hit target2/target3 or stop
 const OUTCOME_BATCH_LOG_EVERY    = 50;    // progress log cadence
 
@@ -176,9 +177,12 @@ export async function evaluateSignalOutcomes(): Promise<{
   console.log('[learning:A] evaluateSignalOutcomes — start');
   const counts = { scanned: 0, evaluated: 0, skippedYoung: 0, skippedExisting: 0, failed: 0 };
 
-  // Pull recent signals that are old enough for at least OUTCOME_MIN_POST_BARS
-  // trading days to have passed. We lean on created_at so backfills don't
-  // get re-evaluated unnecessarily.
+  // Pull recent signals old enough that post-signal EOD bars are likely
+  // available. The calendar floor is only a coarse prefilter — the real
+  // readiness gate is OUTCOME_MIN_POST_BARS against market_data_daily.
+  // Previously `MIN_POST_BARS * 1.4` (≈7 calendar days) permanently
+  // excluded young environments whose oldest signals were ~5–6 days old,
+  // leaving Trust Strategy Performance empty even with full geometry.
   const { rows: sigRows } = await db.query(
     `SELECT s.id, s.symbol, s.direction,
             s.entry_price, s.stop_loss, s.target1, s.target2,
@@ -190,7 +194,7 @@ export async function evaluateSignalOutcomes(): Promise<{
         AND s.entry_price IS NOT NULL
         AND s.stop_loss   IS NOT NULL
         AND s.target1     IS NOT NULL`,
-    [OUTCOME_LOOKBACK_DAYS, Math.max(1, Math.floor(OUTCOME_MIN_POST_BARS * 1.4))],
+    [OUTCOME_LOOKBACK_DAYS, OUTCOME_MIN_AGE_DAYS],
   );
   const signals = sigRows as unknown as SignalRow[];
   counts.scanned = signals.length;
@@ -216,14 +220,14 @@ export async function evaluateSignalOutcomes(): Promise<{
     }
 
     try {
-      // Fetch post-signal candles from market_data_daily (strictly after
-      // the signal's generated_at so we're not grading on the signal bar
-      // itself).
+      // Post-signal EOD bars only (exclude the signal's own session day).
+      // Compare by DATE so midday generated_at values don't depend on
+      // whether the warehouse stores midnight vs session timestamps.
       const { rows: cRows } = await db.query(
         `SELECT ts, high, low, close
            FROM market_data_daily
           WHERE symbol = ?
-            AND ts > ?
+            AND DATE(ts) > DATE(?)
           ORDER BY ts ASC
           LIMIT ?`,
         [sig.symbol, sig.generated_at, OUTCOME_MAX_POST_BARS],
@@ -255,8 +259,14 @@ export async function evaluateSignalOutcomes(): Promise<{
         sig.id, entry, stop, target1, target2, target3, postCandles, isBearish,
         {
           expectedRewardRisk: risk > 0 ? Math.abs(target1 - entry) / risk : 0,
-          evaluatedAt: String(postCandles.at(-1)?.ts ?? sig.generated_at),
-          signalGeneratedAt: sig.generated_at,
+          evaluatedAt: (() => {
+            const raw = postCandles.at(-1)?.ts ?? sig.generated_at;
+            if (raw instanceof Date) return raw.toISOString();
+            return String(raw);
+          })(),
+          signalGeneratedAt: sig.generated_at instanceof Date
+            ? sig.generated_at.toISOString()
+            : String(sig.generated_at),
           signalStateAtResolution: 'evaluated',
         },
       );

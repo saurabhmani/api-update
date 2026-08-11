@@ -14,9 +14,19 @@ import type {
 // ISO string and we'll persist a 'YYYY-MM-DD HH:MM:SS' value.
 function toMysqlDateTime(input: string | Date | null | undefined): string | null {
   if (input == null || input === '') return null;
-  const iso = input instanceof Date ? input.toISOString() : String(input);
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso)) return iso;
-  return iso.slice(0, 19).replace('T', ' ');
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) return null;
+    return input.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  const raw = String(input).trim();
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) return raw.slice(0, 19).replace('T', ' ');
+  // Locale strings like "Tue Aug 11 2026 05:30:00 GMT+0530" — parse then normalize.
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  return null;
 }
 
 // ── Save signal outcome ────────────────────────────────────
@@ -69,6 +79,48 @@ export async function saveOutcome(outcome: SignalOutcome): Promise<void> {
       outcome.metadataVersion ?? null,
     ],
   );
+
+  // Denormalize strategy/outcome/symbol for Trust Strategy Performance.
+  // Older schemas defaulted `outcome` to INSUFFICIENT_DATA and `strategy`
+  // to 'unclassified', which masked outcome_label / signal_type on read.
+  const canonicalOutcome =
+    outcome.outcomeLabel === 'good_followthrough' || outcome.outcomeLabel === 'partial_success'
+      ? 'WIN'
+      : outcome.outcomeLabel === 'stopped_out'
+        ? 'LOSS'
+        : outcome.outcomeLabel === 'expired' || outcome.outcomeLabel === 'stale_no_trigger'
+          ? 'EXPIRED'
+          : 'OPEN';
+  try {
+    await db.query(
+      `UPDATE q365_signal_outcomes o
+          JOIN q365_signals s ON s.id = o.signal_id
+         SET o.outcome = ?,
+             o.strategy = CASE
+               WHEN o.strategy IS NULL OR o.strategy = '' OR o.strategy = 'unclassified'
+               THEN COALESCE(s.signal_type, 'unclassified')
+               ELSE o.strategy
+             END,
+             o.symbol = COALESCE(NULLIF(o.symbol, ''), s.symbol),
+             o.direction = COALESCE(NULLIF(o.direction, ''), s.direction),
+             o.confidence_score = COALESCE(o.confidence_score, s.confidence_score),
+             o.sector = COALESCE(o.sector, s.sector),
+             o.regime = COALESCE(o.regime, s.market_regime),
+             o.target_hit = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(o.target_hit, 0) END,
+             o.stop_hit = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(o.stop_hit, 0) END,
+             o.return_pct = COALESCE(o.return_pct, o.realized_return_pct, o.return_bar5_pct),
+             o.return_r = COALESCE(o.return_r, o.pnl_r)
+       WHERE o.signal_id = ?`,
+      [
+        canonicalOutcome,
+        outcome.target1Hit || outcome.target2Hit || outcome.target3Hit ? 1 : 0,
+        outcome.stopHit ? 1 : 0,
+        outcome.signalId,
+      ],
+    );
+  } catch {
+    // Non-fatal — loader already recovers from outcome_label + signal join.
+  }
 }
 
 // ── Save AI explanation ────────────────────────────────────

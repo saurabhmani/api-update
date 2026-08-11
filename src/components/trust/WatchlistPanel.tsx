@@ -14,9 +14,18 @@ const CATEGORY_COLORS: Record<string, 'green' | 'orange' | 'red' | 'gray' | 'def
 };
 
 export function WatchlistPanel() {
-  const { data, isLoading } = useTrustWatchlist();
+  const { data, isLoading, error } = useTrustWatchlist();
 
   if (isLoading) return <Loading text="Loading watchlist intelligence…" />;
+  if (error) {
+    return (
+      <Card title="Watchlist">
+        <p style={{ padding: 16, color: '#DC2626' }}>
+          {error instanceof Error ? error.message : 'Failed to load watchlist.'}
+        </p>
+      </Card>
+    );
+  }
 
   const items = data?.items ?? [];
 
@@ -37,7 +46,12 @@ export function WatchlistPanel() {
           </thead>
           <tbody>
             {items.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: '#94A3B8' }}>Watchlist empty — add symbols from Market Search</td></tr>
+              <tr>
+                <td colSpan={7} style={{ textAlign: 'center', padding: 24, color: '#94A3B8' }}>
+                  No watchlist symbols yet — add from Market Search, or wait for
+                  engine watchlist / developing setups to appear.
+                </td>
+              </tr>
             )}
             {items.map((item) => {
               // Prefer soft warnings; fall back to the first rejection reason

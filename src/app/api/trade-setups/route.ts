@@ -237,6 +237,155 @@ async function loadRecentSetup(
   return rows[0] ?? null;
 }
 
+/**
+ * When the user has no active trade_setups rows, materialize setups from
+ * recent VALID / HIGH_CONVICTION signal-engine rows. The page only auto-
+ * generates against the top ranked symbol, which often fails live gates
+ * even though actionable signals already exist in q365_signals.
+ */
+async function hydrateTradeSetupsFromSignals(
+  userId: string | number,
+  limit: number,
+): Promise<number> {
+  const { rows: countRows } = await withTimeout(
+    db.query<{ c: number }>(
+      `SELECT COUNT(*) AS c
+         FROM trade_setups
+        WHERE user_id=? AND status='active'
+          AND (expires_at IS NULL OR expires_at>NOW())`,
+      [userId],
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+  if (Number(countRows[0]?.c ?? 0) > 0) return 0;
+
+  const { rows: signals } = await withTimeout(
+    db.query<{
+      id: number;
+      symbol: string;
+      direction: string;
+      entry_price: number;
+      stop_loss: number;
+      target1: number;
+      target2: number | null;
+      confidence_score: number;
+      signal_type: string | null;
+      scenario_tag: string | null;
+      market_regime: string | null;
+      rr_ratio: number | null;
+      classification: string | null;
+      instrument_key: string | null;
+      exchange: string | null;
+    }>(
+      `SELECT s.id, s.symbol, s.direction, s.entry_price, s.stop_loss, s.target1,
+              s.target2, s.confidence_score, s.signal_type, s.scenario_tag,
+              s.market_regime, s.risk_reward AS rr_ratio, s.classification,
+              i.instrument_key, i.exchange
+         FROM q365_signals s
+         LEFT JOIN instruments i
+           ON i.tradingsymbol = s.symbol
+          AND (i.exchange = 'NSE' OR i.exchange IS NULL)
+        WHERE s.classification IN ('VALID_SIGNAL', 'HIGH_CONVICTION')
+          AND s.direction IN ('BUY', 'SELL')
+          AND s.entry_price IS NOT NULL
+          AND s.stop_loss IS NOT NULL
+          AND s.target1 IS NOT NULL
+          AND s.generated_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+        ORDER BY s.confidence_score DESC, s.generated_at DESC
+        LIMIT 80`,
+    ),
+    DATABASE_TIMEOUT_MS,
+    'database',
+  );
+
+  const seen = new Set<string>();
+  let inserted = 0;
+  const hours = VALIDITY_HOURS.swing;
+  const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+  for (const sig of signals ?? []) {
+    if (inserted >= limit) break;
+    const symbol = String(sig.symbol ?? '').toUpperCase();
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+
+    const entry = Number(sig.entry_price);
+    const stop = Number(sig.stop_loss);
+    const t1 = Number(sig.target1);
+    if (!(entry > 0 && stop > 0 && t1 > 0)) continue;
+
+    const risk = Math.abs(entry - stop);
+    const rr = sig.rr_ratio != null && Number(sig.rr_ratio) > 0
+      ? Number(sig.rr_ratio)
+      : risk > 0
+        ? Math.round((Math.abs(t1 - entry) / risk) * 100) / 100
+        : 0;
+    const strategyId = String(sig.signal_type ?? 'auto');
+    const identity = `signal-hydrate|${userId}|${sig.id}|${symbol}`;
+    const instrumentKey = String(sig.instrument_key ?? `NSE_EQ|${symbol}`);
+    const exchange = String(sig.exchange ?? 'NSE');
+    const reason = `${String(sig.classification ?? '').toUpperCase() === 'HIGH_CONVICTION' ? 'High conviction' : 'Valid'} ${strategyId.replace(/_/g, ' ')} setup from Signal Engine.`;
+
+    try {
+      await withTimeout(
+        db.query(
+          `INSERT INTO trade_setups
+            (user_id, generation_identity, strategy_id, instrument_key,
+             tradingsymbol, exchange, direction, entry_price, stop_loss, target1,
+             target2, risk_reward, confidence, timeframe, reason, scenario_tag,
+             regime, status, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'swing', ?, ?, ?, 'active', ?)
+           ON DUPLICATE KEY UPDATE
+             direction=VALUES(direction), entry_price=VALUES(entry_price),
+             stop_loss=VALUES(stop_loss), target1=VALUES(target1),
+             target2=VALUES(target2), risk_reward=VALUES(risk_reward),
+             confidence=VALUES(confidence), reason=VALUES(reason),
+             scenario_tag=VALUES(scenario_tag), regime=VALUES(regime),
+             status='active', expires_at=VALUES(expires_at), updated_at=NOW()`,
+          [
+            userId,
+            identity,
+            strategyId,
+            instrumentKey,
+            symbol,
+            exchange,
+            String(sig.direction).toUpperCase(),
+            entry,
+            stop,
+            t1,
+            sig.target2 != null ? Number(sig.target2) : null,
+            rr,
+            Math.round(Number(sig.confidence_score ?? 0)),
+            reason,
+            sig.scenario_tag ?? null,
+            sig.market_regime ?? null,
+            expiresAt,
+          ],
+        ),
+        DATABASE_TIMEOUT_MS,
+        'database',
+      );
+      inserted += 1;
+    } catch (err) {
+      // Skip individual hydrate failures (missing columns / duplicates).
+      log.warn('Trade setup hydrate row skipped', {
+        symbol,
+        signalId: sig.id,
+        error_name: err instanceof Error ? err.name : 'UnknownError',
+      });
+    }
+  }
+
+  if (inserted > 0) {
+    log.info('Hydrated trade setups from signal engine', {
+      userId,
+      inserted,
+    });
+  }
+  return inserted;
+}
+
 function signalToSetup(signal: Signal): TradeSetup {
   const hours = VALIDITY_HOURS[signal.timeframe as keyof typeof VALIDITY_HOURS]
     ?? VALIDITY_HOURS.swing;
@@ -399,6 +548,13 @@ async function handleGet(req: NextRequest) {
       'database',
     );
 
+    await hydrateTradeSetupsFromSignals(user.id, limitRaw).catch((err) => {
+      log.warn('Trade setup hydrate skipped', {
+        error_name: err instanceof Error ? err.name : 'UnknownError',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
+
     const { rows } = await withTimeout(
       db.query<TradeSetup>(
         `SELECT id, tradingsymbol, exchange, direction, entry_price, stop_loss,
@@ -535,13 +691,18 @@ async function handlePost(req: NextRequest) {
         instrument,
         identity,
       );
-      await cacheService.set(
-        resultKey,
-        payload,
-        market.isOpen
-          ? CACHE_POLICIES.tradeSetup
-          : { ttlSeconds: 60 * 60 },
-      );
+      // Only cache successful setups. Caching `no_setup` made the page
+      // stick on empty for the seed symbol even when other symbols had
+      // actionable Signal Engine setups.
+      if (payload.generationStatus === 'complete') {
+        await cacheService.set(
+          resultKey,
+          payload,
+          market.isOpen
+            ? CACHE_POLICIES.tradeSetup
+            : { ttlSeconds: 60 * 60 },
+        );
+      }
       return payload;
     })();
     inFlight.set(identity, work);
