@@ -3,8 +3,8 @@
 //
 //  Phase 5 — Engine Health Map & Process Observability API.
 //
-//  Reads the /api/signals envelope (lite=true), then builds the
-//  health map. Pure builder lives in src/lib/signals/engineHealthMap.ts.
+//  Reads indexed DB summaries directly, then builds the health map. Pure
+//  builder lives in src/lib/signals/engineHealthMap.ts.
 //
 //  Performance (2026-08):
 //    - Does NOT fan out to /api/signals/daily-report or
@@ -15,7 +15,7 @@
 //    - Candle probe is TTL-cached + in-flight coalesced.
 //
 //  Safety:
-//   - Signals fetch is wrapped in `internalFetch` with a strict timeout.
+//   - Signal state comes from a strict-timeout direct DB probe; no engine runs.
 //   - When the signals envelope is unavailable, candle + learning probes
 //     still populate Data Feed / Learning cards.
 //   - Returns ok=true even when downstream calls fail; affected
@@ -31,7 +31,7 @@
 import { NextRequest, NextResponse }   from 'next/server';
 import { requireSession }              from '@/lib/session';
 import { getMarketStatus }             from '@/lib/marketData/marketHours';
-import { internalFetch }               from '@/lib/api/internalFetch';
+import { probeSignalEngineHealthDirect } from '@/lib/maintenance/engineHealthProbe';
 import {
   buildEngineHealthMap,
   type EngineHealthContext,
@@ -62,7 +62,7 @@ const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
 // cheap candle warehouse probe.
 const TIMEOUT = {
   // /api/signals is heavy — lite=true keeps health aggregation under budget.
-  signals:      30_000,
+  signals:       1_500,
   candleProbe:   2_000,
   learningProbe: 3_000,
 } as const;
@@ -207,18 +207,19 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
   const url     = new URL(req.url);
   const verbose = url.searchParams.get('verbose') === 'true';
   const warnings: string[] = [];
-  const cookieHeader = req.headers.get('cookie') ?? '';
 
   // Fan-out — signals + cheap warehouse probes only.
   // daily-report / backtest sibling HTTP removed: they each re-hit
   // /api/signals and raced the candle COUNT(*) probe for pool slots
   // (see engine-debug.log requestId=engine-health-msnc2f1g).
   const [signalsRes, candleProbeSettled, learningProbeSettled] = await Promise.allSettled([
-    internalFetch<any>(
-      req,
-      `/api/signals?action=all&limit=10&lite=true&request_id=health-${Date.now()}`,
-      { cookieHeader, timeoutMs: TIMEOUT.signals },
-    ),
+    Promise.race([
+      probeSignalEngineHealthDirect().then((data) => ({ ok: true, status: 200, data,
+        error: null, timedOut: false, elapsedMs: 0, timeoutMs: TIMEOUT.signals })),
+      new Promise<any>((resolve) => setTimeout(() => resolve({ ok: false, status: 0, data: null,
+        error: 'direct DB probe timed out', timedOut: true, elapsedMs: TIMEOUT.signals,
+        timeoutMs: TIMEOUT.signals }), TIMEOUT.signals)),
+    ]),
     Promise.race([
       probeCandleWarehouse(),
       new Promise<{ latestCandleDate: null; candleCount: 0; distinctSymbols: 0 }>(

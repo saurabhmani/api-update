@@ -1,0 +1,40 @@
+CREATE TABLE IF NOT EXISTS q365_maintenance_job_runs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL,
+  job_name VARCHAR(80) NOT NULL,
+  trading_date DATE NOT NULL,
+  job_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+  status ENUM('pending','running','succeeded','partial','failed','skipped') NOT NULL DEFAULT 'pending',
+  started_at DATETIME DEFAULT NULL,
+  heartbeat_at DATETIME DEFAULT NULL,
+  completed_at DATETIME DEFAULT NULL,
+  expected_count INT DEFAULT NULL,
+  processed_count INT NOT NULL DEFAULT 0,
+  success_count INT NOT NULL DEFAULT 0,
+  failure_count INT NOT NULL DEFAULT 0,
+  retry_count INT NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT NULL,
+  dependency_run_ids JSON DEFAULT NULL,
+  metadata_json JSON DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_maintenance_stage_date_version (job_name, trading_date, job_version),
+  INDEX idx_maintenance_date_status (trading_date, status),
+  INDEX idx_maintenance_status_heartbeat (status, heartbeat_at),
+  INDEX idx_maintenance_run_id (run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS q365_daily_signal_reports (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  report_date DATE NOT NULL,
+  report_status VARCHAR(24) NOT NULL,
+  data_status VARCHAR(24) NOT NULL,
+  market_status VARCHAR(64),
+  report_json JSON NOT NULL,
+  data_quality_json JSON,
+  generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_q365_daily_reports_date (report_date),
+  INDEX idx_q365_daily_reports_status (report_status, report_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

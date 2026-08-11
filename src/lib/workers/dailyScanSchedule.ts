@@ -717,7 +717,10 @@ export function startDailyScanSchedule(): void {
     });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
+  // The durable 20:30 maintenance DAG owns EOD manipulation by default.
+  // Register this legacy standalone clock only during an explicit rollback.
   tasks.push(cron.schedule(manipulationDailyScanCron, () => {
+    if (process.env.NODE_ENV !== 'test' && process.env.DAILY_MAINTENANCE_PIPELINE_ENABLED !== 'false') return;
     void runManipulationDailyScanJob().catch((err) => {
       log.error('manipulation daily scan cron failed', { err: String(err) });
     });

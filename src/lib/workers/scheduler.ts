@@ -70,9 +70,12 @@ import { ensureBacktestTables } from '@/lib/backtesting/repository/migrate';
 import { processQueuedBacktestRuns } from '@/lib/backtesting/runner/backtestQueue';
 import { rescoreActiveSignals } from '@/lib/signal-engine/rescore/rescoreActiveSignals';
 import { isSignalIntradayRegenEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
+import { runScheduledMaintenance } from '@/lib/maintenance/scheduler';
 
 const log = logger.child({ component: 'worker-scheduler' });
 const IST = 'Asia/Kolkata';
+const DAILY_MAINTENANCE_PIPELINE_ENABLED =
+  process.env.DAILY_MAINTENANCE_PIPELINE_ENABLED !== 'false';
 
 // ── Nightly signal generation ────────────────────────────────────
 // Reads daily candles from the persisted warehouse and runs the
@@ -300,11 +303,13 @@ startDailyScanSchedule();
 startWeeklyUniverseSchedule();
 
 // 3. 19:00 IST — nightly backtest (Mon–Fri).
-cron.schedule('0 19 * * 1-5', () => {
-  runNightlyBacktest().catch(err => {
-    log.error('nightly backtest failed', { err: (err as Error).message });
-  });
-}, { timezone: IST });
+if (!DAILY_MAINTENANCE_PIPELINE_ENABLED) {
+  cron.schedule('0 19 * * 1-5', () => {
+    runNightlyBacktest().catch(err => {
+      log.error('nightly backtest failed', { err: (err as Error).message });
+    });
+  }, { timezone: IST });
+}
 
 // 3b. 19:30 IST — daily EOD ingestion + manipulation scan (Mon–Fri).
 //
@@ -326,7 +331,7 @@ cron.schedule('0 19 * * 1-5', () => {
 // throws), and the wrapper catches anything unexpected. The scheduler
 // loop cannot be killed by a flaky upstream URL.
 let manipulationEodJobRunning = false;
-cron.schedule('30 19 * * 1-5', async () => {
+if (!DAILY_MAINTENANCE_PIPELINE_ENABLED) cron.schedule('30 19 * * 1-5', async () => {
   if (manipulationEodJobRunning) {
     log.warn('[EOD-MANIPULATION] previous run still in flight — skipping this tick');
     return;
@@ -376,7 +381,7 @@ cron.schedule('30 19 * * 1-5', async () => {
 // already evaluated today, so successive batches walk the backlog
 // instead of re-chewing the same rows. Up to 5 batches × 1000.
 let outcomeEvalRunning = false;
-cron.schedule('0 20 * * 1-5', async () => {
+if (!DAILY_MAINTENANCE_PIPELINE_ENABLED) cron.schedule('0 20 * * 1-5', async () => {
   if (outcomeEvalRunning) {
     log.warn('[OUTCOME-EVAL] previous run still in flight — skipping');
     return;
@@ -593,6 +598,19 @@ if (BACKTEST_QUEUE_SCHEDULER_ENABLED) {
       backtestQueueDrainRunning = false;
     }
   });
+}
+
+// Authoritative post-close dependency DAG. One bounded invocation repairs up
+// to two missing trading dates and uses DB claims, so peer scheduler workers
+// cannot duplicate a stage. Individual legacy schedules remain available for
+// intraday operation, while durable EOD completion is determined only here.
+if (DAILY_MAINTENANCE_PIPELINE_ENABLED) {
+  cron.schedule(process.env.DAILY_MAINTENANCE_CRON ?? '30 20 * * 1-5', () => {
+    void runScheduledMaintenance({ lookbackTradingDays: 7, maxDates: 2 })
+      .catch((err) => log.error('[DAILY-MAINTENANCE] failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }));
+  }, { timezone: IST });
 }
 
 log.info('worker-scheduler ready', {
