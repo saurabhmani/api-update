@@ -246,6 +246,10 @@ export interface EngineHealthContext {
 
   /** Persisted Phase-6 learning observations (probed from warehouse). */
   learningPersistence?: import('@/lib/learning/learningPersistenceProbe').LearningPersistenceProbe | null;
+
+  /** Maintenance ledger summary — operational context for EOD pipeline. */
+  maintenanceSummary?: import('@/lib/maintenance/maintenanceHealthSummary').MaintenanceHealthSummary | null;
+  maintenanceRuns?: import('@/lib/maintenance/types').MaintenanceRunRecord[];
 }
 
 // ── Internals ───────────────────────────────────────────────────
@@ -277,6 +281,36 @@ const emptyDiagnostics = (): EngineDiagnostics => ({
   errors:             [],
   recommendedActions: [],
 });
+
+function appendMaintenanceDiagnostics(
+  diag: EngineDiagnostics,
+  ctx: EngineHealthContext,
+  nodeId: string,
+): void {
+  const m = ctx.maintenanceSummary;
+  if (!m) return;
+  diag.findings.push(
+    `Expected maintenance trading date: ${m.expectedTradingDate}. ` +
+    `Last successful: ${m.lastSuccessfulMaintenanceDate ?? 'never'}. ` +
+    `Next scheduled: ${m.nextExpectedRunIst}.`,
+  );
+  if (m.catchUpRequired) {
+    diag.warnings.push(
+      `Maintenance catch-up required for: ${m.catchUpPendingDates.join(', ') || m.expectedTradingDate}.`,
+    );
+    if (!diag.primaryIssue && (nodeId === 'manipulation' || nodeId === 'daily_report')) {
+      diag.primaryIssue = m.lastFailedStage
+        ? `Maintenance incomplete — failed stage: ${m.lastFailedStage}.`
+        : 'Maintenance catch-up pending — EOD pipeline not complete for expected date.';
+    }
+    diag.recommendedActions.push('Scheduler boot catch-up or 20:30 IST maintenance DAG will repair missed dates.');
+  }
+  if (m.lastFailedStage && m.lastFailedReason) {
+    diag.findings.push(
+      `Last maintenance failure: ${m.lastFailedStage} — ${m.lastFailedReason.slice(0, 200)}.`,
+    );
+  }
+}
 
 /** Count how many rows in `pool` have a populated numeric field. */
 const populated = (pool: readonly RankableSignal[], key: keyof RankableSignal): number => {
@@ -1121,6 +1155,7 @@ export function buildDailyReportHealthNode(ctx: EngineHealthContext): EngineHeal
     );
   }
   if (actionableWarnings.length > 0) diag.warnings.push(...actionableWarnings.slice(0, 3));
+  appendMaintenanceDiagnostics(diag, ctx, 'daily_report');
   return {
     id:                'daily_report',
     name:              'Daily Report Engine',
@@ -1397,9 +1432,15 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
     }
   } else if (md.stale) {
     status = 'DEGRADED';
-    diag.primaryIssue = `Manipulation snapshots are stale (latest ${latestScanAt ?? '—'}). ` +
-      'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
-    diag.recommendedActions.push('Run the manipulation scan worker.');
+    const expected = ctx.manipulationRiskMeta?.expectedSessionDate;
+    const session = (ctx.manipulationRiskMeta as { freshestSnapshotSession?: string })?.freshestSnapshotSession;
+    diag.primaryIssue = expected
+      ? `Manipulation stale — latest session ${session ?? '—'}, expected ${expected}.`
+      : `Manipulation snapshots are stale (latest ${latestScanAt ?? '—'}). ` +
+        'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
+    const staleReason = (ctx.manipulationRiskMeta as { staleReason?: string })?.staleReason;
+    if (staleReason) diag.findings.push(staleReason);
+    diag.recommendedActions.push('Run the maintenance DAG or manipulation scan worker.');
   } else {
     status = 'HEALTHY';
     diag.findings.push(
@@ -1417,6 +1458,8 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
   const signalEngineIntegrationActive = md.configured;
   const hardRejectionEnabled = md.configured && md.snapshotCount > 0 && !md.stale;
   const warningOnlyMode      = !hardRejectionEnabled;
+
+  appendMaintenanceDiagnostics(diag, ctx, 'manipulation');
 
   return {
     id:                'manipulation',
@@ -1453,6 +1496,10 @@ export function buildManipulationHealthNode(ctx: EngineHealthContext): EngineHea
       warningOnlyMode,
       stale:                     md.stale,
       freshnessStatus,
+      expectedSessionDate:       ctx.manipulationRiskMeta?.expectedSessionDate ?? null,
+      freshestSnapshotSession:   (ctx.manipulationRiskMeta as { freshestSnapshotSession?: string })?.freshestSnapshotSession ?? null,
+      scanDue:                   (ctx.manipulationRiskMeta as { scanDue?: boolean })?.scanDue ?? null,
+      lifecyclePhase:            (ctx.manipulationRiskMeta as { lifecyclePhase?: string })?.lifecyclePhase ?? null,
     },
     links: [
       { label: 'Open Manipulation Watch', href: '/manipulation' },

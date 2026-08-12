@@ -8,6 +8,7 @@ export const MAINTENANCE_STAGE_NAMES = [
   'scoring_confirmation',
   'history_backfill',
   'backtesting_evaluation',
+  'nightly_backtest',
   'learning_review',
   'daily_report',
   'health_snapshot',

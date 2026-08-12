@@ -268,12 +268,21 @@ function startAllWorkers() {
   );
 
   // Cron-triggered one-shots. Times match the original ecosystem.config.js:
-  //   13:00 UTC = 18:30 IST  — manipulation surveillance sweep
+  //   13:00 UTC = 18:30 IST  — manipulation surveillance sweep (legacy)
   //   15:00 UTC = 20:30 IST  — learning / calibration cycle
-  // node-cron syntax: minute hour day month weekday
-  cron.schedule('0 13 * * *', () => {
-    runOnceWorker('manipulation-scan', 'src/lib/workers/manipulationScannerCli.ts');
-  }, { timezone: 'UTC' });
+  //
+  // When DAILY_MAINTENANCE_PIPELINE_ENABLED (default), manipulation is owned
+  // exclusively by the 20:30 IST maintenance DAG in scheduler.ts — no double
+  // scan and no silent no-op from the legacy 18:30 path.
+  const maintenancePipelineEnabled =
+    process.env.DAILY_MAINTENANCE_PIPELINE_ENABLED !== 'false';
+  if (!maintenancePipelineEnabled) {
+    cron.schedule('0 13 * * *', () => {
+      runOnceWorker('manipulation-scan', 'src/lib/workers/manipulationScannerCli.ts');
+    }, { timezone: 'UTC' });
+  } else {
+    console.log('[server] manipulation-scan cron disabled — maintenance DAG owns EOD manipulation');
+  }
 
   cron.schedule('0 15 * * *', () => {
     runOnceWorker('learning-scheduler', 'src/lib/workers/learningScheduler.ts');

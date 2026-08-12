@@ -712,9 +712,20 @@ export function startDailyScanSchedule(): void {
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
   tasks.push(cron.schedule(crons.eveningScan, () => {
-    void runEveningScanJob().catch((err) => {
-      log.error('evening scan failed', { err: String(err) });
-    });
+    void runEveningScanJob()
+      .then(async (result) => {
+        if (result.ok) {
+          const { repairActiveSignalRiskGeometry } = await import(
+            '@/lib/maintenance/riskGeometryRepair'
+          );
+          await repairActiveSignalRiskGeometry(200).catch((err) => {
+            log.warn('post-evening-scan risk geometry repair failed', { err: String(err) });
+          });
+        }
+      })
+      .catch((err) => {
+        log.error('evening scan failed', { err: String(err) });
+      });
   }, { timezone: DAILY_SCAN_TIMEZONE }));
 
   // The durable 20:30 maintenance DAG owns EOD manipulation by default.

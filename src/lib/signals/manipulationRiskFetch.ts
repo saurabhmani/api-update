@@ -41,6 +41,14 @@ export type ManipulationRiskMeta = {
   globalSnapshotCount:   number;
   /** Latest snapshot timestamp across the full surveillance table. */
   globalLatestScanAt:    string | null;
+  /** Expected completed scan session (YYYY-MM-DD) for current lifecycle point. */
+  expectedSessionDate?:   string;
+  /** Latest persisted snapshot session date (YYYY-MM-DD). */
+  freshestSnapshotSession?: string;
+  freshnessStatus?:       string;
+  scanDue?:               boolean;
+  lifecyclePhase?:        string;
+  staleReason?:             string;
 };
 
 export type ManipulationRiskGlobalProbe = {

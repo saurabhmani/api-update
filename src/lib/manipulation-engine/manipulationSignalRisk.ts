@@ -25,6 +25,11 @@
 // ════════════════════════════════════════════════════════════════
 
 import { db } from '@/lib/db';
+import {
+  evaluateManipulationSessionHealth,
+  scanAtToSessionDate,
+} from '@/lib/manipulation-engine/expectedManipulationSession';
+import { parseIsoDateOnly } from '@/lib/dates/isoDateOnly';
 
 // ── Type surface ───────────────────────────────────────────────────
 
@@ -183,44 +188,37 @@ function dayDiff(a: string | null, b: string | null): number | null {
   return Math.round((db - da) / 86_400_000);
 }
 
-/** Pure freshness resolver — shared by DB probe + tests. */
+/** Pure freshness resolver — shared by DB probe + tests. Uses expected-session lifecycle. */
 export function resolveManipulationFreshnessStatus(input: {
   latestEventDate:  string | null;
   latestCandleDate: string | null;
   latestScanAt:     string | null;
+  latestSnapshotSessionDate?: string | null;
   snapshotCount30d: number;
+  nowMs?:           number;
 }): Pick<FreshnessEnvelope, 'status' | 'reason' | 'daysLag' | 'isStale'> {
-  const refDate = input.latestCandleDate ?? toIsoDate(new Date());
-  const daysLag = dayDiff(input.latestEventDate, refDate);
-  const scanDate = toIsoDate(input.latestScanAt);
+  const snapshotSession =
+    parseIsoDateOnly(input.latestSnapshotSessionDate)
+    ?? scanAtToSessionDate(input.latestScanAt)
+    ?? parseIsoDateOnly(input.latestEventDate);
 
-  let status: FreshnessStatus;
-  let reason: string;
+  const session = evaluateManipulationSessionHealth({
+    latestSnapshotSessionDate: snapshotSession,
+    latestScanAt:              input.latestScanAt,
+    snapshotCount30d:          input.snapshotCount30d,
+    nowMs:                     input.nowMs,
+  });
 
-  if (!input.latestEventDate) {
-    status = 'NO_DATA';
-    reason = 'No manipulation events have been recorded. Run a scan to populate the surveillance surface.';
-  } else if (daysLag != null && daysLag > FRESH_DAYS_THRESHOLD) {
-    status = 'STALE';
-    reason = `No fresh manipulation scan or candle data after ${input.latestEventDate}. ` +
-             `Latest events are ${daysLag} day(s) behind latest candle date.`;
-  } else if (input.snapshotCount30d === 0) {
-    status = 'PARTIAL';
-    reason = 'Manipulation events exist but no snapshot persisted in the last 30 days. ' +
-             'Symbol-level risk view may be incomplete.';
-  } else {
-    status = 'FRESH';
-    reason = `Latest event ${input.latestEventDate}, lag ${daysLag ?? 0} day(s) — within ${FRESH_DAYS_THRESHOLD}-day freshness window.`;
-  }
+  const daysLag = dayDiff(snapshotSession, input.latestCandleDate);
+  let status: FreshnessStatus = session.status;
+  if (status === 'PARTIAL' && session.isStale) status = 'STALE';
 
-  // Candles advanced but surveillance scan did not — hard rejection must stay off.
-  if (status === 'FRESH' && scanDate && refDate && scanDate < refDate) {
-    status = 'STALE';
-    reason = `Manipulation snapshots are stale (latest ${input.latestScanAt}). ` +
-      'Hard rejection disabled — Signal Engine sees warnings only until a fresh scan runs.';
-  }
-
-  return { status, reason, daysLag, isStale: status === 'STALE' };
+  return {
+    status,
+    reason:  session.reason,
+    daysLag,
+    isStale: session.isStale,
+  };
 }
 
 // ── Freshness probe ────────────────────────────────────────────────
@@ -244,6 +242,7 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
   let latestEventDate:  string | null = null;
   let latestCandleDate: string | null = null;
   let latestScanAt:     string | null = null;
+  let latestSnapshotSession: string | null = null;
   let snapshotCount30d = 0;
 
   try {
@@ -256,11 +255,13 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
   } catch {/* table may not exist on fresh DB — treat as no data */}
 
   try {
-    const { rows } = await db.query<{ d: string | Date | null; n: number }>(
-      `SELECT MAX(created_at) AS d, COUNT(*) AS n
+    const { rows } = await db.query<{ session_date: string | null; d: string | Date | null; n: number }>(
+      `SELECT DATE_FORMAT(MAX(snapshot_date), '%Y-%m-%d') AS session_date,
+              MAX(created_at) AS d, COUNT(*) AS n
          FROM q365_manipulation_snapshots
         WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)`,
     );
+    latestSnapshotSession = parseIsoDateOnly(rows?.[0]?.session_date ?? null);
     latestScanAt = toIsoDateTime(rows?.[0]?.d ?? null);
     snapshotCount30d = Number(rows?.[0]?.n ?? 0);
   } catch {/* table may not exist */}
@@ -278,6 +279,7 @@ export async function computeManipulationFreshness(): Promise<FreshnessEnvelope>
     latestEventDate,
     latestCandleDate: refDate,
     latestScanAt,
+    latestSnapshotSessionDate: latestSnapshotSession,
     snapshotCount30d,
   });
 

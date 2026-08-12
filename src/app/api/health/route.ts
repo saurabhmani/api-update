@@ -191,13 +191,19 @@ export async function GET() {
     const r = (rows as any[])[0];
     const lastRun = r?.run_at ?? null;
     const ageHours = lastRun ? Math.round((Date.now() - new Date(lastRun).getTime()) / 3600000) : null;
+    const newsRequired = process.env.NEWS_PIPELINE_REQUIRED === 'true';
+    const newsStatus: CheckStatus = !r ? 'unknown'
+      : ageHours != null && ageHours <= 4 ? 'ok'
+      : newsRequired ? 'fail' : 'warn';
     checks.newsPipeline = {
-      status: r ? (ageHours != null && ageHours <= 4 ? 'ok' : 'warn') : 'unknown',
+      status: newsStatus,
       lastRun, ageHours,
       lastFetched: r?.total_fetched ?? 0,
       lastNewEvents: r?.new_events ?? 0,
       lastDurationMs: r?.duration_ms ?? 0,
+      required: newsRequired,
     };
+    overallStatus = applyCheckResult(overallStatus, newsStatus);
   } catch {
     checks.newsPipeline = { status: 'unknown', lastRun: null };
   }

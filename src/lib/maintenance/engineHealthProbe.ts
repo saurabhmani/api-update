@@ -1,5 +1,10 @@
 import { db } from '@/lib/db';
+import { parseIsoDateOnly } from '@/lib/dates/isoDateOnly';
 import { getLatestCompletedTradingDay } from '@/lib/marketData/marketHours';
+import {
+  evaluateManipulationSessionHealth,
+  scanAtToSessionDate,
+} from '@/lib/manipulation-engine/expectedManipulationSession';
 import { readMaintenanceHealth } from './jobRunRepository';
 
 export interface DirectEngineHealthPayload {
@@ -31,7 +36,8 @@ export async function probeSignalEngineHealthDirect(): Promise<DirectEngineHealt
          FROM q365_signals WHERE status='active'`,
     ),
     db.query<any>(
-      `SELECT MAX(snapshot_date) AS latest_date, MAX(created_at) AS latest_at,
+      `SELECT DATE_FORMAT(MAX(snapshot_date), '%Y-%m-%d') AS latest_date,
+              MAX(created_at) AS latest_at,
               COUNT(DISTINCT symbol) AS covered,
               (SELECT COUNT(*) FROM q365_manipulation_snapshots
                 WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) AS global_count
@@ -39,7 +45,8 @@ export async function probeSignalEngineHealthDirect(): Promise<DirectEngineHealt
         WHERE snapshot_date=(SELECT MAX(snapshot_date) FROM q365_manipulation_snapshots)`,
     ).catch(() => ({ rows: [{ probe_error: true }] })),
     db.query<any>(
-      `SELECT report_date, report_status, data_status, generated_at
+      `SELECT DATE_FORMAT(report_date, '%Y-%m-%d') AS report_date,
+              report_status, data_status, generated_at
          FROM q365_daily_signal_reports ORDER BY report_date DESC LIMIT 1`,
     ).catch(() => ({ rows: [] })),
     readMaintenanceHealth(24).catch(() => []),
@@ -48,15 +55,21 @@ export async function probeSignalEngineHealthDirect(): Promise<DirectEngineHealt
   const manipulation = manipulationResult.rows[0] ?? {};
   const report = reportResult.rows[0];
   const latest = geometry.latest ? new Date(geometry.latest).toISOString() : null;
-  const latestManipulationDate = manipulation.latest_date
-    ? String(manipulation.latest_date).slice(0, 10)
-    : null;
+
+  const latestManipulationDate = parseIsoDateOnly(manipulation.latest_date);
   const latestManipulationAt = manipulation.latest_at
     ? new Date(manipulation.latest_at).toISOString()
     : null;
   const manipulationConfigured = manipulation.probe_error !== true;
   const manipulationCovered = Number(manipulation.covered ?? 0);
-  const latestCompletedTradingDay = getLatestCompletedTradingDay();
+  const globalSnapshotCount = Number(manipulation.global_count ?? 0);
+
+  const sessionHealth = evaluateManipulationSessionHealth({
+    latestSnapshotSessionDate: latestManipulationDate,
+    latestScanAt:              latestManipulationAt,
+    snapshotCount30d:          globalSnapshotCount,
+  });
+
   const approvedSignals = signalResult.rows.map((row: any) => {
     let factorScores = row.factor_scores ?? null;
     if (typeof factorScores === 'string') {
@@ -75,6 +88,9 @@ export async function probeSignalEngineHealthDirect(): Promise<DirectEngineHealt
   }); });
   const buyCount = signalResult.rows.filter((row: any) => String(row.direction).toUpperCase() === 'BUY').length;
   const sellCount = signalResult.rows.filter((row: any) => String(row.direction).toUpperCase() === 'SELL').length;
+
+  const reportDate = report ? parseIsoDateOnly(report.report_date) : null;
+
   return {
     generatedAt: new Date().toISOString(),
     lastPipelineRunAt: latest,
@@ -83,18 +99,31 @@ export async function probeSignalEngineHealthDirect(): Promise<DirectEngineHealt
     counters: { approvedTotal: Number(geometry.active_count ?? 0), approvedBuy: buyCount, approvedSell: sellCount,
       highPotentialTotal: 0, watchlistTotal: 0, rejectedTotal: 0, candidateTotal: 0 },
     freshness: { last_pipeline_run: latest, signal_latest_generated: latest,
-      total_persisted: Number(geometry.active_count ?? 0), missing_risk_geometry: Number(geometry.missing_geometry ?? 0) },
-    dailyReportPreview: report ? { reportDate: String(report.report_date).slice(0, 10),
-      reportStatus: report.report_status, dataStatus: report.data_status, generatedAt: report.generated_at } : null,
+      total_persisted: Number(geometry.active_count ?? 0),
+      missing_risk_geometry: Number(geometry.missing_geometry ?? 0) },
+    dailyReportPreview: report ? {
+      reportDate: reportDate ?? getLatestCompletedTradingDay(),
+      reportStatus: report.report_status,
+      dataStatus: report.data_status,
+      generatedAt: report.generated_at,
+    } : null,
     manipulationRiskMeta: {
-      configured: manipulationConfigured,
-      symbolCount: Number(geometry.active_count ?? 0),
-      snapshotCount: manipulationCovered,
-      freshestSnapshotAt: latestManipulationAt,
-      stale: latestManipulationDate == null || latestManipulationDate < latestCompletedTradingDay,
-      globalSnapshotCount: Number(manipulation.global_count ?? 0),
-      globalLatestScanAt: latestManipulationAt,
+      configured:              manipulationConfigured,
+      symbolCount:             Number(geometry.active_count ?? 0),
+      snapshotCount:           manipulationCovered,
+      freshestSnapshotAt:      latestManipulationAt,
+      freshestSnapshotSession: latestManipulationDate,
+      stale:                   sessionHealth.isStale,
+      freshnessStatus:         sessionHealth.status,
+      expectedSessionDate:     sessionHealth.expectedSessionDate,
+      scanDue:                 sessionHealth.scanDue,
+      lifecyclePhase:          sessionHealth.lifecyclePhase,
+      staleReason:             sessionHealth.reason,
+      globalSnapshotCount,
+      globalLatestScanAt:      latestManipulationAt,
     },
     maintenanceRuns,
   };
 }
+
+export { scanAtToSessionDate, parseIsoDateOnly };

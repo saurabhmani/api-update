@@ -71,6 +71,7 @@ import { processQueuedBacktestRuns } from '@/lib/backtesting/runner/backtestQueu
 import { rescoreActiveSignals } from '@/lib/signal-engine/rescore/rescoreActiveSignals';
 import { isSignalIntradayRegenEnabled } from '@/lib/signal-engine/schedule/signalSchedulePolicy';
 import { runScheduledMaintenance } from '@/lib/maintenance/scheduler';
+import { runMaintenanceBootCatchUp } from '@/lib/maintenance/bootCatchUp';
 
 const log = logger.child({ component: 'worker-scheduler' });
 const IST = 'Asia/Kolkata';
@@ -301,6 +302,16 @@ startDailyScanSchedule();
 
 // 2b. Weekly NSE 1000 universe rebuild — Sunday 22:00 IST by default.
 startWeeklyUniverseSchedule();
+
+// Bounded boot catch-up — replays missed maintenance when deploy/restart
+// occurs after the 20:30 IST window (Aug 11 incident). DB ledger claims
+// prevent duplicate execution across concurrent scheduler boots.
+if (DAILY_MAINTENANCE_PIPELINE_ENABLED) {
+  void runMaintenanceBootCatchUp({ reason: 'scheduler-boot', lookbackTradingDays: 7, maxDates: 2 })
+    .catch((err) => log.error('[MAINTENANCE-CATCHUP] scheduler boot failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }));
+}
 
 // 3. 19:00 IST — nightly backtest (Mon–Fri).
 if (!DAILY_MAINTENANCE_PIPELINE_ENABLED) {
@@ -613,6 +624,23 @@ if (DAILY_MAINTENANCE_PIPELINE_ENABLED) {
   }, { timezone: IST });
 }
 
+// News ingestion — durable schedule when not running in-proc (prod PM2 split).
+if (process.env.NEWS_INGESTION_SCHEDULER_ENABLED !== 'false') {
+  const newsCron = process.env.NEWS_INGESTION_CRON ?? '0 */4 * * *';
+  cron.schedule(newsCron, () => {
+    void (async () => {
+      try {
+        const { runFullPipeline } = await import('@/lib/news-engine/pipeline/runNewsPipeline');
+        await runFullPipeline('Indian stock market NSE', 15);
+      } catch (err) {
+        log.error('[NEWS-INGESTION] scheduled run failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }, { timezone: IST });
+}
+
 log.info('worker-scheduler ready', {
   marketDataCadence: '09:20 warmup · 09:30-15:30 @ 10m · 15:35 post-close',
   dailyScanSchedule: [
@@ -623,13 +651,17 @@ log.info('worker-scheduler ready', {
     '14:45 late rescore',
     '16:00 evening EOD candle update (removed vendor)',
     '16:30 evening scan (DB-only)',
-    '18:30 manipulation scan (scan-only)',
+    DAILY_MAINTENANCE_PIPELINE_ENABLED
+      ? 'manipulation: maintenance DAG @ 20:30 (legacy 18:30 disabled)'
+      : '18:30 manipulation scan (scan-only)',
   ],
-  nightlyJobs: [
-    '19:00 backtest',
-    '19:30 eod-manipulation (NSE bhavcopy + manipulation scan)',
-    '20:00 signal-outcome evaluation (feeds strategy performance)',
-  ],
+  nightlyJobs: DAILY_MAINTENANCE_PIPELINE_ENABLED
+    ? ['20:30 maintenance DAG (EOD pipeline + nightly backtest + daily report)']
+    : [
+      '19:00 backtest',
+      '19:30 eod-manipulation (NSE bhavcopy + manipulation scan)',
+      '20:00 signal-outcome evaluation (feeds strategy performance)',
+    ],
   weeklyUniverseRebuild: {
     enabled: process.env.UNIVERSE_WEEKLY_REBUILD_ENABLED !== 'false',
     cron: process.env.UNIVERSE_WEEKLY_REBUILD_CRON ?? '0 22 * * 0 (Sun 22:00 IST)',

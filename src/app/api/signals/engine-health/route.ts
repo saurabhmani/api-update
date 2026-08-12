@@ -39,6 +39,8 @@ import {
 }                                      from '@/lib/signals/engineHealthMap';
 import { probeLearningPersistence }    from '@/lib/learning/learningPersistenceProbe';
 import { probeCandleWarehouse }        from '@/lib/monitor/candleWarehouseProbe';
+import { buildMaintenanceHealthSummary } from '@/lib/maintenance/maintenanceHealthSummary';
+import type { MaintenanceRunRecord }   from '@/lib/maintenance/types';
 import {
   engineDebugger,
   runWithEngineDebugAsync,
@@ -61,10 +63,10 @@ const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? (v as T[]) : [];
 // comes from signals.dailyReportPreview; backtest readiness from the
 // cheap candle warehouse probe.
 const TIMEOUT = {
-  // /api/signals is heavy — lite=true keeps health aggregation under budget.
-  signals:       1_500,
-  candleProbe:   2_000,
-  learningProbe: 3_000,
+  // Direct DB probes — must survive production pool contention under load.
+  signals:       8_000,
+  candleProbe:   5_000,
+  learningProbe: 5_000,
 } as const;
 
 /** Minimal context when the signals envelope is unavailable or the
@@ -256,6 +258,10 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
   }
 
   const payload = signals.data ?? null;
+  const maintenanceRuns = (payload?.maintenanceRuns ?? []) as MaintenanceRunRecord[];
+  const maintenanceSummary = maintenanceRuns.length > 0
+    ? await buildMaintenanceHealthSummary(maintenanceRuns).catch(() => null)
+    : await buildMaintenanceHealthSummary([]).catch(() => null);
 
   // Daily report: reuse lightweight preview already on the signals
   // envelope — avoids a second /api/signals round-trip via daily-report.
@@ -341,6 +347,8 @@ async function getEngineHealth(req: NextRequest, requestId: string) {
     manipulationGateImpact: payload?.manipulationGateImpact ?? null,
     manipulationRiskMeta:   payload?.manipulationRiskMeta ?? null,
     learningPersistence,
+    maintenanceRuns,
+    maintenanceSummary,
   };
 
   if (hasDailyPreview) {
